@@ -1,9 +1,0 @@
-graph TD
-    A{"What is the device?"} -->|"NVMe, or any device with<br/>deep hardware queues"| B["<b>none</b><br/><i>the device reorders better<br/>than the kernel can</i>"]
-    A -->|"SATA SSD, cloud block store"| C["<b>mq-deadline</b><br/><i>cheap, bounds read latency,<br/>stops writes starving reads</i>"]
-    A -->|"Rotational disk"| D["<b>mq-deadline</b> or <b>bfq</b><br/><i>seek order matters;<br/>bfq if fairness matters more</i>"]
-    A -->|"Desktop, or one tenant<br/>must not starve another"| E["<b>bfq</b><br/><i>proportional share,<br/>at a CPU cost</i>"]
-    B --> F["Check first:<br/><code>cat /sys/block/&lt;dev&gt;/queue/scheduler</code><br/>the bracketed one is active"]
-    C --> F
-    D --> F
-    E --> F

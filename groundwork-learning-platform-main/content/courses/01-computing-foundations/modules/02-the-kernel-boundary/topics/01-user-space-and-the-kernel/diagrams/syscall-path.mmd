@@ -1,9 +1,0 @@
-graph TD
-    A["Your code<br/>printf(\"hello\")"] --> B["glibc<br/>formats the string,<br/>fills its buffer"]
-    B --> C["glibc's write() wrapper<br/>syscall number 1 into rax,<br/>fd, buffer, length into registers"]
-    C -->|"syscall instruction<br/>— the boundary —"| D["CPU switches to ring 0<br/>and jumps to a fixed<br/>kernel entry point"]
-    D --> E["Kernel: check the fd,<br/>check permissions,<br/>copy the bytes in"]
-    E --> F["Device driver<br/>terminal, file, socket"]
-    F --> G["Kernel returns:<br/>bytes written, or -errno"]
-    G -->|"back to ring 3"| H["glibc sets errno<br/>if the value was negative"]
-    H --> I["Your code carries on,<br/>having touched no hardware"]

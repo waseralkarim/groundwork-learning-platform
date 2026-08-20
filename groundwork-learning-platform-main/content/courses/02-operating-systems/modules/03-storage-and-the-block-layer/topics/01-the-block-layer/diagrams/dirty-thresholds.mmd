@@ -1,8 +1,0 @@
-graph LR
-    A["Dirty pages<br/>accumulating"] --> B{"Above<br/>dirty_background_ratio<br/><i>default 10%</i>?"}
-    B -->|"no"| C["Nothing happens.<br/>Pages sit in cache"]
-    B -->|"yes"| D["Kernel threads start<br/>writing back in the<br/>background. Nobody blocks"]
-    D --> E{"Above<br/>dirty_ratio<br/><i>default 20%</i>?"}
-    E -->|"no"| F["Writers continue<br/>at full speed"]
-    E -->|"yes"| G["<b>Writers are throttled</b><br/>write() now blocks until<br/>pages are cleaned"]
-    G --> H["<i>This is the latency cliff.</i><br/>Throughput was fine until<br/>the moment it was not"]

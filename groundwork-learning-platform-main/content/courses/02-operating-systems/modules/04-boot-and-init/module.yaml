@@ -1,8 +1,0 @@
-id: module.boot-and-init
-slug: boot-and-init
-title: Boot and Init
-summary: >-
-  How a machine gets from firmware to a running service, and what the first
-  process is responsible for once it arrives. The dependency model systemd
-  actually implements, and the one Kubernetes reimplemented on top of it.
-order: 4

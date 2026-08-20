@@ -1,8 +1,0 @@
-graph TD
-    A["<b>Firmware</b> — UEFI or BIOS<br/><i>knows about disks, not filesystems</i>"]
-    A -->|"reads the EFI system partition"| B["<b>Bootloader</b> — GRUB, systemd-boot<br/><i>picks a kernel, assembles a command line</i>"]
-    B -->|"loads two files into memory"| C["<b>Kernel</b> + <b>initramfs</b>"]
-    C --> D["Kernel unpacks the initramfs<br/>into a RAM filesystem and runs <b>/init</b>"]
-    D -->|"loads the drivers needed to<br/>see the real root: NVMe, RAID, LUKS, LVM"| E["Real root filesystem is mountable"]
-    E -->|"<b>switch_root</b> — pivot to the real root,<br/>free the RAM disk"| F["<b>/sbin/init</b> — PID 1<br/><i>usually systemd</i>"]
-    F --> G["Units, in dependency order,<br/>until the default target is reached"]

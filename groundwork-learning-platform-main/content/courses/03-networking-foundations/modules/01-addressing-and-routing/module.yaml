@@ -1,7 +1,0 @@
-id: module.addressing-and-routing
-slug: addressing-and-routing
-title: Addressing and Routing
-summary: >-
-  What an address identifies, what a mask decides, and how a machine chooses
-  where to send a packet it cannot deliver itself.
-order: 1

@@ -1,8 +1,0 @@
-graph TD
-    A["<b>write()</b><br/><i>counted in wchar</i>"] --> B["Page cache<br/><i>the page is now dirty.<br/>write() returns here</i>"]
-    B -->|"dirty_background_ratio exceeded,<br/>or dirty_expire_centisecs elapsed,<br/>or fsync()"| C["Filesystem<br/><i>ext4/xfs: journal, allocate,<br/>build bios</i>"]
-    C --> D["Block layer<br/><i>merge adjacent, split oversized</i>"]
-    D --> E["I/O scheduler queue<br/><i>none / mq-deadline / kyber / bfq</i>"]
-    E -->|"nr_requests deep"| F["Device queue<br/><i>the hardware's own</i>"]
-    F --> G["<b>Device</b><br/><i>counted in write_bytes</i>"]
-    B -.->|"tmpfs: there is no step 3.<br/>wchar climbs, write_bytes stays 0"| Z["nothing"]

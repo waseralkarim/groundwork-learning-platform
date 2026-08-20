@@ -1,8 +1,0 @@
-graph TD
-    A["A process wants a new namespace"] --> B{"Which kind?"}
-    B -->|"user"| C["Allowed unprivileged.<br/>This is what makes rootless possible"]
-    B -->|"pid, mnt, net, ipc, uts, cgroup"| D{"Has CAP_SYS_ADMIN<br/>in the current user namespace?"}
-    D -->|"no"| E["EPERM.<br/>Your container cannot nest containers"]
-    D -->|"yes"| F["Allowed"]
-    C --> G["Inside the new user namespace<br/>you hold all capabilities —<br/>over that namespace only"]
-    G --> D

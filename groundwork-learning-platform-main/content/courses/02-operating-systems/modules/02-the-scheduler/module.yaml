@@ -1,8 +1,0 @@
-id: module.the-scheduler
-slug: the-scheduler
-title: The Scheduler
-summary: >-
-  Who runs next, and for how long. The arbitration that cgroup weights feed
-  into, the difference between a process being slow and a process waiting for a
-  CPU, and why nice appears to do nothing until it suddenly does everything.
-order: 2

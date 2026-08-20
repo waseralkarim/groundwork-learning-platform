@@ -1,8 +1,0 @@
-id: module.storage-and-the-block-layer
-slug: storage-and-the-block-layer
-title: Storage and the Block Layer
-summary: >-
-  What happens between write() returning and the data existing on a device: the
-  page cache you already met, the writeback thresholds that decide when it
-  leaves, the queues it waits in, and the counters that say how long it waited.
-order: 3

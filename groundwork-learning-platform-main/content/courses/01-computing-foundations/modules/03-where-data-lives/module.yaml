@@ -1,8 +1,0 @@
-id: module.where-data-lives
-slug: where-data-lives
-title: Where Data Lives
-summary: >-
-  Files, inodes, mounts and the layered filesystem your containers actually run
-  on. The module that turns "the disk is full" from a mystery into a two-command
-  diagnosis.
-order: 3

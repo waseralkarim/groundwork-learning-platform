@@ -1,9 +1,0 @@
-graph TD
-    A["A write failed"] --> B{"Which errno?"}
-    B -->|"ENOSPC"| C{"df -h vs df -i"}
-    C -->|"no blocks free"| C1["Out of space.<br/>Check for deleted-but-open files first"]
-    C -->|"no inodes free"| C2["Out of inodes.<br/>Millions of tiny files"]
-    B -->|"EROFS"| D["Read-only mount.<br/>Nothing to do with permissions"]
-    B -->|"EACCES"| E["Permission check.<br/>Mode bits, owner, or a parent directory"]
-    B -->|"EDQUOT"| F["Quota. The filesystem has room;<br/>you do not"]
-    C1 --> G["lsof / proc fd — a process is holding it open"]

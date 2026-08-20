@@ -1,8 +1,0 @@
-graph TD
-    A["<b>10.0.1.5/24</b>"] --> B["<b>Network part</b> — first 24 bits<br/>10.0.1<br/><i>which network</i>"]
-    A --> C["<b>Host part</b> — remaining 8 bits<br/>.5<br/><i>which host on it</i>"]
-    B --> D["10.0.1.0 — the <b>network address</b><br/>all host bits zero"]
-    C --> E["10.0.1.255 — the <b>broadcast address</b><br/>all host bits one"]
-    D --> F["Usable hosts: 10.0.1.1 – 10.0.1.254<br/><b>254 of them</b>"]
-    E --> F
-    A --> G["<i>Change the mask to /25 and the same<br/>address is on a different network,<br/>with different neighbours</i>"]
