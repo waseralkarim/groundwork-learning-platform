@@ -1,0 +1,186 @@
+id: assessment.user-space-and-the-kernel
+topic: topic.user-space-and-the-kernel
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain the boundary to a new engineer
+    kind: explain
+    objectives: [OBJ-A01.3.2]
+    prompt: >-
+      A developer joining your team asks why their program cannot just write to
+      the disk directly, and why everything has to "go through the kernel".
+
+
+      Explain it in your own words, in about 150 words. Cover what enforces the
+      restriction, what the mechanism for getting work done is, and one thing
+      that becomes easier to understand once they know this.
+    rubric:
+      - "States that the CPU itself enforces the restriction via privilege levels, not the kernel checking afterwards"
+      - "Names the system call as the defined mechanism for crossing"
+      - "Notes that the interface is finite and enumerable — around 350 calls"
+      - "Draws at least one concrete consequence: strace working on any binary, container isolation, or why buffering exists"
+      - "Avoids describing the kernel as a library the program calls into"
+    model_answer: >-
+      Your program runs in ring 3, a CPU mode in which the instructions that
+      touch hardware simply do not execute. This is not the kernel checking your
+      credentials and refusing — the processor traps instead of executing, which
+      is why a bug in your code kills your process and a bug in the kernel can
+      take the machine.
+
+
+      To get anything done you make a system call: put a number and arguments in
+      registers, execute one instruction, and the CPU switches to ring 0 at one
+      fixed entry point the kernel chose. The kernel does the work and returns a
+      value.
+
+
+      Two useful consequences. Because the set of calls is finite — around 350 —
+      `strace` can show you everything a program does to anything, in any
+      language, without source. And because each crossing costs a mode switch,
+      every buffered writer you have ever used exists to make fewer of them.
+    common_failures:
+      - "Describing the kernel as 'the low-level part of your program' rather than a separate, more privileged program"
+      - "Saying the kernel checks permissions on every instruction — the restriction is in hardware, at the mode level"
+      - "Confusing library calls with system calls, and so missing why one costs a thousand times more"
+      - "Explaining the mechanism with no consequence, which makes it trivia"
+
+  - id: B
+    title: Diagnose a workload from its timing profile
+    kind: diagnose
+    objectives: [OBJ-A01.3.4, OBJ-A01.3.5]
+    prompt: >-
+      A nightly job took 6 minutes last quarter and takes 70 minutes now. Its
+      timing looks like this:
+
+
+      ```text
+      real    70m11.400s
+      user    3m02.118s
+      sys     66m40.902s
+      ```
+
+
+      Its CPU limit was doubled last week with no improvement, and an
+      application profiler reports the process as almost entirely idle.
+
+
+      Say what is happening, what you would run next and why, and what class of
+      fix you expect. Explain specifically why the CPU increase changed nothing
+      and why the profiler was not broken.
+    rubric:
+      - "Identifies that ~95% of CPU is system time, so the process is making syscalls rather than computing"
+      - "Chooses `strace -c -f -p <pid>` as the next command, and says why a profiler is the wrong instrument here"
+      - "Explains that the profiler was correct: there is almost no application code executing to sample"
+      - "Explains that more CPU cannot help when the CPU is already busy doing avoidable kernel work"
+      - "Names the expected class of fix as fewer, larger crossings — buffering, batching, or removing a per-item durability barrier"
+      - "Mentions the risk of attaching strace to a live process and bounds the sampling"
+    model_answer: >-
+      Sixty-six of seventy minutes are system time, so the process is spending
+      its life inside system calls. Its own logic uses three minutes. That single
+      split determines everything else.
+
+
+      The profiler was right. It samples application stacks, and there are almost
+      none to sample — the process is in the kernel. Dismissing it as broken cost
+      the team two weeks.
+
+
+      More CPU could not help because the CPU was never idle and never the
+      constraint: it was being consumed by avoidable kernel work, and doubling
+      the limit doubles the capacity to do the same unnecessary work.
+
+
+      Next command: `strace -c -f -p <pid>` for a few seconds, not longer, since
+      tracing stops the process on every crossing and can slow it enough to trip
+      health checks. The summary names the call and its count.
+
+
+      Expected fix: fewer, larger crossings. Per-record writes become a buffered
+      writer; a per-record `fsync` becomes a periodic checkpoint; a poll loop
+      gets a timeout. If a per-item durability barrier turns out to be a genuine
+      requirement, that is a design decision with a measured cost rather than an
+      accident.
+    common_failures:
+      - "Recommending a faster disk — the cost is CPU in the kernel, and throughput here is trivial"
+      - "Trusting the CPU-limit result as evidence that CPU is the constraint, when a null result was the clue"
+      - "Reaching for the profiler again instead of changing instrument"
+      - "Attaching strace to a production process indefinitely with no regard for the slowdown"
+
+  - id: C
+    title: Review a proposed container change
+    kind: reason
+    objectives: [OBJ-A01.3.6, OBJ-A01.3.7, OBJ-A01.3.8]
+    prompt: >-
+      A colleague opens a pull request adding `privileged: true` to a
+      Kubernetes deployment. The description says: "container needs to write its
+      cache to /var/lib/app and bind port 443; runs as root but gets permission
+      errors; privileged fixes it."
+
+
+      Write your review. Say what you would ask for before approving, what you
+      expect the actual causes to be, and what you would propose instead. Be
+      specific about which evidence would settle each question.
+    rubric:
+      - "Refuses to approve on the evidence given, and says what evidence is missing"
+      - "Asks for the errno of each failure, not the message, and names how to get it"
+      - "Recognises the two symptoms are probably different failures with different causes"
+      - "Identifies the likely cache failure as EROFS from a read-only root filesystem, fixed with a volume, not privilege"
+      - "Identifies the port 443 failure as needing CAP_NET_BIND_SERVICE, or better, avoided entirely"
+      - "States what privileged: true actually grants, and why it ends the investigation rather than resolving it"
+      - "Proposes a least-privilege alternative with concrete fields"
+    model_answer: >-
+      I would not approve this yet. "Permission errors" is not a diagnosis, and
+      the two symptoms are almost certainly different failures.
+
+
+      What I would ask for: the errno of each, from `strace -f -e
+      trace=openat,bind` or from the container log if it prints them. EACCES,
+      EPERM and EROFS all read as "not allowed" and have three different fixes.
+
+
+      What I expect. The cache failure is likely EROFS: if the pod sets
+      `readOnlyRootFilesystem: true`, /var/lib/app is read-only and no amount of
+      privilege changes that — root gets EROFS identically. The fix is an
+      emptyDir or a PVC mounted at that path.
+
+
+      The port 443 failure is likely EPERM from a missing
+      CAP_NET_BIND_SERVICE — though note Docker's default set includes it, so if
+      this deployment drops capabilities, that is the line that caused it. Better
+      still: listen on 8443 and let the Service map 443 to it, removing the
+      requirement.
+
+
+      What `privileged: true` actually does: grants all capabilities, disables
+      the seccomp profile, and gives device access. It works, which is precisely
+      the problem — it makes both symptoms disappear without anyone learning
+      which one needed what, and it leaves a standing path to the host in a
+      manifest nobody will revisit.
+
+
+      Proposed instead:
+
+
+      ```yaml
+      securityContext:
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: cache
+          mountPath: /var/lib/app
+      ```
+
+
+      with the container listening on 8443. If a capability really is required
+      after the evidence is in, add that one by name and note why in the
+      manifest.
+    common_failures:
+      - "Approving because it works, without asking which of the two problems it solved"
+      - "Treating both symptoms as one cause"
+      - "Proposing cap_add: SYS_ADMIN as a 'safer' alternative — it is close to privileged"
+      - "Fixing the port binding with a capability when changing the port removes the need entirely"
+      - "Objecting on principle without naming the evidence that would settle it"

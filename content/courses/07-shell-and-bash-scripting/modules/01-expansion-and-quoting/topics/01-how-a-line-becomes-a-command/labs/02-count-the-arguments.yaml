@@ -1,0 +1,319 @@
+id: lab.count-the-arguments
+topic: topic.how-a-line-becomes-a-command
+title: Predict fifteen argument counts, then measure
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.1.3, OBJ-B08.1.4]
+
+intro: >-
+  Fifteen lines in `/tmp/sh/predict.txt`. For each one, write down how many
+  arguments the command will receive — then run it.
+
+
+  Four of them surprise almost everybody. The value of this lab is entirely in
+  the gap between your prediction and the measurement, so commit to answers
+  before running anything.
+
+setup:
+  - /opt/lab/seed-shell.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/sh/predict.txt and write your predicted count for all fifteen
+      lines to /tmp/prediction, before running any of them.
+    hint: >-
+      Work through the stages in order for each line: which expansions apply,
+      then does word splitting see the result, then does globbing.
+    walkthrough: |
+      cat /tmp/sh/predict.txt
+      cat > /tmp/prediction <<'P'
+      1=2   2=1   3=1   4=1   5=1   6=1   7=6   8=1
+      9=0   10=3  11=3  12=2  13=1  14=1  15=1
+      P
+      echo "committed. (deliberately including some wrong ones - 3, 5, 9 and 10 are where i am least sure.)"
+      cat /tmp/prediction
+    verify:
+      - type: file_exists
+        path: /tmp/prediction
+        describe: You committed to predictions before measuring
+      - type: command_exit
+        command: "grep -c '=' /tmp/prediction"
+        exit_code: 0
+        describe: With an answer for each line
+
+  - id: s2
+    instruction: >-
+      Measure all fifteen and record the real answers in /tmp/answer-measured.
+    hint: >-
+      Put /tmp/sh on your PATH and work in /tmp/sh/files. Use eval so you can
+      loop over the expressions, or just run them one at a time.
+    walkthrough: |
+      export PATH="/tmp/sh:$PATH"
+      cd /tmp/sh/files
+      f='a file.log'; e=''; g='*.log'; n=3
+      {
+        printf '%3s  %-24s %s\n' NO EXPRESSION ARGC
+        i=0
+        for expr in '$f' '"$f"' '$e' '"$e"' '$g' '"$g"' '*.log' '"*.log"' \
+                    '*.nomatch' '{1..$n}' '{1..3}' '$(echo one two)' \
+                    '"$(echo one two)"' "'\$f'" "\"'\$f'\""; do
+          i=$((i + 1))
+          printf '%3s  %-24s %s\n' "$i" "argc $expr" "$(eval "argc $expr" | sed -n 's/^argc = //p')"
+        done
+      } > /tmp/answer-measured
+      cat /tmp/answer-measured
+    verify:
+      - type: file_matches
+        path: /tmp/answer-measured
+        pattern: "1  argc \\$f +2"
+        describe: An unquoted variable with a space became two arguments
+      - type: file_matches
+        path: /tmp/answer-measured
+        pattern: "3  argc \\$e +0"
+        describe: An unquoted empty variable became ZERO arguments
+      - type: file_matches
+        path: /tmp/answer-measured
+        pattern: "5  argc \\$g +6"
+        describe: A variable containing a pattern was globbed
+      - type: file_matches
+        path: /tmp/answer-measured
+        pattern: "9  argc \\*.nomatch +1"
+        describe: An unmatched pattern stayed literal
+      - type: file_matches
+        path: /tmp/answer-measured
+        pattern: "10  argc \\{1\\.\\.\\$n\\} +1"
+        describe: And a brace range with a variable did not expand
+
+  - id: s3
+    instruction: >-
+      Take the four results that most often surprise people — 3, 5, 9 and 10 —
+      and explain each by naming the stage responsible. Save to
+      /tmp/answer-surprises.
+    walkthrough: |
+      export PATH="/tmp/sh:$PATH"
+      cd /tmp/sh/files
+      f='a file.log'; e=''; g='*.log'; n=3
+      {
+        echo "3. argc \$e where e='' -> 0 arguments, not 1."
+        echo "   stage 3 substituted the empty string. stage 6 then split it into"
+        echo "   words, and an empty string contains no words - so the argument"
+        echo "   disappeared entirely."
+        echo "   this is why [ \$x = y ] breaks: with x empty the shell runs [ = y ],"
+        echo "   which has the wrong number of operands. dash says so:"
+        sh -c 'x=""; [ $x = y ]' 2>&1 | head -1 | sed 's/^/     /'
+        echo "   quoted, the argument survives as an empty string:"
+        echo "     argc \"\$e\" -> $(argc "$e" | sed -n 's/^argc = //p')"
+        echo
+        echo "5. argc \$g where g='*.log' -> 6, not 1."
+        echo "   stage 3 substituted the text *.log. stage 6 split it into one word."
+        echo "   stage 7 then GLOBBED that word, because globbing does not care"
+        echo "   where the pattern came from. a variable holding a pattern is a"
+        echo "   pattern."
+        echo
+        echo "9. argc *.nomatch -> 1, not 0."
+        echo "   nothing matched, and bash leaves an unmatched pattern as literal"
+        echo "   text by default. shopt -p nullglob says: $(shopt -p nullglob)"
+        echo "   this is why 'for f in /some/empty/dir/*.log' runs its body ONCE,"
+        echo "   with a filename that does not exist."
+        echo "   with nullglob on:"
+        echo "     $(shopt -s nullglob; argc *.nomatch | sed -n 's/^argc = //p') arguments"
+        echo
+        echo "10. argc {1..\$n} -> 1, not 3."
+        echo "    brace expansion is stage 1, parameter expansion is stage 3. the"
+        echo "    brace stage saw {1..\$n}, which is not a valid range, and left it."
+        echo "    the ordering is the entire explanation."
+        echo
+        echo "the pattern across all four: three of them are word splitting or globbing acting on something a VARIABLE produced, and one is a stage running too early to see a variable at all. none of them are special cases - they all fall out of the order."
+      } > /tmp/answer-surprises
+      cat /tmp/answer-surprises
+    verify:
+      - type: file_matches
+        path: /tmp/answer-surprises
+        pattern: "(?i)unexpected operator|argument expected"
+        describe: You reproduced the empty-variable test failure
+      - type: file_matches
+        path: /tmp/answer-surprises
+        pattern: "(?i)a variable holding a pattern is a"
+        describe: And explained why a variable gets globbed
+      - type: file_matches
+        path: /tmp/answer-surprises
+        pattern: "0 arguments"
+        describe: And showed what nullglob changes
+      - type: file_matches
+        path: /tmp/answer-surprises
+        pattern: "(?i)fall out of the order"
+        describe: And connected all four to the ordering
+
+  - id: s4
+    instruction: >-
+      Count the .log files in /tmp/sh/files two different ways and explain the
+      disagreement. Save to /tmp/answer-count.
+    hint: >-
+      Try counting with a glob and with `ls | wc -l`. Then look at the filenames
+      with `ls -b`.
+    walkthrough: |
+      export PATH="/tmp/sh:$PATH"
+      cd /tmp/sh/files
+      {
+        echo "counting the same files two ways:"
+        echo "  argc *.log     -> $(argc *.log | sed -n 's/^argc = //p')"
+        echo "  ls *.log | wc -l -> $(ls *.log | wc -l)"
+        echo
+        echo "they disagree. looking at the names with escaping turned on:"
+        ls -b *.log | sed 's/^/    /'
+        echo
+        echo "one filename contains a NEWLINE. it is a single file, and wc -l counts lines, so it counts as two."
+        echo
+        echo "a filename may contain any byte except NUL and the slash. spaces, tabs, newlines and leading hyphens are all legal, and they arrive from uploads, from windows, and from customer-supplied identifiers."
+        echo
+        echo "so 'ls | wc -l' is not a count of files, it is a count of newlines in some output. every line-based or space-based approach is a guess about what filenames will not contain, and this directory contains a counterexample to each."
+        echo
+        echo "what is actually reliable: a glob, which produces words directly and never re-splits them; or find -print0 with xargs -0, since NUL is the one byte a filename cannot contain."
+        echo "  find . -maxdepth 1 -name '*.log' -print0 | tr -dc '\\0' | wc -c -> $(find . -maxdepth 1 -name '*.log' -print0 | tr -dc '\0' | wc -c)"
+        echo "  (counting NUL separators gives the true file count)"
+      } > /tmp/answer-count
+      cat /tmp/answer-count
+    verify:
+      - type: file_matches
+        path: /tmp/answer-count
+        pattern: "argc \\*.log +-> 6"
+        describe: The glob found six files
+      - type: file_matches
+        path: /tmp/answer-count
+        pattern: "wc -l -> 7"
+        describe: And ls piped to wc counted seven
+      - type: file_matches
+        path: /tmp/answer-count
+        pattern: "(?i)newline"
+        describe: And you found the filename responsible
+      - type: file_matches
+        path: /tmp/answer-count
+        pattern: "(?i)NUL"
+        describe: And named the only safe separator
+
+  - id: s5
+    instruction: >-
+      Score your prediction against the measurement and write to
+      /tmp/answer-score what you got wrong and what rule you now hold.
+    walkthrough: |
+      {
+        echo "predicted vs measured:"
+        echo "  3.  predicted 1, actual 0   - an unquoted empty variable vanishes"
+        echo "  5.  predicted 1, actual 6   - a variable containing a pattern is globbed"
+        echo "  9.  predicted 0, actual 1   - an unmatched pattern stays literal"
+        echo " 10.  predicted 3, actual 1   - brace expansion cannot see variables"
+        echo
+        echo "four wrong out of fifteen, and they were the four i flagged as uncertain - which is worth noticing, because the uncertainty was better calibrated than the answers."
+        echo
+        echo "what the four have in common: in every case i reasoned about what the line MEANT rather than what the stages DO. the shell has no idea what i meant."
+        echo
+        echo "the rule i now hold: an unquoted expansion does not produce 'a value'. it produces an unpredictable NUMBER of words, decided by the data and by the current directory. quoting is how i say 'one argument, exactly this'."
+        echo
+        echo "and the practical version, which costs nothing: when i am unsure, i do not reason - i run it. argc, printf '[%s]\\n' \"\$@\", or set -x settle it in one line, and being right by measurement is worth more than being right by argument."
+      } > /tmp/answer-score
+      cat /tmp/answer-score
+    verify:
+      - type: file_matches
+        path: /tmp/answer-score
+        pattern: "(?i)predicted .*actual"
+        describe: You scored your predictions honestly
+      - type: file_matches
+        path: /tmp/answer-score
+        pattern: "(?i)unpredictable number of words|number of words"
+        describe: And stated what an unquoted expansion really produces
+      - type: file_matches
+        path: /tmp/answer-score
+        pattern: "(?i)i do not reason - i run it|run it"
+        describe: And the habit that replaces reasoning
+
+solution: >-
+  **The fifteen answers.**
+
+
+  | | Expression | argc | |
+  |---|---|---|---|
+  | 1 | `$f` | **2** | split at the space |
+  | 2 | `"$f"` | 1 | |
+  | 3 | `$e` | **0** | an empty expansion produces no words at all |
+  | 4 | `"$e"` | 1 | quoting preserves the empty argument |
+  | 5 | `$g` | **6** | the variable's contents were globbed |
+  | 6 | `"$g"` | 1 | literal `*.log` |
+  | 7 | `*.log` | 6 | |
+  | 8 | `"*.log"` | 1 | |
+  | 9 | `*.nomatch` | **1** | unmatched pattern stays literal |
+  | 10 | `{1..$n}` | **1** | brace expansion runs before variables exist |
+  | 11 | `{1..3}` | 3 | |
+  | 12 | `$(echo one two)` | 2 | output is word-split |
+  | 13 | `"$(echo one two)"` | 1 | |
+  | 14 | `'$f'` | 1 | literal `$f` |
+  | 15 | `"'$f'"` | 1 | one word containing literal quotes |
+
+
+  **The four that surprise people, and the stage responsible for each.**
+
+
+  **3 — an unquoted empty variable produces zero arguments.** Stage 3 substituted
+  an empty string; stage 6 split it into words and found none. This is why the
+  classic test breaks:
+
+
+  ```console
+  $ sh -c 'x=""; [ $x = y ]'
+  sh: 1: [: =: unexpected operator
+  ```
+
+
+  `[` received `=` and `y` — two operands where it expected three.
+
+
+  **5 — a variable holding a pattern is a pattern.** Stage 3 put `*.log` into the
+  line, stage 6 made it one word, and stage 7 globbed it, because globbing does
+  not care where the pattern came from.
+
+
+  **9 — an unmatched pattern stays literal.** `nullglob` is off by default, which
+  is why `for f in /empty/dir/*.log` runs its body **once**, with a filename that
+  does not exist.
+
+
+  **10 — brace expansion cannot see variables.** Stage 1 versus stage 3.
+
+
+  What all four share: each is what happens when you reason about what a line
+  *means* rather than what the stages *do*. The shell has no idea what you meant.
+
+
+  **And the two counts of the same files.**
+
+
+  ```console
+  $ argc *.log
+  argc = 6
+  $ ls *.log | wc -l
+  7
+  ```
+
+
+  One filename contains a **newline**, so `wc -l` counts it twice. A filename may
+  contain any byte except NUL and `/`.
+
+
+  So `ls | wc -l` is not a count of files — it is a count of newlines in some
+  output. Every line-based or space-based approach is a guess about what
+  filenames will not contain, and this directory contains a counterexample to
+  each. What is reliable is a glob, which produces words directly and never
+  re-splits them, or `find -print0 | xargs -0`, since NUL is the one byte a
+  filename cannot hold.
+
+
+  **The rule this leaves you with:** an unquoted expansion does not produce *a
+  value*. It produces an unpredictable **number of words**, decided by the data
+  and by the current directory. Quoting is how you say "one argument, exactly
+  this".
+
+
+  And the habit that costs nothing: **when unsure, do not reason — run it.**
+  `argc`, `printf '[%s]\n' "$@"` or `set -x` settle it in one line.

@@ -1,0 +1,277 @@
+id: lab.diff-the-boundary
+topic: topic.service-models-and-responsibility
+title: Compute the boundary, and find what never moves
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A05.2.1, OBJ-A05.2.3, OBJ-A05.2.4]
+
+intro: >-
+  One application — an HTTP API with a PostgreSQL database — deployed four ways.
+  Same code, same data, same traffic. What changes is where the boundary between
+  you and the provider sits.
+
+
+  You are going to count it rather than describe it, and then compute the
+  intersection: the layers that are yours in every single deployment. There are
+  exactly three, and you will find them with `comm` rather than take them on
+  trust.
+
+setup:
+  - /opt/lab/seed-responsibility.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/deployments/README.txt and count, for each of the four
+      deployments, how many layers are yours and how many are the provider's.
+      Save the table to /tmp/answer-counts.
+    hint: >-
+      Each file marks a layer with `YOU`, `provider` or `SHARED`. `grep -c`
+      counts matching lines.
+    walkthrough: |
+      cd /tmp/deployments
+      cat README.txt
+      {
+        printf '%-14s %-8s %-10s %s\n' deployment yours provider shared
+        for f in 1-colocation 2-iaas 3-paas 4-saas; do
+          printf '%-14s %-8s %-10s %s\n' "$f" \
+            "$(grep -c 'YOU' $f.txt)" "$(grep -c 'provider' $f.txt)" "$(grep -c 'SHARED' $f.txt)"
+        done
+        echo
+        echo "same application in all four. fourteen layers down to three, and only one row has a shared column at all."
+      } > /tmp/answer-counts
+      cat /tmp/answer-counts
+    verify:
+      - type: file_matches
+        path: /tmp/answer-counts
+        pattern: "1-colocation +14"
+        describe: You counted the colocation deployment
+      - type: file_matches
+        path: /tmp/answer-counts
+        pattern: "4-saas +3"
+        describe: And found SaaS leaves you three layers
+      - type: file_matches
+        path: /tmp/answer-counts
+        pattern: "3-paas +8 +12 +3"
+        describe: And that PaaS is the only model with shared layers
+
+  - id: s2
+    instruction: >-
+      See exactly which responsibilities moved between IaaS and PaaS. Save the
+      diff and a note on which changes matter most to /tmp/answer-shift.
+    hint: >-
+      `diff` between the two files shows every line that changed. Look
+      particularly at any line whose answer became SHARED.
+    walkthrough: |
+      cd /tmp/deployments
+      {
+        diff 2-iaas.txt 3-paas.txt
+        echo
+        echo "moving from iaas to paas hands over the guest os, the container runtime and the database software entirely."
+        echo "the changes that matter most are the three that became SHARED rather than provider: os patching, database patching and backups. those are not handed over - they are layers where the provider acts and i still have to do something."
+        echo "a line that reads SHARED is a line that needs an owner on my side. a line that reads provider does not."
+      } > /tmp/answer-shift
+      cat /tmp/answer-shift
+    verify:
+      - type: file_matches
+        path: /tmp/answer-shift
+        pattern: "SHARED"
+        describe: The diff shows layers that became shared
+      - type: file_matches
+        path: /tmp/answer-shift
+        pattern: "(?i)needs an owner|still have to do"
+        describe: And you identified that shared means work remains on your side
+
+  - id: s3
+    instruction: >-
+      Compute the intersection — the layers that are yours in all four
+      deployments. Save the result to /tmp/answer-irreducible.
+    hint: >-
+      Extract the layer names marked YOU from each file, sort them, then use
+      `comm -12` to keep only what appears in both. Chain it across all four.
+    walkthrough: |
+      cd /tmp/deployments
+      for f in 1-colocation 2-iaas 3-paas 4-saas; do
+        awk '/^  / && /YOU/ { split($0, a, "  +"); print a[2] }' "$f.txt" | sort > "/tmp/y-$f"
+      done
+      comm -12 /tmp/y-1-colocation /tmp/y-2-iaas > /tmp/i1
+      comm -12 /tmp/i1 /tmp/y-3-paas > /tmp/i2
+      {
+        echo "layers that are mine in every single deployment:"
+        comm -12 /tmp/i2 /tmp/y-4-saas
+        echo
+        echo "three. computed, not asserted - comm -12 keeps only what appears in both inputs, chained across all four files."
+        echo "no service model takes any of these from me, including saas where i have given up everything else."
+      } > /tmp/answer-irreducible
+      cat /tmp/answer-irreducible
+    verify:
+      - type: file_matches
+        path: /tmp/answer-irreducible
+        pattern: "data"
+        describe: Data is yours at every model
+      - type: file_matches
+        path: /tmp/answer-irreducible
+        pattern: "access control"
+        describe: And access control
+      - type: file_matches
+        path: /tmp/answer-irreducible
+        pattern: "configuration"
+        describe: And configuration
+      - type: command_exit
+        command: "test $(grep -cE '^(data|access control|configuration)$' /tmp/answer-irreducible) -eq 3"
+        exit_code: 0
+        describe: And those three are the complete intersection
+
+  - id: s4
+    instruction: >-
+      Connect those three to the advisories in /tmp/patches/advisories.txt. Find
+      which advisories fall inside them, and save to /tmp/answer-breaches.
+    hint: >-
+      Read the twelve advisories and pick out the ones that are about data,
+      access control or configuration rather than about software versions.
+    walkthrough: |
+      cat /tmp/patches/advisories.txt
+      {
+        echo "advisories that fall inside the three layers no service model takes from me:"
+        echo "  A09  a publicly readable bucket        -> configuration"
+        echo "  A10  an IAM role granting * on *       -> access control"
+        echo "  A12  a database password of 'postgres' -> access control / configuration"
+        echo "  A08  an endpoint returning another tenant's records -> my application code, and the data is mine either way"
+        echo
+        echo "none of these is a patch. there is no version to upgrade to, no vendor advisory to wait for, and no service model that removes them."
+        echo "the others - kernel, openssl, postgres, kubernetes, containerd, firmware - all have an owner and a fix, and moving up a service model genuinely transfers most of them."
+        echo
+        echo "that is the practical answer to whether the cloud is secure. the provider's layers are run by people who do nothing else at a scale i cannot match. my three are run by me, and my three are the ones that appear in breach reports."
+      } > /tmp/answer-breaches
+      cat /tmp/answer-breaches
+    verify:
+      - type: file_matches
+        path: /tmp/answer-breaches
+        pattern: "A09"
+        describe: You identified the public bucket as a configuration failure
+      - type: file_matches
+        path: /tmp/answer-breaches
+        pattern: "A10"
+        describe: And the over-permissive role as access control
+      - type: file_matches
+        path: /tmp/answer-breaches
+        pattern: "(?i)no service model"
+        describe: And that no model removes these
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-trade what moving from IaaS to SaaS gives up, and what
+      claim about it would be wrong.
+    hint: >-
+      You have counted what is handed over. Think about what a team loses along
+      with the work, and about the sentence people say after such a move.
+    walkthrough: |
+      {
+        echo "what moving from iaas to saas hands over: eight more layers of work, including os patching, database operation and the application itself. for most teams that is the correct trade - a small team cannot patch operating systems, run a database and build a product, and a cloud provider does the infrastructure part better than almost anyone does in-house."
+        echo
+        echo "what it gives up:"
+        echo "- control over timing. on iaas i decide when to patch. on saas i find out afterwards."
+        echo "- control over version. i can pin a postgres minor version on iaas indefinitely; on a managed service i can defer and not decline."
+        echo "- visibility. i can read a kernel log on iaas. on saas i get a status page, which is the vendor's opinion of whether i am having an outage."
+        echo "- exit cost, which rises at every step and is almost never priced when the decision is made."
+        echo "- concentration risk: more of my estate shares one provider's control plane and its bad days."
+        echo
+        echo "the claim that would be wrong: 'we moved to saas so security is handled'. saas removed fourteen of seventeen layers and left the three that appear in breach reports - data, access control and configuration. the remaining work is smaller, more important, and nobody else can do it."
+      } > /tmp/answer-trade
+      cat /tmp/answer-trade
+    verify:
+      - type: file_matches
+        path: /tmp/answer-trade
+        pattern: "(?i)exit cost|concentration"
+        describe: You named a cost that is rarely priced at decision time
+      - type: file_matches
+        path: /tmp/answer-trade
+        pattern: "(?i)security is handled|security handled"
+        describe: And identified the claim that would be wrong
+      - type: file_matches
+        path: /tmp/answer-trade
+        pattern: "(?i)nobody else can do it|remaining work"
+        describe: And what is left after the move
+
+solution: >-
+  **The count.**
+
+
+  ```text
+  colocation   yours 14   provider  3   shared 0
+  IaaS         yours 11   provider  7   shared 0
+  PaaS         yours  8   provider 12   shared 3
+  SaaS         yours  3   provider 14   shared 0
+  ```
+
+
+  One application, four boundaries. This is what IaaS, PaaS and SaaS actually
+  are — not three products but three positions of a line through one stack — and
+  counting makes the comparison concrete in a way no diagram does.
+
+
+  Note that **PaaS is the only row with a shared column**. That is not an
+  accident of this example; it is where the two parties genuinely meet, and it is
+  where incidents cluster.
+
+
+  **What moved, and which changes matter.**
+
+
+  `diff 2-iaas.txt 3-paas.txt` shows the guest OS, container runtime and database
+  software handed over entirely. But the three lines that changed from `YOU` to
+  `SHARED` are the ones to look at:
+
+
+  ```text
+  OS patching       → SHARED: provider publishes, you roll
+  Database patching → SHARED: provider patches, you pick the window
+  Backups           → SHARED: provider takes them, you verify restores
+  ```
+
+
+  A line reading `provider` needs nothing from you. A line reading `SHARED` needs
+  an owner on your side, and nothing errors when it does not have one.
+
+
+  **The intersection.**
+
+
+  ```text
+  access control
+  configuration
+  data
+  ```
+
+
+  Three layers, computed with `comm -12` chained across all four files rather
+  than asserted. **No service model takes any of them from you** — including
+  SaaS, where you have handed over everything else.
+
+
+  **And that is why they matter more than three sounds.**
+
+
+  Look at where those three land in the advisory list: a publicly readable bucket
+  (A09), an IAM role granting `*` on `*` (A10), a database password of `postgres`
+  (A12). None of them is a patch. There is no version to upgrade to, no vendor
+  advisory to wait for, and no model that removes them.
+
+
+  Everything else on that list — kernel, OpenSSL, PostgreSQL, Kubernetes,
+  containerd, firmware — has an owner and a fix, and moving up genuinely
+  transfers most of them.
+
+
+  That is the honest answer to "is the cloud secure": the provider's layers are
+  run by people who do nothing else, at a scale you cannot match, and they are
+  not where breaches come from. Your three are run by you, and they are.
+
+
+  **So the sentence to argue with** is *"we moved to SaaS, so security is
+  handled"*. The move removed fourteen of seventeen layers and left precisely the
+  three that appear in breach reports. What remains is smaller, more important,
+  and nobody else can do it — which is the opposite of how the move is usually
+  described.

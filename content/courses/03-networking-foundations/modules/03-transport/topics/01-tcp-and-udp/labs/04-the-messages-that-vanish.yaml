@@ -1,0 +1,293 @@
+id: lab.the-messages-that-vanish
+topic: topic.tcp-and-udp
+title: "Challenge: three ways a datagram disappears"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A03.3.8]
+
+intro: >-
+  A metrics pipeline is losing messages. Every sender reports success, the
+  network is fine, and the collector's logs show nothing wrong.
+
+
+  You will reproduce three distinct causes of that, one at a time, in this
+  container — and for each one work out which counter or socket field proves it.
+  All three look identical from the sending side, and each has a different fix.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before starting, write to /tmp/hypotheses at least three distinct places a
+      UDP datagram can be lost when the network itself is healthy.
+    hint: >-
+      One is about what is bound. One is about who the socket will accept from.
+      One is about how fast the application reads.
+    walkthrough: |
+      printf 'nothing is bound to the destination port at all\nthe receiving socket is connected to one peer and discards the rest\nthe receive buffer filled because the application was too slow\nthe receiver was restarted and the datagrams arrived while it was down\n' > /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You recorded hypotheses before looking
+      - type: command_output
+        command: "wc -l < /tmp/hypotheses"
+        pattern: "[3-9]"
+        describe: At least three hypotheses
+
+  - id: s2
+    instruction: >-
+      **Cause one: nothing is bound.** Send three datagrams to port 9600, where
+      you have started nothing, and record the senders' exit statuses and the
+      `NoPorts` delta in /tmp/answer-cause1.
+    walkthrough: |
+      np() { awk '/^Udp:/ { n++; if (n==2) print $3 }' /proc/net/snmp; }
+      before=$(np)
+      for m in a b c; do printf '%s\n' "$m" | nc -u -w 1 127.0.0.1 9600 >/dev/null 2>&1; echo "rc=$?"; done > /tmp/answer-cause1
+      sleep 1
+      echo "noports_delta=$(( $(np) - before ))" >> /tmp/answer-cause1
+      cat /tmp/answer-cause1
+    verify:
+      - type: command_exit
+        command: "test $(grep -c '^rc=0$' /tmp/answer-cause1) -eq 3"
+        exit_code: 0
+        describe: All three senders reported success
+      - type: file_matches
+        path: /tmp/answer-cause1
+        pattern: 'noports_delta=[1-9]'
+        describe: While the kernel counted them arriving nowhere
+
+  - id: s3
+    instruction: >-
+      **Cause two: the socket is connected.** Start a listener on 9610 without
+      `-k`, send three datagrams from three senders, and save what arrived plus
+      the socket's state to /tmp/answer-cause2.
+    walkthrough: |
+      nohup nc -u -l 127.0.0.1 9610 > /tmp/got-9610 2>/dev/null &
+      sleep 1
+      for m in a b c; do printf '%s\n' "$m" | nc -u -w 1 127.0.0.1 9610 >/dev/null 2>&1; done
+      sleep 1
+      {
+        echo "received=$(wc -l < /tmp/got-9610)"
+        ss -uan | grep ':9610'
+      } > /tmp/answer-cause2
+      cat /tmp/answer-cause2
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cause2
+        pattern: 'received=1'
+        describe: One of three arrived
+      - type: file_matches
+        path: /tmp/answer-cause2
+        pattern: 'ESTAB'
+        describe: And the socket is connected to a single peer
+
+  - id: s4
+    instruction: >-
+      **Cause three: nothing was listening yet.** Send three datagrams to port
+      9620, *then* start a listener, then send three more — and save what the
+      listener received to /tmp/answer-cause3.
+    hint: >-
+      This is the restart case: datagrams sent while the collector is down are
+      simply gone, with no queue anywhere.
+    walkthrough: |
+      for m in early1 early2 early3; do printf '%s\n' "$m" | nc -u -w 1 127.0.0.1 9620 >/dev/null 2>&1; done
+      nohup nc -u -l -k 127.0.0.1 9620 > /tmp/got-9620 2>/dev/null &
+      sleep 1
+      for m in late1 late2 late3; do printf '%s\n' "$m" | nc -u -w 1 127.0.0.1 9620 >/dev/null 2>&1; done
+      sleep 1
+      cp /tmp/got-9620 /tmp/answer-cause3
+      cat /tmp/answer-cause3
+      echo "received=$(wc -l < /tmp/answer-cause3)"
+    verify:
+      - type: command_exit
+        command: "grep -q 'early' /tmp/answer-cause3"
+        exit_code: 1
+        describe: None of the datagrams sent before the listener started survived
+      - type: file_matches
+        path: /tmp/answer-cause3
+        pattern: '^late1$'
+        describe: And everything sent afterwards arrived
+
+  - id: s5
+    instruction: >-
+      Compare the three from the sender's point of view. Save the exit status of
+      one send in each scenario to /tmp/answer-sender-view.
+    hint: >-
+      Send one more datagram to each of the three ports and record `$?` for
+      each.
+    walkthrough: |
+      {
+        printf 'x\n' | nc -u -w 1 127.0.0.1 9600 >/dev/null 2>&1; echo "nothing_bound_rc=$?"
+        printf 'x\n' | nc -u -w 1 127.0.0.1 9610 >/dev/null 2>&1; echo "connected_socket_rc=$?"
+        printf 'x\n' | nc -u -w 1 127.0.0.1 9620 >/dev/null 2>&1; echo "working_rc=$?"
+      } > /tmp/answer-sender-view
+      cat /tmp/answer-sender-view
+    verify:
+      - type: command_exit
+        command: "test $(grep -c '=0$' /tmp/answer-sender-view) -eq 3"
+        exit_code: 0
+        describe: All three report success — including the two that lost the message
+
+  - id: s6
+    instruction: >-
+      Name the evidence for each cause. Write three lines to
+      /tmp/answer-evidence — cause, and the single command or counter that
+      identifies it.
+    walkthrough: |
+      {
+        echo "nothing bound: Udp NoPorts rising in /proc/net/snmp, and ss -uln showing no socket on that port"
+        echo "connected socket: ss -uan showing the socket in ESTAB with a specific peer instead of UNCONN with a wildcard"
+        echo "receiver down or too slow: nothing received during the gap for a restart, and Udp RcvbufErrors rising when the reader cannot keep up"
+      } > /tmp/answer-evidence
+      cat /tmp/answer-evidence
+    verify:
+      - type: file_matches
+        path: /tmp/answer-evidence
+        pattern: 'NoPorts'
+        describe: The counter for nothing bound
+      - type: file_matches
+        path: /tmp/answer-evidence
+        pattern: 'ESTAB'
+        describe: The socket state for a connected receiver
+      - type: file_matches
+        path: /tmp/answer-evidence
+        pattern: 'RcvbufErrors'
+        describe: And the counter for a reader that cannot keep up
+
+  - id: s7
+    instruction: >-
+      Read the receive buffer size and the per-socket drop count for the
+      listener you started on 9620, plus the host-wide `RcvbufErrors` counter,
+      and save all three to /tmp/answer-buffers.
+
+
+      This is the cause you have not reproduced, and the one most likely to be
+      real in production.
+    hint: >-
+      `ss -uanm` adds an `skmem:` line: `rb` is the receive buffer size and `d`
+      is datagrams this socket has dropped. The global counter is field 6 of the
+      `Udp:` values line.
+    walkthrough: |
+      {
+        ss -uanm | grep -A1 ':9620' | grep -o 'skmem:([^)]*)'
+        awk '/^Udp:/ { n++; if (n==2) print "RcvbufErrors=" $6 }' /proc/net/snmp
+      } > /tmp/answer-buffers
+      cat /tmp/answer-buffers
+      echo "--- note: rmem_max is host-wide, so it is not visible in here:"
+      ls /proc/sys/net/core/
+    verify:
+      - type: file_matches
+        path: /tmp/answer-buffers
+        pattern: 'rb[0-9]+'
+        describe: The socket's receive buffer size, in bytes
+      - type: file_matches
+        path: /tmp/answer-buffers
+        pattern: 'd[0-9]+'
+        describe: And the number of datagrams this socket has dropped
+      - type: file_matches
+        path: /tmp/answer-buffers
+        pattern: 'RcvbufErrors=[0-9]+'
+        describe: Alongside the host-wide counter for the same failure
+
+  - id: s8
+    instruction: >-
+      Write your conclusions to /tmp/answer-conclusions: what all three causes
+      have in common from the sender's side, and the order you would check them
+      in on a real collector.
+    walkthrough: |
+      {
+        echo "all three look identical from the sender: sendto returns success in every case, because it only reports that the kernel accepted the datagram, and there is no acknowledgement, connection or return path to carry a failure back"
+        echo "order to check on a real collector: ss -uln for whether anything is bound, then ss -uan for whether the socket is connected to one peer, then Udp RcvbufErrors for a reader that cannot keep up, then NoPorts, and only after all four is it worth suspecting the network"
+      } > /tmp/answer-conclusions
+      cat /tmp/answer-conclusions
+    verify:
+      - type: file_matches
+        path: /tmp/answer-conclusions
+        pattern: "identical|same|success in every"
+        describe: You noted the sender cannot distinguish them
+      - type: file_matches
+        path: /tmp/answer-conclusions
+        pattern: 'ss -uln|ss -uan'
+        describe: And gave a concrete order to check in
+      - type: file_matches
+        path: /tmp/answer-conclusions
+        pattern: "network"
+        describe: With the network last rather than first
+
+solution: |
+  **Three causes, one symptom.**
+
+  | Cause | What the sender saw | What proves it |
+  |---|---|---|
+  | Nothing bound | success | `Udp: NoPorts` rising; `ss -uln` shows no socket |
+  | Socket connected to one peer | success | `ss -uan` shows `ESTAB` with a specific peer |
+  | Receiver down, or too slow | success | Gap in received messages; `Udp: RcvbufErrors` rising |
+
+  Every sender reported success in every case. That is not a quirk — it is what
+  `sendto()` means. It returns when the kernel accepts the datagram for sending,
+  which happens long before delivery and regardless of whether anything on the
+  far side exists. There is no acknowledgement, no connection, and therefore no
+  path for a failure to travel back.
+
+  **Cause one — nothing bound.** The kernel noticed: `NoPorts` incremented for
+  every datagram. It may also have emitted an ICMP port-unreachable message, and
+  an unconnected sending socket generally never sees it. The receiving machine
+  knows and the sending machine does not.
+
+  **Cause two — the socket was connected.** One message of three arrived, and
+  `ss` shows the socket as `ESTAB` with a specific peer rather than `UNCONN`
+  with a wildcard. `connect()` on a UDP socket sends no packets and makes the
+  kernel discard datagrams from everyone else before the application sees them.
+  Nothing is counted anywhere useful, which makes this the hardest of the three
+  to find without knowing to look.
+
+  **Cause three — nothing was listening yet.** The three `early` messages are
+  simply gone. There is no queue, no buffer and no retry: a datagram sent to a
+  port with no socket is discarded on arrival. Every collector restart therefore
+  loses whatever was in flight, and a slow rolling restart of a collector fleet
+  loses a proportional slice of everything.
+
+  **The fourth cause you did not reproduce is the commonest in production.**
+  `RcvbufErrors` counts datagrams that arrived perfectly and were dropped because
+  the socket's receive buffer was full — the application had not read the
+  previous ones. The signature is loss that scales with load, is steady, and is
+  worse during bursts. Genuine network loss is rarely so neatly correlated with
+  your own traffic.
+
+  ```bash
+  ss -uanm | grep -A1 :8125            # skmem: rb is the buffer, d is drops
+  awk '/^Udp:/{n++; if(n==2) print "RcvbufErrors=" $6}' /proc/net/snmp
+  ```
+
+  The `skmem:` line is the per-socket view — `rb` is the receive buffer size and
+  `d` counts datagrams this socket dropped — and it is more useful than the
+  host-wide counter when several services share a machine.
+
+  Note what you *cannot* read from inside a container: `net.core.rmem_max` is
+  not network-namespaced, so it does not appear in `/proc/sys/net/core/` here at
+  all. Only namespaced sysctls do, which is why `somaxconn` is present and
+  `rmem_max` is not — and why raising it is a change to the **node**, not to the
+  container.
+
+  Raising `net.core.rmem_max` on the node *and* having the application request a
+  larger `SO_RCVBUF` buys burst tolerance. Both halves are needed — raising the
+  sysctl alone changes nothing. And if the reader is persistently slower than the send
+  rate, a bigger buffer postpones the loss rather than preventing it; then the
+  answer is a faster reader, sampling, or aggregation at the source.
+
+  **The order to check, on a real collector:**
+
+  ```bash
+  ss -uln | grep :<port>        # 1. is anything bound?
+  ss -uan | grep :<port>        # 2. is it connected to one peer?
+  ss -uanm | grep -A1 :<port>   # 3. is Recv-Q backing up?
+  awk '/^Udp:/{n++; if(n==2) print}' /proc/net/snmp   # 4. NoPorts? RcvbufErrors?
+  ```
+
+  Four commands, and only if all four are clean is the network worth suspecting.
+  That ordering matters because the network is where people start, it is the
+  hardest thing to investigate, and it is almost never the answer.

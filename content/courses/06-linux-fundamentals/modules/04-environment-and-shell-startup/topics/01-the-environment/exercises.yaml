@@ -1,0 +1,236 @@
+topic: topic.environment-and-shell-startup
+
+exercises:
+  - id: e1
+    title: Place four settings
+    level: L1
+    objectives: [OBJ-B06.4.1]
+    kind: interpretation
+    prompt: >-
+      Where does each belong, and why:
+
+
+      1. A `ll` alias you want whenever you are at a terminal
+
+      2. `JAVA_HOME`, needed by a nightly build job
+
+      3. A prompt that shows the current git branch
+
+      4. `LANG`, which should apply to everything you run, interactively or not
+    answer: >-
+      1. **`~/.bashrc`.** Aliases only exist in interactive shells; a script
+         cannot use one anyway.
+
+
+      2. **The scheduler — the unit's `Environment=` or the crontab.** Not a
+         dotfile of any kind. The build job reads none of them.
+
+
+      3. **`~/.bashrc`, and guarded.** It is interactive-only by nature, and it
+         must not print during a non-interactive shell.
+
+
+      4. **`~/.profile`**, so every login session has it — and also in the
+         scheduler if jobs depend on it. There is no single file that covers
+         both, which is the honest answer.
+    explanation: >-
+      Item 2 is the one people get wrong, and they get it wrong in a specific
+      way: they add `JAVA_HOME` to `~/.bashrc`, test it by running the job in
+      their terminal, and it works. The scheduled run reads no dotfile, so it
+      fails — and the failure is delayed until the next scheduled execution.
+
+
+      Item 4 exposes the limit of the whole system. **There is no file that
+      applies to both your shells and your scheduled jobs**, because those are
+      deliberately separate worlds. Anything that must be true in both has to be
+      declared twice, and pretending otherwise is how the first three items keep
+      being misfiled.
+
+  - id: e2
+    title: Predict four PATHs
+    level: L2
+    objectives: [OBJ-B06.4.3]
+    kind: interpretation
+    prompt: >-
+      For a non-root user on Debian, order these by PATH length, longest first,
+      and say what constructed each:
+
+
+      (a) `bash -c 'echo $PATH'` inside a container
+
+      (b) `bash -lc 'echo $PATH'` as the same user
+
+      (c) a cron job
+
+      (d) `env -u PATH bash -c 'echo $PATH'`
+    answer: >-
+      **(d) longest** — bash's compiled-in fallback,
+      `/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:.` Seven
+      entries, and the last one is the current directory.
+
+
+      **(a)** — the image's `ENV`, inherited untouched. Six entries including the
+      `sbin` directories.
+
+
+      **(b)** — `/etc/profile` **assigned** it, taking the non-root branch. Five
+      entries, no `sbin`, and `games` instead.
+
+
+      **(c) shortest** — cron's built-in default, typically `/usr/bin:/bin`. Two
+      entries.
+
+
+      The instructive pair is (a) against (b): **logging in makes your PATH
+      narrower than a script's.**
+    explanation: >-
+      Most people would guess (b) is longest, because a login shell sounds like
+      the "full" environment. It is the second shortest, and that inversion is
+      what makes `capsh` runnable from CI and not from your own terminal.
+
+
+      (d) is the one to remember for the wrong reason. It is longest and it is the
+      dangerous one, because a trailing `.` means a bare command may resolve in
+      the working directory. **An unset PATH is worse than a wrong PATH**, since a
+      wrong one fails loudly and this one silently succeeds against the wrong
+      binary.
+
+  - id: e3
+    title: Triage three failure reports
+    level: L2
+    objectives: [OBJ-B06.4.4]
+    kind: short_answer
+    prompt: >-
+      For each, give your first diagnostic command and what you expect it to show:
+
+
+      1. "The deploy script works on my laptop and fails in CI with `jq: command
+         not found`."
+
+      2. "The systemd service can't write its cache. Permission denied on
+         `/.cache/app`."
+
+      3. "The backup ran fine when I tested it and wrote nothing overnight."
+    answer: >-
+      1. `bash -c 'command -v jq'` on the CI image, and `diff` of the two `env`
+         outputs. Expect `jq` to be absent from the image entirely, or present in
+         a directory their `~/.bashrc` adds to PATH and CI does not. The
+         give-away is that CI reads no dotfiles.
+
+
+      2. `systemctl show -p User,Environment <unit>`. Expect no `User=`, hence
+         `HOME=/`, so `$HOME/.cache` resolved to `/.cache`. The path in the error
+         message already said so — the leading slash is the whole clue.
+
+
+      3. `env -i PATH=/usr/bin:/bin HOME="$HOME" bash ./backup` — reproduce cron
+         rather than waiting. Expect either an unbound variable or a command in
+         `/usr/local/bin` that cron's PATH cannot reach.
+    explanation: >-
+      All three are the same fault: **something was true in the environment where
+      it was tested and is not true where it runs.** What differs is only which
+      observer to ask.
+
+
+      Case 2 rewards reading the error text literally. `/.cache/app` has a leading
+      slash and no username in it; that is `$HOME` being `/`, stated plainly. A
+      surprising amount of environment debugging is noticing that the path in the
+      message is not the path you assumed.
+
+
+      Case 3 is the one to build a habit around. Reproducing a scheduler takes one
+      command and a second; waiting for the schedule costs a day per iteration and
+      teaches you nothing in between.
+
+  - id: e4
+    title: Explain a disagreement between two tools
+    level: L2
+    objectives: [OBJ-B06.4.5]
+    kind: short_answer
+    prompt: >-
+      `env | grep DB_HOST` on a running service prints `db-new.internal`.
+      `tr '\0' '\n' < /proc/$(pgrep app)/environ | grep DB_HOST` prints
+      `db-old.internal`. Both were run seconds apart. Which is right?
+    answer: >-
+      **Both, and they answer different questions.**
+
+
+      `/proc/PID/environ` is the environment recorded at `execve` — what the
+      service was **started with**. It never updates.
+
+
+      `env` in your shell shows *your* environment, not the service's. If the
+      service itself set `DB_HOST` after starting, its live copy differs from its
+      snapshot too.
+
+
+      So the reading is: the service was launched with `db-old.internal`, and
+      something changed since — a config-management run, an updated unit file, or
+      the application setting it internally. **The service is still using
+      `db-old.internal`** unless it re-reads the value, because a running process
+      keeps the copy it was given.
+
+
+      What I would check next: `systemctl show -p Environment` for what the unit
+      declares *now*, and the process start time against the last change to the
+      unit. If they disagree, the service needs a restart to pick up the value —
+      which is the actual finding.
+    explanation: >-
+      The trap is treating `/proc/PID/environ` as "the process's environment" and
+      being confused when it disagrees with something. It is the process's
+      environment *as of exec*, and that historical quality is exactly what makes
+      it useful: it is the only way to see what a long-running process was
+      actually handed, as opposed to what its configuration says today.
+
+
+      The generalisable point is that **editing configuration does not change a
+      running process.** It is the same reason a `daemon-reload` without a restart
+      changes nothing about the running service, and the reason people are
+      surprised by both.
+
+  - id: e5
+    title: Choose a route for two secrets
+    level: L2
+    objectives: [OBJ-B06.4.8]
+    kind: short_answer
+    prompt: >-
+      A service needs a database password (rotated quarterly, by policy) and a
+      log level. Choose a route for each and say what you accept.
+    answer: >-
+      **Log level: an environment variable.** It is configuration, not a secret;
+      it is fine in `ps`, `docker inspect` and every child process; and a restart
+      to change it is acceptable. This is what variables are good at.
+
+
+      **Database password: a file**, mounted at `/run/secrets/db_password`, mode
+      `0400`, owned by the service user.
+
+
+      What that buys, specifically: absent from `ps eww`, absent from
+      `/proc/PID/environ`, absent from `docker inspect`, not inherited by child
+      processes, and **replaceable underneath a running process** — which is the
+      one that matters given a quarterly rotation policy.
+
+
+      What I accept: the application must read a file rather than
+      `os.environ`, which is a code change; and the file has to get there, which
+      means a secrets mechanism rather than a compose line.
+
+
+      If that is not possible today, then the honest position is a variable **plus
+      a written note** that rotation requires restarting every process holding it,
+      and that a leak would be undetectable — rather than pretending the risk is
+      handled.
+    explanation: >-
+      The exercise is about not answering "files are more secure". Two secrets
+      with different properties get different routes, and the deciding property is
+      not confidentiality — it is **what happens after a leak, and what rotation
+      costs**.
+
+
+      A quarterly rotation policy and environment variables are in direct tension:
+      every rotation becomes a restart of everything holding the credential, which
+      is why estates that pass secrets this way tend to have credentials far older
+      than their policy claims. Naming that tension is the useful output, and the
+      last paragraph matters most — **recording an accepted risk is a real
+      outcome**, and much better than a control that is believed to work.

@@ -1,0 +1,8 @@
+id: module.isolation-primitives
+slug: isolation-primitives
+title: Isolation Primitives
+summary: >-
+  Namespaces and cgroups: what the kernel actually provides, and why "container"
+  is a word for a particular way of combining them rather than a thing the
+  kernel knows about.
+order: 1

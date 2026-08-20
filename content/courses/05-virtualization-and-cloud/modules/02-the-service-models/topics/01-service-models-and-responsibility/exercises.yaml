@@ -1,0 +1,239 @@
+topic: topic.service-models-and-responsibility
+
+exercises:
+  - id: e1
+    title: Place four services on the boundary
+    level: L1
+    objectives: [OBJ-A05.2.1]
+    kind: interpretation
+    prompt: >-
+      For each, name the service model and say which layer the boundary sits at:
+
+
+      1. A VM you `ssh` into and run `apt upgrade` on
+
+      2. A managed PostgreSQL where you choose a version and a maintenance window
+
+      3. A hosted CI service where you commit a YAML file and it runs your build
+
+      4. A managed Kubernetes cluster where you supply container images
+    answer: >-
+      1. **IaaS.** The boundary is under the guest OS. They supply the image and
+         the hypervisor; every patch above that is yours, forever.
+
+
+      2. **PaaS.** The boundary passes *through* the patching layer, which is
+         what makes it shared: they apply the patch, you choose the window and
+         the version you are willing to be on.
+
+
+      3. **SaaS**, in effect. You supply configuration and code, and the whole
+         platform is theirs. You cannot pin the runner's OS or choose when it is
+         upgraded.
+
+
+      4. **PaaS.** Node OS and control plane are theirs, your image's contents
+         are yours, and node image rolling is shared — they publish, you adopt.
+    explanation: >-
+      Item 3 is the one worth arguing about, and the argument is the point. It is
+      often called PaaS and behaves like SaaS: you cannot influence the runner
+      image, its OS or its upgrade schedule.
+
+
+      Which is why the model name is less useful than the question underneath it:
+      **for this layer, who patches it and who is paged?** Answering that for a
+      specific service beats classifying it, and the classification tends to
+      follow once you have.
+
+  - id: e2
+    title: Compute a boundary shift
+    level: L2
+    objectives: [OBJ-A05.2.3]
+    kind: calculation
+    prompt: >-
+      A team moves from IaaS (11 layers theirs) to PaaS (8 theirs, 3 shared).
+
+
+      Compute how many layers they stopped owning outright, how many they still
+      have work on, and what the net change in "layers requiring a mechanism on
+      our side" actually is.
+    answer: >-
+      **Stopped owning outright:** 11 − 8 = **3** layers moved entirely to the
+      provider (guest OS, container runtime, database software).
+
+
+      **Still have work on:** 8 owned + 3 shared = **11**.
+
+
+      **Net change in layers needing a mechanism: zero.**
+
+
+      That is the answer worth noticing. The count of layers they *own* fell by
+      three, and the count needing something from them is unchanged — because the
+      three shared layers each still need a mechanism: a node-rolling cadence, a
+      maintenance window, a restore test.
+
+
+      What changed is the *kind* of work: from doing it, to noticing that it has
+      been done. That is genuinely less effort, and it is not none, and it is the
+      part that gets planned as none.
+    explanation: >-
+      The arithmetic makes a real point that the marketing does not. Moving to
+      managed services reduces the work per layer dramatically and does not
+      reduce the number of layers you have to think about nearly as much.
+
+
+      Teams plan the move as "we stop doing three things" and are surprised when
+      three new obligations appear. Counting owned-plus-shared rather than owned
+      alone is what makes the plan honest — and it is also why shared layers
+      should get named owners at the point of migration, when someone is thinking
+      about them.
+
+  - id: e3
+    title: Find what a claim leaves out
+    level: L2
+    objectives: [OBJ-A05.2.6]
+    kind: short_answer
+    prompt: >-
+      A vendor says: *"We handle infrastructure security, patching and
+      availability so you can focus on your application. 99.9% uptime SLA."*
+
+
+      Every word is defensible. List what a buyer should still ask.
+    answer: >-
+      - **What exactly does "patching" cover?** The runtime and OS presumably.
+        Not the contents of my container image, and not my dependencies — those
+        stay mine at every model.
+
+      - **99.9% of what, measured how?** Per service, per region, per calendar
+        month? A six-hour regional outage on one service can sit inside a
+        multi-service average.
+
+      - **What is the remedy?** Almost certainly a service credit, which is a
+        refund and not a guarantee. It will not cover what an outage costs me.
+
+      - **What is my composite availability?** If my system needs three of their
+        99.9% services, I have 99.70% — about 2h 09m a month, not 43 minutes.
+
+      - **What is shared?** Do they publish updates I must adopt? Is there a
+        maintenance window, and what is its default?
+
+      - **What about my data, access and configuration?** Those never transfer,
+        and the sentence implies otherwise by omission.
+
+      - **How do I leave, and how long would it take?**
+    explanation: >-
+      Nothing in the vendor's sentence is false, which is what makes it worth
+      practising on. The gaps are all omissions, and each one maps to a real
+      failure: unpatched image contents, an SLA that is technically met during
+      your outage, composite availability nobody computed, and a shared layer
+      with no owner.
+
+
+      The most useful of the seven is the composite-availability question,
+      because it is arithmetic the buyer can do themselves and it usually changes
+      the number by an order of magnitude.
+
+  - id: e4
+    title: Assign owners to shared layers
+    level: L2
+    objectives: [OBJ-A05.2.7]
+    kind: short_answer
+    prompt: >-
+      You run managed Kubernetes and managed PostgreSQL. List every shared layer
+      you can identify, and for each give the mechanism and the failure mode if
+      nobody owns it.
+    answer: >-
+      **Node OS images** — they publish, you roll. *Mechanism:* a rolling upgrade
+      cadence plus an alert on node image age. *If unowned:* nodes drift onto old
+      images while every dashboard stays green, because nothing is failing.
+
+
+      **Database patches** — they apply, you schedule. *Mechanism:* a maintenance
+      window that is set, off-peak, and known to the on-call rota. *If unowned:*
+      the default is "any time" and a three-hour patch lands mid-afternoon.
+
+
+      **Backups** — they take, you verify. *Mechanism:* a scheduled restore into
+      a scratch environment that asserts the data is usable. *If unowned:* you
+      have files of unknown quality and discover their quality during an
+      incident.
+
+
+      **Deprecations** — they announce, you act. *Mechanism:* somebody owning the
+      provider's change feed and the deprecation calendar. *If unowned:* a
+      twelve-month notice expires and something stops working.
+
+
+      **Certificate and credential rotation** on managed endpoints, where the
+      provider rotates and your clients must trust the new chain.
+
+
+      Common shape: **they do the doing, you do the noticing** — and noticing has
+      no error state.
+    explanation: >-
+      Writing this list is the single most valuable output of the topic, and most
+      teams have never written it. The act of writing it usually finds a layer
+      nobody had, and the backups row is the one that most often turns out to be
+      unverified.
+
+
+      The mechanisms are all cheap — a cadence, a window, a scheduled job, a
+      subscription. What makes them fail is not difficulty; it is that nothing
+      complains when they are absent, so they never reach the top of anyone's
+      list.
+
+  - id: e5
+    title: Justify a model with its reversal conditions
+    level: L2
+    objectives: [OBJ-A05.2.8]
+    kind: short_answer
+    prompt: >-
+      A six-person team currently runs everything on IaaS: VMs, self-managed
+      PostgreSQL, self-managed Kubernetes. They are considering managed
+      equivalents.
+
+
+      Write the recommendation, including what they give up and what would change
+      the answer.
+    answer: >-
+      **Recommendation: move to managed Kubernetes and managed PostgreSQL.**
+
+
+      Six people cannot run a database, patch operating systems, operate a
+      control plane and build a product. The dominant input to this decision is
+      headcount, and at six the answer is not close. Provider infrastructure
+      operations are also, honestly, better than what a six-person team achieves,
+      because it is the only thing the provider does.
+
+
+      **What they give up:** control over patch timing (they gain a window rather
+      than a decision), version pinning (defer, not decline), visibility into the
+      layers below, exit cost — a managed database migration is a real project —
+      and concentration on one provider's control plane.
+
+
+      **What they take on that they do not have today:** three shared layers
+      needing named owners — node rolling, the maintenance window, and a restore
+      test. The count of layers requiring a mechanism does not fall; the effort
+      per layer does.
+
+
+      **What would change the answer:** a compliance requirement about data
+      location the provider cannot meet; a database version or extension the
+      managed service does not support; a latency floor that managed networking
+      cannot hit; or growing to the point where a dedicated platform team makes
+      self-managing genuinely cheaper — which is much later than most teams
+      believe.
+    explanation: >-
+      Two things make this defensible rather than decorative. It **names
+      headcount as the dominant input**, which is true and is usually left
+      implicit while people argue about technology. And it **records reversal
+      conditions**, so the decision can be revisited by somebody who was not
+      there.
+
+
+      The paragraph about taking on three shared layers is the part most
+      recommendations omit, and it is the part that determines whether the move
+      goes well. A migration that assigns owners to those three at the point of
+      cutover avoids most of what goes wrong afterwards.

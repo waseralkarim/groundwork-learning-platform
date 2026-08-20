@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "AssessmentPart": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[A-Z]$",
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 140,
+          "minLength": 5,
+          "title": "Title",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "explain",
+            "diagnose",
+            "reason",
+            "practical"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "objectives": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Objectives",
+          "type": "array"
+        },
+        "prompt": {
+          "minLength": 30,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "rubric": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "title": "Rubric",
+          "type": "array"
+        },
+        "model_answer": {
+          "minLength": 50,
+          "title": "Model Answer",
+          "type": "string"
+        },
+        "common_failures": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Common Failures",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "objectives",
+        "prompt",
+        "rubric",
+        "model_answer"
+      ],
+      "title": "AssessmentPart",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "topic": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Topic",
+      "type": "string"
+    },
+    "pass_score": {
+      "default": 70,
+      "maximum": 100,
+      "minimum": 50,
+      "title": "Pass Score",
+      "type": "integer"
+    },
+    "parts": {
+      "items": {
+        "$ref": "#/$defs/AssessmentPart"
+      },
+      "minItems": 1,
+      "title": "Parts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "topic",
+    "parts"
+  ],
+  "title": "Assessment",
+  "type": "object"
+}

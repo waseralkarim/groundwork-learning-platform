@@ -1,0 +1,8 @@
+graph LR
+    A{"Type="} -->|"simple"| B["<b>Started</b> the moment exec succeeds.<br/><i>Nothing waits for readiness</i>"]
+    A -->|"exec"| C["Started once exec succeeds and<br/>the binary did not immediately fail"]
+    A -->|"forking"| D["Started when the parent exits<br/><i>PIDFile= tells systemd which child to watch</i>"]
+    A -->|"oneshot"| E["Started when the process <b>exits</b><br/><i>RemainAfterExit=yes keeps it 'active'</i>"]
+    A -->|"notify"| F["<b>Ready</b> when the service says so<br/>via sd_notify. The only honest one"]
+    B --> G["<i>After= on a simple unit orders you<br/>after it was launched, not after<br/>it can serve traffic</i>"]
+    E --> H["<i>The right type for migrations:<br/>the next unit waits for completion</i>"]

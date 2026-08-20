@@ -1,0 +1,207 @@
+topic: topic.ports-and-sockets
+
+questions:
+  - id: i1
+    level: L1
+    question: >-
+      A service is running and clients get connection refused. Walk me through
+      what you check.
+    model_answer: >-
+      First, on the server: `ss -tlnp | grep :<port>`. That answers three
+      questions in one line — whether anything is bound at all, which *address*
+      it bound to, and which process owns it. The middle one is the answer more
+      often than the other two, because binding `127.0.0.1` instead of `0.0.0.0`
+      is the commonest deployment bug there is.
+
+
+      Second, I would notice that "refused" is already telling me a great deal.
+      A refusal is a TCP reset, which means the packet arrived and the machine
+      answered it. Routing worked, no firewall dropped it, the host is up. That
+      eliminates every network-shaped explanation and leaves two: nothing is
+      bound, or something is bound to a different address.
+
+
+      The timing corroborates it — a refusal comes back in milliseconds, and a
+      firewall drop would have produced silence and a timeout after several
+      seconds.
+
+
+      Third, I would run the connectivity test from the machine that is actually
+      failing rather than from the server. Testing from the server uses loopback,
+      which is the one path that works when the bind is wrong, and that is
+      precisely how this bug survives an entire investigation.
+    signal: >-
+      Reaching for `ss -tlnp` and reading the *address* column is the core.
+      Treating "refused" as informative rather than as bad news is the second
+      signal, and it separates people who have debugged this from people who
+      have read about it. Insisting on testing from the failing client is the
+      practical habit that actually saves the time.
+    follow_ups:
+      - "What would a timeout have told you instead?"
+      - "Why does publishing a container port not help if the process bound loopback?"
+      - "What if `ss` shows nothing at all but the process is in `ps`?"
+
+  - id: i2
+    level: L2
+    question: >-
+      How does a web server handle 50000 simultaneous connections on port 443?
+    model_answer: >-
+      Because a connection is not identified by a port — it is identified by a
+      four-tuple: source address, source port, destination address, destination
+      port. Every client connection has a different source side, so all 50000 are
+      distinct while sharing a destination port.
+
+
+      Mechanically, the listening socket accepts a connection and the kernel
+      creates a new socket for it carrying the full tuple; the listener goes
+      straight back to waiting. The server never allocates a port per client.
+
+
+      So the limits on a busy server are file descriptors, memory and CPU. Ports
+      are not among them, and `ulimit -n` is the one people hit first.
+
+
+      The mirror image is worth adding, because it is where the port limit does
+      bind: a *client* draws a source port from `ip_local_port_range`, about
+      28000 by default, and the constraint is per destination address and port.
+      So a client can hold 28000 connections to one server and another 28000 to a
+      different one — and running out means tens of thousands of short-lived
+      connections to a single destination, which is a connection-reuse problem
+      rather than a tuning one.
+    signal: >-
+      The four-tuple is the answer and most people get there. What distinguishes
+      a strong answer is knowing where the port limit *does* apply — on the
+      client, per destination — and identifying pooling rather than a wider
+      range as the fix. Naming file descriptors as the real server-side ceiling
+      is a good practical signal.
+    follow_ups:
+      - "Where does the client's source port come from?"
+      - "When would a client genuinely run out of ports?"
+      - "What is the first limit a busy server actually hits?"
+
+  - id: i3
+    level: L2
+    question: >-
+      What is the difference between a lot of sockets in TIME-WAIT and a lot in
+      CLOSE-WAIT?
+    model_answer: >-
+      They are opposites, and only one of them is a problem.
+
+
+      **TIME-WAIT** is on whichever side closed *first*. The kernel holds the
+      four-tuple for about sixty seconds so a delayed duplicate from the old
+      connection cannot be mistaken for part of a new one reusing the same
+      numbers. It expires by itself, and thousands of them on a busy client are
+      completely normal. There is a lot of advice about eliminating them with
+      `tcp_tw_recycle` — that option was removed from Linux because it broke
+      clients behind NAT, and reaching for it usually means something else has
+      been misdiagnosed.
+
+
+      **CLOSE-WAIT** is on the side that has *not* closed. The peer sent a FIN
+      and the local application has not called `close()`. The kernel cannot
+      proceed and there is no timeout, so it stays until the process closes it or
+      exits — and each one holds a file descriptor. A growing count is a leak in
+      your own code, and it ends with the process hitting `RLIMIT_NOFILE` and
+      failing at everything, including opening log files, which looks nothing
+      like a socket bug.
+
+
+      Practically: `ss -tan state close-wait` and group by peer, which usually
+      points at the specific backend whose connections are being abandoned, then
+      look for the error path that returns without closing.
+    signal: >-
+      "TIME-WAIT is the side that closed first and it is correct; CLOSE-WAIT is
+      the side that has not closed and it is your bug" is the whole answer.
+      Knowing `tcp_tw_recycle` was removed is a good vintage check. Describing
+      the descriptor-exhaustion endgame shows they have watched one happen.
+    follow_ups:
+      - "Why does TIME-WAIT exist at all?"
+      - "What would you do about 40000 sockets in TIME-WAIT on a proxy?"
+      - "How would you find which code path is leaking?"
+
+  - id: i4
+    level: L2
+    question: >-
+      A server has low CPU, no errors in its logs, and clients report
+      intermittent connection timeouts. What is your hypothesis?
+    model_answer: >-
+      The accept queue is overflowing.
+
+
+      A listening socket has two queues: the SYN queue for half-open handshakes,
+      and the accept queue for completed connections waiting for the application
+      to call `accept()`. When the accept queue fills, the kernel drops new
+      connections — by default *silently*, with no reset. So the client sees a
+      timeout and the server has nothing to report, because from its point of
+      view no connection was ever made. That is exactly the shape described:
+      healthy-looking server, timing-out clients.
+
+
+      I would check `ss -tln` and look at `Recv-Q` against `Send-Q` on the
+      listening row — on a LISTEN socket those mean connections-waiting and
+      backlog-limit rather than bytes, and `Recv-Q` at or near `Send-Q` is the
+      queue full. Then `nstat -az TcpExtListenOverflows`, which is the counter
+      that records the drops.
+
+
+      Low CPU is consistent with it: the application is not busy, it is blocked
+      — on a lock, a slow downstream call, or a single-threaded event loop stuck
+      somewhere — so it is not calling `accept()` fast enough. Which is why
+      raising the backlog is the wrong first move: it buys queueing, not
+      throughput, and converts timeouts into slow responses.
+    signal: >-
+      Naming the accept queue and the silent drop is the discriminator — this
+      failure is invisible unless you know the counter exists. Knowing that
+      `Recv-Q`/`Send-Q` mean something different on a LISTEN row is a strong
+      supporting signal. Resisting "raise the backlog" as the fix shows they
+      understand what the queue is for.
+    follow_ups:
+      - "Which counter records those drops?"
+      - "Why would raising the backlog not fix it?"
+      - "What are the two queues behind a listening socket?"
+
+  - id: i5
+    level: L2
+    question: >-
+      What does binding to 0.0.0.0 versus 127.0.0.1 versus a specific address
+      actually change, and how would you choose?
+    model_answer: >-
+      A bind claims an address as well as a port, and the kernel matches incoming
+      packets against the full pair.
+
+
+      `127.0.0.1` means only this machine can connect — the responsible default
+      for a development server, and the reason so many services ship that way. It
+      becomes a bug the moment something on another machine is supposed to reach
+      it, and it is a bug that every local test passes, because a local test uses
+      loopback.
+
+
+      `0.0.0.0` means every address the machine currently has, and any it gains
+      later. That is usually right for a service that should be reachable.
+
+
+      A specific address means that one and no other, which sounds precise and is
+      subtly fragile: an address added later by DHCP or a second interface will
+      not be served, and the failure appears long after the change that caused
+      it.
+
+
+      How I would choose depends on where it runs. In a pod, `0.0.0.0` is
+      straightforwardly right — the pod has its own network namespace and its own
+      address, so a wildcard exposes it on the pod address and nothing else, and
+      network policy is the correct control for who may reach it. On a host with
+      a public interface, a management network and a VPN, `0.0.0.0` plus a
+      missing firewall rule is how databases end up on the internet, so I would
+      bind the interface the service should be reachable on, or bind the wildcard
+      deliberately and put a firewall in front of it.
+    signal: >-
+      The three cases are easy; what distinguishes a good answer is the
+      fragility of binding a *specific* address, and the pod-versus-host
+      distinction at the end. Someone who says "always 0.0.0.0" has not operated
+      a multi-homed host; someone who says "never" has not operated a cluster.
+    follow_ups:
+      - "Why is 0.0.0.0 safer inside a pod than on a bare host?"
+      - "What breaks if you bind a specific address and the machine gets a new one?"
+      - "How would you find every service on a fleet listening on loopback?"

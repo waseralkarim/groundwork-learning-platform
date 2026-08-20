@@ -1,0 +1,6 @@
+graph LR
+    F[Fetch<br/>read next instruction<br/>from memory] --> D[Decode<br/>what operation?<br/>on what?]
+    D --> E[Execute<br/>do it]
+    E --> F
+    PC[Program counter<br/>holds the address<br/>of the next instruction] -.-> F
+    E -.increments or jumps.-> PC

@@ -1,0 +1,8 @@
+id: module.http
+slug: http
+title: HTTP
+summary: >-
+  The protocol almost everything you operate speaks, read as bytes on a wire
+  rather than as a library call — request, response, status, headers, and the
+  question of where the body ends.
+order: 4

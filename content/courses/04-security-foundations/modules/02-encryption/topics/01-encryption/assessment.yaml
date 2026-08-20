@@ -1,0 +1,175 @@
+id: assessment.encryption
+topic: topic.encryption
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain why the design cannot work as written
+    kind: explain
+    objectives: [OBJ-A04.2.4, OBJ-A04.2.3]
+    prompt: >-
+      A design document proposes: *"Each nightly export (roughly 500 MB) will be
+      encrypted with the recovery system's RSA-4096 public key, so that only the
+      recovery system can read it. This avoids managing any shared secret."*
+
+
+      In about 200 words: explain why this cannot be built as written, give the
+      numbers, and describe what the design should say instead.
+    rubric:
+      - "Identifies the payload limit as a hard refusal, not a performance concern"
+      - "Gives the approximate limit — a few hundred bytes for RSA-4096, around 500"
+      - "Notes that the private-key side is the slow one and lands on the restore path"
+      - "Describes hybrid encryption: random symmetric key for the data, public key for that key"
+      - "Keeps the design's actual goal — no shared secret to manage — which hybrid preserves"
+    model_answer: >-
+      The goal is right and the mechanism is impossible.
+
+
+      RSA encrypts a number smaller than its modulus. For RSA-4096 that is 512
+      bytes, less padding, so around 470 usable. A 500 MB export is not slow to
+      encrypt this way — it is **refused**, with `data too large for key size`.
+      There is no chunking in RSA, so building it means inventing a format that
+      fragments the export into roughly a million pieces and reassembles them: a
+      bespoke protocol with its own bugs, replacing one that already exists.
+
+
+      The timing is bad too, and in the worst place. Encryption uses the public
+      key and is fast; **decryption** uses the private key and runs at a few
+      hundred operations a second for RSA-4096. A million operations lands on the
+      *restore* path — the moment nobody wants to discover a multi-hour
+      bottleneck.
+
+
+      What the design should say is hybrid encryption, which preserves the goal
+      exactly: generate a fresh random key per export, encrypt the 500 MB with
+      AES-256-GCM at over a gigabyte a second, encrypt that 32-byte key with the
+      recovery system's RSA public key, and store both together.
+
+
+      Still no shared secret — the sender holds only a public key. The slow
+      algorithm protects 32 bytes and the fast one does the rest, which is what
+      TLS, PGP and `age` all do.
+    common_failures:
+      - "Treating the limit as a performance problem to be optimised rather than a refusal"
+      - "Proposing a larger RSA key, which raises the limit slightly and worsens the speed"
+      - "Abandoning the no-shared-secret goal, which hybrid encryption fully preserves"
+      - "Measuring the encrypt side only, which is fast and hides the cost on restore"
+
+  - id: B
+    title: Diagnose a tampered ciphertext
+    kind: diagnose
+    objectives: [OBJ-A04.2.6]
+    prompt: >-
+      A file transferred through a third-party host arrives with one field
+      changed. The evidence:
+
+
+      ```text
+      sent:     ...,GBP,00190000,SETTLED
+      received: ...,GBP,04290000,SETTLED
+      encryption: openssl enc -aes-256-ctr, fixed -K and -iv
+      byte count at upload and download: identical
+      recipient's decryption: rc=0, 8412 rows parsed, 0 malformed
+      ```
+
+
+      The sender insists tampering is impossible because the file decrypted
+      successfully. In about 200 words: say what happened, why their reasoning
+      fails, and what the identical byte count and field width establish.
+    rubric:
+      - "States that `openssl enc` supports no authenticated mode, so decryption never checked integrity"
+      - "Explains CTR malleability: flipped ciphertext bits flip exactly the corresponding plaintext bits"
+      - "Uses the identical lengths as evidence of substitution rather than corruption"
+      - "Notes that the fixed IV is a separate and larger finding, exposing every prior file"
+      - "Concludes that decryption succeeding proves nothing about integrity"
+    model_answer: >-
+      The file was altered in transit, and their reasoning fails at one step.
+
+
+      "A tampered file would not decrypt" is true of an **authenticated** mode and
+      false of every other. `openssl enc` supports none — its cipher list is CBC,
+      CFB, CTR, ECB and OFB, and `-aes-256-gcm` returns `enc: AEAD ciphers not
+      supported`. So `rc=0` establishes nothing about integrity; there was never a
+      check to fail.
+
+
+      CTR computes `ciphertext = plaintext XOR keystream`, so flipping ciphertext
+      bits flips exactly the corresponding plaintext bits and nothing else. An
+      attacker who knows the format — a fixed-width amount field in a CSV — XORs
+      the digits they see against the digits they want and applies it, without the
+      key.
+
+
+      The lengths are the confirmation. CTR cannot insert or remove bytes, only
+      substitute them, so identical byte counts at both ends and a replacement
+      field of identical width are exactly the signature of a stream-mode
+      substitution. Corruption would have produced malformed rows; 8,412 parsed
+      with 0 malformed did not happen by accident.
+
+
+      The **fixed IV is the larger finding**. Every file ever sent shares one
+      keystream, so XORing any two captures cancels the key and yields the XOR of
+      two settlement files. The incident is 4,100,000 pence on one merchant; the
+      exposure is every file in the archive.
+    common_failures:
+      - "Accepting that successful decryption implies integrity"
+      - "Calling it corruption, which the identical field width and clean parse contradict"
+      - "Recommending a longer key, which the XOR arithmetic makes irrelevant"
+      - "Fixing only the tampering and missing that the constant IV exposes the whole archive"
+
+  - id: C
+    title: Specify a scheme and defend the omissions
+    kind: reason
+    objectives: [OBJ-A04.2.8, OBJ-A04.2.2]
+    prompt: >-
+      You are asked to specify encryption for a table of 40 million customer
+      records, of which four columns would trigger a breach notification. The
+      platform team says disk encryption is already enabled and asks whether
+      anything more is needed.
+
+
+      In about 250 words: answer the question, specify the scheme, and say what
+      each decision costs.
+    rubric:
+      - "States precisely what disk encryption protects against — offline access to storage — and what it does not"
+      - "Recommends application- or column-level encryption for the four columns, above the database"
+      - "Specifies an AEAD mode and a per-record nonce that survives restarts and replicas"
+      - "Requires a key identifier per record so rotation is possible"
+      - "States the costs honestly: lost queryability, added latency, key management burden"
+    model_answer: >-
+      Yes, more is needed, and the reason is where the existing control sits.
+
+
+      Disk encryption protects against **storage obtained without the running
+      system** — a decommissioned drive, a copied snapshot. On a live node the
+      volume is mounted and the key already applied, so everything above the
+      filesystem reads plaintext: the application, `SELECT *`, a logical backup,
+      anyone with shell access. It is worth having and it does not address a
+      compromised application, which is the threat that produces a notification.
+
+
+      For the four notifiable columns I would encrypt **above** the database, in
+      the application, with **AES-256-GCM**. A **unique nonce per record**,
+      randomly generated — not a counter, which repeats across replicas and
+      restarts. Keys in a **KMS** where the key never leaves: the application
+      sends data to be decrypted, so a compromise can *ask* for decryptions —
+      logged, rate-limitable, and 40 million requests in an afternoon is an alert
+      — but cannot walk away with the key. A **key identifier stored with every
+      row**, so rotation is a background migration rather than one unpausable
+      operation.
+
+
+      The costs, stated plainly because they are real: those columns become
+      **unqueryable** — no `WHERE`, no `LIKE`, no index — so anything filtering on
+      them needs redesigning, possibly with a blind index. Every read and write
+      adds a KMS round trip, which caching reduces and does not remove. And there
+      is now a key lifecycle to own.
+
+
+      For the other columns, disk encryption remains proportionate. The point is
+      to protect what would be notifiable, not everything.
+    common_failures:
+      - "Answering that disk encryption is sufficient because the data is already encrypted"
+      - "Encrypting every column, which multiplies the cost and destroys the schema's usability"
+      - "Omitting the key identifier, which makes rotation impossible in practice"
+      - "Presenting the design without its costs, particularly the loss of queryability"

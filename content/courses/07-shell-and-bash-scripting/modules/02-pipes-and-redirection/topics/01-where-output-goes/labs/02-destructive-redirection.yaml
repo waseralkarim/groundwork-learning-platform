@@ -1,0 +1,301 @@
+id: lab.destructive-redirection
+topic: topic.where-output-goes
+title: Destroy a config file, then do it properly
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.2.4, OBJ-B08.2.3]
+
+intro: >-
+  `/tmp/pipes/app.conf` has two `DEBUG` lines that need removing. The obvious
+  command destroys the file completely, and the reason is one sentence about
+  when the shell does its work.
+
+
+  You will destroy it, understand exactly why, and then find the ways that
+  work — including one that warns you and still destroys the file anyway.
+
+setup:
+  - /opt/lab/seed-pipes.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/pipes/config-task.txt and predict what the suggested command
+      leaves in the file. Commit your prediction to /tmp/prediction, then run it.
+      Save the result to /tmp/answer-destroyed.
+    hint: >-
+      Ask what the shell does before it starts the program, and in what order.
+    walkthrough: |
+      cat /tmp/pipes/config-task.txt
+      cd /tmp/pipes
+      cp app.conf.pristine app.conf
+      echo "prediction: the file will be EMPTY, because > truncates before grep runs" > /tmp/prediction
+      {
+        echo "before: $(wc -l < app.conf) lines, $(grep -c DEBUG app.conf) of them DEBUG"
+        echo
+        echo "running: grep -v DEBUG app.conf > app.conf"
+        grep -v DEBUG app.conf > app.conf 2>/tmp/grep1.err; rc=$?
+        echo "  grep said: $(cat /tmp/grep1.err)"
+        echo "  exit status: $rc"
+        echo
+        echo "after: $(wc -c < app.conf) bytes"
+        echo
+        echo "the whole file is gone, including the seven lines i wanted to keep."
+      } > /tmp/answer-destroyed
+      cat /tmp/answer-destroyed
+    verify:
+      - type: file_exists
+        path: /tmp/prediction
+        describe: You committed a prediction first
+      - type: file_matches
+        path: /tmp/answer-destroyed
+        pattern: "after: 0 bytes"
+        describe: And the file was emptied
+      - type: command_exit
+        command: "test $(wc -c < /tmp/pipes/app.conf) -eq 0"
+        exit_code: 0
+        describe: The config file really is empty now
+
+  - id: s2
+    instruction: >-
+      Explain the exact sequence that emptied the file, and check whether grep
+      noticed. Save to /tmp/answer-sequence.
+    hint: >-
+      List what happens in order: what the shell does, then what the program
+      does. And compare grep's behaviour with sort's.
+    walkthrough: |
+      cd /tmp/pipes
+      {
+        echo "the sequence, in order:"
+        echo "  1. the shell opens app.conf for writing, which TRUNCATES it to 0 bytes"
+        echo "  2. the shell starts grep, with descriptor 1 attached to the empty file"
+        echo "  3. grep opens app.conf to read, and finds nothing"
+        echo
+        echo "redirections are set up BEFORE the command runs. by the time grep looked at the file, the shell had already emptied it."
+        echo
+        echo "did grep notice? it did:"
+        cp app.conf.pristine app.conf
+        grep -v DEBUG app.conf > app.conf 2>/tmp/grep2.err || true
+        sed 's/^/    /' /tmp/grep2.err
+        echo "    exit status was 2, not 0"
+        echo "  but the file is still $(wc -c < app.conf) bytes. the warning tells me what happened; it does not prevent it, because the truncation already occurred."
+        echo
+        echo "and most tools do not warn at all:"
+        printf 'c\nb\na\n' > d.txt
+        sort d.txt > d.txt
+        echo "    sort: exit $?, file now $(wc -c < d.txt) bytes, and it said nothing."
+        echo
+        echo "so 'the tool will stop me' is not a defence. grep happens to check; sort does not; and neither can undo a truncation performed by the shell before either of them started."
+        cp app.conf.pristine app.conf
+      } > /tmp/answer-sequence
+      cat /tmp/answer-sequence
+    verify:
+      - type: file_matches
+        path: /tmp/answer-sequence
+        pattern: "(?i)TRUNCATES it to 0 bytes"
+        describe: You identified what the shell does first
+      - type: file_matches
+        path: /tmp/answer-sequence
+        pattern: "(?i)input file is also the output"
+        describe: And that grep does notice
+      - type: file_matches
+        path: /tmp/answer-sequence
+        pattern: "sort: exit 0, file now 0 bytes"
+        describe: While sort destroys it silently
+      - type: file_matches
+        path: /tmp/answer-sequence
+        pattern: "(?i)not a defence"
+        describe: And drew the right conclusion about relying on the tool
+
+  - id: s3
+    instruction: >-
+      Do the edit correctly, at least two different ways, and verify the result.
+      Save to /tmp/answer-correct.
+    hint: >-
+      One approach writes somewhere else first. Another uses a tool that edits
+      in place.
+    walkthrough: |
+      cd /tmp/pipes
+      {
+        echo "method 1 - temp file then rename:"
+        cp app.conf.pristine app.conf
+        grep -v DEBUG app.conf > app.conf.tmp && mv app.conf.tmp app.conf
+        echo "  lines: $(wc -l < app.conf), DEBUG lines remaining: $(grep -c DEBUG app.conf || true)"
+        echo "  the && matters: without it, a failed grep still renames a truncated"
+        echo "  temp file over the config."
+        echo
+        echo "method 2 - sed in place:"
+        cp app.conf.pristine app.conf
+        sed -i '/DEBUG/d' app.conf
+        echo "  lines: $(wc -l < app.conf), DEBUG lines remaining: $(grep -c DEBUG app.conf || true)"
+        echo
+        echo "what each costs:"
+        echo "  temp file  needs space for a second copy, and the rename is ATOMIC -"
+        echo "             a reader sees either the old file or the new one, never a"
+        echo "             half-written one. this is the default choice."
+        echo "  sed -i     convenient, and NOT really in place: it writes a new file"
+        echo "             and renames it. so it breaks hard links and changes the"
+        echo "             inode, which matters if something is watching the file by"
+        echo "             inode or if it is a bind-mounted config in a container."
+        echo
+        echo "a third option is a tool like sponge, which reads all its input before opening the output. it is from moreutils and is not installed here, which is itself the argument against depending on it in a script that has to run anywhere."
+        cp app.conf.pristine app.conf
+      } > /tmp/answer-correct
+      cat /tmp/answer-correct
+    verify:
+      - type: file_matches
+        path: /tmp/answer-correct
+        pattern: "(?i)temp file then rename"
+        describe: You used the temp-file pattern
+      - type: file_matches
+        path: /tmp/answer-correct
+        pattern: "(?i)ATOMIC"
+        describe: And explained why the rename matters
+      - type: file_matches
+        path: /tmp/answer-correct
+        pattern: "(?i)&& matters"
+        describe: And why the && is not optional
+      - type: file_matches
+        path: /tmp/answer-correct
+        pattern: "(?i)changes the inode|breaks hard links"
+        describe: And what sed -i actually does
+
+  - id: s4
+    instruction: >-
+      Try noclobber as a safety net, find what it does and does not protect, and
+      save your assessment to /tmp/answer-noclobber.
+    hint: >-
+      Turn it on, try to overwrite something, then try the same thing with `>>`
+      and with `tee`.
+    walkthrough: |
+      cd /tmp/pipes
+      {
+        echo "x" > guard.txt
+        set -o noclobber
+        echo "with noclobber on:"
+        echo -n "  echo y > guard.txt   : "
+        if echo y > guard.txt 2>/tmp/nc.err; then echo "allowed"; else echo "REFUSED - $(cat /tmp/nc.err | sed 's/.*: //')"; fi
+        echo -n "  echo y >| guard.txt  : "
+        if echo y >| guard.txt 2>/dev/null; then echo "allowed (>| overrides)"; else echo "refused"; fi
+        echo "x" > guard.txt 2>/dev/null || echo y >| guard.txt
+        echo -n "  echo y >> guard.txt  : "
+        if echo y >> guard.txt 2>/dev/null; then echo "allowed - append is NOT protected"; else echo "refused"; fi
+        echo -n "  echo y | tee guard.txt : "
+        if echo y | tee guard.txt >/dev/null 2>&1; then echo "allowed - tee is a program, noclobber is a SHELL option"; else echo "refused"; fi
+        set +o noclobber
+        echo
+        echo "assessment: a useful interactive safety net, and a poor script-wide policy."
+        echo "  - it protects only the shell's own > redirection"
+        echo "  - it does not protect >>, and does not protect any program that opens"
+        echo "    a file itself, because noclobber is a shell option and tee is not the shell"
+        echo "  - set script-wide it changes the meaning of every > in everything i"
+        echo "    source, which is a long-range surprise for the next reader"
+        echo
+        echo "so: worth having in an interactive shell, and in scripts prefer the explicit temp-file pattern, which protects against the case noclobber cannot see."
+      } > /tmp/answer-noclobber
+      cat /tmp/answer-noclobber
+    verify:
+      - type: file_matches
+        path: /tmp/answer-noclobber
+        pattern: "(?i)REFUSED"
+        describe: noclobber blocked the overwrite
+      - type: file_matches
+        path: /tmp/answer-noclobber
+        pattern: "(?i)append is NOT protected"
+        describe: And you found what it does not cover
+      - type: file_matches
+        path: /tmp/answer-noclobber
+        pattern: "(?i)tee is a program|SHELL option"
+        describe: And why a program writing the file is unaffected
+      - type: file_matches
+        path: /tmp/answer-noclobber
+        pattern: "(?i)interactive safety net"
+        describe: And reached a defensible position on where to use it
+
+solution: >-
+  **The obvious command empties the file.**
+
+
+  ```console
+  $ grep -v DEBUG app.conf > app.conf
+  grep: app.conf: input file is also the output
+  $ wc -c < app.conf
+  0
+  ```
+
+
+  Nine lines became zero — including the seven that had nothing to do with
+  `DEBUG`.
+
+
+  **The sequence, in order:**
+
+
+  1. The shell opens `app.conf` for writing, which **truncates it to 0 bytes**.
+  2. The shell starts `grep`, with descriptor 1 attached to the now-empty file.
+  3. `grep` opens `app.conf` to read, and finds nothing.
+
+
+  Redirections are set up **before** the command runs.
+
+
+  **`grep` noticed, and it did not help.** It printed a warning and exited 2 —
+  and the file is still empty, because the truncation happened before `grep`
+  started and nothing can undo it. Most tools do not even notice:
+
+
+  ```console
+  $ sort d.txt > d.txt
+  $ echo $?; wc -c < d.txt
+  0
+  0
+  ```
+
+
+  Silent, exit 0, file destroyed. **"The tool will stop me" is not a defence.**
+
+
+  **Two ways that work.**
+
+
+  ```bash
+  grep -v DEBUG app.conf > app.conf.tmp && mv app.conf.tmp app.conf
+  sed -i '/DEBUG/d' app.conf
+  ```
+
+
+  The `&&` is not decoration: without it, a failed `grep` still renames a
+  truncated temp file over your config.
+
+
+  What each costs. The **temp file** needs space for a second copy, and the
+  rename is **atomic** — a concurrent reader sees either the old file or the new
+  one, never a half-written one. That is the default choice.
+
+
+  **`sed -i` is not really in place.** It writes a new file and renames it, so it
+  breaks hard links and changes the inode — which matters when something watches
+  the file by inode, or when it is a bind-mounted config in a container.
+
+
+  **`noclobber` is an interactive safety net, not a policy.**
+
+
+  ```text
+  echo y > guard.txt      REFUSED: cannot overwrite existing file
+  echo y >| guard.txt     allowed — >| overrides it
+  echo y >> guard.txt     allowed — append is not protected
+  echo y | tee guard.txt  allowed — tee is a program; noclobber is a shell option
+  ```
+
+
+  It protects only the shell's own `>`. It cannot see a program opening a file
+  itself, which is most of the ways a file gets overwritten. And set script-wide
+  it changes the meaning of every `>` in everything you source — a long-range
+  surprise for the next reader.
+
+
+  Use it interactively; in scripts, prefer the explicit temp-file pattern, which
+  covers the case `noclobber` cannot.

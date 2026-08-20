@@ -1,0 +1,299 @@
+id: lab.logical-and-physical
+topic: topic.the-block-layer
+title: Write 64 megabytes and send nothing to a disk
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A02.4.2, OBJ-A02.4.7]
+
+intro: >-
+  `/proc/PID/io` keeps two sets of numbers that people routinely confuse. One
+  counts what your process asked the kernel for. The other counts what a block
+  device did about it.
+
+
+  In this container they disagree completely, and for two different reasons.
+  You will read 56 megabytes without touching a disk, then write 64 megabytes
+  without touching a disk, and work out which of the two explanations applies to
+  each. Then you will reason about the case where the second number is *larger*
+  than the first, which is what containers do to databases.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      First read the files you are about to measure, once, and throw the output
+      away. Then take a baseline of this shell's own I/O counters and save it to
+      /tmp/answer-before.
+
+
+      The first read is deliberate: this lab is about **steady state**, and a
+      file being read for the very first time on a freshly started machine
+      genuinely does come from the device. Priming the cache makes the thing you
+      are about to measure the thing you meant to measure.
+
+
+      Read the counters from /proc/$$/io, not /proc/self/io — inside a `grep`,
+      `self` is grep.
+    hint: >-
+      `cat` the files to /dev/null once, then
+      `grep -E '^(rchar|wchar|read_bytes|write_bytes|syscr|syscw)' /proc/$$/io >
+      /tmp/answer-before`
+    walkthrough: |
+      # prime the page cache, so step 2 measures steady state and not a cold start
+      for f in $(find /usr/lib/x86_64-linux-gnu /usr/bin -type f -size +2M 2>/dev/null | head -12); do
+        cat "$f" > /dev/null
+      done
+
+      grep -E '^(rchar|wchar|read_bytes|write_bytes|syscr|syscw)' /proc/$$/io > /tmp/answer-before
+      cat /tmp/answer-before
+    verify:
+      - type: file_matches
+        path: /tmp/answer-before
+        pattern: 'rchar: [0-9]+'
+        describe: Bytes asked for through the VFS
+      - type: file_matches
+        path: /tmp/answer-before
+        pattern: 'read_bytes: [0-9]+'
+        describe: And bytes actually fetched from a block device
+
+  - id: s2
+    instruction: >-
+      Now read a lot of data. Read a dozen multi-megabyte files out of the image
+      into /dev/null, then capture your counters again into /tmp/answer-read.
+
+
+      This must all happen in one shell, so the counters belong to the process
+      that did the reading.
+    hint: >-
+      `find /usr/lib/x86_64-linux-gnu /usr/bin -type f -size +2M | head -12`
+      gives you the files; `cat` each one to /dev/null.
+    walkthrough: |
+      for f in $(find /usr/lib/x86_64-linux-gnu /usr/bin -type f -size +2M 2>/dev/null | head -12); do
+        cat "$f" > /dev/null
+      done
+      grep -E '^(rchar|read_bytes|syscr)' /proc/$$/io > /tmp/answer-read
+      cat /tmp/answer-read
+    verify:
+      - type: command_exit
+        command: "awk '/rchar/ { exit ($2 > 20000000) ? 0 : 1 }' /tmp/answer-read"
+        exit_code: 0
+        describe: More than 20 MB was read through the VFS
+      - type: command_exit
+        command: "awk '/rchar/{r=$2} /read_bytes/{b=$2} END { exit (b * 10 < r) ? 0 : 1 }' /tmp/answer-read"
+        exit_code: 0
+        describe: But barely any of it came from a block device
+
+  - id: s3
+    instruction: >-
+      Explain the gap. Write to /tmp/answer-why-read one sentence saying where
+      those bytes came from, if not from a device.
+    hint: >-
+      The files live in the image layers. Something between the filesystem and
+      the device already had them.
+    walkthrough: |
+      echo "they came from the page cache: the image layer files were already resident in memory, so the reads were satisfied without any block device being asked for anything" > /tmp/answer-why-read
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-read
+        pattern: "cache|memory|resident"
+        describe: You attributed the reads to the page cache
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-why-read) -ge 10"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+  - id: s4
+    instruction: >-
+      Now write. Put 64 megabytes into /tmp, then capture your write counters
+      into /tmp/answer-write.
+    hint: "`dd if=/dev/zero of=/tmp/big bs=1M count=64`, then read /proc/$$/io again."
+    walkthrough: |
+      dd if=/dev/zero of=/tmp/big bs=1M count=64 2>/dev/null
+      grep -E '^(wchar|write_bytes|syscw)' /proc/$$/io > /tmp/answer-write
+      cat /tmp/answer-write
+    verify:
+      - type: command_exit
+        command: "awk '/wchar/ { exit ($2 > 60000000) ? 0 : 1 }' /tmp/answer-write"
+        exit_code: 0
+        describe: More than 60 MB was written through the VFS
+      - type: file_matches
+        path: /tmp/answer-write
+        pattern: 'write_bytes: 0'
+        describe: And not one byte reached a block device
+
+  - id: s5
+    instruction: >-
+      That zero has a different cause from the one in step 2. Find it: save the
+      filesystem type of /tmp to /tmp/answer-fstype.
+    hint: "`awk '$2 == \"/tmp\" {print $3}' /proc/mounts`"
+    walkthrough: |
+      awk '$2 == "/tmp" {print $3}' /proc/mounts > /tmp/answer-fstype
+      cat /tmp/answer-fstype
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fstype
+        pattern: '^tmpfs$'
+        describe: /tmp is a tmpfs — there is no device behind it at all
+
+  - id: s6
+    instruction: >-
+      Write the two explanations side by side in /tmp/answer-two-zeros — one
+      line for the read zero, one for the write zero.
+
+
+      They look identical in the counters and are not the same thing.
+    hint: >-
+      One will eventually reach a device if memory gets tight. The other never
+      can.
+    walkthrough: |
+      {
+        echo "reads: the data was already in the page cache, so no device was asked; a cache miss would have produced real read_bytes"
+        echo "writes: tmpfs has no backing device at all, so these bytes can never reach one; they are memory, charged to this cgroup"
+      } > /tmp/answer-two-zeros
+      cat /tmp/answer-two-zeros
+    verify:
+      - type: file_matches
+        path: /tmp/answer-two-zeros
+        pattern: "reads:.*cache"
+        describe: You explained the read zero as a cache hit
+      - type: file_matches
+        path: /tmp/answer-two-zeros
+        pattern: "writes:.*(tmpfs|no backing|no device|memory)"
+        describe: And the write zero as there being no device to reach
+
+  - id: s7
+    instruction: >-
+      Check where those 64 megabytes actually went. Save the Shmem and Dirty
+      lines from /proc/meminfo to /tmp/answer-where.
+
+
+      One of them moved and the other did not.
+    hint: "`grep -E '^(Shmem|Dirty|Writeback):' /proc/meminfo > /tmp/answer-where`"
+    walkthrough: |
+      grep -E '^(Shmem|Dirty|Writeback):' /proc/meminfo > /tmp/answer-where
+      cat /tmp/answer-where
+      grep -E '^(anon|file|shmem) ' /sys/fs/cgroup/memory.stat
+    verify:
+      - type: file_matches
+        path: /tmp/answer-where
+        pattern: 'Shmem:\s+[0-9]+ kB'
+        describe: The tmpfs pages are accounted as shared memory
+      - type: file_matches
+        path: /tmp/answer-where
+        pattern: 'Dirty:\s+[0-9]+ kB'
+        describe: And not as dirty page cache, because there is nothing to write them back to
+
+  - id: s8
+    instruction: >-
+      Last one, and it is the case that costs money. Suppose `write_bytes` came
+      out *larger* than `wchar` — the device did more work than you asked for.
+
+
+      Write to /tmp/answer-amplification the container-specific mechanism that
+      causes it, and what fixes it.
+    hint: >-
+      Your root filesystem is an overlay, and overlayfs copies on write at file
+      granularity rather than block granularity.
+    walkthrough: |
+      awk '$2 == "/" {print $1, $3}' /proc/mounts
+      echo "overlayfs copy-up: the first write to a file that lives in a lower layer copies the whole file to the upper layer before applying the change, so a small write to a large file writes the whole file; a volume mounts the underlying filesystem directly and avoids the overlay entirely" > /tmp/answer-amplification
+    verify:
+      - type: file_matches
+        path: /tmp/answer-amplification
+        pattern: "copy.up|overlay"
+        describe: You named copy-up as the mechanism
+      - type: file_matches
+        path: /tmp/answer-amplification
+        pattern: "volume|bind|mount"
+        describe: And a volume as the fix
+
+solution: |
+  ```bash
+  grep -E '^(rchar|wchar|read_bytes|write_bytes)' /proc/$$/io
+
+  for f in $(find /usr/lib/x86_64-linux-gnu /usr/bin -type f -size +2M | head -12); do
+    cat "$f" > /dev/null
+  done
+  grep -E '^(rchar|read_bytes)' /proc/$$/io      # rchar ~56 MB, read_bytes 0
+
+  dd if=/dev/zero of=/tmp/big bs=1M count=64 2>/dev/null
+  grep -E '^(wchar|write_bytes)' /proc/$$/io     # wchar ~67 MB, write_bytes 0
+
+  awk '$2 == "/tmp" {print $3}' /proc/mounts     # tmpfs
+  grep -E '^(Shmem|Dirty):' /proc/meminfo
+  ```
+
+  **What you just measured.**
+
+  ```text
+  rchar:       56826358      56 MB asked for
+  read_bytes:         0      0 bytes from a device
+  wchar:       67108958      64 MB written
+  write_bytes:        0      0 bytes to a device
+  ```
+
+  **Two zeros, two different causes, and telling them apart is the lab.**
+
+  The read zero is a **cache hit**. The image layer files were already resident
+  in memory, so the VFS served every byte without asking a device for anything.
+  On a cold cache the same commands would have produced tens of megabytes of
+  `read_bytes`. The gap between `rchar` and `read_bytes` *is* the page cache,
+  measured in bytes, for this process.
+
+  The write zero is **structural**. `/tmp` is a tmpfs — a filesystem that lives
+  entirely in page cache with no device behind it. Those bytes cannot reach a
+  device, now or ever. They are memory.
+
+  **Which is why the third reading matters.** `Shmem` climbed by roughly the
+  amount written; `Dirty` did not move. Dirty pages are file-backed pages waiting
+  to be written *somewhere*, and tmpfs pages have nowhere to go, so they are
+  never dirty and never reclaimable. They are charged to the cgroup that touched
+  them and they stay until deleted.
+
+  This is a real and regular production failure: a pod writes "temporary files"
+  to `/tmp`, is charged the whole amount as memory, and is OOM-killed on a node
+  with tens of gigabytes free. The tells are exactly what you just read — a large
+  `wchar` with `write_bytes` at zero, and `shmem` large in `memory.stat`.
+
+  **The four patterns, now that you can read them:**
+
+  | Pattern | Meaning |
+  |---|---|
+  | `rchar` ≫ `read_bytes` | Cache is doing its job; the working set fits |
+  | `rchar` ≈ `read_bytes` | Every read reaches the device — cache too small, or random access |
+  | `wchar` ≫ `write_bytes` | Buffered and not yet flushed, or a tmpfs |
+  | `write_bytes` ≫ `wchar` | **Write amplification** — and worth explaining before anyone tunes anything |
+
+  **The fourth row is what containers do to databases.** Overlayfs is
+  copy-on-write at *file* granularity. The first write to any file living in a
+  lower layer copies the entire file up first:
+
+  ```text
+  write 1 byte at offset 500 MB of a 2 GB file
+    -> copy all 2 GB from lower layer to upper
+    -> then apply the 1-byte change
+  ```
+
+  For a database — large data files, small constant modifications — this is close
+  to a worst case, and it explains the shape of the symptom exactly: fine for
+  weeks, then a migration that takes forty minutes instead of ninety seconds,
+  because it touched files that had never been written before.
+
+  A volume mounts the underlying filesystem straight into the container and
+  bypasses the overlay entirely. "Databases need volumes" is usually said as a
+  durability rule; it is equally a performance one, and this counter is how you
+  demonstrate it.
+
+  **The routine.** For any container that seems to be doing too much I/O:
+
+  ```bash
+  grep -E 'rchar|wchar|read_bytes|write_bytes' /proc/1/io
+  awk '$2 == "/" || $2 == "/tmp" {print $2, $3}' /proc/mounts
+  ```
+
+  Two commands, and they separate "reading from cache", "writing to memory" and
+  "writing far more than it was asked to" before anyone looks at a device.

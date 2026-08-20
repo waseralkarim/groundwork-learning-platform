@@ -1,0 +1,7 @@
+graph TD
+    N1["/tmp/report.txt"] --> I["inode 4211<br/>mode, owner, size, timestamps<br/>link count = 2<br/>pointers to data blocks"]
+    N2["/tmp/backup.txt<br/>(hard link)"] --> I
+    N3["/tmp/shortcut<br/>(symlink)"] -->|"contains the TEXT<br/>'/tmp/report.txt'"| N1
+    I --> D["data blocks on the device"]
+    R["rm /tmp/report.txt"] -.->|"removes the name,<br/>decrements the count to 1"| I
+    R2["rm /tmp/backup.txt"] -.->|"count reaches 0 —<br/>only now is the data freed"| D

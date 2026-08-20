@@ -1,0 +1,151 @@
+id: troubleshooting.root-but-not-allowed
+topic: topic.user-space-and-the-kernel
+title: The container runs as root and still cannot write the file
+level: L3
+objectives: [OBJ-A01.3.6, OBJ-A01.3.7]
+reveal_policy: progressive
+
+situation: >-
+  A batch job that has run on a VM for three years was containerised last
+  sprint. It reads inputs, writes a report to /var/lib/reporting/out.csv, and
+  emails a link.
+
+
+  In the container it fails immediately. The team confirmed the process runs as
+  root, confirmed the directory exists, and ran `chmod 777` on it inside the
+  image. It still fails. Someone has proposed adding `--privileged` to the run
+  command, "just to unblock the release", and the change is in review now.
+
+
+  You have been asked to review it. Work out what is actually happening before
+  you read the answer.
+
+symptoms:
+  - "The process runs as uid 0 — confirmed with `id` inside the container"
+  - "The target directory exists and is mode 777"
+  - "The same code works unchanged on the old VM"
+  - "It fails within a second of starting, before any real work"
+  - "Adding `--privileged` in a scratch test did make it work"
+
+artifacts:
+  - type: log
+    label: Application error
+    content: |
+      2026-08-14T09:12:04Z INFO  starting reporting job v4.2.1
+      2026-08-14T09:12:04Z INFO  loaded 3 input sources
+      2026-08-14T09:12:04Z ERROR cannot open /var/lib/reporting/out.csv: read-only file system
+      2026-08-14T09:12:04Z FATAL exiting
+
+  - type: command_output
+    label: Identity and privileges inside the container
+    content: |
+      $ docker exec reporting id
+      uid=0(root) gid=0(root) groups=0(root)
+
+      $ docker exec reporting grep -E 'Uid|CapEff' /proc/1/status
+      Uid:    0       0       0       0
+      CapEff: 00000000a80425fb
+
+  - type: command_output
+    label: Directory permissions
+    content: |
+      $ docker exec reporting ls -ld /var/lib/reporting
+      drwxrwxrwx 2 root root 4096 Aug 14 09:02 /var/lib/reporting
+
+  - type: config
+    label: The deployment's container spec
+    content: |
+      securityContext:
+        readOnlyRootFilesystem: true
+        runAsUser: 0
+      volumeMounts:
+        - name: cache
+          mountPath: /var/cache/reporting
+
+  - type: command_output
+    label: What strace shows
+    content: |
+      $ docker exec reporting strace -e trace=openat -p 1
+      openat(AT_FDCWD, "/var/lib/reporting/out.csv", O_WRONLY|O_CREAT|O_TRUNC, 0644) = -1 EROFS (Read-only file system)
+
+diagnostic_questions:
+  - "Which errno is in the strace output, and is it a permission failure at all?"
+  - "Does the mode of the directory have any bearing on this errno?"
+  - "Which line of the container spec explains the failure?"
+  - "Why did `--privileged` appear to fix it, and what did it actually change?"
+  - "Where is /var/lib/reporting, relative to the volumes that were mounted?"
+
+hints:
+  - "Read the errno, not the message. EROFS and EACCES are different failures."
+  - "The capability set is Docker's default and includes CAP_DAC_OVERRIDE — so file permissions were never going to be the obstacle here anyway."
+  - "There is a volume mounted, but not at the path the job writes to."
+  - "Ask what `--privileged` changes about a read-only root filesystem."
+
+root_cause: >-
+  The root filesystem is mounted read-only by `readOnlyRootFilesystem: true`,
+  and /var/lib/reporting is on it. The only writable mount is at
+  /var/cache/reporting, which is not where the job writes.
+
+
+  The failure is EROFS — a property of the mount — and has nothing to do with
+  permissions, ownership or capabilities. The `chmod 777` could not have helped,
+  and neither could running as root: a read-only filesystem refuses uid 0
+  exactly as firmly as anyone else.
+
+
+  `--privileged` appeared to fix it in the scratch test because that test was run
+  without the securityContext, not because privilege was the issue. It removed
+  the read-only mount along with everything else, which is why the result was
+  misleading.
+
+method: >-
+  Three steps, in this order.
+
+
+  **1. Get the errno, not the message.** The application log said "read-only
+  file system" and the strace line confirms `EROFS`. That single value
+  eliminates the entire permissions hypothesis before any investigation starts —
+  EROFS is never about identity, mode bits or capabilities. Had it been
+  `EACCES`, the directory mode would have been the right place to look; had it
+  been `EPERM`, the capability set would have been.
+
+
+  **2. Find which layer owns that errno.** EROFS belongs to the mount. So the
+  question becomes "what is mounted where", and the container spec answers it in
+  two lines: the root filesystem is read-only, and the one writable volume is at
+  a different path from the one the job writes to.
+
+
+  **3. Treat the `--privileged` result as evidence, not a solution.** It changed
+  many things at once, so it proves nothing about which one mattered. A
+  controlled test — the same spec with only `readOnlyRootFilesystem` removed —
+  isolates the variable and confirms the diagnosis in one run.
+
+
+  The general habit: when a fix that changes many things works, you have not
+  found the cause. You have found a way to stop looking for it.
+
+resolution: >-
+  Mount a writable volume at the path the job actually writes to, and keep the
+  read-only root filesystem.
+
+
+  ```yaml
+  securityContext:
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+  volumeMounts:
+    - name: reports
+      mountPath: /var/lib/reporting
+  ```
+
+
+  Reject the `--privileged` change. It would have worked, and it would have
+  granted all capabilities, disabled the seccomp profile and given the container
+  device access — to solve a problem that was one wrong mount path.
+
+
+  Two follow-ups worth taking while the context is fresh: drop `runAsUser: 0`,
+  since nothing here needed root once the mount was right, and add the errno to
+  the job's own error message so the next occurrence names its own cause.

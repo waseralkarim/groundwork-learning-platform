@@ -1,0 +1,236 @@
+id: lab.http-by-hand
+topic: topic.http
+title: Write an HTTP server in one line, and read what the client sent
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A03.4.1, OBJ-A03.4.5]
+
+intro: >-
+  HTTP is text. A complete, standards-compliant response is a few lines you can
+  type, and a request is a few lines you can read.
+
+
+  You will serve one by hand with `nc`, fetch it with `curl`, and then read the
+  request that arrived — byte for byte, with the line endings made visible.
+  Everything after this topic depends on having seen that once.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Serve a single HTTP response on port 8080 and fetch it with curl. Save
+      what curl received to /tmp/answer-body.
+
+
+      The response must be: a status line, a `Content-Length` header, a blank
+      line, and the body `hello`.
+    hint: >-
+      `printf 'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello' | nc -l
+      127.0.0.1 8080 &` then curl it. Every line ends with `\r\n`.
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello' \
+        | timeout 10 nc -l 127.0.0.1 8080 > /tmp/req-8080 2>/dev/null &
+      sleep 1
+      curl -s -m 3 http://127.0.0.1:8080/ > /tmp/answer-body
+      cat /tmp/answer-body; echo
+    verify:
+      - type: file_matches
+        path: /tmp/answer-body
+        pattern: '^hello$'
+        describe: curl received the body — you served real HTTP with one printf
+
+  - id: s2
+    instruction: >-
+      Read the request that arrived, with the line endings made visible, and
+      save it to /tmp/answer-request.
+    hint: "`cat -A /tmp/req-8080` — `^M$` is a carriage return then a line feed."
+    walkthrough: |
+      cat -A /tmp/req-8080 > /tmp/answer-request
+      cat /tmp/answer-request
+    verify:
+      - type: file_matches
+        path: /tmp/answer-request
+        pattern: '^GET / HTTP/1\.1\^M\$'
+        describe: The request line, ending in CR LF
+      - type: file_matches
+        path: /tmp/answer-request
+        pattern: 'Host: 127\.0\.0\.1:8080\^M\$'
+        describe: And a Host header, which HTTP/1.1 requires
+      - type: file_matches
+        path: /tmp/answer-request
+        pattern: '^\^M\$'
+        describe: Ending with a bare CR LF — the blank line that terminates the headers
+
+  - id: s3
+    instruction: >-
+      Identify the four parts of that request. Write them to /tmp/answer-parts,
+      one per line, in order.
+    hint: >-
+      The first line is one part. The `Name: value` lines are another. Then
+      something with no content at all. Then, for some methods, one more.
+    walkthrough: |
+      {
+        echo "request line: GET / HTTP/1.1"
+        echo "headers: Host, User-Agent, Accept"
+        echo "blank line: a bare CRLF that ends the headers"
+        echo "body: absent, because GET has none"
+      } > /tmp/answer-parts
+      cat /tmp/answer-parts
+    verify:
+      - type: file_matches
+        path: /tmp/answer-parts
+        pattern: 'request line'
+        describe: The request line
+      - type: file_matches
+        path: /tmp/answer-parts
+        pattern: 'blank line'
+        describe: And the blank line, which is a part rather than formatting
+
+  - id: s4
+    instruction: >-
+      Confirm the blank line matters. Serve a response whose headers are
+      **not** terminated by a blank line, fetch it with a short timeout, and
+      save curl's exit status to /tmp/answer-noblank.
+    hint: >-
+      Send `HTTP/1.1 200 OK\r\nContent-Length: 5\r\n` and then the body, with no
+      empty line between them. Use `curl -m 3` so it cannot hang the lab.
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 5\r\nhello' \
+        | timeout 8 nc -l 127.0.0.1 8081 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -m 3 -o /dev/null http://127.0.0.1:8081/ 2>/dev/null
+      echo "rc=$?" > /tmp/answer-noblank
+      cat /tmp/answer-noblank
+    verify:
+      - type: command_exit
+        command: "grep -q '^rc=0$' /tmp/answer-noblank"
+        exit_code: 1
+        describe: curl did not succeed — without the blank line the headers never end
+
+  - id: s5
+    instruction: >-
+      Now the Host header. Serve one more response, fetch it with a **different**
+      Host header than the address you connected to, and save the captured
+      request to /tmp/answer-host.
+    hint: "`curl -H 'Host: shop.example.com' http://127.0.0.1:8082/`"
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok' \
+        | timeout 8 nc -l 127.0.0.1 8082 > /tmp/req-8082 2>/dev/null &
+      sleep 1
+      curl -s -m 3 -o /dev/null -H 'Host: shop.example.com' http://127.0.0.1:8082/
+      sleep 1
+      grep -i '^Host:' /tmp/req-8082 > /tmp/answer-host
+      cat /tmp/answer-host
+    verify:
+      - type: file_matches
+        path: /tmp/answer-host
+        pattern: 'Host: shop\.example\.com'
+        describe: The Host header says a site the connection never went to
+
+  - id: s6
+    instruction: >-
+      Explain the difference, in /tmp/answer-host-vs-address — what the address
+      decided and what the Host header decides.
+    hint: >-
+      One got the bytes to a machine. The other tells the server which of its
+      sites the request is for.
+    walkthrough: |
+      echo "the address and port decided which machine and which socket the connection reached, and the host header decides which site the server should answer as, which is why one address can serve hundreds of sites and why an ingress rule matching on host returns 404 when you connect by ip without setting it" > /tmp/answer-host-vs-address
+    verify:
+      - type: file_matches
+        path: /tmp/answer-host-vs-address
+        pattern: "site|virtual|which"
+        describe: You separated the routing decision from the connection
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-host-vs-address) -ge 15"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+  - id: s7
+    instruction: >-
+      Last one. Save curl's own view of an exchange — the request and response
+      headers it reports — to /tmp/answer-verbose, and note what the `>`, `<`
+      and `*` prefixes mean.
+    hint: "`curl -sv` and keep stderr. Serve one more response first."
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok' \
+        | timeout 8 nc -l 127.0.0.1 8083 >/dev/null 2>&1 &
+      sleep 1
+      curl -sv -m 3 http://127.0.0.1:8083/ > /dev/null 2> /tmp/answer-verbose
+      cat /tmp/answer-verbose
+    verify:
+      - type: file_matches
+        path: /tmp/answer-verbose
+        pattern: '^> GET / HTTP/1\.1'
+        describe: Lines starting with > are what curl sent
+      - type: file_matches
+        path: /tmp/answer-verbose
+        pattern: '^< HTTP/1\.1 200 OK'
+        describe: Lines starting with < are what came back
+
+solution: |
+  ```bash
+  printf 'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello' \
+    | nc -l 127.0.0.1 8080 > /tmp/req-8080 &
+  curl -s http://127.0.0.1:8080/          # hello
+  cat -A /tmp/req-8080
+  ```
+
+  **What you just did.**
+
+  You wrote an HTTP server. One `printf` is a complete, standards-compliant
+  response, and `curl` — a serious HTTP client — accepted it without complaint.
+  There is nothing else to the protocol at this level.
+
+  **The request, with its line endings visible:**
+
+  ```text
+  GET / HTTP/1.1^M$
+  Host: 127.0.0.1:8080^M$
+  User-Agent: curl/8.14.1^M$
+  Accept: */*^M$
+  ^M$
+  ```
+
+  Four parts:
+
+  1. **The request line** — method, target, version. Note that the target is a
+     path, not a URL: the hostname is not on this line.
+  2. **Headers**, one per line, `Name: value`.
+  3. **A blank line** — that last bare `^M$`. It is a part of the format, not
+     formatting.
+  4. **A body**, which a GET does not have.
+
+  **`^M$` is CR LF**, and HTTP requires both. The blank line that ends the
+  headers is therefore CRLF CRLF, and that four-byte sequence is what a server
+  scans for. Omitting it — which you did deliberately in step 4 — means the
+  headers never end, the server never begins the body, and the client waits
+  until its own timeout.
+
+  That failure is worth having produced. "It hangs" is not a network symptom
+  here; it is a framing bug, and the same shape recurs in the next lab.
+
+  **The Host header is not the address.** You connected to `127.0.0.1:8082` and
+  sent `Host: shop.example.com`, and the server received exactly that. The
+  address decided which machine and socket the bytes reached; `Host` decides
+  which *site* the server answers as.
+
+  This is the whole basis of virtual hosting, and it produces a specific
+  operational trap: testing an ingress by IP address sends `Host: 10.0.1.5`,
+  matches no rule, and gets a 404 from the ingress controller while your
+  application logs nothing at all. The test you meant is:
+
+  ```bash
+  curl -H 'Host: shop.example.com' http://10.0.1.5/
+  ```
+
+  And for HTTPS, `--resolve shop.example.com:443:10.0.1.5`, which sets the Host
+  header *and* the TLS SNI — `-H 'Host: …'` alone does not, so it fails on TLS.
+
+  **Reading `curl -v`:** `>` is what curl sent, `<` is what came back, and `*` is
+  curl's own commentary — DNS, connection reuse, TLS. Once those three prefixes
+  are automatic, `-v` output reads as a transcript rather than a wall of arrows.

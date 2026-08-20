@@ -1,0 +1,148 @@
+id: topic.http
+slug: http
+title: "HTTP: The Protocol You Will Debug Most"
+summary: >-
+  Almost everything you operate speaks HTTP, and almost nobody has seen it as
+  bytes. This topic reads and writes it by hand — the request line, the headers,
+  the blank line that ends them, and the surprisingly important question of how
+  a client knows when the body has finished.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.tcp-and-udp
+    hardness: required
+  - topic: topic.ports-and-sockets
+    hardness: required
+
+objectives:
+  - id: OBJ-A03.4.1
+    level: L1
+    verb: describe
+    statement: >-
+      Describe the shape of an HTTP request and response, and identify each part
+      in a raw exchange.
+    assessed_by: [quiz.q1, quiz.q2, lab.http-by-hand, exercise.e1]
+
+  - id: OBJ-A03.4.2
+    level: L1
+    verb: identify
+    statement: >-
+      Identify the status code classes, and say what each tells a client to do
+      next.
+    assessed_by: [quiz.q3, quiz.q4, lab.status-codes-and-redirects]
+
+  - id: OBJ-A03.4.3
+    level: L2
+    verb: trace
+    statement: >-
+      Trace a request through a redirect, and say what the client does at each
+      step.
+    assessed_by: [quiz.q5, quiz.q6, lab.status-codes-and-redirects, exercise.e2]
+
+  - id: OBJ-A03.4.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain the three ways a client can know where a response body ends, and
+      what happens when the framing is wrong.
+    assessed_by: [quiz.q7, quiz.q8, quiz.q9, lab.where-does-the-body-end, assessment.A]
+
+  - id: OBJ-A03.4.5
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish the Host header's role from the address the connection was
+      made to.
+    assessed_by: [quiz.q10, lab.http-by-hand, exercise.e3]
+
+  - id: OBJ-A03.4.6
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret a client's timing breakdown, and attribute latency to a specific
+      phase of the request.
+    assessed_by: [quiz.q11, quiz.q12, lab.four-broken-exchanges, exercise.e4]
+
+  - id: OBJ-A03.4.7
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what keep-alive changes, and why connection reuse dominates HTTP
+      performance.
+    assessed_by: [quiz.q13, lab.where-does-the-body-end, assessment.B]
+
+  - id: OBJ-A03.4.8
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose an HTTP failure from the raw exchange rather than from the
+      application's logs.
+    assessed_by: [quiz.q14, quiz.q15, lab.four-broken-exchanges, troubleshooting.the-request-that-hangs, troubleshooting.the-404-that-should-be-a-200, assessment.C]
+
+terminology:
+  - term: request line
+    definition: >-
+      The first line of a request — method, target and version, as in
+      `GET /path HTTP/1.1`.
+  - term: status line
+    definition: >-
+      The first line of a response — version, status code and reason phrase, as
+      in `HTTP/1.1 404 Not Found`. The reason phrase is decorative; only the
+      code matters.
+  - term: header
+    definition: >-
+      A `Name: value` line. Names are case-insensitive, order is not significant,
+      and the set of them ends with a blank line.
+  - term: CRLF
+    definition: >-
+      Carriage return followed by line feed — the line ending HTTP requires. The
+      blank line that ends the headers is therefore CRLF CRLF.
+  - term: Host header
+    definition: >-
+      Which site the request is for, as distinct from which machine the
+      connection reached. Mandatory in HTTP/1.1, and what makes virtual hosting
+      possible.
+  - term: Content-Length
+    definition: >-
+      How many bytes of body follow. The client reads exactly that many — which
+      is why a wrong value hangs or truncates rather than erroring.
+  - term: chunked transfer encoding
+    definition: >-
+      A body sent as size-prefixed chunks ending with a zero-size chunk. It
+      exists so a response can begin before its length is known.
+  - term: keep-alive
+    definition: >-
+      Reusing one TCP connection for several requests. The default in HTTP/1.1,
+      and the single largest performance property of the protocol.
+  - term: idempotent
+    definition: >-
+      A method that can safely be repeated — GET, HEAD, PUT, DELETE. It is what
+      makes automatic retries safe, and why POST is usually excluded from them.
+  - term: 4xx
+    definition: >-
+      The client sent something wrong. Retrying the same request unchanged will
+      not help.
+  - term: 5xx
+    definition: >-
+      The server failed to handle a request that may have been fine. Retrying
+      may help, which is why the split matters for retry policy.
+  - term: 301 and 302
+    definition: >-
+      Permanent and temporary redirection. A 301 may be cached forever by
+      clients and proxies, which makes it hard to take back.
+  - term: TTFB
+    definition: >-
+      Time to first byte — how long after the request the response started
+      arriving. Separating it from connect time and transfer time is most of
+      HTTP latency debugging.
+
+foreshadows:
+  - "B12's HTTP/1.1 vs 2 vs 3 comparison builds on the framing and keep-alive properties here."
+  - "C15's health checks are HTTP requests, and they fail in exactly the ways this topic catalogues."
+  - "E29's Ingress routes on the Host header and the path, both of which are read from the request line and headers."
+  - "F34 alerts on status code rates and latency percentiles, which are aggregates over the exchanges here."
+
+tags: [networking, http, protocols, curl, debugging, fundamentals]

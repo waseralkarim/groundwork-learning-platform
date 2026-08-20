@@ -1,0 +1,9 @@
+graph TD
+    LIMIT["memory.max · the limit"] --- CUR["memory.current · what is charged"]
+    CUR --> ANON["anon · heap and stack<br/>reclaimable only by swapping"]
+    CUR --> FILE["file · page cache<br/>dropped on demand, costs a re-read"]
+    CUR --> KERN["kernel · slab, sockets, page tables"]
+    ANON -->|"cannot be dropped"| PRESSURE{"Over the limit?"}
+    FILE -->|"reclaimed first, silently"| PRESSURE
+    PRESSURE -->|"reclaim succeeded"| OK["Carries on, slower"]
+    PRESSURE -->|"nothing left to reclaim"| OOM["OOM kill · SIGKILL, no warning"]

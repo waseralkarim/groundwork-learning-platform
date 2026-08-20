@@ -1,0 +1,20 @@
+flowchart TB
+    IN["the line you typed<br/><code>argc $f *.log</code>"] --> B["1 · brace expansion<br/><i>{1..3} → 1 2 3</i><br/>happens BEFORE variables exist"]
+    B --> T["2 · tilde expansion<br/><i>~ → /home/you</i>"]
+    T --> P["3 · parameter expansion<br/><i>$f → a file.log</i>"]
+    P --> C["4 · command substitution<br/><i>$(cmd) → its output, trailing newlines stripped</i>"]
+    C --> A["5 · arithmetic expansion<br/><i>$((1+1)) → 2</i>"]
+    A --> W["6 · WORD SPLITTING<br/><b>on the results of 3, 4 and 5 only</b><br/><i>a file.log → [a] [file.log]</i>"]
+    W --> G["7 · globbing<br/><i>*.log → the matching filenames</i><br/><b>results are never re-split</b>"]
+    G --> Q["8 · quote removal<br/><i>the quotes you typed are deleted</i>"]
+    Q --> OUT["the argument list execve() receives"]
+
+    DQ["double quotes suppress<br/>6 and 7 only"] -.-> W
+    DQ -.-> G
+    SQ["single quotes suppress<br/>everything from 1 to 7"] -.-> B
+    SQ -.-> G
+
+    style W fill:#fdecea,stroke:#c0392b
+    style G fill:#fdf6e3,stroke:#b58900
+    style DQ fill:#e8f4ea,stroke:#2f7d4f
+    style SQ fill:#e8f0fb,stroke:#3b6ea5

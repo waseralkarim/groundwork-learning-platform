@@ -1,0 +1,288 @@
+id: troubleshooting.the-job-that-only-runs-by-hand
+topic: topic.environment-and-shell-startup
+title: The backup that ran green for eight months and wrote nothing
+level: L2
+objectives: [OBJ-B06.4.4, OBJ-B06.4.7]
+reveal_policy: progressive
+
+situation: >-
+  A database backup runs nightly from cron. The monitoring check that watches it
+  has been green for eight months.
+
+
+  A developer asks for a restore from three weeks ago. The backup directory
+  contains one file, dated eight months and two days ago — the day the job was
+  set up and tested.
+
+
+  The engineer who wrote it runs the script by hand now. It works, and produces a
+  correct backup in about four minutes.
+
+
+  They run it again with `sudo -u backup`, the account cron uses. It works.
+
+
+  The cron entry is present, the times are right, and `/var/log/syslog` shows
+  cron starting the job every night without complaint.
+
+
+  Work out why eight months of nightly runs produced nothing, and why the
+  monitoring never noticed.
+
+symptoms:
+  - "Nightly cron job produced exactly one backup, on the day it was tested"
+  - "The script works by hand, including as the cron user"
+  - "cron logs show the job starting every night"
+  - "The monitoring check has been green throughout"
+  - "No error appears in any log"
+
+artifacts:
+  - type: config
+    label: The crontab
+    content: |
+      # crontab -l -u backup
+      0 2 * * * /opt/backup/run-backup.sh >> /var/log/backup/backup.log 2>&1
+
+  - type: config
+    label: The script, abridged
+    content: |
+      #!/bin/bash
+      # /opt/backup/run-backup.sh
+
+      DEST="${BACKUP_DEST}/db-$(date +%F).sql.gz"
+
+      pg_dump --no-owner "$DATABASE_URL" | gzip > "$DEST"
+
+      aws s3 cp "$DEST" "s3://acme-backups/db/" --only-show-errors
+
+      echo "backup complete: $DEST"
+
+  - type: log
+    label: /var/log/backup/backup.log, every night for eight months
+    content: |
+      /opt/backup/run-backup.sh: line 6: pg_dump: command not found
+      /opt/backup/run-backup.sh: line 8: aws: command not found
+      backup complete: /db-2026-08-17.sql.gz
+
+  - type: command_output
+    label: Where the tools actually live
+    content: |
+      $ sudo -u backup bash -lc 'command -v pg_dump aws'
+      /usr/local/pgsql/bin/pg_dump
+      /usr/local/bin/aws
+
+      $ sudo -u backup bash -c 'command -v pg_dump aws'
+      $
+      # (nothing)
+
+  - type: config
+    label: The backup user's dotfiles
+    content: |
+      # ~backup/.profile — last modified the day the job was set up
+      export PATH="$PATH:/usr/local/pgsql/bin"
+      export BACKUP_DEST=/srv/backups
+      export DATABASE_URL=postgres://backup@db.internal/production
+
+  - type: config
+    label: The monitoring check
+    content: |
+      # checks/backup.yaml
+      name: nightly-backup
+      command: /opt/backup/run-backup.sh
+      expect_exit_code: 0
+
+  - type: command_output
+    label: What is in the backup directory
+    content: |
+      $ ls -la /srv/backups/
+      total 4194304
+      -rw-r--r-- 1 backup backup 4294967296 Dec 18  2025 db-2025-12-18.sql.gz
+
+      $ ls -la / | grep 'db-'
+      -rw-r--r-- 1 backup backup            0 Aug 17 02:00 db-2026-08-17.sql.gz
+
+diagnostic_questions:
+  - "Where did tonight's file actually get written, and what does that path tell you?"
+  - "Which shell does cron use, and which startup files does it read?"
+  - "The script has no `set -u`. What happens to `${BACKUP_DEST}` when it is unset?"
+  - "Why did the script exit 0 despite two `command not found` errors?"
+  - "What was the monitoring check actually testing?"
+
+hints:
+  - "Compare `ls /srv/backups` with `ls /` and read the filenames."
+  - "Read the `bash -lc` and `bash -c` outputs against each other."
+  - "Work out what `\"${BACKUP_DEST}/db-...\"` expands to if BACKUP_DEST is empty."
+  - "Look at what the last command in the script is, and what a pipeline's exit status is."
+
+root_cause: >-
+  **cron reads no startup files, so none of the backup user's `~/.profile`
+  settings existed — and every one of the resulting failures was silent.**
+
+
+  Three faults compound, and each one hides the next.
+
+
+  **PATH.** `pg_dump` lives in `/usr/local/pgsql/bin`, added to PATH by
+  `~backup/.profile`. Cron runs jobs from a bare environment with a minimal PATH
+  — typically `/usr/bin:/bin` — and reads no dotfile of any kind. So `pg_dump`
+  and `aws` are not found. The artifacts show this precisely: `bash -lc` finds
+  both because it is a login shell that reads `~/.profile`; `bash -c` finds
+  neither.
+
+
+  **The unset variable.** `BACKUP_DEST` also came from `~/.profile`, so under
+  cron it is empty. The script has no `set -u`, so `"${BACKUP_DEST}/db-$(date
+  +%F).sql.gz"` expands to **`/db-2026-08-17.sql.gz`** — the path collapses to the
+  root directory. That is the zero-byte file in `/`, and it is why nothing ever
+  appeared in `/srv/backups`.
+
+
+  **The exit code.** `pg_dump | gzip > "$DEST"` — `pg_dump` fails, but the exit
+  status of a pipeline is the status of its **last** command, and `gzip`
+  succeeded in writing an empty file. Then `aws` fails and its status is
+  discarded too. The final `echo` succeeds, so **the script exits 0**, and it
+  prints `backup complete` with the wrong path in it.
+
+
+  **Why monitoring was green.** The check runs the script and asserts
+  `expect_exit_code: 0`. The script exits 0 every night. The check was never
+  testing whether a backup existed — it was testing whether the script reached
+  its last line, which it did, faithfully, for eight months.
+
+
+  **Why it works by hand, including as the backup user.** `sudo -u backup
+  bash -lc ...` is a *login* shell and reads `~/.profile`. So the engineer's
+  reproduction attempt used a different environment from cron's and confirmed
+  the wrong thing — which is the specific trap: testing "as the right user" is
+  not the same as testing "the way it runs".
+
+
+  The one successful backup is dated the day the job was set up, when somebody
+  ran it in their own shell to check it worked.
+
+method: >-
+  **1. Read the filename in the log rather than the message.**
+  `backup complete: /db-2026-08-17.sql.gz` — a leading slash and no directory.
+  That path is `${BACKUP_DEST}` being empty, stated plainly, in a line everybody
+  read as a success message for eight months.
+
+
+  **2. Look for the output where the path says it went**, not where you expect
+  it. `ls /` finds a zero-byte `db-2026-08-17.sql.gz`. The job has been producing
+  a file every night, in the wrong place, with nothing in it.
+
+
+  **3. Ask which shell the scheduler uses and what it reads.** Cron: no login
+  shell, no dotfiles, minimal PATH. Everything in `~/.profile` is invisible to it
+  — and that file holds both the PATH entry and the destination.
+
+
+  **4. Reproduce the environment, not the user.** `sudo -u backup bash -lc` is a
+  *login* shell and reads the dotfile; that is why the reproduction succeeded and
+  proved nothing. The honest reproduction is:
+
+
+  ```bash
+  sudo -u backup env -i PATH=/usr/bin:/bin HOME=~backup bash /opt/backup/run-backup.sh
+  ```
+
+
+  **5. Ask why a failing command produced exit 0.** A pipeline's status is its
+  last command's, so `pg_dump` failing is invisible behind a successful `gzip`.
+  Without `set -o pipefail` this is a silent data-loss bug in a great many backup
+  scripts.
+
+
+  **6. Ask what the monitoring check actually asserts.** It asserted the script
+  exits 0. Nothing anywhere asserted that a backup **exists**, has a plausible
+  **size**, or is **recent** — so the check could only ever have detected the
+  script crashing.
+
+
+  The habit: **a job that has never been run without a human's environment has
+  not been tested.** And a check that watches the runner rather than the result
+  is watching the wrong thing.
+
+resolution: >-
+  **Immediately:** take a backup by hand, verify a restore from it, and only then
+  work on the job. Eight months of unnoticed absence is a data-loss incident that
+  has already happened; whether it is also a data-loss *event* depends on
+  something nobody has checked yet.
+
+
+  **Then make the script refuse rather than guess:**
+
+
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+
+  : "${BACKUP_DEST:?BACKUP_DEST must be set (see the crontab)}"
+  : "${DATABASE_URL:?DATABASE_URL must be set}"
+
+  PATH=/usr/local/pgsql/bin:/usr/local/bin:/usr/bin:/bin
+  export PATH
+
+  for cmd in pg_dump gzip aws; do
+    command -v "$cmd" >/dev/null || { echo "missing command: $cmd" >&2; exit 1; }
+  done
+
+  DEST="${BACKUP_DEST}/db-$(date +%F).sql.gz"
+  pg_dump --no-owner "$DATABASE_URL" | gzip > "$DEST"
+
+  # assert the artifact before claiming success
+  [ -s "$DEST" ] || { echo "backup is empty: $DEST" >&2; exit 1; }
+  [ "$(stat -c %s "$DEST")" -gt 100000000 ] || { echo "backup implausibly small" >&2; exit 1; }
+
+  aws s3 cp "$DEST" "s3://acme-backups/db/" --only-show-errors
+  echo "backup complete: $DEST ($(stat -c %s "$DEST") bytes)"
+  ```
+
+
+  `set -o pipefail` — included in `set -euo pipefail` — is the line that would
+  have caught this on night one, because `pg_dump` failing would have failed the
+  pipeline.
+
+
+  **Declare the environment where cron can see it**, not in a dotfile:
+
+
+  ```text
+  PATH=/usr/local/pgsql/bin:/usr/local/bin:/usr/bin:/bin
+  BACKUP_DEST=/srv/backups
+  MAILTO=platform-alerts@example.com
+
+  0 2 * * * /opt/backup/run-backup.sh >> /var/log/backup/backup.log 2>&1
+  ```
+
+
+  `DATABASE_URL` contains a credential and should not be in a crontab — it goes
+  in a file the script reads, mode `0400`, owned by `backup`.
+
+
+  **Fix the monitoring to check the result, not the runner:**
+
+
+  ```yaml
+  name: recent-backup-exists
+  command: |
+    test -n "$(find /srv/backups -name 'db-*.sql.gz' -mtime -1 -size +100M)"
+  ```
+
+
+  A check that runs the job and asserts exit 0 tests the job's own opinion of
+  itself. This one tests whether a recent, plausibly-sized backup exists, which
+  is the thing anybody actually cares about — and it would have alerted on day
+  two.
+
+
+  **And add a restore test.** A backup nobody has restored is a hypothesis. A
+  monthly automated restore into a scratch database is the only check that
+  catches corruption, schema drift and empty files at once.
+
+
+  **For the postmortem:** cron behaved correctly, the script behaved as written,
+  the monitoring did what it was configured to do, and the organisation had no
+  database backups for eight months. Every component reported success. The
+  environment the job needed lived in one user's `~/.profile` — a file cron has
+  never read and was never going to.

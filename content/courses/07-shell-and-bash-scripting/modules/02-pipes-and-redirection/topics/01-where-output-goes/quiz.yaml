@@ -1,0 +1,468 @@
+id: quiz.where-output-goes
+topic: topic.where-output-goes
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.2.1]
+    stem: Why do stdout and stderr exist as separate descriptors?
+    options:
+      - id: a
+        text: >-
+          So errors stay out of the data stream — `cmd | next` is not fed error
+          text, and `cmd > file` captures results while you still see complaints
+        correct: true
+      - id: b
+        text: So the shell can colour errors differently
+        note: >-
+          Colouring is a terminal convention layered on top; the separation
+          exists whether or not anything is coloured.
+      - id: c
+        text: Because stderr is unbuffered and stdout is not
+        note: >-
+          A real and separate property. It is a consequence of the design, not
+          the reason for it.
+      - id: d
+        text: For historical compatibility with teletypes
+        note: >-
+          The split is a deliberate design decision that remains useful in every
+          pipeline you write.
+    explanation: >-
+      The split is what lets you redirect results without losing diagnostics, and
+      pipe data without a failure message being processed as a record. A program
+      that writes errors to stdout has broken that contract, and the symptom is
+      confusing — error text appearing inside a data file.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.2.1]
+    stem: >-
+      How do you find out which file a running daemon has open as its stdout?
+    options:
+      - id: a
+        text: "`readlink /proc/<pid>/fd/1`"
+        correct: true
+      - id: b
+        text: "`ps -o stdout= -p <pid>`"
+        note: >-
+          `ps` has no such field. Descriptors live in `/proc`.
+      - id: c
+        text: Read the unit file or the command line that started it
+        note: >-
+          That tells you what was *intended*. `/proc` tells you what is actually
+          open now, which can differ.
+      - id: d
+        text: "`strace -p <pid>` and wait for a write"
+        note: >-
+          It works and it is far more invasive than reading a symlink.
+    explanation: >-
+      `/proc/<pid>/fd/` holds one symlink per open descriptor. It answers "where
+      is this process actually writing" for something already running — including
+      the case where the target shows as `(deleted)`, which explains a disk that
+      is full with nothing on it.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.2.2]
+    stem: What does the shell do to run `a | b`?
+    options:
+      - id: a
+        text: >-
+          Creates a pipe and forks a process for each stage, running them at the
+          same time
+        correct: true
+      - id: b
+        text: Runs `a` to completion, stores its output, then runs `b`
+        note: >-
+          That would need to hold the entire output in memory. Pipelines can
+          process files larger than RAM precisely because both run at once.
+      - id: c
+        text: Runs both in the current shell, connected by a buffer
+        note: >-
+          Each stage is a separate process — which is why a variable set in one
+          is invisible to the others.
+      - id: d
+        text: Writes `a`'s output to a temporary file that `b` reads
+        note: >-
+          Some shells on other platforms did this. On Linux it is a kernel pipe
+          with no file involved.
+    explanation: >-
+      Both stages run concurrently, connected by a kernel buffer; the writer
+      blocks when the buffer is full. That concurrency is what makes pipelines
+      efficient, and the separate processes are what make a counter incremented
+      inside `cmd | while read` vanish when the loop ends.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.2.2]
+    stem: >-
+      Why is `count` zero after
+      `printf 'a\nb\nc\n' | while read l; do count=$((count+1)); done`?
+    options:
+      - id: a
+        text: >-
+          The loop ran in a subshell; it incremented that process's copy, which
+          exited
+        correct: true
+      - id: b
+        text: "`read` does not set the variable the loop body sees"
+        note: >-
+          `read` works correctly and the loop body runs three times. The
+          increments happen — in another process.
+      - id: c
+        text: The pipe delivered the lines after the loop had finished
+        note: >-
+          The loop consumes as data arrives; nothing is late.
+      - id: d
+        text: Arithmetic expansion does not work inside a `while` loop
+        note: >-
+          It works anywhere. The scope is the issue, not the arithmetic.
+    explanation: >-
+      Nothing was lost or overwritten — the parent's `count` was simply never
+      touched. `while read l; do ...; done < <(printf ...)` avoids the pipeline
+      entirely and gives 3, which is the general fix; `shopt -s lastpipe` is the
+      bash-specific alternative and needs job control off.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.3]
+    stem: "What does `cmd 2>&1 > file` do?"
+    options:
+      - id: a
+        text: Sends stdout to the file and stderr to wherever stdout pointed before — usually the terminal
+        correct: true
+      - id: b
+        text: Sends both stdout and stderr to the file
+        note: >-
+          That is `cmd > file 2>&1`. The order is the whole difference.
+      - id: c
+        text: Sends stderr to the file and stdout to the terminal
+        note: >-
+          Backwards. `> file` applies to descriptor 1.
+      - id: d
+        text: The same as `cmd &> file`
+        note: >-
+          `&>` is shorthand for the *correct* order, so it captures both.
+    explanation: >-
+      `2>&1` makes descriptor 2 a copy of **wherever descriptor 1 points at that
+      moment** — it duplicates the target, not the name. Applied first, it copies
+      the terminal; the later `> file` moves descriptor 1 and leaves 2 behind.
+      This is the most common redirection bug and it looks correct.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.3]
+    stem: >-
+      A cron job is configured `job.sh 2>&1 >> /var/log/job.log`. The log looks
+      clean and the job is failing. Where are the errors?
+    options:
+      - id: a
+        text: Going to cron's stdout, so they arrive by mail or in the system log — not the file
+        correct: true
+      - id: b
+        text: Being discarded, because `2>&1` before a redirect throws them away
+        note: >-
+          Nothing is discarded; descriptor 2 still points at whatever stdout was
+          when the line was parsed.
+      - id: c
+        text: In the log file, but written before the stdout lines
+        note: >-
+          They are not in the file at all — that is why it looks clean.
+      - id: d
+        text: Buffered and flushed only when the job exits
+        note: >-
+          A real phenomenon and a different one; here the errors never reach the
+          file regardless of buffering.
+    explanation: >-
+      A clean log for a failing job is the signature of this bug. `2>&1` was
+      applied while descriptor 1 still pointed at cron's stdout, so stderr
+      followed it there — cron mails that output or drops it depending on
+      `MAILTO`. Writing `>> /var/log/job.log 2>&1` captures both, and separating
+      into `.out` and `.err` files is better still.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.3]
+    stem: >-
+      You want a progress message on the terminal while a block's bulk output
+      goes to a file. What is the idiom?
+    options:
+      - id: a
+        text: "`exec 3>&1` before the block, then `echo msg >&3` inside it"
+        correct: true
+      - id: b
+        text: "`echo msg > /dev/tty` inside the block"
+        note: >-
+          It works interactively and fails wherever there is no controlling
+          terminal — cron, systemd, a container.
+      - id: c
+        text: "`echo msg >&2` inside the block"
+        note: >-
+          Only if stderr was not also redirected — and in `> file 2>&1` it was.
+      - id: d
+        text: Run the block twice, once redirected and once not
+        note: >-
+          Doubles the work and any side effects.
+    explanation: >-
+      `exec 3>&1` saves a copy of the current stdout, so writes to descriptor 3
+      bypass a later redirection of descriptor 1. This is the **save / redirect /
+      restore** pattern, and it is how a script logs a section of its own output
+      without wrapping every command individually.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.4]
+    stem: "Why does `sort data.txt > data.txt` leave an empty file?"
+    options:
+      - id: a
+        text: The shell truncates the file when setting up the redirection, before sort starts
+        correct: true
+      - id: b
+        text: "`sort` reads the whole file, then overwrites it while writing"
+        note: >-
+          `sort` never got to read anything — the file was already empty when it
+          opened it.
+      - id: c
+        text: The two operations race, so the result is unpredictable
+        note: >-
+          It is entirely deterministic: the truncation always happens first.
+      - id: d
+        text: "`sort` refuses to read and write the same file, and exits"
+        note: >-
+          `sort` exits 0 and says nothing. `grep` does warn — and the file is
+          destroyed either way.
+    explanation: >-
+      Redirections are set up **before** the command runs, so the order is:
+      truncate, start `sort`, `sort` finds nothing. GNU `grep` detects this case
+      and warns, `sort` does not, and in both cases the data is already gone. Use
+      `cmd file > file.tmp && mv file.tmp file` — the `&&` matters, because
+      without it a failed command still renames a truncated temp file over the
+      original.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.4]
+    stem: What does `noclobber` protect you from?
+    options:
+      - id: a
+        text: The shell's own `>` overwriting an existing file — and nothing else
+        correct: true
+      - id: b
+        text: Any command overwriting any file
+        note: >-
+          It is a shell option. A program opening a file itself is unaffected,
+          including `tee`.
+      - id: c
+        text: Both `>` and `>>` writing to existing files
+        note: >-
+          `>>` appends and is not restricted.
+      - id: d
+        text: Accidental `rm` of a file that is open
+        note: >-
+          Unrelated — it governs redirection only.
+    explanation: >-
+      Useful interactively, poor as a script-wide policy: it changes the meaning
+      of every `>` in everything you source, and it cannot see the case that
+      matters most — a program opening the file itself. `>|` overrides it for one
+      redirection. In scripts, prefer the explicit temp-file-and-rename pattern.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.5]
+    stem: "What is the exit status of `false | true`?"
+    options:
+      - id: a
+        text: 0 — a pipeline reports its last command's status
+        correct: true
+      - id: b
+        text: 1 — any failing stage fails the pipeline
+        note: >-
+          Only with `set -o pipefail`, which is off by default.
+      - id: c
+        text: 1 — the first command's status wins
+        note: >-
+          The *last* command's status is used, not the first.
+      - id: d
+        text: Undefined; it depends on timing
+        note: >-
+          Entirely deterministic.
+    explanation: >-
+      This is why `pg_dump | gzip > backup.gz` can report success when `pg_dump`
+      failed — `gzip` succeeded in compressing nothing. `set -o pipefail` makes
+      the status the last non-zero one, and `"${PIPESTATUS[@]}"` shows every
+      stage so you can say **which** one failed.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.5]
+    stem: >-
+      With `set -euo pipefail`, why might `producer | head -20` abort your
+      script?
+    options:
+      - id: a
+        text: >-
+          `head` exits after 20 lines, the producer is killed by SIGPIPE and exits
+          141, and `pipefail` propagates that
+        correct: true
+      - id: b
+        text: "`head` returns non-zero when its input has more lines than requested"
+        note: >-
+          `head` exits 0. The non-zero status belongs to the producer.
+      - id: c
+        text: "`set -u` treats the truncated input as an unset variable"
+        note: >-
+          Unrelated — `-u` is about variables.
+      - id: d
+        text: Because `pipefail` is incompatible with `head`
+        note: >-
+          They are compatible; the interaction is just surprising and needs a
+          deliberate exemption.
+    explanation: >-
+      141 is `128 + 13` — SIGPIPE. It is the normal, desirable mechanism that
+      makes `find / | head` cheap instead of a full filesystem walk. The fix is
+      per-line and deserves a comment, because a bare `|| true` reads as
+      sloppiness: `producer | head -20 || true  # SIGPIPE on the producer is
+      expected`.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.6]
+    stem: >-
+      `tail -f app.log | grep ERROR` shows nothing for minutes, then a burst.
+      Why?
+    options:
+      - id: a
+        text: >-
+          `grep`'s stdout is a pipe, so stdio block-buffers and holds lines until
+          4–8 KB accumulate
+        correct: true
+      - id: b
+        text: "`tail -f` polls the file and only notices changes periodically"
+        note: >-
+          `tail -f` follows promptly. The delay is downstream.
+      - id: c
+        text: The log is being written with buffering, so the lines are not there yet
+        note: >-
+          Possible in general, and the classic version of this problem is
+          `grep`'s own output buffering.
+      - id: d
+        text: "`grep` batches matches for efficiency and flushes on a timer"
+        note: >-
+          There is no timer. The C library flushes when the buffer fills or the
+          program exits.
+    explanation: >-
+      The C library picks line buffering when stdout is a terminal and block
+      buffering when it is a pipe — the same program, different behaviour based
+      on what is downstream. `grep --line-buffered` or `stdbuf -oL` fixes it. It
+      is also why it "works when I run it by hand": interactively `grep`'s stdout
+      is a terminal, so **every attempt to observe the bug removes it**.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.6]
+    stem: >-
+      Why is a timestamp added by a log shipper less trustworthy than one the
+      script printed itself?
+    options:
+      - id: a
+        text: >-
+          Buffering means a line can be written long after the event, so the
+          shipper records the flush time
+        correct: true
+      - id: b
+        text: Log shippers use a different clock source
+        note: >-
+          They generally use the same system clock.
+      - id: c
+        text: Shippers batch and reorder lines
+        note: >-
+          Reordering within a stream is rare; late arrival due to buffering is
+          routine.
+      - id: d
+        text: It is not — both are equally accurate
+        note: >-
+          They differ by exactly the buffering delay, which can be minutes for a
+          quiet log.
+    explanation: >-
+      The event time and the write time are different quantities, and buffering
+      separates them. `date -Is` inside the script records when something
+      happened; anything downstream can only record when the bytes arrived. On a
+      job that emits little output, that gap can be the whole run.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.7]
+    stem: >-
+      You are writing a here-doc containing an awk program and a password with a
+      `$` in it. Which form do you use?
+    options:
+      - id: a
+        text: "`<<'EOT'` — a quoted delimiter, so nothing is expanded"
+        correct: true
+      - id: b
+        text: "`<<EOT`, escaping each `$` with a backslash"
+        note: >-
+          Works and is fragile — one missed escape silently changes the content,
+          and awk programs are full of `$`.
+      - id: c
+        text: "`<<<`, a here-string"
+        note: >-
+          A here-string is one line and still expands variables.
+      - id: d
+        text: "`<<-EOT`, which disables expansion and allows indentation"
+        note: >-
+          `<<-` only strips leading **tabs**. It has no effect on expansion.
+    explanation: >-
+      Quoting the delimiter is the distinction that matters: `<<EOT` expands
+      `$var` and `$(cmd)` inside the body, `<<'EOT'` expands nothing. Use the
+      quoted form by default — an awk program, a regex or a password containing
+      `$` is silently mangled otherwise. And note `<<-` strips tabs only, which
+      is a nuisance in a file indented with spaces.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.2.8]
+    stem: >-
+      Which crontab line gives you the most to work with when a job fails
+      overnight?
+    options:
+      - id: a
+        text: "`job.sh >> /var/log/job.out 2>> /var/log/job.err`"
+        correct: true
+      - id: b
+        text: "`job.sh >> /var/log/job.log 2>&1`"
+        note: >-
+          Captures everything and merges two questions — "did it produce
+          results" and "did it complain" — into one stream permanently.
+      - id: c
+        text: "`job.sh > /var/log/job.log 2>&1`"
+        note: >-
+          Also merged, and `>` keeps only the most recent run — usually not the
+          one you need.
+      - id: d
+        text: "`job.sh 2>&1 >> /var/log/job.log`"
+        note: >-
+          The ordering bug: errors go to cron's stdout and the log looks clean
+          while the job fails.
+    explanation: >-
+      Separate files keep "did it produce results" and "did it complain"
+      separately answerable at 08:00, and `>>` preserves history across runs. Add
+      `date -Is` timestamps inside the script — because buffering means the write
+      time is not the event time — plus rotation, since `>>` without it is a
+      disk-full incident that simply has not happened yet.

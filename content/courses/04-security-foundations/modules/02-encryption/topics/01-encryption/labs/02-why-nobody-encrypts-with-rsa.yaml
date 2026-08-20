@@ -1,0 +1,305 @@
+id: lab.why-nobody-encrypts-with-rsa
+topic: topic.encryption
+title: Find RSA's ceiling, then build what everyone builds instead
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-A04.2.3, OBJ-A04.2.4]
+
+intro: >-
+  Asymmetric encryption solves key distribution, which is the hard part. It pays
+  for that with two limits that are much harsher than people expect, and you are
+  going to find both by hitting them.
+
+
+  Then you will build the design every real system uses to work around them —
+  four commands — and finish with the modern alternative, where two parties agree
+  a shared secret without one ever being sent.
+
+setup:
+  - /opt/lab/seed-encryption.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Generate an RSA-2048 key pair and find the exact largest payload its public
+      key will encrypt. Save the boundary and the error to /tmp/answer-limit.
+    hint: >-
+      Try encrypting files of increasing size until it refuses, then narrow down.
+      The answer is somewhere between 200 and 256 bytes.
+    walkthrough: |
+      cd /tmp
+      openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out rsa.key 2>/dev/null
+      openssl pkey -in rsa.key -pubout -out rsa.pub 2>/dev/null
+      {
+        for n in 200 240 245 246 250 256; do
+          head -c $n /dev/urandom > probe.bin
+          if openssl pkeyutl -encrypt -pubin -inkey rsa.pub -in probe.bin -out /dev/null 2>/dev/null; then
+            echo "$n bytes: OK"
+          else
+            echo "$n bytes: REFUSED"
+          fi
+        done
+        echo
+        echo "the error at the boundary:"
+        head -c 246 /dev/urandom > probe.bin
+        openssl pkeyutl -encrypt -pubin -inkey rsa.pub -in probe.bin -out /dev/null 2>&1 | tail -1
+        echo
+        echo "largest accepted: 245 bytes. the modulus is 2048 bits = 256 bytes, and pkcs#1 padding takes 11 of them. this is a hard refusal, not a performance warning."
+      } > /tmp/answer-limit
+      cat /tmp/answer-limit
+    verify:
+      - type: file_matches
+        path: /tmp/answer-limit
+        pattern: "245 bytes: OK"
+        describe: 245 bytes was accepted
+      - type: file_matches
+        path: /tmp/answer-limit
+        pattern: "246 bytes: REFUSED"
+        describe: And 246 was refused — the boundary is exact
+      - type: file_matches
+        path: /tmp/answer-limit
+        pattern: "(?i)too large"
+        describe: And you captured the error that says why
+
+  - id: s2
+    instruction: >-
+      Measure the speed of both kinds. Get AES-256-CBC throughput and RSA-2048
+      operations per second, and save both with the ratio to /tmp/answer-speed.
+    hint: >-
+      `openssl speed -seconds 3 aes-256-cbc` and `openssl speed -seconds 3
+      rsa2048`. For RSA, read the private-key operation rate — sign or decaps —
+      not the public one, and note the difference between them.
+    walkthrough: |
+      cd /tmp
+      aes=$(openssl speed -seconds 3 aes-256-cbc 2>/dev/null | awk '/^aes-256-cbc/{print $NF}' | sed 's/k$//')
+      openssl speed -seconds 3 rsa2048 2>/dev/null > rsa.out
+      {
+        echo "AES-256-CBC at 16KB blocks: ${aes}k bytes/sec"
+        echo
+        echo "RSA-2048, raw openssl speed output:"
+        grep rsa2048 rsa.out
+        echo
+        sign=$(awk '/rsa2048/ && NF>=7 {print $(NF-1)}' rsa.out | tail -1)
+        echo "the private-key operations (sign, decaps) are the slow ones."
+        echo "the public-key operations (verify, encaps) are roughly thirty times faster - anyone who benchmarks only verification comes away with a badly wrong idea of what rsa costs."
+        echo
+        echo "aes moves over a gigabyte a second. rsa does a couple of thousand private-key operations a second, each carrying at most 245 bytes."
+      } > /tmp/answer-speed
+      cat /tmp/answer-speed
+    verify:
+      - type: file_matches
+        path: /tmp/answer-speed
+        pattern: "AES-256-CBC at 16KB blocks: [0-9]+"
+        describe: You measured symmetric throughput
+      - type: command_exit
+        command: "grep -q 'rsa2048' /tmp/answer-speed"
+        exit_code: 0
+        describe: And captured RSA's operation rates
+      - type: file_matches
+        path: /tmp/answer-speed
+        pattern: "private-key operations"
+        describe: And distinguished the slow private-key side from the fast public one
+
+  - id: s3
+    instruction: >-
+      Turn those two numbers into an argument. Compute how long RSA would take to
+      encrypt a 1 GB file at 245 bytes per operation, against AES doing the same
+      file, and save the comparison to /tmp/answer-why-not.
+    hint: >-
+      A gigabyte divided by 245 gives the number of RSA operations needed. Divide
+      by the operations per second. Compare against a gigabyte divided by the AES
+      throughput.
+    walkthrough: |
+      cd /tmp
+      aes_kb=$(sed -n 's/AES-256-CBC at 16KB blocks: \([0-9]*\).*/\1/p' /tmp/answer-speed)
+      aes_bytes=$(( aes_kb * 1000 ))
+      rsa_sign=$(awk '/rsa2048/{print $(NF-1)}' rsa.out | tail -1)
+      rsa_ops=${rsa_sign%%.*}
+      gb=1073741824
+      ops=$(( gb / 245 ))
+      rsa_secs=$(( ops / rsa_ops ))
+      aes_ms=$(( gb * 1000 / aes_bytes ))
+      {
+        echo "to encrypt 1 GB:"
+        echo "  RSA-2048: ${ops} operations at 245 bytes each, at ${rsa_ops} ops/sec = ${rsa_secs} seconds ($(( rsa_secs / 60 )) minutes)"
+        echo "  AES-256:  ${aes_ms} milliseconds at ${aes_bytes} bytes/sec"
+        echo "  ratio: about $(( rsa_secs * 1000 / aes_ms ))x"
+        echo
+        echo "and that is only the time. the 245-byte ceiling means a single rsa operation cannot carry a file at all - encrypting one means splitting it into four million chunks and managing them, which no protocol does."
+        echo
+        echo "so asymmetric encryption is not a slower symmetric encryption. it is a different tool, and it is used on keys rather than on data."
+      } > /tmp/answer-why-not
+      cat /tmp/answer-why-not
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-not
+        pattern: "RSA-2048: [0-9]+ operations"
+        describe: You computed the operation count from the payload limit
+      - type: command_exit
+        command: "test $(sed -n 's/.*ratio: about \\([0-9]*\\)x/\\1/p' /tmp/answer-why-not) -gt 50"
+        exit_code: 0
+        describe: And the ratio is at least fifty-fold in RSA's disfavour
+      - type: file_matches
+        path: /tmp/answer-why-not
+        pattern: "used on keys rather than on data|on keys"
+        describe: And drew the conclusion that follows
+
+  - id: s4
+    instruction: >-
+      Build hybrid encryption by hand. Generate a fresh symmetric key, encrypt a
+      100 KB file with it, encrypt the key with the RSA public key, then reverse
+      the whole thing and prove the recovered file is identical. Save the
+      transcript to /tmp/answer-hybrid.
+    hint: >-
+      `openssl rand -out session.key 32` for the key. Feed it to `enc` as raw hex
+      via `-K` rather than as a passphrase, and RSA-encrypt the 32 raw bytes.
+    walkthrough: |
+      cd /tmp
+      head -c 100000 /dev/urandom > big.dat
+      openssl rand -out session.key 32
+      KHEX=$(od -An -tx1 -v session.key | tr -d ' \n')
+      IVHEX=$(openssl rand -hex 16)
+      openssl enc -aes-256-ctr -K "$KHEX" -iv "$IVHEX" -in big.dat -out big.enc
+      openssl pkeyutl -encrypt -pubin -inkey rsa.pub -in session.key -out session.key.enc
+      openssl pkeyutl -decrypt -inkey rsa.key -in session.key.enc -out recovered.key
+      RHEX=$(od -An -tx1 -v recovered.key | tr -d ' \n')
+      openssl enc -d -aes-256-ctr -K "$RHEX" -iv "$IVHEX" -in big.enc -out big.out
+      {
+        echo "plaintext:        $(wc -c < big.dat) bytes"
+        echo "session key:      $(wc -c < session.key) bytes"
+        echo "encrypted data:   $(wc -c < big.enc) bytes   (AES)"
+        echo "encrypted key:    $(wc -c < session.key.enc) bytes   (RSA)"
+        if cmp -s session.key recovered.key; then echo "key recovered:    IDENTICAL"; fi
+        if cmp -s big.dat big.out; then echo "data recovered:   IDENTICAL"; fi
+        echo
+        echo "the slow algorithm encrypted 32 bytes and produced 256. the fast one handled the other 100000."
+        echo "the recipient's private key protects the session key; the session key protects the data. that is the whole construction, and it is what tls, pgp and age all do."
+      } > /tmp/answer-hybrid
+      cat /tmp/answer-hybrid
+    verify:
+      - type: file_matches
+        path: /tmp/answer-hybrid
+        pattern: "key recovered:    IDENTICAL"
+        describe: The session key survived the RSA round trip
+      - type: file_matches
+        path: /tmp/answer-hybrid
+        pattern: "data recovered:   IDENTICAL"
+        describe: And the 100 KB file decrypted back to exactly the original
+      - type: file_matches
+        path: /tmp/answer-hybrid
+        pattern: "encrypted key:    256 bytes"
+        describe: And RSA carried a 32-byte key in a 256-byte wrapper
+
+  - id: s5
+    instruction: >-
+      Do it the modern way instead. Generate two X25519 key pairs, derive a
+      shared secret from each side, and show the two secrets are identical
+      without either having been transmitted. Save to /tmp/answer-exchange.
+    hint: >-
+      `openssl pkeyutl -derive -inkey <your private> -peerkey <their public>`.
+      Run it once as each party. Hash the raw output so it is readable.
+    walkthrough: |
+      cd /tmp
+      openssl genpkey -algorithm X25519 -out alice.key 2>/dev/null
+      openssl pkey -in alice.key -pubout -out alice.pub 2>/dev/null
+      openssl genpkey -algorithm X25519 -out bob.key 2>/dev/null
+      openssl pkey -in bob.key -pubout -out bob.pub 2>/dev/null
+      a=$(openssl pkeyutl -derive -inkey alice.key -peerkey bob.pub | openssl dgst -sha256 -r | cut -d' ' -f1)
+      b=$(openssl pkeyutl -derive -inkey bob.key -peerkey alice.pub | openssl dgst -sha256 -r | cut -d' ' -f1)
+      {
+        echo "alice combines her private key with bob's public key: $a"
+        echo "bob   combines his private key with alice's public key: $b"
+        if [ "$a" = "$b" ]; then echo "IDENTICAL"; fi
+        echo
+        echo "only the two public keys crossed the wire. the shared secret was never transmitted, and an eavesdropper holding both public keys cannot compute it."
+        echo "this is diffie-hellman, and it is preferred over wrapping a key with rsa because the key pairs can be ephemeral - discarded after the session. someone who steals a long-term private key next year cannot decrypt traffic they recorded this year, which rsa key transport does not give you. that property is forward secrecy."
+      } > /tmp/answer-exchange
+      cat /tmp/answer-exchange
+    verify:
+      - type: file_matches
+        path: /tmp/answer-exchange
+        pattern: "IDENTICAL"
+        describe: Both sides derived the same secret
+      - type: file_matches
+        path: /tmp/answer-exchange
+        pattern: "never transmitted|not transmitted"
+        describe: And you noted the secret never crossed the wire
+      - type: file_matches
+        path: /tmp/answer-exchange
+        pattern: "forward secrecy"
+        describe: And named the property that makes it preferred to RSA key transport
+
+solution: >-
+  **The ceiling is 245 bytes, exactly.**
+
+
+  RSA encrypts a number smaller than its modulus. A 2048-bit modulus is 256
+  bytes, PKCS#1 v1.5 padding consumes 11, and what is left is 245. 246 is not
+  slow or unwise — it is `data too large for key size`, a refusal.
+
+
+  This is the limit people are most surprised by, because RSA is introduced as
+  "encryption" and the word implies it works on data. It does not. It works on
+  numbers a few hundred bytes long.
+
+
+  **And it is slow in the direction that matters.**
+
+
+  `openssl speed rsa2048` reports four numbers and people read the wrong two.
+  `verify` and `encaps` use the public key and run at tens of thousands per
+  second. `sign` and `decaps` use the **private** key and run at around two
+  thousand — a thirty-fold difference within the same algorithm. Every
+  benchmark that makes RSA look acceptable has measured the fast half.
+
+
+  Against AES at over a gigabyte a second, the arithmetic for a 1 GB file is
+  brutal: about 4.4 million RSA operations, tens of minutes, against under a
+  second. And the ceiling means you would have to invent a chunking scheme to
+  attempt it at all, which no protocol does.
+
+
+  **So: hybrid.**
+
+
+  ```text
+  plaintext        100,000 bytes
+  session key           32 bytes   ← random, fresh, used once
+  encrypted data   100,000 bytes   ← AES, fast
+  encrypted key        256 bytes   ← RSA, slow, but only 32 bytes went in
+  ```
+
+
+  The slow algorithm protects the key. The key protects the data. Both halves
+  travel together, and the recipient reverses it: private key opens the session
+  key, session key opens the data.
+
+
+  That is not a workaround or an optimisation — it is what TLS, PGP, `age`, S/MIME
+  and every encrypted-storage product do. Having built it in four commands, a TLS
+  handshake stops being a diagram: the certificate carries a public key, the
+  handshake uses it to establish a session key, and the session key does all the
+  work.
+
+
+  **The modern version is better still.**
+
+
+  X25519 key agreement gave both parties the same secret from their own private
+  key and the other's public key, with nothing secret transmitted. It feels like
+  a trick and it is arithmetic.
+
+
+  It is preferred over RSA key transport for one reason worth being precise
+  about: **forward secrecy**. With RSA, the session key is encrypted to the
+  server's long-term key and sent, so a recorded handshake plus that key —
+  obtained at any point in the future — yields the session key and the traffic.
+  With ephemeral Diffie–Hellman the private halves are discarded after the
+  session, so there is nothing left to steal that decrypts the recording.
+
+
+  That difference changes the severity of "we should rotate that key eventually"
+  from housekeeping to urgent, and it is why modern TLS removed RSA key transport
+  entirely.

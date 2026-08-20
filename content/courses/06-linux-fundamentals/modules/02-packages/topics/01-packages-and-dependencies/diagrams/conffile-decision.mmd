@@ -1,0 +1,18 @@
+flowchart TD
+    START["Upgrade reaches a conffile"] --> Q1{"Recorded md5 still<br/>matches the file on disk?"}
+
+    Q1 -- "yes — you never touched it" --> Q2{"Does the new package<br/>ship a different version?"}
+    Q1 -- "no — you edited it" --> Q3{"Does the new package<br/>ship a different version?"}
+
+    Q2 -- no --> R1["Nothing happens.<br/>File left alone."]
+    Q2 -- yes --> R2["Silently replaced<br/>with the new version."]
+
+    Q3 -- no --> R3["Your version kept.<br/>No message."]
+    Q3 -- yes --> R4["CONFLICT — prompt"]
+
+    R4 --> U{"Is anyone there<br/>to answer?"}
+    U -- "interactive" --> R5["Admin chooses.<br/>Loser saved as<br/>.dpkg-old or .dpkg-dist"]
+    U -- "unattended" --> R6["Default applies:<br/>YOUR version kept.<br/>New version left as<br/>.dpkg-dist<br/>Upgrade reports success."]
+
+    style R6 fill:#fdecea,stroke:#c0392b
+    style R2 fill:#fdf6e3,stroke:#b58900

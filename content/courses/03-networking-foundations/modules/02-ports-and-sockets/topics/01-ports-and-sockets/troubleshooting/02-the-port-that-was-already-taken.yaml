@@ -1,0 +1,209 @@
+id: troubleshooting.the-port-that-was-already-taken
+topic: topic.ports-and-sockets
+title: Address already in use, and nothing is using it
+level: L2
+objectives: [OBJ-A03.2.8, OBJ-A03.2.6]
+reveal_policy: progressive
+
+situation: >-
+  A batch job runs every ten minutes. It starts a small HTTP server on port
+  40100 to expose metrics while it works, does its job, and exits.
+
+
+  Since the schedule was changed from hourly to every ten minutes, roughly one
+  run in six fails immediately with `bind: Address already in use`. The failures
+  are not at consistent times and the job leaves nothing behind — `ps` shows no
+  previous instance, and the port is free when anyone looks.
+
+
+  The team have added a retry loop, which mostly works, and a
+  `sleep 5` before binding, which mostly works too. The failures have become
+  rarer and have not stopped.
+
+
+  Somebody has suggested moving to a random high port each run.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "About one run in six fails at start-up with 'Address already in use'"
+  - "No previous instance of the job is running when it fails"
+  - "The port appears free by the time anyone investigates"
+  - "It started when the schedule went from hourly to every ten minutes"
+  - "A sleep before binding made it rarer, not absent"
+  - "It never happened on the developer's machine"
+
+artifacts:
+  - type: log
+    label: A failing run
+    content: |
+      10:20:00 batch-job starting, run id 4471
+      10:20:00 metrics server binding 0.0.0.0:40100
+      10:20:00 FATAL listen tcp 0.0.0.0:40100: bind: address already in use
+      10:20:00 exit status 1
+
+  - type: command_output
+    label: Taken one second after a failure
+    content: |
+      $ ss -tlnp | grep :40100
+      (no output)
+
+      $ ss -tan | grep :40100
+      TIME-WAIT 0 0    10.0.4.18:40100    10.0.4.31:52014
+      TIME-WAIT 0 0    10.0.4.18:40100    10.0.4.31:52015
+      TIME-WAIT 0 0    10.0.4.18:40100    10.0.4.31:52016
+
+  - type: command_output
+    label: The previous run, ten minutes earlier
+    content: |
+      10:10:00 batch-job starting, run id 4470
+      10:10:41 scrape from 10.0.4.31 (prometheus)
+      10:11:11 scrape from 10.0.4.31 (prometheus)
+      10:11:41 scrape from 10.0.4.31 (prometheus)
+      10:19:47 batch-job complete, exiting
+
+  - type: command_output
+    label: Relevant settings on the host
+    content: |
+      $ cat /proc/sys/net/ipv4/tcp_fin_timeout
+      60
+
+      $ cat /proc/sys/net/ipv4/ip_local_port_range
+      32768 60999
+
+  - type: config
+    label: How the server is created
+    content: |
+      // no SO_REUSEADDR is set — the default for this framework's raw listener
+      ln, err := net.Listen("tcp", ":40100")
+      if err != nil {
+          log.Fatal(err)
+      }
+
+diagnostic_questions:
+  - "What state are the sockets in, and which side of the connection do they belong to?"
+  - "Why does `ss -tlnp` show nothing while `ss -tan` shows three sockets?"
+  - "How long does that state last, and how does that compare with the schedule?"
+  - "What is scraping the port, and how does that affect the count?"
+  - "What is missing from the listener setup?"
+
+hints:
+  - "Look at the second `ss` command, not the first. The `-l` filter hides the answer."
+  - "TIME-WAIT is held by whichever side closed first. Which side is 40100 on here?"
+  - "Compare tcp_fin_timeout with the gap between the previous run ending and the next starting."
+  - "Read the last artifact and ask what socket option is not being set."
+
+root_cause: >-
+  The previous run's sockets are in `TIME-WAIT`, and the new run does not set
+  `SO_REUSEADDR`.
+
+
+  When the job exits, its accepted connections — from Prometheus scraping the
+  metrics endpoint — close. The job's side closed first, so *its* end holds the
+  four-tuple in `TIME-WAIT` for about sixty seconds. Those sockets have a local
+  address of `10.0.4.18:40100`, so the address and port are still in use as far
+  as `bind()` is concerned, even though nothing is listening.
+
+
+  Without `SO_REUSEADDR`, `bind()` refuses to claim an address that appears in
+  any existing socket, including one in `TIME-WAIT`. With it — which almost every
+  server sets — the bind succeeds, because a listening socket cannot be confused
+  with a closing connection.
+
+
+  The timing explains everything else. The previous run ended at 10:19:47 and the
+  next started at 10:20:00, thirteen seconds later, well inside the sixty-second
+  window. On the hourly schedule the gap was always minutes, so the window had
+  always expired and the bug was invisible for as long as the job had existed.
+
+
+  `ss -tlnp` showed nothing because `-l` filters to listening sockets and these
+  are not listening. Every investigation that used the habitual command saw an
+  empty result and concluded the port was free.
+
+
+  "One in six" is the runs whose previous instance happened to finish within
+  sixty seconds of the next starting — which varies with how long the job takes.
+  The `sleep 5` helped by eating five seconds of the window, which is why it
+  reduced the rate without fixing anything.
+
+method: >-
+  **1. Drop the `-l` when the answer is "nothing is listening".** `ss -tlnp`
+  answers "what is listening" and the question here was "what is holding this
+  address". `ss -tan | grep :40100` shows three sockets the first command hid,
+  and that is the entire diagnosis.
+
+
+  **2. Read which side the TIME-WAIT is on.** The local address is
+  `10.0.4.18:40100` — the job's own port. TIME-WAIT is held by whichever side
+  closed first, so these belong to the job, not to Prometheus.
+
+
+  **3. Compare the timescale with the schedule.** `tcp_fin_timeout` is 60 and
+  the gap between runs is thirteen seconds. That single comparison explains both
+  the failure and why changing the schedule caused it, and it is why "it never
+  happened before" was true and not reassuring.
+
+
+  **4. Read the failed remedies as evidence.** `sleep 5` made it rarer. A fix
+  that reduces a failure rate in proportion to a delay is fighting a timer, and
+  naming the timer is then the whole job.
+
+
+  **5. Look for the missing socket option.** `net.Listen` without
+  `SO_REUSEADDR` is the specific defect. Most servers set it and this raw
+  listener does not, which is why the same code shape works everywhere else in
+  the fleet.
+
+
+  The habit worth keeping: **"Address already in use" has two distinct causes** —
+  a process holding it, and a socket lingering in TIME-WAIT — and `ss -tan`
+  distinguishes them in one command. Only the first is what people picture.
+
+resolution: >-
+  **Set `SO_REUSEADDR` on the listener.** In Go, that means using a
+  `net.ListenConfig` with a control function:
+
+
+  ```go
+  lc := net.ListenConfig{
+      Control: func(network, address string, c syscall.RawConn) error {
+          return c.Control(func(fd uintptr) {
+              unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+          })
+      },
+  }
+  ln, err := lc.Listen(context.Background(), "tcp", ":40100")
+  ```
+
+
+  Most HTTP server libraries set this by default, which is why the problem is
+  specific to a hand-rolled listener. It is safe: `SO_REUSEADDR` allows binding
+  over a socket in `TIME-WAIT`, and does *not* allow two live listeners on the
+  same address — that is `SO_REUSEPORT`, a different option with different
+  consequences.
+
+
+  **Remove the retry loop and the sleep.** Both were compensating for a timer and
+  both hide the failure rather than removing it. Leaving them in place means the
+  next person sees a job that retries for no documented reason and does not know
+  whether it is still needed.
+
+
+  **Reject the random-port suggestion.** It would work, and it would break
+  Prometheus, which needs a stable target — and the same class of bug would
+  return the first time two runs overlapped. It trades a one-line fix for a
+  permanent monitoring problem.
+
+
+  **Then check whether overlapping runs are possible at all.** Every ten minutes
+  with a run that took nine minutes and forty-seven seconds is uncomfortably
+  close. Even with the bind fixed, two instances running at once will collide for
+  real — and that is a scheduling question, not a socket one. A lock file, or a
+  scheduler that refuses to start a run while the previous one is alive, is worth
+  adding before the job gets any slower.
+
+
+  **One line for the runbook:** when `bind` fails and `ss -tlnp` shows nothing,
+  run `ss -tan` instead. The `-l` flag hides exactly the sockets that cause this.

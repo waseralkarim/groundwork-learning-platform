@@ -1,0 +1,184 @@
+topic: topic.namespaces
+
+exercises:
+  - id: e1
+    title: Read a namespace comparison
+    level: L2
+    objectives: [OBJ-A02.1.2]
+    kind: interpretation
+    prompt: >-
+      You ran the same comparison inside a pod and on its node. Say, for each
+      dimension, whether the pod is isolated from the node — and which findings
+      you would raise.
+
+
+      ```text
+      type    pod                 node
+      pid     pid:[4026532918]    pid:[4026531836]
+      mnt     mnt:[4026532915]    mnt:[4026531841]
+      net     net:[4026531992]    net:[4026531992]
+      ipc     ipc:[4026532917]    ipc:[4026531839]
+      uts     uts:[4026532916]    uts:[4026531838]
+      user    user:[4026531837]   user:[4026531837]
+      time    time:[4026531834]   time:[4026531834]
+      ```
+    answer: >-
+      Isolated: pid, mnt, ipc, uts. Not isolated: net, user, time. The one
+      finding is the network namespace — the pod is on the node's network, which
+      means `hostNetwork: true`. The user and time namespaces also match, but
+      those match for every pod on every default cluster and are not findings on
+      their own.
+    explanation: >-
+      The mechanical part is easy: same inode, same namespace. The judgement is
+      knowing which matches mean something.
+
+
+      **net** is the finding. Nothing about a normal pod shares the node's
+      network namespace, so this one was configured to. Everything that follows
+      from it — no pod IP, no NetworkPolicy, direct access to the node's
+      interfaces and port space — is now true of this workload, and none of it
+      is visible in the pod's own logs.
+
+
+      **user** and **time** are the trap. They match because Kubernetes does not
+      enable user namespaces by default and almost nothing uses time namespaces.
+      If you report them as findings you will be wrong about every pod in the
+      cluster, and the real finding gets lost in the noise.
+
+
+      The rule worth carrying: a shared namespace is only interesting when it is
+      not shared by everything. Establish the baseline on one known-good pod
+      before you start diagnosing.
+
+  - id: e2
+    title: Order the construction of a container
+    level: L3
+    objectives: [OBJ-A02.1.4]
+    kind: ordering
+    prompt: >-
+      Put these into the order a container runtime performs them:
+
+
+      1. Drop capabilities and apply the seccomp profile
+
+      2. Mount a fresh /proc reflecting the new PID namespace
+
+      3. `execve()` the entrypoint
+
+      4. `clone()` with the namespace flags
+
+      5. Write the memory and CPU limits into the cgroup
+
+      6. `pivot_root` into the assembled overlay filesystem
+    answer: "4, 6, 2, 5, 1, 3"
+    explanation: >-
+      Namespaces come first because everything after them happens *inside* them
+      — the root filesystem is mounted in the new mount namespace, and the fresh
+      `/proc` must reflect the new PID namespace or the container would see the
+      host's process table through it.
+
+
+      The ordering that matters for security is the tail. Capabilities are
+      dropped at step 1, *after* all the setup, because the runtime needed them
+      to do the setup. Nothing can drop them earlier.
+
+
+      That is exactly why `no_new_privs` exists. It is the flag that says no
+      later `execve` may regain what was just given up — without it, a setuid
+      binary in the image could restore privilege the container was deliberately
+      denied, inside a user namespace it still shares with the host. The
+      privilege used to build the container is the thing that must not survive
+      into it.
+
+  - id: e3
+    title: Justify a hardening control from a single file
+    level: L3
+    objectives: [OBJ-A02.1.6]
+    kind: short_answer
+    prompt: >-
+      A colleague argues that dropping all capabilities on your containers is
+      security theatre: "they're namespaced, they can't see the host anyway, and
+      we've never had an incident."
+
+
+      You have one file to make your case with. Name it, say what you expect it
+      to contain, and give the argument in three or four sentences.
+    answer: >-
+      `/proc/<container-pid>/uid_map`, which will read `0 0 4294967295` — the
+      identity mapping of the host's initial user namespace. That means the
+      container shares the host's user namespace, so its uid 0 is the node's uid
+      0 with no translation. Namespaces limit what it can *see*; they do nothing
+      about what its root could *do* if it reached past one, so with a shared
+      user namespace the empty capability set is not an extra layer — it is the
+      confinement.
+    explanation: >-
+      The argument works because it replaces an assertion with a file. "It's
+      namespaced" is true and irrelevant: the namespace that would have made
+      container root harmless is the one the container did not get, and the
+      uid_map says so in eight characters.
+
+
+      The second half of the answer is the part that changes behaviour. If
+      capabilities are what stands between the container and the node, then
+      `--privileged` is not "a bit permissive" — it is removing the confinement
+      entirely, and the container is then real root with real authority on a
+      shared kernel.
+
+
+      "We've never had an incident" is worth answering directly rather than
+      ignoring: the control is about consequence, not likelihood. It does not
+      make an escape less likely; it makes one survivable.
+
+  - id: e4
+    title: Review three requests for host access
+    level: L3
+    objectives: [OBJ-A02.1.8]
+    kind: interpretation
+    prompt: >-
+      Three teams have opened pull requests. For each, say whether you would
+      approve it, and if not, what you would ask for instead.
+
+
+      **A** — A node-exporter DaemonSet requests `hostNetwork: true` and
+      `hostPID: true`, to report per-node interface counters and process counts.
+
+
+      **B** — A payments API requests `hostNetwork: true`, because "the service
+      mesh sidecar adds 3ms of latency and we need it gone".
+
+
+      **C** — A CI runner requests `privileged: true`, because it needs to build
+      container images.
+    answer: >-
+      A: approve — that is the job, and both namespaces are load-bearing for it;
+      confirm it is read-only and non-root otherwise. B: reject — it removes
+      NetworkPolicy from a payments service to save 3ms; ask for a latency
+      measurement and mesh tuning instead. C: reject as written — ask for a
+      rootless builder (Buildah, Kaniko, BuildKit rootless) or a Sysbox runtime,
+      which give the nested namespaces without the capabilities.
+    explanation: >-
+      The three cases are the three answers a reviewer actually gives.
+
+
+      **A is a legitimate need.** A node exporter that cannot see the node's
+      interfaces or process table cannot do its job. The isolation being given
+      up is precisely the isolation that would prevent the work. The review moves
+      on to everything else — read-only rootfs, non-root uid, no service account
+      token.
+
+
+      **B is the common one, and it is a bad trade.** A payments service is
+      exactly where NetworkPolicy matters most, and `hostNetwork` silently
+      removes it — the pod has no pod IP, so no policy selects it. Trading the
+      strongest network control you have for 3ms is a trade nobody would make
+      if it were stated in those terms, which is why stating it in those terms
+      is the reviewer's job.
+
+
+      **C is a real need with a better answer.** Building images does require
+      creating namespaces, which does require `CAP_SYS_ADMIN` under a
+      conventional runtime — so the request is not unreasonable. But rootless
+      builders and Sysbox exist precisely to break that trade: they give the
+      inner build its own user namespace, in which it holds capabilities that
+      mean nothing on the node. "No" without an alternative would just get you
+      overruled next sprint.

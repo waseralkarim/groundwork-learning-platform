@@ -1,0 +1,311 @@
+id: lab.version-comparison-traps
+topic: topic.distributions-and-versions
+title: Predict nine comparisons, then find out
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B06.1.4, OBJ-B06.1.7]
+
+intro: >-
+  Nine version comparisons in /tmp/versions/cases.txt. Predict every one before
+  testing any of them.
+
+
+  Four of the nine do not go the way instinct says, and they are
+  counter-intuitive in four different ways. Getting them all right by feel is not
+  possible, which is why the prediction goes first.
+
+
+  Then you will show that the shell's own comparison gets one of them wrong, and
+  work out what that costs in a real script.
+
+setup:
+  - /opt/lab/seed-distro.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/versions/cases.txt and write your prediction for all nine to
+      /tmp/hypotheses — `gt`, `lt` or `eq` for the relationship of A to B. Do
+      not test anything yet.
+    hint: >-
+      Commit to an answer for each. Being wrong here is the point of the
+      exercise; being unsure and skipping one is not.
+    walkthrough: |
+      cat /tmp/versions/cases.txt
+      {
+        echo "1 gt   # 1.10 vs 1.9 - numeric, so 10 > 9"
+        echo "2 lt   # 1.0 vs 1.0-1 - no revision sorts before revision 1"
+        echo "3 lt   # 1.0~rc1 vs 1.0 - tilde sorts before nothing"
+        echo "4 gt   # 1:1.0 vs 99.0 - epoch beats everything"
+        echo "5 gt   # 4:14.2.0-1 vs 15.0.0 - same, real gcc case"
+        echo "6 gt   # ~deb13u2 vs ~deb13u1 - later update"
+        echo "7 lt   # 2.0-1 vs 2.0-1+b1 - plus sorts after nothing"
+        echo "8 gt   # 1.0.0 vs 1.0 - more components"
+        echo "9 lt   # 1.0~~ vs 1.0~ - more tildes sort earlier"
+      } > /tmp/hypotheses
+      cat /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You committed to predictions before testing
+      - type: command_exit
+        command: "test $(grep -cE '^[1-9] +(gt|lt|eq)' /tmp/hypotheses) -eq 9"
+        exit_code: 0
+        describe: With an answer for all nine cases
+
+  - id: s2
+    instruction: >-
+      Now test all nine with the tool that decides it, and save the results
+      alongside your predictions to /tmp/answer-results.
+    hint: >-
+      `dpkg --compare-versions A op B` exits 0 or 1 and prints nothing. Try each
+      operator until one succeeds.
+    walkthrough: |
+      {
+        printf '%-3s %-22s %-22s %s\n' '#' A B ACTUAL
+        n=0
+        while read -r num a b; do
+          case "$num" in ""|\#*|A) continue;; esac
+          [ -z "$b" ] && continue
+          for op in gt lt eq; do
+            if dpkg --compare-versions "$a" "$op" "$b" 2>/dev/null; then
+              printf '%-3s %-22s %-22s %s\n' "$num" "$a" "$b" "$op"
+              break
+            fi
+          done
+        done < /tmp/versions/cases.txt
+        echo
+        echo "my predictions:"
+        cat /tmp/hypotheses
+      } > /tmp/answer-results
+      cat /tmp/answer-results
+    verify:
+      - type: file_matches
+        path: /tmp/answer-results
+        pattern: "1 +1\\.10 +1\\.9 +gt"
+        describe: 1.10 is greater than 1.9 — numeric, not lexical
+      - type: file_matches
+        path: /tmp/answer-results
+        pattern: "4 +1:1\\.0 +99\\.0 +gt"
+        describe: And an epoch beats a much larger upstream version
+      - type: file_matches
+        path: /tmp/answer-results
+        pattern: "3 +1\\.0~rc1 +1\\.0 +lt"
+        describe: And a tilde sorts before nothing at all
+
+  - id: s3
+    instruction: >-
+      Show that the shell's own comparison disagrees. Compare case 1 with a
+      string operator and save the difference to /tmp/answer-shell.
+    hint: >-
+      `[ "$a" \> "$b" ]` in a test is string comparison. Try it on 1.10 versus
+      1.9 and compare against what dpkg said.
+    walkthrough: |
+      {
+        a=1.10; b=1.9
+        echo "comparing $a and $b"
+        echo
+        if [ "$a" \> "$b" ]; then echo "  shell string compare:  $a > $b"; else echo "  shell string compare:  $a <= $b"; fi
+        if dpkg --compare-versions "$a" gt "$b"; then echo "  dpkg version compare:  $a > $b"; else echo "  dpkg version compare:  $a <= $b"; fi
+        echo
+        echo "the shell compares character by character: '1' equals '1', '.' equals '.', then '1' vs '9' - and '1' sorts before '9', so it concludes 1.10 < 1.9."
+        echo "dpkg compares the numeric parts as numbers: 1 equals 1, then 10 vs 9, so 1.10 > 1.9."
+        echo
+        echo "both are behaving correctly for what they are. the bug is choosing string comparison for a version, and it is invisible until a project ships a .10 release - which is exactly when it matters and exactly when nobody is looking."
+      } > /tmp/answer-shell
+      cat /tmp/answer-shell
+    verify:
+      - type: file_matches
+        path: /tmp/answer-shell
+        pattern: "shell string compare: +1\\.10 <= 1\\.9"
+        describe: The shell's string comparison gets it wrong
+      - type: file_matches
+        path: /tmp/answer-shell
+        pattern: "dpkg version compare: +1\\.10 > 1\\.9"
+        describe: And dpkg gets it right
+      - type: file_matches
+        path: /tmp/answer-shell
+        pattern: "(?i)\\.10 release|invisible until"
+        describe: And you identified when the bug would first appear
+
+  - id: s4
+    instruction: >-
+      Identify which of the nine you predicted wrongly, and for each say which
+      rule you missed. Save to /tmp/answer-wrong.
+    hint: >-
+      There are four rules in play: numeric comparison, epoch precedence, tilde
+      sorting before nothing, and plus sorting after it.
+    walkthrough: |
+      {
+        echo "the four rules the nine cases test:"
+        echo
+        echo "1. NUMERIC, NOT LEXICAL - components are compared as numbers."
+        echo "   cases 1 and 8. 1.10 > 1.9, and 1.0.0 > 1.0."
+        echo
+        echo "2. EPOCH FIRST, AND DECISIVELY - an epoch is compared before anything else."
+        echo "   cases 4 and 5. 1:1.0 > 99.0, and gcc's 4:14.2.0-1 > 15.0.0."
+        echo "   this is the one that surprises people most, because the epoch is invisible in the version anyone quotes."
+        echo
+        echo "3. TILDE SORTS BEFORE NOTHING - it is the only character that does."
+        echo "   cases 3 and 9. 1.0~rc1 < 1.0, and 1.0~~ < 1.0~."
+        echo "   without it there would be no way to express a pre-release: 1.0rc1 sorts AFTER 1.0."
+        echo
+        echo "4. EVERYTHING ELSE SORTS AFTER NOTHING - including '+' and a revision."
+        echo "   cases 2 and 7. 1.0 < 1.0-1, and 2.0-1 < 2.0-1+b1."
+        echo
+        echo "case 6 is the one that needs no special rule and matters most operationally: ~deb13u2 > ~deb13u1, so a later security update is correctly newer."
+      } > /tmp/answer-wrong
+      cat /tmp/answer-wrong
+    verify:
+      - type: file_matches
+        path: /tmp/answer-wrong
+        pattern: "(?i)numeric, not lexical"
+        describe: You named the numeric comparison rule
+      - type: file_matches
+        path: /tmp/answer-wrong
+        pattern: "(?i)epoch first"
+        describe: And epoch precedence
+      - type: file_matches
+        path: /tmp/answer-wrong
+        pattern: "(?i)tilde sorts before"
+        describe: And the tilde rule
+      - type: file_matches
+        path: /tmp/answer-wrong
+        pattern: "(?i)invisible in the version"
+        describe: And why the epoch rule surprises people
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-rules how you would compare versions in a real script,
+      and what you would never use.
+    hint: >-
+      One tool settles it. Three common alternatives are each wrong in at least
+      one of the nine cases.
+    walkthrough: |
+      {
+        echo "use the package manager's own comparison:"
+        echo "  if dpkg --compare-versions \"\$installed\" lt \"\$required\"; then ... fi"
+        echo "it prints nothing and exits 0 or 1, which is what makes it usable in a condition. operators: lt le eq ne ge gt."
+        echo
+        echo "never use:"
+        echo "- [ \"\$a\" \\> \"\$b\" ] - string comparison. gets 1.10 vs 1.9 wrong."
+        echo "- sort -V - close, and does not implement epochs or the tilde rule."
+        echo "- converting to a number - cannot represent revisions, suffixes or epochs at all."
+        echo "- comparing only the upstream part - throws away exactly the revision that records the security backport."
+        echo
+        echo "on a system without dpkg the equivalents are rpm's version comparison and 'apk version -t'. every distribution ships the comparison its own package manager uses, and that is the one to borrow rather than reimplementing it."
+        echo
+        echo "the general rule: version comparison looks simple and is not, and every one of the nine cases here has caused a real failure somewhere - a rollback that would not install because the old version compared as newer, a pre-release that sorted after its release, a scanner that missed a backport."
+      } > /tmp/answer-rules
+      cat /tmp/answer-rules
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rules
+        pattern: "dpkg --compare-versions"
+        describe: You named the tool that settles it
+      - type: file_matches
+        path: /tmp/answer-rules
+        pattern: "(?i)sort -V"
+        describe: And that sort -V is close but incomplete
+      - type: file_matches
+        path: /tmp/answer-rules
+        pattern: "(?i)upstream part|throws away"
+        describe: And that comparing only the upstream version discards the backport
+
+solution: >-
+  **The nine, resolved.**
+
+
+  ```text
+  1  1.10              gt  1.9              numeric, not lexical
+  2  1.0               lt  1.0-1            no revision sorts before revision 1
+  3  1.0~rc1           lt  1.0              ~ sorts BEFORE nothing
+  4  1:1.0             gt  99.0             epoch beats everything
+  5  4:14.2.0-1        gt  15.0.0           the real gcc case
+  6  3.5.6-1~deb13u2   gt  3.5.6-1~deb13u1  a later security update
+  7  2.0-1             lt  2.0-1+b1         + sorts after nothing
+  8  1.0.0             gt  1.0              more components
+  9  1.0~~             lt  1.0~             more tildes sort earlier
+  ```
+
+
+  **Four rules, and each is tested twice.**
+
+
+  *Numeric, not lexical* (1, 8). Components are compared as numbers, so `1.10 >
+  1.9` because ten is more than nine.
+
+
+  *Epoch first, and decisively* (4, 5). An epoch is compared before anything
+  else, so `1:1.0` beats `99.0`. This is the rule that surprises people most,
+  because **the epoch is invisible in the version anybody quotes** — nobody says
+  "gcc four colon fourteen".
+
+
+  *Tilde sorts before nothing* (3, 9). It is the only character that does, and
+  without it there would be no way to express a pre-release at all: `1.0rc1`
+  sorts *after* `1.0`.
+
+
+  *Everything else sorts after nothing* (2, 7), including `+` and a revision.
+
+
+  Case 6 needs no special rule and matters most day to day: `~deb13u2 >
+  ~deb13u1`, so a later security update is correctly newer than an earlier one.
+
+
+  **The shell disagrees, and is not wrong.**
+
+
+  ```text
+  shell string compare:  1.10 <= 1.9
+  dpkg version compare:  1.10 >  1.9
+  ```
+
+
+  `[ "$a" \> "$b" ]` compares character by character: `1`=`1`, `.`=`.`, then `1`
+  against `9` — and `1` sorts first, so it concludes `1.10` is older.
+
+
+  Both tools are correct for what they are. The bug is choosing string comparison
+  for a version, and it is **invisible until a project ships a `.10` release** —
+  which is precisely when it matters and when nobody is looking at that code any
+  more.
+
+
+  **What to use.**
+
+
+  ```bash
+  if dpkg --compare-versions "$installed" lt "$required"; then …
+  ```
+
+
+  It prints nothing and exits 0 or 1, which is what makes it usable in a
+  condition.
+
+
+  **What never to use:**
+
+
+  - `[ "$a" \> "$b" ]` — string comparison; wrong on case 1.
+
+  - `sort -V` — close, and implements neither epochs nor the tilde rule.
+
+  - Converting to a number — cannot represent revisions, suffixes or epochs.
+
+  - Comparing only the upstream part — throws away exactly the revision that
+    records the security backport, which is the field you most needed.
+
+
+  On a system without dpkg, `rpm`'s comparison and `apk version -t` are the
+  equivalents. Every distribution ships the comparison its own package manager
+  uses; borrow that rather than reimplementing it.
+
+
+  Every one of these nine has caused a real failure somewhere — a rollback that
+  would not install because the old version compared as newer, a release
+  candidate that sorted after its release, a scanner that missed a backport
+  because it only read the upstream field.

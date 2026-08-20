@@ -1,0 +1,440 @@
+id: quiz.virtual-memory
+topic: topic.virtual-memory
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.4.1]
+    stem: Two processes both read address 0x7f2a1000. What do they get?
+    options:
+      - id: a
+        text: Different physical memory, because each has its own page table
+        correct: true
+      - id: b
+        text: The same data, since it is the same address
+        note: >-
+          The address is only meaningful inside one process. The same number in
+          two processes is translated by two different page tables.
+      - id: c
+        text: An error in one of them, since an address can only be mapped once
+        note: >-
+          Every process has its own address space. Identical addresses across
+          processes are the normal case, not a conflict.
+      - id: d
+        text: The same data only if they are related by fork
+        note: >-
+          fork does share pages, but unrelated processes also routinely hold the
+          same virtual addresses pointing at completely different memory.
+    explanation: >-
+      A virtual address is an index into that process's page table. The MMU
+      translates it on every access, so the same number in two processes lands
+      wherever each table says. Deliberate sharing — libc, a mapped file, pages
+      after a fork — is the exception, and it is arranged by the kernel.
+
+  - id: q2
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.4.1]
+    stem: Why can one process not read another's memory?
+    options:
+      - id: a
+        text: There is no address in its page table that refers to those pages
+        correct: true
+      - id: b
+        text: The kernel checks ownership on every read
+        note: >-
+          There is no per-read check by the kernel — that would be far too slow.
+          The mapping simply does not exist.
+      - id: c
+        text: File permissions on /proc prevent it
+        note: >-
+          /proc/PID/mem is guarded by permissions, but that is a special
+          interface. Ordinary memory access is blocked by the absence of a
+          mapping.
+      - id: d
+        text: Memory is encrypted per process
+        note: >-
+          No encryption is involved on a normal system. Isolation comes from
+          translation, not secrecy.
+    explanation: >-
+      The isolation is structural: a process cannot even name another's memory.
+      This is the same shape of guarantee as the privilege boundary — not a
+      check that could be misconfigured, but an absence of any way to express the
+      request.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.4.2]
+    stem: >-
+      In /proc/PID/maps, a region shows permissions `rw-p` and no file path.
+      What is it?
+    options:
+      - id: a
+        text: Anonymous memory — heap, stack, or a private allocation
+        correct: true
+      - id: b
+        text: A shared memory segment
+        note: >-
+          Shared mappings show `s` rather than `p` in the fourth position.
+          Private is the default for ordinary allocations.
+      - id: c
+        text: A memory-mapped file whose name has been withheld
+        note: >-
+          File-backed mappings carry the path. No path means nothing on disk
+          backs it.
+      - id: d
+        text: Executable code
+        note: "Code regions carry `x`. This one is explicitly not executable."
+    explanation: >-
+      No path means no file, which means anonymous memory: the heap, a stack, or
+      the result of an mmap with MAP_ANONYMOUS. This is the memory that cannot be
+      reclaimed by dropping it, which is what makes the distinction matter.
+
+  - id: q4
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-A01.4.2]
+    stem: Which of these appear in a typical process's memory map? Select all that apply.
+    options:
+      - id: a
+        text: The program's own executable, in several regions with different permissions
+        correct: true
+      - id: b
+        text: Shared libraries such as libc
+        correct: true
+      - id: c
+        text: A region labelled [heap]
+        correct: true
+      - id: d
+        text: The physical addresses of each region
+        note: >-
+          Physical addresses never appear in user space. Everything in maps is
+          virtual, which is the point.
+    explanation: >-
+      One binary appears as several regions because its segments need different
+      permissions — executable code must not be writable. Nothing in the map is
+      a physical address; a process has no way to learn one.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.4.3]
+    stem: >-
+      A process shows VSZ 2.1 GB and RSS 84 MB. What should you conclude?
+    options:
+      - id: a
+        text: It has mapped a lot of address space and touched little of it — normal
+        correct: true
+      - id: b
+        text: It is leaking memory
+        note: >-
+          Nothing here indicates a leak. Virtual size grows when address space is
+          reserved, which allocators and runtimes do routinely.
+      - id: c
+        text: It is using 2.1 GB and the RSS figure is stale
+        note: >-
+          RSS is current. VSZ counts mappings that may never have been touched.
+      - id: d
+        text: It will be OOM-killed soon
+        note: >-
+          The OOM killer responds to physical memory pressure. Untouched address
+          space costs no physical memory.
+    explanation: >-
+      This is the normal shape for a Go or Java process, or anything mapping
+      large files. Address space is nearly free; only touched pages consume RAM.
+      Alerting on VSZ produces pages for healthy processes.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.4.3]
+    stem: What makes an allocation occupy physical memory?
+    options:
+      - id: a
+        text: Touching it — the first read or write to each page
+        correct: true
+      - id: b
+        text: The malloc call returning successfully
+        note: >-
+          malloc usually just records that a range is valid. No physical page is
+          involved until the memory is used.
+      - id: c
+        text: The process being scheduled onto a CPU
+        note: >-
+          Scheduling has no bearing on which pages are resident.
+      - id: d
+        text: The kernel pre-faulting the whole allocation
+        note: >-
+          The kernel deliberately avoids this. Pre-faulting large allocations
+          that are never fully used would waste most of the memory in the world.
+    explanation: >-
+      Each first touch causes a page fault: the kernel finds a free page, zeroes
+      it, maps it, and lets the instruction re-run. This is why VSZ and RSS
+      diverge, and why memory pressure follows usage rather than allocation.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.4.4]
+    stem: >-
+      Ten worker processes each report 80 MB RSS. How much memory are they using
+      in total?
+    options:
+      - id: a
+        text: Less than 800 MB — shared pages are counted in full by every process
+        correct: true
+      - id: b
+        text: Exactly 800 MB
+        note: >-
+          This is the arithmetic that produces impossible totals. Shared library
+          and code pages exist once and are counted ten times.
+      - id: c
+        text: More than 800 MB, because RSS excludes kernel memory
+        note: >-
+          RSS does exclude some kernel overhead, but that is far outweighed by
+          the double-counting of shared pages.
+      - id: d
+        text: It cannot be estimated at all
+        note: >-
+          It can: sum PSS instead, which divides each shared page between its
+          sharers.
+    explanation: >-
+      Workers forked from one parent share most of their pages copy-on-write, and
+      all of them share the interpreter and its libraries. Summing PSS gives the
+      real figure — often a small fraction of the RSS total.
+
+  - id: q8
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.4.5]
+    stem: >-
+      A container sits at 95% of memory.max for hours with no incidents. What
+      should you check before treating it as a problem?
+    options:
+      - id: a
+        text: The anon/file split in memory.stat
+        correct: true
+      - id: b
+        text: The number of processes in the container
+        note: >-
+          Process count says nothing about which memory is reclaimable.
+      - id: c
+        text: The host's free memory
+        note: >-
+          The limit is on the cgroup. The host having memory free does not stop
+          a cgroup hitting its own cap.
+      - id: d
+        text: Nothing — 95% is always dangerous
+        note: >-
+          A container that reads files will always drift toward its limit,
+          because the kernel keeps cache until it needs the space.
+    explanation: >-
+      If the charge is mostly `file`, that is page cache and it will be handed
+      back the moment anything needs it. If it is mostly `anon`, the headroom is
+      real and nearly gone. Same percentage, opposite conclusions.
+
+  - id: q9
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.4.5]
+    stem: A container reads a 300 MB file. What happens to its memory.current?
+    options:
+      - id: a
+        text: It rises by roughly the amount read, as page cache charged to that cgroup
+        correct: true
+      - id: b
+        text: Nothing — reading a file does not allocate memory
+        note: >-
+          The read itself allocates nothing in the process, but the kernel caches
+          the data and charges it to the cgroup that caused the read.
+      - id: c
+        text: It rises only if the file is memory-mapped
+        note: >-
+          Ordinary reads populate the page cache too. Mapping changes how the
+          process accesses it, not whether it is cached.
+      - id: d
+        text: It rises and stays high permanently
+        note: >-
+          Cache is reclaimed under pressure. It stays only while nothing needs
+          the memory more.
+    explanation: >-
+      Page cache is charged to the cgroup that first touched the data. This is
+      why a container's memory can climb without its application allocating
+      anything, and why the number alone cannot tell you whether anything is
+      wrong.
+
+  - id: q10
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.4.6]
+    stem: A container exits with code 137. What does that tell you?
+    options:
+      - id: a
+        text: It was killed by SIGKILL — in a container, almost always the OOM killer
+        correct: true
+      - id: b
+        text: The application returned 137 from main
+        note: >-
+          Exit codes above 128 encode a signal: 137 is 128 + 9. An application
+          returning 137 itself is possible but vanishingly rare.
+      - id: c
+        text: A health check failed
+        note: >-
+          A failed health check causes a restart via SIGTERM first, which would
+          give 143 if it escalated.
+      - id: d
+        text: The container ran out of disk
+        note: >-
+          Disk exhaustion produces write errors, not SIGKILL.
+    explanation: >-
+      128 + 9 = SIGKILL, which cannot be caught, so there is no shutdown log and
+      no stack trace. Confirm with the cgroup's `memory.events` oom_kill counter
+      or, in Kubernetes, the container's `OOMKilled` termination reason.
+
+  - id: q11
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.4.6]
+    stem: >-
+      A JVM in a container with a 512 MB limit chooses a 16 GB heap. Why?
+    options:
+      - id: a
+        text: It read /proc/meminfo, which reports the host's memory, not the limit
+        correct: true
+      - id: b
+        text: The container limit was applied after the JVM started
+        note: >-
+          The cgroup limit is in place before the first instruction runs.
+      - id: c
+        text: The JVM ignores limits by design
+        note: >-
+          Modern JVMs read cgroup limits when container support is enabled. The
+          failure is in what the runtime asks, not a refusal to comply.
+      - id: d
+        text: 16 GB of address space costs nothing, so it is harmless
+        note: >-
+          The heap is not just address space — the JVM will grow into it, touch
+          the pages and be killed.
+    explanation: >-
+      /proc/meminfo is not namespaced, so anything sizing itself from "the
+      machine's memory" inside a container is configuring for hardware it does
+      not have. The fix belongs in the runtime's configuration — container
+      support, GOMEMLIMIT, an explicit max heap — not in the limit.
+
+  - id: q12
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.4.7]
+    stem: What does memory overcommit mean?
+    options:
+      - id: a
+        text: The kernel grants more memory than it has, assuming most is never touched
+        correct: true
+      - id: b
+        text: Processes are allowed to exceed their cgroup limit temporarily
+        note: >-
+          Cgroup limits are enforced. Overcommit is about promises against
+          physical memory, not about limits.
+      - id: c
+        text: Memory is compressed to fit more in
+        note: >-
+          That describes zswap or zram, which are separate features.
+      - id: d
+        text: Swap is used before RAM is exhausted
+        note: >-
+          Swapping is a response to pressure, not the promise that creates it.
+    explanation: >-
+      Because most allocations are never fully used, refusing to promise memory
+      the machine cannot back would waste most of it. The cost of that
+      efficiency is that failure cannot be reported at allocation time — it
+      arrives later as an OOM kill.
+
+  - id: q13
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.4.7]
+    stem: >-
+      Your program checks malloc for NULL and handles it gracefully. On a
+      default Linux system, how often will that path run?
+    options:
+      - id: a
+        text: Almost never — overcommit means the allocation succeeds and the kill comes later
+        correct: true
+      - id: b
+        text: Whenever the machine is short of memory
+        note: >-
+          Shortage shows up when pages are touched, not when they are requested.
+      - id: c
+        text: Whenever the cgroup limit is reached
+        note: >-
+          Reaching the limit triggers reclaim and then an OOM kill, not a NULL
+          return.
+      - id: d
+        text: On every allocation over 1 GB
+        note: >-
+          Size alone does not cause refusal; the kernel is happy to promise
+          large ranges.
+    explanation: >-
+      The check is not wrong to have, but it is not the safety net people assume.
+      A process that is going to die of memory exhaustion usually dies by SIGKILL
+      while touching a page, with no opportunity to handle anything.
+
+  - id: q14
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.4.8]
+    stem: >-
+      A service's RSS climbs for days and plateaus. Restarting drops it to
+      nothing. `memory.stat` shows `anon` growing and `file` flat. What is the
+      most likely explanation?
+    options:
+      - id: a
+        text: A leak, or an unbounded in-process cache — and a heap profile will separate them
+        correct: true
+      - id: b
+        text: Page cache growth, which is harmless
+        note: >-
+          Page cache would show as `file`. This growth is anonymous.
+      - id: c
+        text: Normal behaviour that needs no investigation
+        note: >-
+          Anonymous memory that only ever grows is worth understanding before it
+          reaches the limit.
+      - id: d
+        text: The kernel failing to reclaim
+        note: >-
+          Anonymous memory is not reclaimable without swap. The kernel is not
+          failing; there is nothing for it to do.
+    explanation: >-
+      Growing `anon` with flat `file` rules out cache. It leaves a genuine leak,
+      an unbounded application cache, or allocator arenas holding freed memory.
+      Comparing a heap profile against RSS distinguishes the first two from the
+      third.
+
+  - id: q15
+    type: multi_choice
+    level: L3
+    objectives: [OBJ-A01.4.8]
+    stem: Which of these are poor memory alerts? Select all that apply.
+    options:
+      - id: a
+        text: Alerting on free memory rather than available
+        correct: true
+      - id: b
+        text: Alerting on container memory usage percentage with no anon/file split
+        correct: true
+      - id: c
+        text: Alerting on the sum of per-process RSS
+        correct: true
+      - id: d
+        text: Alerting on a non-zero oom_kill counter
+        note: >-
+          This is the one alert that is never a false positive. Something died
+          and lost its in-flight work.
+    explanation: >-
+      The first three page people for healthy systems, which trains everyone to
+      ignore memory alerts. The fourth is unambiguous — if you take one change
+      from this topic, make it adding that one.

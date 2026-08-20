@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph SH["one shell process — assignments here are shared"]
+        G["global scope<br/><i>target=staging</i>"]
+        G --> D["deploy()<br/><i>local stage=prod</i>"]
+        D --> R["run_step()<br/><b>can read AND write</b><br/>target, stage, and anything<br/>else on the call stack"]
+        R --> L["log()<br/>sees all of the above"]
+    end
+
+    SH --> Q{"how was it called?"}
+
+    Q -- "f          plain call" --> K["same process<br/><b>assignments survive</b>"]
+    Q -- "( f )      subshell" --> X["forked copy"]
+    Q -- "v=$(f)     command substitution" --> X
+    Q -- "f | other  left of a pipe" --> X
+    Q -- "cmd | while read ..." --> X
+
+    X --> X2["the fork exits<br/><b>every assignment is discarded</b><br/><i>only its output and status come back</i>"]
+
+    style R fill:#fdf6e3,stroke:#b58900
+    style X2 fill:#fdecea,stroke:#c0392b
+    style K fill:#e8f4ea,stroke:#2f7d4f

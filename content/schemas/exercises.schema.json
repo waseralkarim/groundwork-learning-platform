@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "Exercise": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^e\\d+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 140,
+          "minLength": 5,
+          "title": "Title",
+          "type": "string"
+        },
+        "level": {
+          "$ref": "#/$defs/Level"
+        },
+        "objectives": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Objectives",
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "ordering",
+            "short_answer",
+            "calculation",
+            "interpretation"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "prompt": {
+          "minLength": 20,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "answer": {
+          "minLength": 10,
+          "title": "Answer",
+          "type": "string"
+        },
+        "explanation": {
+          "minLength": 20,
+          "title": "Explanation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "level",
+        "objectives",
+        "kind",
+        "prompt",
+        "answer",
+        "explanation"
+      ],
+      "title": "Exercise",
+      "type": "object"
+    },
+    "Level": {
+      "description": "The difficulty ladder. See docs/architecture/01-vision-and-principles.md.",
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5"
+      ],
+      "title": "Level",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "topic": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Topic",
+      "type": "string"
+    },
+    "exercises": {
+      "items": {
+        "$ref": "#/$defs/Exercise"
+      },
+      "minItems": 1,
+      "title": "Exercises",
+      "type": "array"
+    }
+  },
+  "required": [
+    "topic",
+    "exercises"
+  ],
+  "title": "ExerciseSet",
+  "type": "object"
+}

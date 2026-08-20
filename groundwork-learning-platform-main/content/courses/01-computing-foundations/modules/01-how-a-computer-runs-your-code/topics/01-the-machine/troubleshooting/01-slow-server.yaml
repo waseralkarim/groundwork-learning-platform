@@ -1,0 +1,169 @@
+id: troubleshooting.slow-server
+topic: topic.the-machine
+title: The server got slow at 14:00
+level: L3
+objectives: [OBJ-A01.1.7]
+reveal_policy: progressive
+
+situation: >-
+  You are on call. At 14:07 the alerting system fires: API p99 latency has gone
+  from 40ms to 2.5 seconds. The service is still returning correct responses,
+  just slowly. There has been no deploy today — the last one was four days ago.
+  Traffic volume is normal for a Tuesday afternoon.
+
+
+  You have SSH access to the host. Work out what is wrong before you read the
+  answer, and be able to point at the specific line of output that proves it.
+
+symptoms:
+  - "API p99 latency: 40ms → 2,500ms, starting around 14:00"
+  - "Error rate unchanged — responses are correct, just slow"
+  - "No deploy in four days"
+  - "Request volume normal"
+  - "SSH itself feels sluggish"
+
+artifacts:
+  - type: command_output
+    label: "vmstat 1 5"
+    content: |
+      procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+       r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+       1  3 4194300  62144  12000  98000  892  1140  4820  1260 3100 8200  8  9 21 62  0
+       2  4 4198200  58900  11800  94000  1024 1320  5100  1480 3350 8900  7 11 18 64  0
+       1  5 4201100  55200  11500  91000  976  1208  4990  1390 3210 8600  9 10 19 62  0
+       2  3 4205600  53100  11200  88000  1100 1420  5240  1510 3400 9100  8 12 17 63  0
+       1  4 4208900  51800  10900  86000  1050 1380  5080  1440 3380 8950  8 11 18 63  0
+
+  - type: command_output
+    label: "free -h"
+    content: |
+      $ free -h
+                     total        used        free      shared  buff/cache   available
+      Mem:            15Gi        14Gi        50Mi       120Mi       380Mi       210Mi
+      Swap:          8.0Gi       4.0Gi       4.0Gi
+
+  - type: command_output
+    label: "ps -eo pid,comm,%cpu,%mem,rss --sort=-rss | head -6"
+    content: |
+      $ ps -eo pid,comm,%cpu,%mem,rss --sort=-rss | head -6
+          PID COMMAND         %CPU %MEM     RSS
+         2841 report-worker    6.2 41.2 6488064
+         1180 postgres         3.1 18.9 2976768
+         1042 api-server       4.8 14.2 2236416
+          892 nginx            0.4  0.3   47232
+          410 node-exporter    0.2  0.1   18944
+
+  - type: log
+    label: "journalctl -u report-worker --since 13:45 | tail -5"
+    content: |
+      13:52:01 report-worker[2841]: starting monthly reconciliation job
+      13:52:01 report-worker[2841]: loading transactions for period 2026-07
+      13:58:44 report-worker[2841]: loaded 14,200,000 rows into memory
+      14:03:12 report-worker[2841]: building index
+      14:11:55 report-worker[2841]: building index
+
+  - type: metric
+    label: "Disk read throughput, node exporter"
+    content: |
+      13:30  4 MB/s
+      13:45  6 MB/s
+      14:00  180 MB/s
+      14:15  195 MB/s
+
+diagnostic_questions:
+  - "Which of the three resources is the bottleneck — CPU, memory, or disk?"
+  - "Which specific columns in the vmstat output prove it? Name them."
+  - "The disk read throughput jumped 30×. Is the disk the cause, or a symptom?"
+  - "The CPU shows 62% in the `wa` column. Does that mean the CPU is busy?"
+  - "What started at 13:52, and why did the impact appear around 14:00 rather than immediately?"
+  - "Why is `free` showing 50Mi when `available` shows 210Mi — and does that difference matter here?"
+
+hints:
+  - >-
+    Start by ruling things out rather than looking for the answer. Three
+    resources, three sets of columns. Which two can you eliminate?
+  - >-
+    The `si` and `so` columns in vmstat are swap-in and swap-out, in blocks per
+    second. Any sustained non-zero value there is significant. What are they here?
+  - >-
+    `wa` is time the CPU spent *idle because it had nothing to do but wait*. It
+    is not CPU utilisation. Given `us` is only 8%, what is the CPU actually doing?
+  - >-
+    Look at the timeline. Something loaded 14.2 million rows into memory at
+    13:58. What is the machine's total RAM?
+
+root_cause: >-
+  The `report-worker` process began a monthly reconciliation job at 13:52 and
+  loaded 14.2 million rows into memory, growing to 6.2GB RSS — 41% of a 15GB
+  machine. Combined with Postgres (2.9GB) and the API server (2.2GB), demand
+  exceeded physical RAM.
+
+
+  The kernel responded by evicting the page cache (buff/cache collapsed to
+  380Mi) and then swapping (4GB swapped out, with sustained si/so around
+  1000 blocks/sec). Every memory access that now hits swap costs disk latency
+  instead of RAM latency — roughly a thousand times slower.
+
+
+  The API server did not change. It is slow because its memory pages are being
+  paged in and out of disk on access, and because the disk is saturated serving
+  that swap traffic. The disk activity is a symptom of the memory shortage, not
+  its cause.
+
+method: |
+  The general procedure, which is the actual thing to learn here:
+
+  **1. Classify before you investigate.** Three resources, and each has a
+  signature in `vmstat`:
+
+  | Resource | Signature |
+  |---|---|
+  | CPU | `r` high (> core count), `id` near 0, `wa` low |
+  | Memory | `si`/`so` sustained non-zero — this dominates everything else |
+  | Disk | `wa` high, `b` high, `si`/`so` zero |
+
+  Here `si`/`so` are ~1000 sustained. That single fact makes this a memory
+  problem, and everything else on the page is downstream of it.
+
+  **2. Do not be misled by the largest number.** `wa` at 62% is the most dramatic
+  figure in the output, and reading it as "the disk is the problem" is the
+  mistake this scenario is built to catch. `wa` is *idle* time — the CPU waiting.
+  The question is always *waiting for what*, and `si`/`so` answer it.
+
+  **3. Confirm with a second source.** `free -h` shows 4GB of swap in use and
+  210Mi available on a 15GB box. That is independent confirmation, not a
+  restatement.
+
+  **4. Find what changed.** No deploy, so look for something that *started*. The
+  journal shows a job beginning at 13:52 and loading 14.2M rows. `ps` sorted by
+  RSS names the process.
+
+  **5. Explain the delay.** Impact appeared at ~14:00, not 13:52, because the
+  page cache absorbed the pressure first. Only once it was exhausted did swapping
+  begin. The gap between cause and symptom is a normal feature of memory
+  exhaustion, and it is why "nothing changed at 14:00" is usually false.
+
+  **6. Sanity-check the direction of causation.** Disk throughput rose 30× at the
+  same time. Ask which way the arrow points: a job that suddenly read 180MB/s
+  could cause memory pressure through cache, but here the reads are *swap* reads,
+  which means memory pressure caused the disk load.
+
+resolution: |
+  **Immediate:** stop or renice the `report-worker` job. Memory is returned,
+  swapping stops, and API latency recovers within seconds — swap-in is fast once
+  nothing is competing.
+
+  **Verify:** `si`/`so` return to 0 and `available` recovers. Do not declare it
+  fixed on the basis of the latency graph alone; confirm the mechanism.
+
+  **Short term:** cap the job's memory with a cgroup or systemd
+  `MemoryMax=`, so it is killed instead of degrading everything else. A batch job
+  that fails is much better than a batch job that takes the API down with it.
+
+  **Proper fix:** the job should stream and paginate rather than loading 14.2
+  million rows into memory. This is the actual defect; everything else is
+  mitigation.
+
+  **Prevention:** alert on `available` memory and on sustained swap activity —
+  not on the `free` column. A swap-rate alert would have fired at 13:56, four
+  minutes before any user noticed.

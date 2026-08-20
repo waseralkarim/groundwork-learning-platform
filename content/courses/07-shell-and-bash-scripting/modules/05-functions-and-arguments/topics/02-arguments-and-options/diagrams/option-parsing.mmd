@@ -1,0 +1,19 @@
+flowchart TB
+    A["the operator types<br/><i>prune.sh --dry-run /srv/data</i>"] --> B{"which parser?"}
+
+    B -- "getopts<br/><i>builtin, short options only</i>" --> C["sees the word --dry-run<br/>and splits it into LETTERS<br/><b>- d r y - r u n</b>"]
+    C --> C2["d matches the optstring<br/><b>delete is enabled</b><br/><i>the rest are unknown-option warnings<br/>on stderr</i>"]
+
+    B -- "getopt(1)<br/><i>external, util-linux</i>" --> D["recognises --dry-run<br/>as one long option"]
+    D --> D2["emits a requoted list<br/><i>-n -- '/srv/data'</i><br/>for <b>eval set --</b>"]
+
+    B -- "hand-rolled<br/><i>while/case over \$1</i>" --> E["whatever you wrote<br/><i>--out=FILE, --, and a missing<br/>value are each a decision</i>"]
+
+    C2 --> F["<b>files deleted</b>"]
+    D2 --> G["dry run"]
+    E --> H["depends"]
+
+    style C2 fill:#fdecea,stroke:#c0392b
+    style F fill:#fdecea,stroke:#c0392b
+    style G fill:#e8f4ea,stroke:#2f7d4f
+    style H fill:#fdf6e3,stroke:#b58900

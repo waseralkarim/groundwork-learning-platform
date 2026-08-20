@@ -1,0 +1,300 @@
+id: lab.read-the-hash
+topic: topic.hashing-and-passwords
+title: Read a stored hash, and prove a message came from who it claims
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A04.1.6, OBJ-A04.1.7]
+
+intro: >-
+  Two skills that come up on real systems. First: given a password hash from a
+  machine you inherited, name the algorithm, read its parameters and say what it
+  costs an attacker — in under a minute, from the string alone.
+
+
+  Second: verify a signed webhook, and then show why the obvious way of building
+  that signature is broken.
+
+setup:
+  - /opt/lab/seed-hashing.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      /tmp/shadow-samples/shadow.sample is a shadow file from an inherited
+      machine. For each account, extract the algorithm id and save a table to
+      /tmp/answer-algorithms naming what each one is.
+    hint: >-
+      Split the second field on `$`. The first piece after the leading `$` is
+      the algorithm id. Two of the six accounts have no hash at all — say what
+      those mean.
+    walkthrough: |
+      cd /tmp/shadow-samples
+      {
+        awk -F: '{ n=split($2, a, "$"); if (n >= 3) print $1, "id=" a[2]; else print $1, "no-hash: [" $2 "]" }' shadow.sample
+        echo
+        echo "1 = md5crypt, obsolete"
+        echo "5 = sha256crypt"
+        echo "6 = sha512crypt"
+        echo "an exclamation mark means the account is locked - no password can match"
+        echo "an empty field means no password is required at all, which is worse than any weak hash here"
+      } > /tmp/answer-algorithms
+      cat /tmp/answer-algorithms
+    verify:
+      - type: file_matches
+        path: /tmp/answer-algorithms
+        pattern: "ancient id=1"
+        describe: You identified the md5crypt account
+      - type: file_matches
+        path: /tmp/answer-algorithms
+        pattern: "md5crypt"
+        describe: And named the algorithm behind the id
+      - type: file_matches
+        path: /tmp/answer-algorithms
+        pattern: "locked|exclamation"
+        describe: And read the locked account correctly
+      - type: file_matches
+        path: /tmp/answer-algorithms
+        pattern: "empty|no password is required"
+        describe: And spotted that an empty hash field is the worst entry in the file
+
+  - id: s2
+    instruction: >-
+      All four hashed accounts use the same password. Prove it by recomputing
+      each hash from the candidate `hunter2` and its own salt, and save the
+      comparison to /tmp/answer-same-password.
+    hint: >-
+      The salt is the field before the digest. For the tuned account the salt
+      field includes its `rounds=` parameter, and you must pass all of it to
+      `-salt` for the recomputation to match.
+    walkthrough: |
+      cd /tmp/shadow-samples
+      {
+        for u in ancient default5 default6 tuned6; do
+          stored=$(awk -F: -v u="$u" '$1==u{print $2}' shadow.sample)
+          flag=$(echo "$stored" | cut -d'$' -f2)
+          salt=$(echo "$stored" | sed 's/\$[^$]*$//' | sed 's/^\$[0-9]*\$//')
+          recomputed=$(openssl passwd -"$flag" -salt "$salt" hunter2)
+          if [ "$recomputed" = "$stored" ]; then
+            echo "$u: MATCH (salt=$salt)"
+          else
+            echo "$u: no match"
+          fi
+        done
+        echo
+        echo "four different stored strings, one password: the salts made them differ, so an attacker sorting this file for duplicates finds none"
+      } > /tmp/answer-same-password
+      cat /tmp/answer-same-password
+    verify:
+      - type: command_exit
+        command: "test $(grep -c 'MATCH' /tmp/answer-same-password) -eq 4"
+        exit_code: 0
+        describe: All four recomputed hashes matched the stored values
+      - type: file_matches
+        path: /tmp/answer-same-password
+        pattern: "rounds=1000000"
+        describe: And the tuned account's work factor was carried through as part of its salt
+
+  - id: s3
+    instruction: >-
+      Rank the four accounts by what one guess costs an attacker. Measure the
+      per-hash cost of the weakest and the strongest, and save the ranking with
+      both timings to /tmp/answer-ranking.
+    hint: >-
+      Time a single `openssl passwd` for the md5crypt salt and for the
+      `rounds=1000000` one, using `date +%s%N`. The two `$6$` accounts differ
+      only by a parameter, and that is the finding.
+    walkthrough: |
+      cd /tmp/shadow-samples
+      t0=$(date +%s%N); openssl passwd -1 -salt oldsalt1 hunter2 >/dev/null; t1=$(date +%s%N)
+      weak=$(( (t1 - t0) / 1000000 ))
+      t0=$(date +%s%N); openssl passwd -6 -salt 'rounds=1000000$k2Lp9QmX' hunter2 >/dev/null; t1=$(date +%s%N)
+      strong=$(( (t1 - t0) / 1000000 ))
+      [ "$weak" -lt 1 ] && weak=1
+      {
+        echo "weakest: ancient (md5crypt) at ${weak}ms per hash"
+        echo "then:    default5 and default6, both at algorithm defaults with no rounds= parameter"
+        echo "strongest: tuned6 (sha512crypt rounds=1000000) at ${strong}ms per hash"
+        echo
+        echo "ratio strongest/weakest: $(( strong / weak ))x"
+        echo "default6 and tuned6 are the SAME algorithm. the only difference is the rounds parameter, and it is worth more than the difference between md5crypt and sha512crypt."
+      } > /tmp/answer-ranking
+      cat /tmp/answer-ranking
+    verify:
+      - type: file_matches
+        path: /tmp/answer-ranking
+        pattern: "strongest: tuned6"
+        describe: You ranked the tuned account as the most expensive to attack
+      - type: file_matches
+        path: /tmp/answer-ranking
+        pattern: "SAME algorithm|same algorithm"
+        describe: And identified that the two sha512crypt accounts differ only by a parameter
+      - type: command_exit
+        command: "test $(sed -n 's/.*rounds=1000000) at \\([0-9]*\\)ms.*/\\1/p' /tmp/answer-ranking) -ge 100"
+        exit_code: 0
+        describe: And measured the tuned hash at 100ms or more per attempt
+
+  - id: s4
+    instruction: >-
+      /tmp/webhook holds two deliveries and the signature headers they arrived
+      with, plus the shared secret. Verify both and save the results to
+      /tmp/answer-webhook.
+    hint: >-
+      `openssl dgst -sha256 -hmac "$SECRET" -r < body` prints the tag. Compare it
+      against the value in the matching `.headers` file.
+    walkthrough: |
+      cd /tmp/webhook
+      secret=$(cat shared-secret)
+      {
+        for n in 1 2; do
+          claimed=$(sed 's/.*sha256=//' "delivery-$n.headers")
+          actual=$(openssl dgst -sha256 -hmac "$secret" -r < "delivery-$n.json" | cut -d' ' -f1)
+          echo "delivery-$n:"
+          echo "  body:     $(cat delivery-$n.json)"
+          echo "  claimed:  $claimed"
+          echo "  computed: $actual"
+          if [ "$claimed" = "$actual" ]; then echo "  VALID"; else echo "  REJECTED"; fi
+        done
+        echo
+        echo "delivery-2 carries delivery-1's signature. the amount was changed from 1200 to 9900 after signing, and the hmac does not cover the new body, so verification rejects it."
+      } > /tmp/answer-webhook
+      cat /tmp/answer-webhook
+    verify:
+      - type: file_matches
+        path: /tmp/answer-webhook
+        pattern: "VALID"
+        describe: The untampered delivery verified
+      - type: file_matches
+        path: /tmp/answer-webhook
+        pattern: "REJECTED"
+        describe: And the altered one was rejected
+      - type: file_matches
+        path: /tmp/answer-webhook
+        pattern: "9900|amount was changed"
+        describe: And you identified what was altered
+
+  - id: s5
+    instruction: >-
+      Show why the key is what makes the signature meaningful. Compute a plain
+      SHA-256 of delivery-2's body without any secret, and an HMAC with a wrong
+      secret, and save both alongside a statement of what each proves to
+      /tmp/answer-why-key.
+    hint: >-
+      Anyone who has the body can compute the plain digest. Ask yourself what
+      that digest would let an attacker do if the provider had sent it as the
+      signature.
+    walkthrough: |
+      cd /tmp/webhook
+      {
+        echo "plain sha256 of delivery-2, computed with no secret at all:"
+        sha256sum delivery-2.json | cut -d' ' -f1
+        echo "  anyone holding the body can produce this. if the provider sent it as the signature, an attacker could alter the body AND recompute a matching value, and verification would always pass."
+        echo
+        echo "hmac of delivery-2 with the wrong secret:"
+        openssl dgst -sha256 -hmac "whsec_wrong" -r < delivery-2.json | cut -d' ' -f1
+        echo "  unrelated to the real tag. only a holder of the shared secret can produce the value the provider sent."
+        echo
+        echo "a plain digest proves what the bytes are. an hmac proves who produced them. the key is the entire difference."
+      } > /tmp/answer-why-key
+      cat /tmp/answer-why-key
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-key
+        pattern: "anyone"
+        describe: You stated that a keyless digest can be produced by anyone
+      - type: file_matches
+        path: /tmp/answer-why-key
+        pattern: "who produced|origin|shared secret"
+        describe: And that the key is what turns a digest into evidence of origin
+
+solution: >-
+  **Reading a shadow file.**
+
+
+  Every crypt-format hash is `$id$[params$]salt$digest`. Splitting the second
+  colon-field on `$` gives you the algorithm in one step, and the table is short
+  enough to memorise: `1` md5crypt, `2a`/`2b`/`2y` bcrypt, `5` sha256crypt, `6`
+  sha512crypt, `argon2id` the current answer, and *no* `$` at all means DES crypt
+  — thirteen characters, and only the first eight characters of the password
+  matter.
+
+
+  Two entries had no hash, and they mean opposite things. `!` is a locked
+  account: no computed hash can ever equal `!`, so no password authenticates.
+  An **empty** field means no password is required, and it is the most serious
+  finding in the file — considerably worse than the md5crypt entry beside it.
+
+
+  **All four were `hunter2`.**
+
+
+  Recomputing each hash from the candidate and the row's own salt reproduced the
+  stored string exactly. That is what verification *is* — there is no reversing
+  step anywhere in a login, only recomputation and comparison.
+
+
+  The detail worth carrying: for `tuned6` the salt you must pass back is
+  `rounds=1000000$k2Lp9QmX`, parameter included. The parameters live inside the
+  salt field precisely so that a stored hash is self-describing — a verifier
+  needs no configuration to check a hash made under an old work factor, which is
+  what makes raising it over time possible at all.
+
+
+  **Ranking by cost, and the surprise.**
+
+
+  ```text
+  ancient  (md5crypt)                 ~1ms
+  default5 (sha256crypt, no rounds=)  fast
+  default6 (sha512crypt, no rounds=)  fast
+  tuned6   (sha512crypt rounds=1e6)   ~480ms
+  ```
+
+
+  `default6` and `tuned6` are **the same algorithm**. The only difference is a
+  parameter, and that parameter is worth more than the entire difference between
+  md5crypt and sha512crypt.
+
+
+  This is why "we use SHA-512" is not an answer to "how are passwords stored".
+  The algorithm name tells you almost nothing on its own; the parameter tells you
+  the cost. When you review this on a real system, the question is always **what
+  is the work factor**, and the answer is in the string.
+
+
+  **The webhook.**
+
+
+  `delivery-1` verified; `delivery-2` did not. Its body claims 9900 rather than
+  1200 and it carries `delivery-1`'s signature unchanged — an amount altered
+  after signing, which is exactly the attack HMAC verification exists to catch.
+
+
+  A service that logs the signature header but never checks it — which is
+  extremely common — accepts that request and credits 9900.
+
+
+  **Why the key, and not just the hash.**
+
+
+  The plain SHA-256 of the body is computable by anyone holding the body. If a
+  provider sent *that* as a signature, an attacker could alter the body and
+  recompute a matching digest, and verification would pass every time. The
+  digest proves what the bytes are. It cannot prove who produced them.
+
+
+  The HMAC can, because producing it requires the secret. One further rule
+  applies when you implement the check: compare the tags with a **constant-time**
+  comparison — `hmac.compare_digest`, `crypto.timingSafeEqual`,
+  `subtle.ConstantTimeCompare`. An ordinary `==` returns as soon as two bytes
+  differ, and an attacker who can measure that timing recovers a valid tag one
+  byte at a time.
+
+
+  And do not build the construction yourself. `sha256(secret + body)` looks
+  equivalent and is not: SHA-2's output *is* its internal state, so an attacker
+  who sees a tag can resume from it and produce a valid tag for
+  `body + anything_they_choose` without ever learning the secret. That is a
+  length extension attack, and HMAC's two-pass structure is precisely the fix
+  for it.

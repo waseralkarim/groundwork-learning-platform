@@ -1,0 +1,151 @@
+id: topic.encryption
+slug: encryption
+title: "Encryption: What the Key Protects, and What It Does Not"
+summary: >-
+  Encryption keeps data secret from anyone without the key. It does not keep it
+  unaltered, it does not say who sent it, and it does not survive a key used
+  twice. Each of those gaps is a real failure you can produce here in one
+  command — including changing the amount in an encrypted payment without ever
+  learning the key.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.hashing-and-passwords
+    hardness: required
+
+objectives:
+  - id: OBJ-A04.2.1
+    level: L1
+    verb: distinguish
+    statement: >-
+      Distinguish symmetric from asymmetric encryption, and state which problem
+      each one exists to solve.
+    assessed_by: [quiz.q1, quiz.q2, lab.what-the-key-protects, exercise.e1]
+
+  - id: OBJ-A04.2.2
+    level: L1
+    verb: explain
+    statement: >-
+      Explain why the key rather than the algorithm is the secret, and what
+      follows from that for operations.
+    assessed_by: [quiz.q3, quiz.q4, lab.what-the-key-protects]
+
+  - id: OBJ-A04.2.3
+    level: L2
+    verb: measure
+    statement: >-
+      Measure the cost and payload limits of asymmetric encryption, and use both
+      to explain why bulk data is never encrypted with it.
+    assessed_by: [quiz.q5, quiz.q6, lab.why-nobody-encrypts-with-rsa, exercise.e2]
+
+  - id: OBJ-A04.2.4
+    level: L2
+    verb: trace
+    statement: >-
+      Trace a hybrid encryption scheme end to end, and identify which key
+      protects which part.
+    assessed_by: [quiz.q7, quiz.q8, lab.why-nobody-encrypts-with-rsa, assessment.A]
+
+  - id: OBJ-A04.2.5
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what a mode of operation decides, and demonstrate what ECB leaks
+      that CBC does not.
+    assessed_by: [quiz.q9, quiz.q10, lab.what-the-key-protects, exercise.e3]
+
+  - id: OBJ-A04.2.6
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a ciphertext that was altered in transit, and explain why
+      decryption succeeded anyway.
+    assessed_by: [quiz.q11, quiz.q12, lab.encryption-is-not-integrity, troubleshooting.the-amount-that-changed, assessment.B]
+
+  - id: OBJ-A04.2.7
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what reusing a nonce or IV costs, and recover information from two
+      messages encrypted under the same one.
+    assessed_by: [quiz.q13, lab.the-key-used-twice, exercise.e4]
+
+  - id: OBJ-A04.2.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify an encryption scheme for a stated job, naming the mode, the key
+      management and the integrity mechanism.
+    assessed_by: [quiz.q14, quiz.q15, lab.the-key-used-twice, exercise.e5, assessment.C]
+
+terminology:
+  - term: symmetric encryption
+    definition: >-
+      One key encrypts and decrypts. Fast enough for bulk data — around a
+      gigabyte a second per core — and the whole problem is getting the key to
+      the other party.
+  - term: asymmetric encryption
+    definition: >-
+      A key pair: what the public key encrypts, only the private key decrypts.
+      It solves key distribution, and it is thousands of times slower with a
+      payload limit of a few hundred bytes.
+  - term: hybrid encryption
+    definition: >-
+      Encrypt the data with a fresh symmetric key, encrypt that key with the
+      recipient's public key, send both. Every real system does this, including
+      TLS.
+  - term: mode of operation
+    definition: >-
+      How a block cipher is applied to data longer than one block. It is not a
+      detail — the same cipher in two modes has entirely different properties.
+  - term: ECB
+    definition: >-
+      Electronic Codebook — each block encrypted independently, so identical
+      plaintext blocks produce identical ciphertext blocks. It leaks structure
+      and is never the right choice.
+  - term: IV
+    definition: >-
+      Initialisation vector — a value that makes the same plaintext encrypt
+      differently each time. Not secret, but it must never repeat under one key.
+  - term: nonce
+    definition: >-
+      Number used once. The same requirement as an IV, named for the property
+      that matters: reuse under one key is catastrophic, not merely untidy.
+  - term: keystream
+    definition: >-
+      The pseudorandom bytes a stream cipher or counter mode produces from key
+      and nonce, XORed with the plaintext. Reuse it and the key cancels out of
+      the arithmetic entirely.
+  - term: malleability
+    definition: >-
+      Being able to make a predictable change to the plaintext by changing the
+      ciphertext, without the key. Every unauthenticated mode has this property.
+  - term: AEAD
+    definition: >-
+      Authenticated Encryption with Associated Data — encryption and integrity
+      in one operation, so a tampered ciphertext fails to decrypt rather than
+      decrypting to something else. AES-GCM and ChaCha20-Poly1305.
+  - term: key exchange
+    definition: >-
+      Establishing a shared secret over a channel an eavesdropper can read.
+      Diffie–Hellman does this without the secret ever being transmitted.
+  - term: forward secrecy
+    definition: >-
+      Using an ephemeral key exchange so that stealing the long-term private key
+      later does not decrypt traffic captured earlier.
+  - term: encryption at rest
+    definition: >-
+      Data encrypted on disk. It protects against a stolen disk and almost
+      nothing else — a running process with the key sees plaintext, and so does
+      anyone who compromises it.
+
+foreshadows:
+  - "A04.3's TLS handshake is a key exchange followed by hybrid encryption, both built here."
+  - "C16's image and secret encryption is this primitive with a key management system attached."
+  - "D22's cloud KMS answers the question this topic ends on — where does the key live."
+  - "G43's secrets management is mostly key distribution, which is the problem asymmetric encryption exists to solve."
+
+tags: [security, encryption, cryptography, openssl, tls, fundamentals]

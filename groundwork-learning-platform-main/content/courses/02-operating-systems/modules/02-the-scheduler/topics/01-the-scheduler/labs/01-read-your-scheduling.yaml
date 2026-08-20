@@ -1,0 +1,279 @@
+id: lab.read-your-scheduling
+topic: topic.the-scheduler
+title: Read your scheduling state, and find out which policies you may have
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A02.3.1, OBJ-A02.3.2, OBJ-A02.3.5, OBJ-A02.3.6]
+
+intro: >-
+  Orientation. Which policy you are running under, what weight the scheduler is
+  arbitrating with on your behalf, and how long a slice you ask for when you are
+  picked.
+
+
+  Then the boundary: three scheduling policies you may set yourself, two you may
+  not, and one nice value that is refused. Each refusal names a specific power
+  the sandbox has taken away, and being able to say which is the difference
+  between fixing a latency problem and asking for `--privileged`.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Save your scheduler state to /tmp/answer-sched — the policy, priority,
+      weight, virtual runtime and slice lines from /proc/self/sched.
+    hint: >-
+      `grep -E '^(policy|prio)|se.load.weight|se.vruntime|se.slice'
+      /proc/self/sched > /tmp/answer-sched`
+    walkthrough: |
+      grep -E '^(policy|prio)|se.load.weight|se.vruntime|se.slice' /proc/self/sched > /tmp/answer-sched
+      cat /tmp/answer-sched
+    verify:
+      - type: file_matches
+        path: /tmp/answer-sched
+        pattern: 'policy\s+:\s+0'
+        describe: Policy 0 — SCHED_NORMAL, like essentially everything you deploy
+      - type: file_matches
+        path: /tmp/answer-sched
+        pattern: 'se.load.weight\s+:\s+1048576'
+        describe: Weight 1048576 — that is 1024, scaled by another 1024
+      - type: file_matches
+        path: /tmp/answer-sched
+        pattern: 'se.slice'
+        describe: The request slice is present, which means this kernel runs EEVDF
+
+  - id: s2
+    instruction: >-
+      That weight corresponds to a nice value. Confirm it two ways — the `nice`
+      command and the `prio` line you just captured — and save both to
+      /tmp/answer-nice.
+    hint: >-
+      For a normal task, `prio` is 120 plus the nice value. Write the nice
+      command's output and the prio line together.
+    walkthrough: |
+      {
+        echo "nice=$(nice)"
+        grep '^prio' /proc/self/sched
+      } > /tmp/answer-nice
+      cat /tmp/answer-nice
+    verify:
+      - type: file_matches
+        path: /tmp/answer-nice
+        pattern: 'nice=0'
+        describe: The default nice value
+      - type: file_matches
+        path: /tmp/answer-nice
+        pattern: 'prio\s+:\s+120'
+        describe: And prio 120, which is 120 + 0
+
+  - id: s3
+    instruction: >-
+      Now lower your own standing. Run something at nice 10 and capture the
+      weight the scheduler gives it, into /tmp/answer-nice10.
+
+
+      Compare that number with your own.
+    hint: >-
+      `nice -n 10 bash -c "grep -E 'se.load.weight|^prio' /proc/self/sched" >
+      /tmp/answer-nice10`
+    walkthrough: |
+      nice -n 10 bash -c "grep -E 'se.load.weight|^prio' /proc/self/sched" > /tmp/answer-nice10
+      cat /tmp/answer-nice10
+    verify:
+      - type: file_matches
+        path: /tmp/answer-nice10
+        pattern: 'se.load.weight\s+:\s+112640'
+        describe: Weight 110 scaled — about one ninth of nice 0
+      - type: file_matches
+        path: /tmp/answer-nice10
+        pattern: 'prio\s+:\s+130'
+        describe: prio 130, which is 120 + 10
+
+  - id: s4
+    instruction: >-
+      Try to raise your standing instead. Attempt nice -5 and save the result,
+      including the exit status, to /tmp/answer-negative.
+    hint: >-
+      `nice -n -5 true > /tmp/answer-negative 2>&1; echo "exit=$?" >>
+      /tmp/answer-negative`
+    walkthrough: |
+      nice -n -5 true > /tmp/answer-negative 2>&1
+      echo "exit=$?" >> /tmp/answer-negative
+      cat /tmp/answer-negative
+    verify:
+      - type: file_matches
+        path: /tmp/answer-negative
+        pattern: "Permission denied|not permitted"
+        describe: Lowering your nice value is refused
+
+  - id: s5
+    instruction: >-
+      Two operations on the same knob, one allowed and one not. Write to
+      /tmp/answer-asymmetry a sentence explaining why the kernel treats them
+      differently.
+    hint: >-
+      One of the two takes something from your neighbours. The other gives
+      something away.
+    walkthrough: |
+      echo "raising your priority takes CPU from other tasks so it needs CAP_SYS_NICE, while lowering it only gives your own share away and harms nobody" > /tmp/answer-asymmetry
+    verify:
+      - type: file_matches
+        path: /tmp/answer-asymmetry
+        pattern: "other|neighbour|else|take"
+        describe: You identified the effect on other tasks as the reason
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-asymmetry) -ge 12"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+  - id: s6
+    instruction: >-
+      Now the policies. Try to run something under SCHED_BATCH, SCHED_IDLE and
+      SCHED_FIFO, capturing each attempt's exit status into
+      /tmp/answer-policies.
+
+
+      Two will work and one will not.
+    hint: >-
+      `chrt -b 0 true`, `chrt -i 0 true`, `chrt -f 10 true` — record the exit
+      status after each.
+    walkthrough: |
+      {
+        chrt -b 0 true 2>&1; echo "batch exit=$?"
+        chrt -i 0 true 2>&1; echo "idle exit=$?"
+        chrt -f 10 true 2>&1; echo "fifo exit=$?"
+      } > /tmp/answer-policies
+      cat /tmp/answer-policies
+    verify:
+      - type: file_matches
+        path: /tmp/answer-policies
+        pattern: "batch exit=0"
+        describe: SCHED_BATCH is available to you
+      - type: file_matches
+        path: /tmp/answer-policies
+        pattern: "idle exit=0"
+        describe: So is SCHED_IDLE
+      - type: file_matches
+        path: /tmp/answer-policies
+        pattern: "fifo exit=1"
+        describe: SCHED_FIFO is not
+
+  - id: s7
+    instruction: >-
+      Confirm that the batch policy actually took, rather than being silently
+      ignored. Run `chrt -p` on a process started under it and save the output
+      to /tmp/answer-batch.
+    hint: "`chrt -b 0 bash -c 'chrt -p $$' > /tmp/answer-batch 2>&1`"
+    walkthrough: |
+      chrt -b 0 bash -c 'chrt -p $$' > /tmp/answer-batch 2>&1
+      cat /tmp/answer-batch
+    verify:
+      - type: file_matches
+        path: /tmp/answer-batch
+        pattern: "SCHED_BATCH"
+        describe: The process really is running under SCHED_BATCH
+
+  - id: s8
+    instruction: >-
+      Last one. Read the real-time throttle the kernel applies, and save both
+      values to /tmp/answer-rt-throttle.
+
+
+      Work out what fraction of each second is reserved for normal tasks.
+    hint: >-
+      `/proc/sys/kernel/sched_rt_runtime_us` and
+      `/proc/sys/kernel/sched_rt_period_us`.
+    walkthrough: |
+      {
+        echo "runtime=$(cat /proc/sys/kernel/sched_rt_runtime_us)"
+        echo "period=$(cat /proc/sys/kernel/sched_rt_period_us)"
+      } > /tmp/answer-rt-throttle
+      cat /tmp/answer-rt-throttle
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rt-throttle
+        pattern: "runtime=950000"
+        describe: Real-time tasks may use at most 950ms per period
+      - type: file_matches
+        path: /tmp/answer-rt-throttle
+        pattern: "period=1000000"
+        describe: And the period is one second — so 5% is reserved for everyone else
+
+solution: |
+  ```bash
+  grep -E '^(policy|prio)|se.load.weight|se.vruntime|se.slice' /proc/self/sched
+  nice
+  nice -n 10 bash -c "grep -E 'se.load.weight|^prio' /proc/self/sched"
+  nice -n -5 true                       # Permission denied
+
+  chrt -b 0 true; echo $?               # 0
+  chrt -i 0 true; echo $?               # 0
+  chrt -f 10 true; echo $?              # 1 — Operation not permitted
+
+  cat /proc/sys/kernel/sched_rt_runtime_us   # 950000
+  cat /proc/sys/kernel/sched_rt_period_us    # 1000000
+  ```
+
+  **What you just established.**
+
+  **You are an ordinary SCHED_NORMAL task with weight 1024.** `policy 0`,
+  `prio 120`, `se.load.weight 1048576`. The double scaling is a fixed-point
+  detail: the weight table says 1024 for nice 0, and `/proc` reports it shifted
+  by another 10 bits. Divide by 1024 to get the number in the documentation.
+
+  **This kernel runs EEVDF.** `se.slice` exists — the request slice, 3ms by
+  default — and it is the file that tells you which scheduler you are on.
+  Under CFS there was no such concept: slice length was derived from a target
+  latency divided by the number of runnable tasks. If you find tuning advice
+  about `sched_latency_ns` or `sched_min_granularity_ns`, it predates 6.6 and
+  those files no longer exist.
+
+  **Nice maps to weight through a table, not a formula you would guess:**
+
+  | nice | weight | `/proc` shows |
+  |---|---|---|
+  | −20 | 88761 | 90891264 |
+  | 0 | 1024 | 1048576 |
+  | 10 | 110 | 112640 |
+  | 19 | 15 | 15360 |
+
+  Each step is about 1.25×. Ten steps is therefore roughly 9×, and nineteen
+  steps is about 68×. Nice 10 at weight 110 is a ninth of nice 0 — which is a
+  far bigger difference than "10 out of 39" suggests.
+
+  **The asymmetry is a design pattern, not an accident.** Positive nice is
+  allowed because giving your share away harms nobody. Negative nice takes CPU
+  from your neighbours, so it needs `CAP_SYS_NICE`. The same shape governed
+  namespace creation earlier in this course: operations that only affect you are
+  unprivileged; operations that affect others are not.
+
+  **Two policies you can use today, without asking anyone.**
+
+  `SCHED_BATCH` removes the small bonus the scheduler gives freshly woken tasks.
+  That bonus makes interactive work feel responsive; a compute job collects it
+  repeatedly, briefly preempting the latency-sensitive neighbour every time, and
+  gains nothing from it. Marking batch work as batch costs nothing.
+
+  `SCHED_IDLE` is weaker than nice 19 — it runs only when a CPU would otherwise
+  be idle. For genuinely discardable work it is the honest setting, and the one
+  people reach for `nice 19` instead of.
+
+  **The real-time refusal, and the valve behind it.** `SCHED_FIFO` was denied
+  because it needs `CAP_SYS_NICE`, and the reason is severe: a runnable FIFO
+  task preempts every normal task and runs until it *blocks*. One that spins
+  does not make the machine slow, it makes the machine unavailable — including
+  to the shell you would use to kill it.
+
+  `sched_rt_runtime_us` of 950000 in a 1000000 period is the safety valve:
+  real-time tasks get at most 95% of each second, leaving 50ms in which normal
+  tasks can run. Setting it to −1 removes the valve, which is occasionally right
+  on a dedicated appliance and is otherwise how a machine is lost.
+
+  **Where this goes.** `--cap-add=SYS_NICE` on a container grants exactly what
+  was refused here. It is requested surprisingly often to "improve latency", and
+  it lets that container preempt every workload on the node, kubelet included.
+  You now have the specific sentence to say in that review.

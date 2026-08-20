@@ -1,0 +1,8 @@
+id: module.the-kernel-boundary
+slug: the-kernel-boundary
+title: The Kernel Boundary
+summary: >-
+  The line your code cannot cross by itself, the mechanism it uses to ask, and
+  what happens when permission to ask is taken away. Every isolation feature in
+  the rest of the curriculum is built on this boundary.
+order: 2

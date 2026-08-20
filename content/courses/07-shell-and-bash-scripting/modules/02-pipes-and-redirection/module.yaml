@@ -1,0 +1,9 @@
+id: module.pipes-and-redirection
+slug: pipes-and-redirection
+title: Pipes and Redirection
+summary: >-
+  Where output actually goes — three file descriptors, the order redirections
+  are applied in, and why a pipeline runs each stage in its own process. Plus
+  the two failures that produce no error at all: a file that truncates itself,
+  and output that is written but never appears.
+order: 2

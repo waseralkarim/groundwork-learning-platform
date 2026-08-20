@@ -1,0 +1,19 @@
+flowchart TB
+    C["a command returns non-zero<br/>under set -e"] --> Q{"is the shell already<br/>testing this status?"}
+
+    Q -- "yes — errexit is SUPPRESSED" --> E["an if or while condition<br/>an operand of && or ||<br/>anything after !<br/>any non-final pipeline stage<br/><i>and everything inside them,<br/>including function bodies</i>"]
+    Q -- no --> F["the shell exits"]
+
+    E --> E2["execution continues<br/><b>silently</b>"]
+
+    M["a status can also be MASKED<br/>before errexit ever sees it"] --> M1["local x=$(cmd)<br/><i>the status is local's, not cmd's</i>"]
+    M --> M2["cmd | other<br/><i>the pipeline's status is the last stage's</i>"]
+    M --> M3["((count++)) when count is 0<br/><i>arithmetic returning 0 is 'false'</i><br/><b>this one FIRES when you did not want it</b>"]
+
+    M1 --> E2
+    M2 --> E2
+    M3 --> F
+
+    style E2 fill:#fdecea,stroke:#c0392b
+    style M3 fill:#fdf6e3,stroke:#b58900
+    style F fill:#e8f4ea,stroke:#2f7d4f

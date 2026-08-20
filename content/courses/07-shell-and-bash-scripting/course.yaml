@@ -1,0 +1,14 @@
+id: course.shell-and-bash-scripting
+slug: shell-and-bash-scripting
+code: B08
+title: Shell & Bash Scripting
+summary: >-
+  The shell is the language every operations job is written in, and almost
+  nobody is taught its rules. This course starts where the bugs are: what
+  actually happens to a line before the command runs, why an unquoted variable
+  is a different number of arguments depending on its contents, and how to write
+  scripts that fail loudly instead of quietly doing the wrong thing.
+track: Core Craft
+levels: [L1, L2, L3, L4]
+estimated_hours: 16
+order: 7

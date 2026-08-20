@@ -1,0 +1,9 @@
+id: module.expansion-and-quoting
+slug: expansion-and-quoting
+title: Expansion and Quoting
+summary: >-
+  What happens to a line between pressing Enter and the command running — eight
+  stages in a fixed order, one of which splits your variables into pieces. And
+  quoting, which is not a style preference but the only control you have over
+  that order.
+order: 1

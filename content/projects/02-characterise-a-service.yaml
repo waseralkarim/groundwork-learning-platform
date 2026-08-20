@@ -1,0 +1,197 @@
+id: project.characterise-a-service
+slug: characterise-a-service
+title: "Capstone: characterise a service you did not write"
+level: L3
+requires_topics:
+  - topic.the-machine
+  - topic.processes
+  - topic.user-space-and-the-kernel
+  - topic.virtual-memory
+  - topic.files-and-filesystems
+  - topic.threads-and-concurrency
+estimated_hours: 8
+
+summary: >-
+  Take a containerised service you have never read the source of, and produce
+  the operational profile a team would need to run it: what it does, what it
+  needs, how it fails, and what would page you.
+
+brief: |
+  Every engineer eventually inherits a service nobody explains. The person who
+  wrote it has left, the documentation describes an earlier version, and it is
+  now yours to keep running.
+
+  The skill that matters then is not reading the code. It is finding out what a
+  running system actually does — from the outside, with the tools every Linux
+  machine has, without waiting for anyone's permission or explanation.
+
+  That is the whole of this capstone. Everything in Computing Foundations was
+  building the instruments; this is the piece of work that uses all of them at
+  once on something you did not choose.
+
+  ## Choose your subject
+
+  Pick a containerised service whose source you have not read. Genuinely not
+  read — the exercise is worthless if you already know the answers.
+
+  Good candidates, roughly in order of how much they will teach you:
+
+  - A database you do not administer: PostgreSQL, MySQL, MongoDB, Valkey
+  - A message broker: RabbitMQ, NATS, Kafka
+  - A proxy or gateway: Caddy, Envoy, Traefik
+  - An off-the-shelf application from Docker Hub with a real workload
+  - This platform's own `api` service, if you have not been reading it
+
+  You need to be able to run it, put load on it, and read its cgroup files. That
+  is all.
+
+  ## What you are producing
+
+  An operational profile: a written document with the evidence embedded, that
+  another engineer could use to run this service without ever meeting you.
+
+  It has to answer six questions, and each one is a topic from this course
+  pointed at a real system.
+
+  **1. What does it actually do?** Trace it. What does it open at start-up,
+  what does it do per request, and how many system calls does a single request
+  cost? You are looking for the shape of its work, not a complete transcript —
+  `strace -c` on a few seconds of load says more than a full trace nobody reads.
+
+  **2. What is its memory shape?** Anonymous versus file-backed, at rest and
+  under load. What does it hold that cannot be reclaimed, and what does it merely
+  cache? Does its own reported memory agree with the cgroup's, and if not, why
+  not?
+
+  **3. What is its CPU shape?** Threads, and what they are doing. Is the work
+  CPU-bound or waiting? Does the service size any pool from `nproc`, and what
+  happens to throttling as you vary the limit?
+
+  **4. What does it write, and where?** Which paths does it write to, on which
+  filesystems, and how much does it accumulate over an hour of load. What breaks
+  if the root filesystem is read-only. What would need a volume.
+
+  **5. How does it fail?** Deliberately break it — starve it of memory, of CPU,
+  of disk. Record what each failure looks like from outside: exit codes, log
+  lines, whether it recovers, and how long it takes to notice.
+
+  **6. What would you page someone for?** Given all of the above, the specific
+  signals that mean this service is in trouble, with thresholds you can defend
+  and an explicit list of what you deliberately would *not* alert on.
+
+  ## Why this is the capstone
+
+  Each earlier lab handed you a system that was built to demonstrate one thing.
+  This one does not cooperate: it has its own architecture, its own opinions,
+  and no lab author has arranged for the answer to be findable.
+
+  That is the actual job. The measure of this course is not whether you can
+  recite what `throttled_usec` means — it is whether, faced with an unfamiliar
+  service and a bad afternoon, you know which file to read first.
+
+constraints:
+  - "You must not read the service's source code before finishing sections 1 to 5. Read it afterwards if you like, and note where your findings were wrong."
+  - "Every claim needs evidence in the document: a command and its output, not a summary of what you saw."
+  - "Measure under load, sustained for at least five minutes. A service at rest tells you almost nothing."
+  - "You must break it deliberately at least twice, and record what each failure looked like from the outside before you knew the cause."
+  - "Alerting thresholds must be justified by a measurement you took, not by a number from a blog post."
+  - "Where you could not determine something, say so explicitly. An honest gap is worth more than a confident guess."
+
+deliverables:
+  - "The operational profile: one document answering the six questions, with commands and raw output included rather than summarised away."
+  - "A resources block — Compose or Kubernetes — with a comment justifying every number from your measurements."
+  - "A monitoring section: the signals you would alert on, their thresholds, and what you deliberately excluded and why."
+  - "A failure log: what you broke, what it looked like from outside, and how long it took you to identify each one."
+  - "A short reflection: what you got wrong before you had evidence, and which instrument you reached for too late."
+
+rubric:
+  - id: r1
+    criterion: The service's behaviour was determined from outside, not from its documentation
+    excellent: >-
+      Uses strace, /proc and cgroup files to establish what the service does per
+      request, and notes at least one finding that contradicted the
+      documentation or the learner's expectation.
+    adequate: >-
+      Uses the right tools and reports what they showed, without any finding
+      that challenged an assumption.
+    inadequate: >-
+      Reports what the service is documented to do, or reads the source first.
+    evidence: The strace summary and the /proc readings in section 1
+    weight: 3
+
+  - id: r2
+    criterion: The memory profile separates what can be reclaimed from what cannot
+    excellent: >-
+      Reports anon, file and shmem at rest and under load, explains any gap
+      between the service's own memory figure and the cgroup's, and identifies
+      which part determines the limit it needs.
+    adequate: >-
+      Reports the cgroup's memory figures under load and distinguishes anon from
+      file.
+    inadequate: >-
+      Reports a single memory number, or uses only the service's own metric.
+    evidence: The memory.stat readings at rest and under load
+    weight: 3
+
+  - id: r3
+    criterion: The CPU profile distinguishes work from waiting, and accounts for the limit
+    excellent: >-
+      Reports thread counts and states, identifies whether the work is CPU-bound
+      or blocked, measures throttling as the limit is varied, and checks whether
+      any pool was sized from nproc.
+    adequate: >-
+      Measures CPU usage and throttling under load without varying the limit.
+    inadequate: >-
+      Reports CPU utilisation only, with no throttling measurement.
+    evidence: The cpu.stat readings and the thread listing
+    weight: 3
+
+  - id: r4
+    criterion: The failure modes were produced deliberately and observed from outside
+    excellent: >-
+      Breaks the service at least twice in different ways, records exit codes,
+      logs and recovery behaviour, and notes what was visible *before* the cause
+      was known — including anything that was misleading.
+    adequate: >-
+      Breaks it and records what happened, without distinguishing what was
+      visible at the time from what was understood afterwards.
+    inadequate: >-
+      Describes failures that were not actually induced, or asserts what would
+      happen without testing it.
+    evidence: The failure log, with the exit codes and cgroup counters
+    weight: 3
+
+  - id: r5
+    criterion: The proposed limits and alerts are defensible from the measurements
+    excellent: >-
+      Every number traces to a measurement in the document, headroom is
+      quantified with a reason, and the monitoring section names what was
+      deliberately excluded and why.
+    adequate: >-
+      Limits derive from measurements but headroom or exclusions are
+      unexplained.
+    inadequate: >-
+      Round numbers, or thresholds taken from an external source without
+      checking them against this service.
+    evidence: The comments in your resources block and the monitoring section
+    weight: 3
+
+  - id: r6
+    criterion: The document is honest about its own limits
+    excellent: >-
+      States explicitly what could not be determined and why, records at least
+      one thing the learner believed before measuring that turned out to be
+      wrong, and names an instrument reached for too late.
+    adequate: >-
+      Notes some gaps, without reflecting on where the process itself went
+      wrong.
+    inadequate: >-
+      Presents complete confidence, or omits anything that did not work.
+    evidence: The reflection section
+    weight: 2
+
+going_further:
+  - "Hand the profile to a colleague who does not know the service and ask them to predict what happens when you halve its memory limit. Their prediction tests your document, not their knowledge."
+  - "Repeat the CPU section with the limit removed entirely, and decide whether you would run it that way — the argument about CPU limits is one you can now have with numbers."
+  - "Write the runbook entry for the failure that was hardest to identify, in the shape used in docs/runbooks: what it means, how urgent, how to confirm, what to do."
+  - "Re-run the whole profile after a version upgrade of the service, and diff the two. The differences are the release notes nobody wrote."

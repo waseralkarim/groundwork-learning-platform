@@ -1,0 +1,272 @@
+id: lab.status-codes-and-redirects
+topic: topic.http
+title: Serve the status codes, and follow a redirect
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A03.4.2, OBJ-A03.4.3]
+
+intro: >-
+  A status code is three digits on the first line of a response, and its
+  *class* is what tells a caller what to do next — retry, fix the request, look
+  elsewhere, or nothing.
+
+
+  You will serve several by hand, watch how curl reports each, then build a
+  two-hop redirect and follow it — which is the clearest way to see that a
+  redirect is a normal response plus a client that chose to make a second
+  request.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Serve a 404 and record the status code curl reports, plus whether it
+      treats the request as failed, in /tmp/answer-404.
+    hint: >-
+      `curl -s -o /dev/null -w '%{http_code}\n'` prints the code. Record `$?` as
+      well.
+    walkthrough: |
+      printf 'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n' \
+        | timeout 8 nc -l 127.0.0.1 8101 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -m 3 -o /dev/null -w 'code=%{http_code}\n' http://127.0.0.1:8101/missing > /tmp/answer-404
+      echo "curl_rc=$?" >> /tmp/answer-404
+      cat /tmp/answer-404
+    verify:
+      - type: file_matches
+        path: /tmp/answer-404
+        pattern: 'code=404'
+        describe: The status code came through
+      - type: file_matches
+        path: /tmp/answer-404
+        pattern: 'curl_rc=0'
+        describe: And curl succeeded — a 404 is a successful HTTP exchange
+
+  - id: s2
+    instruction: >-
+      That exit status is worth noticing. Write to /tmp/answer-rc-meaning why
+      curl reported success on a 404, and what it would take to make it fail.
+    hint: >-
+      curl's exit status is about the *transfer*, not about the application's
+      answer. There is a flag that changes this.
+    walkthrough: |
+      echo "curl's exit status reports whether the http exchange itself worked, and it did: a request was sent and a complete response came back, so a 404 is a successful transfer carrying an unsuccessful answer; curl --fail makes it exit non-zero on 4xx and 5xx, which is what scripts and health checks usually want" > /tmp/answer-rc-meaning
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rc-meaning
+        pattern: "transfer|exchange"
+        describe: You separated the transfer from the application's answer
+      - type: file_matches
+        path: /tmp/answer-rc-meaning
+        pattern: '\-\-fail'
+        describe: And named the flag that changes it
+
+  - id: s3
+    instruction: >-
+      Serve a 503 with a `Retry-After` header, and save the full response
+      headers curl received to /tmp/answer-503.
+    hint: "`curl -sI` shows response headers only."
+    walkthrough: |
+      printf 'HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nContent-Length: 0\r\n\r\n' \
+        | timeout 8 nc -l 127.0.0.1 8102 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -m 3 -D - -o /dev/null http://127.0.0.1:8102/ > /tmp/answer-503
+      cat /tmp/answer-503
+    verify:
+      - type: file_matches
+        path: /tmp/answer-503
+        pattern: '503 Service Unavailable'
+        describe: The status line
+      - type: file_matches
+        path: /tmp/answer-503
+        pattern: 'Retry-After: 30'
+        describe: And the header that tells a well-behaved client when to come back
+
+  - id: s4
+    instruction: >-
+      Classify four codes by what the caller should do. Write to
+      /tmp/answer-classes one line each for 404, 429, 500 and 503 — saying
+      whether a retry of the identical request could succeed.
+    hint: >-
+      The 4xx/5xx split is the rule, and one 4xx is an exception worth naming.
+    walkthrough: |
+      {
+        echo "404 no: the resource does not exist, so an identical retry fails identically"
+        echo "429 yes but not immediately: rate limited, so back off and honour Retry-After"
+        echo "500 yes: the server failed and the same request may succeed later"
+        echo "503 yes: temporarily unavailable, and Retry-After may say when"
+      } > /tmp/answer-classes
+      cat /tmp/answer-classes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-classes
+        pattern: '404 no'
+        describe: 4xx will fail again
+      - type: file_matches
+        path: /tmp/answer-classes
+        pattern: '500 yes'
+        describe: 5xx may not
+      - type: file_matches
+        path: /tmp/answer-classes
+        pattern: '429 yes'
+        describe: And 429 is the 4xx that is worth retrying, after a delay
+
+  - id: s5
+    instruction: >-
+      Build a redirect. Serve a 301 on port 8103 pointing at port 8104, and a
+      200 on 8104 — then fetch the first **without** following, and save what
+      you get to /tmp/answer-no-follow.
+    hint: >-
+      The 301 needs a `Location:` header. Without `-L`, curl reports the
+      redirect itself.
+    walkthrough: |
+      printf 'HTTP/1.1 301 Moved Permanently\r\nLocation: http://127.0.0.1:8104/new\r\nContent-Length: 0\r\n\r\n' \
+        | timeout 12 nc -l 127.0.0.1 8103 >/dev/null 2>&1 &
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew' \
+        | timeout 12 nc -l 127.0.0.1 8104 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -m 3 -D - -o /dev/null http://127.0.0.1:8103/old > /tmp/answer-no-follow
+      cat /tmp/answer-no-follow
+    verify:
+      - type: file_matches
+        path: /tmp/answer-no-follow
+        pattern: '301 Moved Permanently'
+        describe: Without -L, curl reports the redirect rather than following it
+      - type: file_matches
+        path: /tmp/answer-no-follow
+        pattern: 'Location: http://127\.0\.0\.1:8104/new'
+        describe: And shows where it was pointed
+
+  - id: s6
+    instruction: >-
+      Now follow it. Fetch the same URL with redirect-following on, and save the
+      final status, the number of redirects and the final URL to
+      /tmp/answer-follow.
+    hint: "`curl -sL -w '%{http_code} %{num_redirects} %{url_effective}'`"
+    walkthrough: |
+      printf 'HTTP/1.1 301 Moved Permanently\r\nLocation: http://127.0.0.1:8106/new\r\nContent-Length: 0\r\n\r\n' \
+        | timeout 12 nc -l 127.0.0.1 8105 >/dev/null 2>&1 &
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew' \
+        | timeout 12 nc -l 127.0.0.1 8106 >/dev/null 2>&1 &
+      sleep 1
+      curl -sL -m 4 -o /dev/null \
+        -w 'final=%{http_code} redirects=%{num_redirects} url=%{url_effective}\n' \
+        http://127.0.0.1:8105/old > /tmp/answer-follow
+      cat /tmp/answer-follow
+    verify:
+      - type: file_matches
+        path: /tmp/answer-follow
+        pattern: 'final=200'
+        describe: The second request succeeded
+      - type: file_matches
+        path: /tmp/answer-follow
+        pattern: 'redirects=1'
+        describe: After exactly one hop
+      - type: file_matches
+        path: /tmp/answer-follow
+        pattern: 'url=http://127\.0\.0\.1:8106/new'
+        describe: And ended at the location the first response named
+
+  - id: s7
+    instruction: >-
+      Write to /tmp/answer-what-redirect-is what a redirect actually is,
+      mechanically — and how many TCP connections that exchange used.
+    hint: >-
+      The server did not fetch anything on the client's behalf. What did each
+      side do?
+    walkthrough: |
+      echo "a redirect is an ordinary response whose status tells the client to make a second request to the url in the location header; the server fetched nothing and the client made two separate requests, over two separate tcp connections here since each listener served one connection and closed" > /tmp/answer-what-redirect-is
+    verify:
+      - type: file_matches
+        path: /tmp/answer-what-redirect-is
+        pattern: "second request|two request|client"
+        describe: You identified the client making the second request
+      - type: file_matches
+        path: /tmp/answer-what-redirect-is
+        pattern: "two|2"
+        describe: And counted the connections
+
+  - id: s8
+    instruction: >-
+      Last one. Write to /tmp/answer-301-vs-302 why a 301 is riskier than a 302,
+      and when you would use each.
+    hint: >-
+      One of them may be remembered by clients and proxies for a very long
+      time.
+    walkthrough: |
+      echo "a 301 is permanent, so browsers and proxies may cache it indefinitely and keep redirecting long after the server stops sending it, which makes a mistaken 301 very hard to take back; a 302 or 307 is temporary and is re-checked each time, so use 301 only when the move is genuinely permanent and never when the target depends on anything conditional" > /tmp/answer-301-vs-302
+    verify:
+      - type: file_matches
+        path: /tmp/answer-301-vs-302
+        pattern: "cach"
+        describe: You identified caching as the risk
+      - type: file_matches
+        path: /tmp/answer-301-vs-302
+        pattern: "permanent|temporar"
+        describe: And distinguished the two by permanence
+
+solution: |
+  ```bash
+  printf 'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n' | nc -l 127.0.0.1 8101 &
+  curl -s -o /dev/null -w 'code=%{http_code}\n' http://127.0.0.1:8101/missing
+  # code=404, and curl exits 0
+  ```
+
+  **A 404 is a successful HTTP exchange.** curl exited 0 because the transfer
+  worked: a request went out, a complete response came back. The status code is
+  the *application's* answer, and curl does not editorialise about it.
+
+  That is why `curl --fail` exists — it makes 4xx and 5xx produce a non-zero
+  exit — and why a health check written as `curl -s url && echo ok` reports a 500
+  as healthy. It is one of the most common scripting bugs in monitoring.
+
+  **The classes, by what the caller should do:**
+
+  | Class | Meaning | Retry the identical request? |
+  |---|---|---|
+  | 2xx | Success | n/a |
+  | 3xx | Look elsewhere | Follow the `Location` |
+  | 4xx | You sent something wrong | **No** — it will fail identically |
+  | 5xx | The server failed | **Yes** — it may succeed |
+
+  The 4xx/5xx split decides retry policy and alerting. A rising 4xx rate is a
+  client population doing something wrong and rarely deserves a page; a rising
+  5xx rate is yours. The exception worth naming is **429**, which is a 4xx that
+  *is* worth retrying — after the delay in `Retry-After`, which is the whole
+  point of the header.
+
+  **A redirect is not the server fetching anything.** The exchange you built was:
+
+  ```text
+  1. client → :8105   GET /old
+     server → client  301, Location: http://127.0.0.1:8106/new
+  2. client → :8106   GET /new
+     server → client  200, "new"
+  ```
+
+  Two requests, over two TCP connections here, and the client made the decision
+  to follow. `curl` without `-L` shows the 301 and stops — which is what you
+  usually want when debugging, because it tells you what the first server
+  actually said rather than where you ended up.
+
+  `%{num_redirects}` and `%{url_effective}` are the two to remember: they turn
+  "it went somewhere unexpected" into a count and a destination. A redirect loop
+  appears as curl stopping at its maximum with the same URL repeating.
+
+  **301 versus 302 is an operational decision, not a stylistic one.** A 301 says
+  permanent, and browsers and proxies may cache it indefinitely — so a mistaken
+  301 keeps redirecting clients long after the server stops sending it, and there
+  is no way to reach into their caches. A 302 or 307 is re-checked every time.
+
+  The rule worth following: **301 only when the move is genuinely permanent, and
+  never when the target depends on anything conditional** — a user's locale, a
+  feature flag, an A/B assignment. Those must be 302 or 307, or you will
+  permanently pin a fraction of your users to whichever branch they saw first.
+
+  The difference between 302 and 307 is narrower and occasionally matters: 307
+  guarantees the method and body are preserved, where 302 is historically
+  allowed to turn a POST into a GET. For an API, use 307 or 308.

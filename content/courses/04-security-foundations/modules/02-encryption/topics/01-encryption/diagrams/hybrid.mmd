@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph SEND["Sender"]
+        direction TB
+        A["The message<br/>(any size)"]
+        K["Generate a fresh<br/>symmetric key<br/>(32 random bytes)"]
+        A --> E1["AES-256-GCM<br/>~1.2 GB/sec"]
+        K --> E1
+        K --> E2["RSA / ECDH<br/>with recipient's<br/>public key"]
+        E1 --> C1["Encrypted message"]
+        E2 --> C2["Encrypted key<br/>(256 bytes)"]
+    end
+
+    C1 --> WIRE["Both travel together"]
+    C2 --> WIRE
+
+    subgraph RECV["Recipient"]
+        direction TB
+        WIRE --> D2["Decrypt the key<br/>with the private key"]
+        D2 --> SK["The symmetric key"]
+        SK --> D1["Decrypt the message"]
+        D1 --> P["The message"]
+    end
+
+    NOTE["The slow algorithm encrypts 32 bytes.<br/>The fast one encrypts everything else.<br/>This is TLS, PGP, age, and every<br/>encrypted-storage system you will meet."]
+    RECV --> NOTE

@@ -1,0 +1,295 @@
+topic: topic.functions-and-scope
+
+questions:
+  - id: i1
+    level: L1
+    question: "How does variable scope work in a shell function?"
+    model_answer: >-
+      It is **dynamic**, which is the thing worth saying first because almost
+      every other language people have used is lexical.
+
+
+      A called function can read the variables of whatever called it, however far
+      up the call stack, without being passed anything:
+
+
+      ```console
+      $ log()    { echo "stage=${stage:-<unset>}"; }
+      $ deploy() { local stage=production; log; }
+      $ deploy
+      stage=production
+      $ log
+      stage=<unset>
+      ```
+
+
+      `log` declares nothing and was given nothing. What it can see depends on
+      **who called it**.
+
+
+      And it can write. If a callee assigns to a name its caller declared
+      `local`, it writes to the caller's variable rather than creating a global.
+      So `local` does not create an isolated variable — it **hides** any outer
+      one of the same name for the duration of the call, *including everything
+      the call makes*.
+
+
+      The practical consequence is that any helper using a common name without
+      declaring it — `i`, `n`, `line`, `count`, `file`, `tmp` — silently corrupts
+      callers that use the same name. A helper that loops with `i`, called from a
+      loop over `i`, makes the outer loop see `3` on every iteration. One word
+      fixes it and there is no warning without it, because nothing is wrong as
+      far as the shell is concerned.
+
+
+      I do treat it as genuinely useful in one place: a `log` helper reading
+      `$LOG_LEVEL` is better than threading it through forty calls, and
+      `run_quietly() { local LOG_LEVEL=error; "$@"; }` gives you a scoped
+      override that lexical scope cannot express. The rule I hold to is that a
+      function reading something it was not passed has to **say so in a
+      comment** — an undocumented read is how you get a helper quietly using a
+      global default instead of the argument somebody thought they were passing.
+    signal: >-
+      Saying "dynamic" unprompted is the discriminator — most people describe
+      `local` as if it were `let` and stop. Knowing a callee can **write** to a
+      caller's local, not just read it, is the senior half, and volunteering a
+      case where dynamic scope is genuinely useful shows they have a model rather
+      than a list of gotchas.
+    follow_ups:
+      - "What does `local` do that `declare` inside a function does not?"
+      - "When would you deliberately use `declare -g`?"
+  - id: i2
+    level: L2
+    question: >-
+      A script copies files in a loop and reports that it copied zero, but the
+      files are there. What is happening?
+    model_answer: >-
+      The loop is on the right of a pipe, so it is running in a subshell.
+
+
+      ```bash
+      find "$SRC" -type f | while read -r f; do
+        cp "$f" "$DEST/"
+        copied=$((copied + 1))
+      done
+      echo "copied $copied files"
+      ```
+
+
+      Every stage of a pipeline runs in its own forked shell. `cp` writes to the
+      **filesystem**, which is shared between processes, so the copies survive.
+      `copied=` writes to a **variable**, which is per-process, so it dies when
+      the subshell exits at the end of the loop.
+
+
+      The loop was never failing. That is the diagnostic that settles it in one
+      command — move the `echo` inside the braces and the count is right:
+
+
+      ```console
+      $ printf 'a\nb\nc\n' | { n=0; while read -r l; do n=$((n+1)); done; echo "inside n=$n"; }
+      inside n=3
+      ```
+
+
+      That distinguishes "the loop is not running" from "the loop's result is not
+      escaping", which are the only two hypotheses.
+
+
+      The fix I would ship is process substitution, because the loop body does
+      not move and `find` keeps streaming:
+
+
+      ```bash
+      done < <(find "$SRC" -type f)
+      ```
+
+
+      `mapfile -t files < <(…)` is right when you need the list twice.
+      `shopt -s lastpipe` also fixes it and I would not ship it — it changes
+      every pipeline in the file and silently does nothing when job control is
+      on, so it works in the script and not when somebody pastes the loop into a
+      terminal to debug it.
+
+
+      And none of those is the real lesson. The script reported a number nobody
+      checked. I would compare `copied` against an independently derived count
+      and fail if they differ — the original compared a number to itself.
+    signal: >-
+      Naming the subshell is table stakes. The discriminator is the
+      count-from-inside diagnostic, because it distinguishes the two hypotheses
+      in one command rather than by reading code. Rejecting `lastpipe` for a
+      stated reason, and pivoting to "the script reported a number nobody
+      checked", is what separates a fix from an engineer.
+    follow_ups:
+      - "Why does `cp` survive the subshell and the counter not?"
+      - "When would you reach for `mapfile` instead?"
+  - id: i3
+    level: L2
+    question: >-
+      What can go wrong with `exit "$count"` at the end of a script?
+    model_answer: >-
+      An exit status is a **single unsigned byte**, so the value is taken modulo
+      256 — and several of those 256 values already mean something.
+
+
+      ```console
+      $ bash -c 'exit 256'; echo $?    → 0
+      $ bash -c 'exit 300'; echo $?    → 44
+      $ bash -c 'exit -1';  echo $?    → 255
+      ```
+
+
+      So **256 failures is a success**. That is not hypothetical when the number
+      counts bad records, failed hosts or log lines.
+
+
+      The collisions are worse than the wrapping. 126 means "found but not
+      executable", 127 means "command not found", and **128 + N** means killed by
+      signal N — so 130 is Ctrl-C, 137 is `SIGKILL` and 143 is `SIGTERM`. A count
+      of 143 is indistinguishable from a cancellation or a timeout, and a
+      supervisor may well retry one and page on the other. You have made your
+      count ambiguous with the infrastructure's own vocabulary.
+
+
+      What I write instead: **the number goes in the message, the status says
+      pass or fail.**
+
+
+      ```bash
+      echo "$failures of $checked services down"
+      [ "$failures" -eq 0 ] || exit 1
+      ```
+
+
+      If a caller genuinely needs the number, print it in a form they can parse,
+      or write it to a file. 1 to 125 are yours if you want distinct failure
+      *modes* — "config invalid" versus "target unreachable" — and that is a good
+      use of the range, because those are categories rather than quantities.
+      64 for a usage error is the `sysexits.h` convention and useful, since it
+      distinguishes "you called it wrong" from "it went wrong" for something
+      deciding whether to retry.
+    signal: >-
+      "It is one byte" is the expected answer. The discriminator is the
+      **collisions** — that 143 is indistinguishable from SIGTERM and a
+      supervisor may retry on it — because that is the part that turns a curiosity
+      into an operational problem. Distinguishing failure *modes* (fine) from
+      *quantities* (not fine) shows they know what the range is for.
+    follow_ups:
+      - "When is it right to use exit codes other than 0 and 1?"
+      - "What is 64 conventionally, and would you use it?"
+  - id: i4
+    level: L2
+    question: >-
+      Someone puts `ls() { ls -l "$@"; }` in their shell config. What happens,
+      and why?
+    model_answer: >-
+      It calls itself until bash exhausts memory.
+
+
+      The lookup order for a word in command position is alias, then function,
+      then builtin, then `PATH`. Inside the function body, `ls` resolves exactly
+      the way it did at the call site — **a function body is not a separate
+      namespace**, and shell has no `super` or `outer`. So the function is the
+      `ls` it finds.
+
+
+      The dangerous part is that `FUNCNEST` is **unset by default**, so there is
+      no nesting limit at all. It recurses until memory runs out, which in a
+      container with a memory cap means the OOM killer rather than an error
+      message. If I am experimenting with anything recursive I set `FUNCNEST=10`
+      first — I have hung a container by not doing that.
+
+
+      The fix is `command`:
+
+
+      ```bash
+      ls() { command ls -l "$@"; }
+      ```
+
+
+      `command` skips functions and runs the builtin or the `PATH` executable;
+      `builtin` does the same for shell builtins, which is what you need when
+      wrapping `cd`. `\ls` escapes **aliases only** and does nothing here, which
+      is a common wrong answer.
+
+
+      Two things I would add about wrappers. `"$@"` goes **last**, so a caller's
+      flags come after the default and can override it — putting the default
+      after `"$@"` means the wrapper wins over the caller, which is the opposite
+      of what a default means. And a wrapper must not change the exit status of
+      what it wraps: piping through a second command replaces the status with the
+      last stage's, and a wrapper you cannot use in an `if` is worse than no
+      wrapper.
+
+
+      In a shared script I would not name it `ls` at all. In a `.bashrc` it is a
+      convenience; in a file other people read, or worse a file that gets
+      `source`d, every reader of every line below now has to know the shadow
+      exists — and a function defined at the top level of a sourced file lives in
+      the caller's shell for the rest of its life.
+    signal: >-
+      Most people know the wrapper recurses. The discriminator is *why* — that a
+      function body is not a separate namespace — plus knowing `FUNCNEST` is
+      unset by default, which is the difference between a hung container and an
+      error message. `"$@"` last, and preserving the wrapped command's exit
+      status, are details you only have if you have shipped one.
+    follow_ups:
+      - 'What does a backslash before a command name actually escape?'
+      - "What changes if this file is sourced rather than executed?"
+  - id: i5
+    level: L2
+    question: >-
+      How do you get a value out of a shell function?
+    model_answer: >-
+      A function returns an exit status and nothing else, so everything that
+      looks like returning a value is a workaround. There are four, and the
+      choice turns on one question: **does the function have a side effect the
+      caller needs?**
+
+
+      **Print it and capture with `$( )`.** Reads like a function call in any
+      other language and is the only one that composes — `$(a $(b x))`. It costs
+      a fork, so no side effect survives: no counter, no cache, no flag. It also
+      strips trailing newlines, and `local sum=$(cmd)` discards the exit status,
+      which is SC2155 and the highest-value thing shellcheck finds.
+
+
+      **Assign a fixed global**, `REPLY` by convention. No fork, side effects
+      survive, the status is the function's own. The cost is a hard-coded name,
+      so two nested calls clobber each other.
+
+
+      **A nameref** — `local -n _out=$2` — lets the caller choose the name, so it
+      nests, and keeps the side effects. One trap: if the caller's variable has
+      the same name as the parameter, bash prints `circular name reference`; if
+      that target is the caller's own `local`, the assignment is **lost**, and it
+      is a *warning* rather than a failure — so
+      under `set -e` the script carries on and the caller reads a stale value.
+      Hence the underscore prefix. The cleverest option has the quietest failure,
+      which is a reason to use it only where its advantage matters.
+
+
+      **Return only a status** when the value *is* a yes/no. `if service_is_up
+      "$host"; then` is what `if` was built for, and it keeps the fact as a fact
+      instead of turning it into text.
+
+
+      That last point is the one I would actually put in a convention: **a
+      function is a question or a producer, never both.** The bug I have seen
+      most often is a `check_service` whose `if`/`else` consumes a probe's status
+      and prints "DOWN" — after which the information exists only as characters
+      on stdout and nothing can act on it. Its last command is an `echo`, so it
+      also returns 0 whichever branch it took, and every `if` around it is a
+      no-op. A health check that runs, detects the problem, prints it, and cannot
+      fail.
+    signal: >-
+      Four mechanisms with their costs is a good answer; the discriminator is
+      deciding between them on **"does it have a side effect the caller needs"**
+      rather than by taste. The circular-nameref trap is rare knowledge, and
+      "a question or a producer, never both" — with the health-check example —
+      shows they have debugged this rather than read about it.
+    follow_ups:
+      - "How would you return twelve values?"
+      - "Why is `local x=$(cmd)` worse than two lines?"

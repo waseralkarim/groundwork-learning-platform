@@ -1,0 +1,22 @@
+stateDiagram-v2
+    [*] --> R: fork
+    R --> S: waits for something<br/>(signal can wake it)
+    S --> R: it arrived
+    R --> D: waits on I/O<br/>(signals NOT delivered)
+    D --> R: I/O completed
+    R --> T: SIGSTOP
+    T --> R: SIGCONT
+    R --> Z: exit()
+    Z --> [*]: parent calls wait()<br/>= reaped
+
+    note right of D
+        kill -9 does nothing here.
+        The signal is queued until
+        the I/O finishes.
+    end note
+
+    note right of Z
+        Already dead. Holds a PID
+        and an exit code, nothing else.
+        Signal the PARENT.
+    end note

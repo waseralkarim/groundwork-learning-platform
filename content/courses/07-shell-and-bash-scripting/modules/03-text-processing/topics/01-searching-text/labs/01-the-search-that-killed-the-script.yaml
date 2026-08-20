@@ -1,0 +1,328 @@
+id: lab.the-search-that-killed-the-script
+topic: topic.searching-text
+title: A health check that fails because the system is healthy
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.3.1, OBJ-B08.3.4]
+
+intro: >-
+  `/tmp/text/healthcheck.sh` never prints its final line and always exits 1. The
+  line that stops it did nothing wrong — it searched for a problem and correctly
+  reported that there was none.
+
+
+  You will find the mechanism, discover what the script does on a **perfectly
+  healthy** system, and fix it three different ways depending on what each search
+  actually meant.
+
+setup:
+  - /opt/lab/seed-text.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Run the health check and record exactly where it stops. Save to
+      /tmp/answer-stops.
+    hint: >-
+      Read which messages print and which do not, and note the exit status.
+    walkthrough: |
+      cd /tmp/text
+      cat healthcheck.sh
+      {
+        echo "running it:"
+        bash healthcheck.sh > /tmp/hc.out 2>&1; rc=$?
+        sed 's/^/  /' /tmp/hc.out
+        echo "  exit status: $rc"
+        echo
+        echo "it printed 'checking for auth failures...' and then stopped. it never printed 'all checks complete'."
+        echo
+        echo "so the line that stopped it is the SECOND grep - the one searching for 401s. and there are no 401s in this log, which is good news."
+      } > /tmp/answer-stops
+      cat /tmp/answer-stops
+    verify:
+      - type: file_matches
+        path: /tmp/answer-stops
+        pattern: "exit status: 1"
+        describe: You captured the failing exit status
+      - type: file_matches
+        path: /tmp/answer-stops
+        pattern: "(?i)auth failures"
+        describe: And where it stopped
+      - type: file_matches
+        path: /tmp/answer-stops
+        pattern: "(?i)good news|no 401"
+        describe: And noticed the stopping line found nothing wrong
+
+  - id: s2
+    instruction: >-
+      Establish grep's three exit statuses by producing each one. Save to
+      /tmp/answer-statuses.
+    hint: >-
+      A match, a non-match, and a file that cannot be read.
+    walkthrough: |
+      cd /tmp/text
+      {
+        echo "grep's three answers:"
+        grep -q ' 500 ' access.log; echo "  match          -> $?"
+        grep -q ' 401 ' access.log; echo "  no match       -> $?"
+        grep -q ' 401 ' /nonexistent 2>/dev/null; echo "  file unreadable-> $?"
+        echo
+        echo "  0 = at least one line matched"
+        echo "  1 = no lines matched. a RESULT, not a failure."
+        echo "  2 = an actual error - unreadable file, invalid pattern"
+        echo
+        echo "most scripts treat anything non-zero as failure, which merges 'the thing i searched for is absent' with 'the search could not be performed'. those are opposite findings, and only one of them should stop a deploy."
+        echo
+        echo "and set -e cannot tell 1 from a real failure either, which is what killed the script."
+      } > /tmp/answer-statuses
+      cat /tmp/answer-statuses
+    verify:
+      - type: file_matches
+        path: /tmp/answer-statuses
+        pattern: "match +-> 0"
+        describe: You produced status 0
+      - type: file_matches
+        path: /tmp/answer-statuses
+        pattern: "no match +-> 1"
+        describe: And status 1
+      - type: file_matches
+        path: /tmp/answer-statuses
+        pattern: "unreadable-> 2"
+        describe: And status 2
+      - type: file_matches
+        path: /tmp/answer-statuses
+        pattern: "(?i)opposite findings"
+        describe: And explained why conflating them matters
+
+  - id: s3
+    instruction: >-
+      Find out what the script does on a log containing no errors at all. Save
+      the result and what it implies to /tmp/answer-healthy.
+    hint: >-
+      Make a clean log by removing the 500 lines, then run the check against it.
+    walkthrough: |
+      cd /tmp/text
+      {
+        grep -v ' 500 ' access.log > clean.log
+        echo "clean.log has $(wc -l < clean.log) lines and $(grep -c ' 500 ' clean.log || true) server errors."
+        echo
+        echo "running the health check against it:"
+        bash healthcheck.sh /tmp/text/clean.log > /tmp/hc2.out 2>&1; rc=$?
+        sed 's/^/  /' /tmp/hc2.out
+        echo "  exit status: $rc"
+        echo
+        echo "it failed IMMEDIATELY, at the first grep, printing only the first message."
+        echo
+        echo "so the script's behaviour is exactly inverted: THE HEALTHIER THE SYSTEM, THE SOONER IT DIES. a log full of errors gets further through the checks than a clean one."
+        echo
+        echo "and because set -e exits silently, the symptom is a script that stops partway with no message and status 1 - which reads like an infrastructure problem rather than a bug in the check."
+      } > /tmp/answer-healthy
+      cat /tmp/answer-healthy
+    verify:
+      - type: file_matches
+        path: /tmp/answer-healthy
+        pattern: "exit status: 1"
+        describe: The check fails on a clean log too
+      - type: file_matches
+        path: /tmp/answer-healthy
+        pattern: "(?i)IMMEDIATELY|first grep"
+        describe: And fails sooner than before
+      - type: file_matches
+        path: /tmp/answer-healthy
+        pattern: "(?i)healthier the system"
+        describe: And you stated the inversion
+      - type: file_matches
+        path: /tmp/answer-healthy
+        pattern: "(?i)exits silently"
+        describe: And why the symptom is misleading
+
+  - id: s4
+    instruction: >-
+      Fix the script. Each search meant something different, so each needs a
+      different form. Save the fixed script to /tmp/answer-fixed and show it
+      working on both logs.
+    walkthrough: |
+      cat > /tmp/answer-fixed <<'FIX'
+      #!/bin/bash
+      # Pre-deploy health check. Exits non-zero if anything is wrong.
+      set -euo pipefail
+
+      LOG=${1:?LOG required}
+      [ -r "$LOG" ] || { echo "cannot read log: $LOG" >&2; exit 2; }
+
+      fail=0
+
+      # server errors: their PRESENCE is the failure
+      if grep -q ' 500 ' "$LOG"; then
+        echo "FAIL: server errors present" >&2
+        grep ' 500 ' "$LOG" >&2
+        fail=1
+      else
+        echo "ok: no server errors"
+      fi
+
+      # auth failures: same shape, and absence is the good case
+      if grep -q ' 401 ' "$LOG"; then
+        echo "FAIL: auth failures present" >&2
+        fail=1
+      else
+        echo "ok: no auth failures"
+      fi
+
+      # a count, where zero is a perfectly good answer
+      slow=$(grep -cE ' [0-9]{4,}ms$' "$LOG" || true)
+      echo "ok: $slow slow requests"
+
+      echo "all checks complete"
+      exit "$fail"
+      FIX
+      chmod +x /tmp/answer-fixed
+      cd /tmp/text
+      {
+        echo "against the log WITH errors:"
+        bash /tmp/answer-fixed /tmp/text/access.log 2>&1 | sed 's/^/  /'
+        echo "  exit status: ${PIPESTATUS[0]}"
+        echo
+        echo "against the CLEAN log:"
+        bash /tmp/answer-fixed /tmp/text/clean.log 2>&1 | sed 's/^/  /'
+        echo "  exit status: ${PIPESTATUS[0]}"
+        echo
+        echo "against a missing log:"
+        bash /tmp/answer-fixed /tmp/text/nope 2>&1 | sed 's/^/  /'
+        echo "  exit status: ${PIPESTATUS[0]}"
+      } >> /tmp/answer-fixed
+      tail -16 /tmp/answer-fixed
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "if grep -q ' 500 '"
+        describe: You branched on the result rather than letting it exit
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "\\|\\| true"
+        describe: And allowed a count of zero
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "ok: no auth failures"
+        describe: And a clean log now reports success
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "cannot read log"
+        describe: And an unreadable log is distinguished from a clean one
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-policy the convention you would give a team for using
+      grep under `set -e`.
+    walkthrough: |
+      {
+        echo "the three forms, and what each one means:"
+        echo
+        echo "  if grep -q PATTERN \"\$f\"; then ...      # i am branching on the result"
+        echo "  count=\$(grep -c PATTERN \"\$f\" || true)  # i want a number, zero is fine"
+        echo "  grep PATTERN \"\$f\" || true               # absence is acceptable HERE"
+        echo
+        echo "the first is what most health checks actually meant. -q is also the fastest: it stops at the first match and prints nothing."
+        echo
+        echo "the third needs a comment saying WHICH case it is covering. without one, a reviewer cannot tell 'absence is fine' from 'somebody silenced a failure' - and a bare || true also hides exit status 2, so a missing or unreadable file becomes a silent pass."
+        echo
+        echo "that is the same rule this course keeps arriving at: the deliberate exception has to be marked, or it is indistinguishable from the mistake."
+        echo
+        echo "and the check i would add to review: a bare grep as a STATEMENT under set -e is almost always wrong. if the output is not being captured or branched on, ask what the author expected to happen when it found nothing."
+      } > /tmp/answer-policy
+      cat /tmp/answer-policy
+    verify:
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "grep -q"
+        describe: You gave the branching form
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)needs a comment"
+        describe: And required the deliberate case to be marked
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)hides exit status 2"
+        describe: And noted what || true also conceals
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)as a statement|bare grep"
+        describe: And gave a reviewable signal
+
+solution: >-
+  **Where it stops.**
+
+
+  The script prints `checking for auth failures...` and ends. The line that
+  stopped it is `grep ' 401 ' "$LOG"` — and there are no 401s, which is the good
+  news it was looking for.
+
+
+  **grep's three answers:**
+
+
+  | Status | Meaning |
+  |---|---|
+  | 0 | at least one line matched |
+  | 1 | **no lines matched — a result, not a failure** |
+  | 2 | an actual error: unreadable file, invalid pattern |
+
+
+  Treating anything non-zero as failure merges "the thing I searched for is
+  absent" with "the search could not be performed". Those are opposite findings,
+  and only one should stop a deploy. `set -e` cannot tell 1 from a real failure
+  either.
+
+
+  **And on a healthy log it is worse.**
+
+
+  Against a log with the 500s removed, the check fails **immediately**, at the
+  first grep, printing one line. So the behaviour is exactly inverted: **the
+  healthier the system, the sooner the script dies.** A log full of errors gets
+  further through the checks than a clean one.
+
+
+  Because `set -e` exits silently, the symptom is a script stopping partway with
+  no message and status 1 — which reads like an infrastructure problem rather
+  than a bug in the check.
+
+
+  **The fix uses a different form per intent.**
+
+
+  ```bash
+  if grep -q ' 500 ' "$LOG"; then      # presence IS the failure
+    echo "FAIL: server errors present" >&2
+    fail=1
+  else
+    echo "ok: no server errors"
+  fi
+
+  slow=$(grep -cE ' [0-9]{4,}ms$' "$LOG" || true)   # a count; zero is fine
+  ```
+
+
+  Plus an explicit `[ -r "$LOG" ]` check exiting **2**, so an unreadable log is
+  distinguished from a clean one — which the original could not do at all.
+
+
+  **The convention worth giving a team:**
+
+
+  - `if grep -q …; then` — branching on the result. Usually what was meant, and
+    the fastest form.
+  - `count=$(grep -c … || true)` — a number, where zero is a valid answer.
+  - `grep … || true` — absence is acceptable **here**, with a comment saying so.
+
+
+  The comment on the third is what scales. Without it a reviewer cannot tell
+  "absence is fine" from "somebody silenced a failure" — and a bare `|| true`
+  also swallows status **2**, turning a missing file into a silent pass.
+
+
+  A reviewable signal: **a bare `grep` used as a statement under `set -e` is
+  almost always wrong.** If the output is neither captured nor branched on, ask
+  what the author expected to happen when it found nothing.

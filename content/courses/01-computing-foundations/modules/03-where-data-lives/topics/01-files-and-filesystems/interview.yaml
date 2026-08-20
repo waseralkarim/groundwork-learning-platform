@@ -1,0 +1,155 @@
+topic: topic.files-and-filesystems
+
+questions:
+  - id: i1
+    level: L2
+    question: What is the difference between a hard link and a symbolic link?
+    model_answer: >-
+      A hard link is another name for the same inode — there is no original, both
+      names are equal, and the data survives until the last name is removed. A
+      symbolic link is a separate small file whose contents are a path, resolved
+      by a second lookup.
+
+
+      That difference decides their properties: a symlink can cross filesystems
+      and can dangle, because it holds text rather than a reference. A hard link
+      cannot cross filesystems, because inode numbers are only unique within one,
+      and cannot dangle by construction.
+
+
+      Practically: a symlink survives its target being replaced, which is why
+      deploys point one at the current release. A hard link survives its target
+      being renamed.
+    signal: >-
+      The reasoning from "shares an inode" to the properties, rather than a
+      memorised list. A candidate who explains *why* a hard link cannot cross
+      filesystems has the model; one who states it has the fact.
+    follow_ups:
+      - "Why can you not hard-link a directory?"
+      - "What does the link count mean, and when does the data get freed?"
+      - "Which would you use to point at the current release of a deployment?"
+
+  - id: i2
+    level: L3
+    question: >-
+      A disk is 100% full. You delete 30 GB of logs and nothing changes. What is
+      happening and what do you do?
+    model_answer: >-
+      Almost certainly deleted files still held open by a running process. `rm`
+      removed the names and dropped the link counts to zero, but the kernel does
+      not free a file's blocks while any process holds a descriptor for it.
+
+
+      The evidence is `du` and `df` disagreeing: `du` walks names and there are
+      none, while `df` asks the filesystem for free blocks. `lsof +L1`, or
+      `/proc/*/fd` for a link ending in `(deleted)`, names the process.
+
+
+      The fix is to make the holder let go without an outage: signal the service
+      to reopen its logs if it supports it, or truncate in place — `: >
+      /proc/PID/fd/N` works even though the file has no name. Restarting works
+      and costs more than it needs to.
+
+
+      The underlying cause is usually log rotation that renames without telling
+      the writer.
+    signal: >-
+      Reaching for `du` versus `df` before deleting anything else. The strong
+      answer also knows truncation frees the blocks without breaking the writer —
+      that is the difference between resolving it in a minute and taking an
+      outage.
+    follow_ups:
+      - "Why does restarting the service fix it?"
+      - "How would you prevent it recurring?"
+      - "What else produces a du/df gap?"
+
+  - id: i3
+    level: L3
+    question: >-
+      Explain what a container's root filesystem actually is, and why ten
+      containers from one image do not cost ten images of disk.
+    model_answer: >-
+      It is an overlay: a stack of read-only directories from the image, plus one
+      writable directory for that container, presented as a single tree. Lookups
+      go top-down and the first match wins.
+
+
+      The read-only layers are shared — one copy on disk, and one copy in the page
+      cache, so containers share RAM as well. Only the writable upper layer is
+      per-container, and it is created empty at start and discarded when the
+      container is removed.
+
+
+      Two consequences worth stating: containers start instantly because nothing
+      is copied, and modifying a file that came from a lower layer triggers
+      copy-up of the whole file — so appending to a 2 GB file inherited from the
+      image costs 2 GB. That is the reason anything written frequently belongs on
+      a volume.
+    signal: >-
+      Copy-up is the discriminator. Most candidates know layers are shared; the
+      ones who have debugged container storage know that editing a large file is
+      unexpectedly expensive and why a database's data directory must never live
+      on the overlay.
+    follow_ups:
+      - "Why does `RUN rm big-file` not shrink an image?"
+      - "Where do writes go, and what happens to them?"
+      - "When would you choose a bind mount over a volume?"
+
+  - id: i4
+    level: L3
+    question: >-
+      A container fails with "read-only file system" on a path that exists in the
+      image. What is your process?
+    model_answer: >-
+      First, note that `EROFS` is not a permission error. It comes from the mount,
+      so ownership, mode bits and capabilities are all irrelevant — that rules
+      out most of what people try first.
+
+
+      Then compare the failing path against the mount table. In a hardened
+      container the root is read-only by design, so any path not covered by a
+      volume or tmpfs will refuse writes. The fix is a writable mount exactly
+      where the application needs one — a volume for anything worth keeping, a
+      tmpfs for small scratch data.
+
+
+      I would also check what the fix lands on: a memory-backed emptyDir is a
+      tmpfs, so it is bounded by its size limit and charged against the pod's
+      memory limit. Mounting one for a large scratch file converts an EROFS into
+      an OOM kill.
+    signal: >-
+      Refusing to remove the read-only root to make the symptom go away, and
+      knowing that a memory-backed volume is memory. Both are the difference
+      between fixing the cause and moving it.
+    follow_ups:
+      - "How does EROFS differ from EACCES and ENOSPC in practice?"
+      - "When is `medium: Memory` the right choice?"
+      - "Why is removing readOnlyRootFilesystem the wrong fix here?"
+
+  - id: i5
+    level: L3
+    question: Does a successful write mean the data is on disk?
+    model_answer: >-
+      No. It means the kernel has the bytes — they are in the page cache, marked
+      dirty, and will be written out later by a flush thread or under memory
+      pressure. If the machine loses power in between, the data is gone and the
+      application was told it succeeded.
+
+
+      `fsync` is the request to make it durable, returning when the device
+      confirms. For a newly created file you also need to fsync the directory, or
+      the data can survive in an inode that nothing names.
+
+
+      The standard safe pattern is write to a temporary file, fsync it, then
+      rename over the target — rename within a filesystem is atomic, so a reader
+      sees either the old file or the complete new one.
+    signal: >-
+      Knowing the directory also needs syncing separates people who have written
+      durable code from people who have read about fsync. Mentioning the
+      throughput cost — every fsync is a device round trip — shows they have had
+      to make the trade rather than just name it.
+    follow_ups:
+      - "What is the cost of fsync per record, and when is it acceptable?"
+      - "Why is rename atomic, and why does that matter?"
+      - "When is it correct to skip durability entirely?"

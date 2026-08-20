@@ -1,0 +1,227 @@
+topic: topic.the-filesystem-hierarchy
+
+exercises:
+  - id: e1
+    title: Place five files
+    level: L1
+    objectives: [OBJ-B06.3.1]
+    kind: interpretation
+    prompt: >-
+      Give the correct directory for each, and one sentence on why:
+
+
+      1. A statically linked CLI tool your team wrote and installs by hand
+
+      2. A vendor's monitoring agent that ships as a tarball with its own `bin`,
+         `lib` and `conf`
+
+      3. A 40 GB search index the application rebuilds in about two hours
+
+      4. A unix socket the service creates at startup
+
+      5. The database the service cannot function without
+    answer: >-
+      1. **`/usr/local/bin`.** Reserved for locally installed software; no
+         package may write there, so an upgrade can never clobber it.
+
+
+      2. **`/opt/<vendor>/`.** Self-contained third-party trees get one
+         subdirectory each, keeping their layout out of the system hierarchy.
+
+
+      3. **`/var/cache/<app>/`.** Regenerable. Putting it there states that it
+         may be deleted at any time, which keeps it out of backups.
+
+
+      4. **`/run/<app>/`.** Valid for this boot only. A tmpfs, so it is empty at
+         every start and stale sockets cannot accumulate.
+
+
+      5. **`/var/lib/<app>/`.** State that cannot be regenerated — the thing to
+         put in a volume and the thing to back up.
+    explanation: >-
+      Items 3 and 5 are the pair worth separating carefully, because a service
+      will happily put both under `/var/lib` and nobody notices until the backup
+      is 300 GB. **The directory is a claim about regenerability**, so a cache
+      placed in `/var/lib` is a mislabelled file, not a harmless one.
+
+
+      Items 1 and 2 are both "software from outside the archive" and differ only
+      in shape: one binary goes in `/usr/local/bin`, a whole tree with its own
+      layout goes in `/opt`. Both land on the register of things the distribution
+      will never patch.
+
+  - id: e2
+    title: Explain an empty answer
+    level: L2
+    objectives: [OBJ-B06.3.3]
+    kind: short_answer
+    prompt: >-
+      A colleague runs `dpkg -S /usr/local/bin/deploy-tool`, gets "no path found",
+      and concludes the package database is broken. Correct them, and say what
+      the same output would mean for `/usr/bin/curl`.
+    answer: >-
+      *The database is fine — that answer is what `/usr/local` is for.* Debian
+      policy forbids any package from installing files under `/usr/local`, so
+      nothing there is ever owned. On this image, zero of 162 packages ship a
+      file under `/usr/local` or `/opt`; the directories are created by
+      `base-files.postinst` precisely so they exist while nothing owns them.
+
+
+      *What it actually tells you is who is responsible.* `deploy-tool` gets no
+      upgrades, no security fixes, no integrity checking and no line in any
+      inventory — so somebody owns patching it, and that fact lives nowhere on
+      the machine.
+
+
+      *The same output for `/usr/bin/curl` would be a genuine finding*, because
+      `/usr/bin` is package territory. It would mean something replaced a
+      packaged binary with an unowned file — which is either a careless manual
+      install or a compromise, and worth treating as the second until shown
+      otherwise.
+    explanation: >-
+      The exercise is about reading an identical output two ways depending on
+      where it came from. **The hierarchy tells you in advance which paths will
+      answer "unowned"**, which converts a confusing result into a routine one —
+      and, more usefully, makes the genuinely alarming version stand out.
+
+
+      This is the same finding B06.2 arrived at by discovery. Reaching it from the
+      layout is faster: instead of searching for absences, you look in the three
+      directories where unpackaged software is supposed to live.
+
+  - id: e3
+    title: Split a /var directory into a backup policy
+    level: L2
+    objectives: [OBJ-B06.3.4]
+    kind: interpretation
+    prompt: >-
+      A service uses these. For each, say back up, skip, or "depends", and why:
+
+
+      ```text
+      /var/lib/app/main.db          8 GB
+      /var/lib/app/thumbnails/    120 GB
+      /var/lib/app/uploads/        60 GB
+      /var/cache/app/              15 GB
+      /var/log/app/access.log       2 GB
+      /var/log/app/audit.log        4 GB
+      ```
+    answer: >-
+      - `main.db` — **back up.** Irreplaceable state.
+
+      - `thumbnails/` — **skip.** A cache living in the state directory; 120 GB of
+        data that regenerates from `uploads/`.
+
+      - `uploads/` — **back up.** User-supplied and irreplaceable; note it is also
+        what makes the thumbnails disposable.
+
+      - `/var/cache/app/` — **skip.** Regenerable by definition.
+
+      - `access.log` — **depends**, and usually skip: if logs ship to a central
+        system, backing them up stores a second copy of something already durable.
+
+      - `audit.log` — **depends**, and usually back up — not because it is more
+        useful, but because audit trails are frequently retained under a policy or
+        a law. The obligation comes from outside the system.
+
+
+      Backed up: 68 GB, against 209 GB for the whole tree.
+    explanation: >-
+      `thumbnails/` is the entire exercise. It sits in `/var/lib` — the state
+      directory — and is the largest item, which is exactly how a backup grows to
+      three times its necessary size while looking correct.
+
+
+      The two logs are the interesting pair because they are **in the same
+      directory with different obligations**. No rule based on paths can separate
+      them, which is why a manifest has to name paths individually and record a
+      reason. The reason column is not documentation overhead — it is the only
+      thing that makes the manifest maintainable when the paths change.
+
+  - id: e4
+    title: Diagnose three refusals
+    level: L2
+    objectives: [OBJ-B06.3.5, OBJ-B06.3.6]
+    kind: interpretation
+    prompt: >-
+      Name the gate and the fix for each:
+
+
+      1. `touch /var/lib/app/x` → `Read-only file system`
+
+      2. `touch /run/app/x` → `Permission denied`, and `/run` is mounted `rw`
+
+      3. `./helper.sh` → `Permission denied`, file is `0755` and owned by you, in
+         `/dev/shm`
+    answer: >-
+      1. **The mount.** `EROFS` — the filesystem is read-only and no permission
+         change can affect it. Fix: declare the path writable, as a volume for
+         state or a tmpfs for scratch. Keep it narrow.
+
+
+      2. **The mode.** `EACCES` — the mount permits writes, but the directory is
+         `755` owned by root and the process is not. Fix: own it, or mount the
+         tmpfs with the right `uid`. Remounting will not help.
+
+
+      3. **The mount, but not for writing.** `noexec` blocks execution
+         independently of the permission bits. Fix: put the executable somewhere
+         that allows exec — and ask why a program is executing something out of
+         shared memory at all, since that is what `noexec` is there to stop.
+    explanation: >-
+      Three refusals, two of which say "Permission denied", and all three need
+      different responses. Reading the exact message first is what separates a
+      one-minute fix from an afternoon of `chmod`-ing a filesystem that is
+      ignoring you.
+
+
+      Case 3 is worth sitting with: the fix is usually not to make the path
+      executable. `noexec` on a world-writable directory exists so that a process
+      which can write somewhere cannot also run what it wrote, and a program
+      tripping over it is often telling you something about the program.
+
+  - id: e5
+    title: Argue the writable list is worth producing
+    level: L2
+    objectives: [OBJ-B06.3.8]
+    kind: short_answer
+    prompt: >-
+      A team spent two days getting a service to run under a read-only root and
+      now wants to abandon it. What is the strongest argument for keeping the
+      work, even if they turn `read_only` off?
+    answer: >-
+      *You now have a tested list of every path this service writes, and that
+      document did not exist anywhere before.* It could not have been produced by
+      reading the code — the runtime, the TLS library and the logging framework
+      all write things the application's authors never think about. Two days of
+      error messages with paths in them produced it.
+
+
+      *That list is what the other work depends on.* Classifying paths for the
+      writable set is the same work as classifying them for the backup, so the
+      backup policy is now derivable rather than guessed. The volume layout is
+      decided. The restore procedure can be checked against something.
+
+
+      *And it holds even if you lose the argument.* Turning `read_only` off does
+      not invalidate the list — it only removes the enforcement. So keep the
+      document, keep the narrow volume and tmpfs mounts, and leave the flag as a
+      separate decision somebody can revisit.
+
+
+      What is genuinely lost by turning it off: drift can accumulate again, and a
+      compromised process regains somewhere to persist. Both are real and neither
+      is what I would lead with, because you cannot point at the incident that did
+      not happen.
+    explanation: >-
+      The instructive move is **separating the artefact from the enforcement**.
+      Most arguments about hardening are all-or-nothing, which means losing the
+      argument discards the work — and the work was the valuable part.
+
+
+      It also generalises. Plenty of controls are worth running once for what they
+      teach you even if you do not keep them on: a dependency audit, a chaos
+      experiment, a permissions review. Framing them as "this produces a document
+      we do not have" gets a much better reception than framing them as "this is
+      more secure", and it is usually the more honest claim.

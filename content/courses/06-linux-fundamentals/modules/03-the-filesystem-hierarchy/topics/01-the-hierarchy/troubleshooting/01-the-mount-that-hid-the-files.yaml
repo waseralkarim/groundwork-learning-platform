@@ -1,0 +1,249 @@
+id: troubleshooting.the-mount-that-hid-the-files
+topic: topic.the-filesystem-hierarchy
+title: The plugins that vanished on Tuesday
+level: L2
+objectives: [OBJ-B06.3.7, OBJ-B06.3.4]
+reveal_policy: progressive
+
+situation: >-
+  A reporting service lost half its output formats on Tuesday morning. CSV and
+  JSON still work; PDF, XLSX and the three custom formats return "unsupported
+  format".
+
+
+  The application loads format plugins from `/usr/lib/reporting/plugins/` at
+  startup. That directory is now almost empty. Nobody deployed the application on
+  Monday and the image digest has not changed in three weeks.
+
+
+  The only change in the window was a platform team change: adding a shared
+  fonts directory to a group of services, because PDF rendering needed a
+  corporate font.
+
+
+  The team's working theory is that the image build silently dropped the plugins,
+  and somebody is rebuilding it to compare.
+
+
+  Work out where the plugins went.
+
+symptoms:
+  - "Five of seven output formats stopped working simultaneously"
+  - "The plugin directory is nearly empty inside the running container"
+  - "The image digest is unchanged and three weeks old"
+  - "The only change was adding a fonts volume for PDF rendering"
+  - "No error appears in the application or platform logs"
+
+artifacts:
+  - type: command_output
+    label: The plugin directory, in the running container and in the image
+    content: |
+      $ docker exec reporting ls /usr/lib/reporting/plugins/
+      corporate.ttf
+      NotoSans-Regular.ttf
+
+      $ docker run --rm --entrypoint ls \
+          registry.internal/reporting@sha256:4f1c... /usr/lib/reporting/plugins/
+      csv.so
+      json.so
+      pdf.so
+      xlsx.so
+      finance-a.so
+      finance-b.so
+      audit.so
+
+  - type: config
+    label: The change that went out on Monday evening
+    content: |
+      # compose.yaml — the fonts change
+       services:
+         reporting:
+           image: registry.internal/reporting@sha256:4f1c...
+           volumes:
+             - reporting-data:/var/lib/reporting
+      +      - shared-fonts:/usr/lib/reporting/plugins
+
+  - type: log
+    label: The ticket the change came from
+    content: |
+      PLAT-4471  "PDF export needs the corporate font.
+                  Put the shared fonts volume where the reporting service
+                  will find them — it already loads things from its
+                  plugins directory, so mount them there."
+
+  - type: command_output
+    label: What the container thinks is mounted
+    content: |
+      $ docker exec reporting mountpoint /usr/lib/reporting/plugins
+      /usr/lib/reporting/plugins is a mountpoint
+
+      $ docker exec reporting sh -c 'grep plugins /proc/1/mountinfo'
+      ... /usr/lib/reporting/plugins rw,relatime - ext4 /dev/sdb1 rw
+
+  - type: command_output
+    label: Someone checked whether the files were deleted
+    content: |
+      $ docker exec reporting find / -name 'pdf.so' 2>/dev/null
+      $
+      # nothing. the file does not exist anywhere in the container.
+
+diagnostic_questions:
+  - "The image contains the plugins and the running container does not. What sits between them?"
+  - "What does mounting a volume over a non-empty directory do to its contents?"
+  - "Why does `find` not locate the files, if they were never deleted?"
+  - "Why did CSV and JSON keep working?"
+  - "Why is there no error anywhere?"
+
+hints:
+  - "Compare `ls` in the image against `ls` in the running container. The image is unchanged."
+  - "Read the `mountpoint` output. Something is mounted exactly there."
+  - "A mount does not merge with what is underneath."
+  - "Look at which two plugins survived, and where they might have been loaded from."
+
+root_cause: >-
+  **The fonts volume was mounted directly over the plugin directory, and a mount
+  covers what is underneath rather than merging with it.**
+
+
+  The image ships seven `.so` files in `/usr/lib/reporting/plugins/`. The Monday
+  change mounted `shared-fonts` at exactly that path. From the moment the
+  container started, the process sees the volume's contents — two font files —
+  and nothing else.
+
+
+  **The plugins were never deleted.** They are in the image layer, intact,
+  underneath the mount. `find` cannot see them for the same reason the
+  application cannot: the mount point hides the directory beneath it in this
+  mount namespace. Remove the volume and all seven reappear immediately.
+
+
+  That is why the investigation went wrong. `find` returning nothing reads as
+  proof of deletion, and it is not — it is proof of unreachability, and those look
+  identical from inside the container.
+
+
+  **Why CSV and JSON still work:** they are almost certainly compiled into the
+  binary or loaded from a different path, with the `.so` files present as
+  optional overrides. Whatever the reason, the surviving formats are the ones
+  that never needed the covered directory — which is exactly the sort of partial
+  failure that makes people look for a subtle bug instead of a blunt cause.
+
+
+  **Why nothing errored:** from the process's point of view the directory simply
+  contains two font files. There is no missing-file error, because the
+  application enumerates a directory rather than opening named plugins. An empty
+  result is a valid result. The container started successfully and the platform
+  change did exactly what it was asked to do.
+
+
+  The ticket is the origin of the mistake, and it is a reasonable-sounding
+  sentence: *"it already loads things from its plugins directory, so mount them
+  there."* That reasoning would be correct if mounts merged. They do not.
+
+method: >-
+  **1. Compare the image against the running container.** The image is unchanged
+  and contains the plugins; the container does not. That places the fault
+  strictly between "image" and "running process" — which is a very short list:
+  mounts, entrypoint, and the runtime's own configuration.
+
+
+  **2. Ask whether anything is mounted at that exact path.** `mountpoint
+  /usr/lib/reporting/plugins` answers in one second and says yes. This is the
+  command that ends the investigation, and the reason to reach for it early is
+  that its answer is unambiguous.
+
+
+  **3. Read `/proc/1/mountinfo`** for the authoritative list of what the runtime
+  attached, regardless of what any manifest claims or anybody remembers changing.
+
+
+  **4. Do not treat `find` returning nothing as proof of deletion.** It proves
+  unreachability. Deletion and masking are indistinguishable from inside the
+  namespace, and only one of them is reversible — so check for the reversible one
+  first, because it costs a second.
+
+
+  **5. Read the partial failure as a clue rather than a complication.** Two of
+  seven formats surviving means the surviving two do not depend on the affected
+  path. That narrows the location of the fault before you understand the
+  mechanism.
+
+
+  **6. Re-read the change with the mechanism in mind.** "Mount the fonts where
+  the service already looks" is a sentence that assumes merging. Once you know
+  mounts cover rather than merge, the change and the symptom are the same fact.
+
+
+  The habit: **when files that should exist do not, ask whether something is
+  mounted on top before asking whether something deleted them.** Deletion is loud
+  and leaves traces — logs, audit records, a process that did it. Masking is
+  silent, instantaneous and completely reversible.
+
+resolution: >-
+  **Immediately:** move the fonts somewhere they belong and stop covering the
+  plugin directory.
+
+
+  ```yaml
+  volumes:
+    - reporting-data:/var/lib/reporting
+    - shared-fonts:/usr/share/fonts/corporate:ro
+  ```
+
+
+  `/usr/share/fonts` is where fonts go, and the font subsystem finds them there
+  without anybody being told a path. Redeploy and all seven plugins return,
+  because they were never gone.
+
+
+  **Then fix the class, not the instance.** Three rules, in order of preference:
+
+
+  *Never mount over a directory the image populates.* If a mount must land inside
+  one, mount the **single file** rather than the directory:
+
+
+  ```yaml
+  - ./finance-b.so:/usr/lib/reporting/plugins/finance-b.so:ro
+  ```
+
+
+  *Give operators a directory intended for mounting* — an empty `plugins.d/` the
+  image never writes to — so the merging question cannot arise.
+
+
+  *And prefer paths the software already searches by convention* over paths that
+  happen to work. The ticket picked the plugin directory because the service
+  reads it, which is a reason that sounds good and encodes no policy.
+
+
+  **Add the check to deployment review**, because it is mechanical:
+
+
+  ```bash
+  # every path this compose file mounts over, that the image is not empty at
+  for p in $(yq '.services.*.volumes[]' compose.yaml | cut -d: -f2); do
+    n=$(docker run --rm --entrypoint sh "$IMAGE" -c "ls -A $p 2>/dev/null | wc -l")
+    [ "$n" -gt 0 ] && echo "WARNING: mount at $p covers $n existing entries"
+  done
+  ```
+
+
+  A mount landing on non-empty image content is not always wrong — it is how you
+  replace a config directory on purpose — but it should never be a surprise, and
+  this turns it into a line in a pull request.
+
+
+  **Record the plugin directory's contract.** The image ships plugins there and
+  the application enumerates whatever it finds; that made an empty directory a
+  valid state rather than an error. Where a component legitimately cannot
+  distinguish "nothing configured" from "everything missing", the fix belongs in
+  the component: log the plugin count at startup, and warn when a format that was
+  available yesterday is not today.
+
+
+  **For the postmortem:** the platform change did exactly what it was asked to
+  do, the image was never rebuilt, no file was deleted, and every plugin was
+  present on disk throughout the incident. A volume was mounted one directory too
+  high, and for two days the team investigated a build system that had done
+  nothing wrong.

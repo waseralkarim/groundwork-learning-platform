@@ -1,0 +1,263 @@
+topic: topic.finding-files
+
+questions:
+  - id: i1
+    level: L1
+    question: What does `find . -mtime +7` actually select?
+    model_answer: >-
+      Files whose modification time is **more than seven whole 24-hour periods**
+      ago — so eight days or more.
+
+
+      `-mtime` truncates the age to whole days, and `+` means strictly greater.
+      A file that is exactly seven days old has completed seven periods, so
+      "more than seven" is false and it survives another full day.
+
+
+      That matters because a policy written as "delete after seven days" and
+      implemented as `-mtime +7` gives an eight-day retention window. The job
+      reports success every night, the count looks plausible, and the archive is
+      14% over policy indefinitely. I have seen that found by a compliance audit
+      rather than by any monitoring — and the give-away was the shape: files at
+      eight days and **none older**, which is a uniform one-day overrun rather
+      than an intermittently failing job.
+
+
+      What I write instead:
+
+
+      ```bash
+      find archive -type f ! -newermt '-7 days' -delete
+      ```
+
+
+      `-newermt` compares against a real timestamp with no truncation.
+      `-mtime +6` selects the same files and reads as "six" to whoever audits it
+      against a seven-day policy, which is how it gets "corrected" back to `+7`
+      later.
+
+
+      And I would put the policy in a comment next to the predicate, so the next
+      reader compares intent against implementation rather than re-deriving it.
+    signal: >-
+      Knowing `+7` means eight days is the discriminator — most people read it as
+      "seven or more". Preferring `-newermt` for *reviewability* rather than just
+      correctness is the senior half, and the audit-shape observation shows they
+      have diagnosed it rather than read about it.
+    follow_ups:
+      - "How would you test the boundary?"
+      - "What is the difference between -mtime, -atime and -ctime?"
+      - "Why not just use -mtime +6?"
+
+  - id: i2
+    level: L2
+    question: >-
+      What is the difference between `find -exec cmd \;` and `find -exec cmd +`?
+    model_answer: >-
+      Three differences, and the third is the one that matters.
+
+
+      **Process count.** `\;` runs the command once per file; `+` batches as many
+      paths as fit on a command line. For 50,000 files that is 50,000 forks
+      against a handful.
+
+
+      **Where `{}` may appear.** With `+` it must be last, because find appends
+      the batch there. With `\;` it can be anywhere and repeated.
+
+
+      **Exit status.** `-exec cmd \;` **discards the command's exit status
+      entirely**. `-exec false \;` gives find rc 0; `-exec false {} +` gives rc 1.
+
+
+      That third one is why I care. A retention job written as `find … -exec rm
+      {} \;` on a read-only filesystem, or against files owned by another user,
+      deletes nothing and prints its completion message and exits 0. It is also
+      the form people copy, because it is what most examples show.
+
+
+      So I default to `+`, and reach for `\;` only when the command genuinely
+      takes one filename — or when I need `{}` somewhere other than the end.
+
+
+      The related trap is on the xargs side: `xargs -I{}` implies one item per
+      invocation, so a pipeline written for batching silently becomes one process
+      per file. Same regression, arrived at by accident.
+
+
+      And whichever I use, I check find's **own** status separately — it returns
+      1 when it could not read part of the tree, and in a pipeline that
+      disappears unless `pipefail` is set.
+    signal: >-
+      Naming the process count is table stakes. The exit-status difference is the
+      discriminator and very few people know it. Volunteering the `-I{}`
+      equivalent shows they have thought about the whole family rather than
+      memorised one pair.
+    follow_ups:
+      - "When would you still use \\;?"
+      - "What happens to find's own exit status in a pipeline?"
+      - "How would you parallelise it?"
+
+  - id: i3
+    level: L2
+    question: >-
+      A nightly cleanup job has reported success for four months and the disk
+      just filled. Where do you look?
+    model_answer: >-
+      At what the job's exit status is actually reporting, because "success" and
+      "did the work" are different claims.
+
+
+      First I would **run it as the user cron uses**, not as myself or as root.
+      A job that works when you run it and not on a schedule is usually a
+      privilege or environment difference, and running it as root tests a
+      different program.
+
+
+      In the case I have seen, that immediately printed `find: '/srv/builds/proj-a/work':
+      Permission denied` — the build directories had moved to per-project users
+      at mode 0700 four months earlier, and the cleanup user was in none of those
+      groups.
+
+
+      Then three independent reasons nobody was told:
+
+
+      - **find's status was never checked.** It correctly returns 1 when it could
+        not read part of the tree.
+      - **The script's last command was `echo "cleanup complete"`**, so the
+        script exits 0 regardless of everything before it.
+      - **`-exec rm {} \;` discards the command's status**, so even with the
+        files visible, failing removals would have reported success.
+
+
+      Three ways to report success while doing nothing, in one short script.
+
+
+      What I would change: check find's status and **refuse on a partial walk**
+      rather than deleting what is visible — deleting less while appearing to work
+      is worse than stopping. Report `deleted=N remaining=M` instead of a message.
+      And alert on **remaining growing run over run**, because whether the job ran
+      is a proxy and whether the disk is emptying is the outcome.
+
+
+      A free-space alert would also have fired four months earlier, which is worth
+      saying out loud in the review.
+    signal: >-
+      Running it as the cron user first is the instinct that solves it. The
+      discriminator is enumerating all three reporting failures rather than
+      stopping at the permissions — and choosing to *refuse* on a partial walk,
+      rather than delete what is visible, shows they have thought about which
+      failure is worse.
+    follow_ups:
+      - "Why not just run the cleanup as root?"
+      - "What would you monitor instead of the job's exit code?"
+      - "Why refuse rather than delete what you can see?"
+
+  - id: i4
+    level: L2
+    question: >-
+      How would you make a bulk delete safe enough to run unattended?
+    model_answer: >-
+      I would separate **deciding** from **acting**, so the decision can be
+      reviewed.
+
+
+      ```bash
+      find "$DIR" -type f -name '*.log' ! -newermt "-${DAYS} days" -print0 > "$LIST" \
+        || { echo "find could not read part of $DIR" >&2; exit 1; }
+
+      n=$(tr -dc '\0' < "$LIST" | wc -c)
+      tr '\0' '\n' < "$LIST" | head -20
+      [ "$n" -le 10000 ] || { echo "refusing: $n exceeds the limit" >&2; exit 1; }
+      [ "$DRY_RUN" = yes ] && exit 0
+      xargs -0 -r rm -- < "$LIST"
+      ```
+
+
+      The properties I want: the list is **computed once**, so nothing changes
+      between deciding and acting — `find -delete` re-walks a tree other processes
+      are writing to. find's status is **checked**. The list is **printable**, so
+      it can be logged, reviewed, or diffed against yesterday's. There is a
+      **count ceiling**, which catches the case where the predicate is right and
+      the input is not — a failed mount, a clock problem. And `DRY_RUN` defaults
+      to yes until somebody has read the output.
+
+
+      Plus an **allow-list** on the target path, not a deny-list — a deny-list is
+      the dangerous paths somebody thought of, and the first unusual value is the
+      one that was missed. An empty `$DIR` is the common one, so `${DIR:?}` too.
+
+
+      But the honest answer is that I would try not to delete at all. A storage
+      lifecycle rule is declarative and does not run as root on a machine. A
+      quarantine directory makes the first deletion reversible, so a wrong
+      predicate is found while the files still exist. And rotating by **count**
+      rather than age removes this whole class of off-by-one.
+
+
+      `find -delete` is what I reach for when none of those fit, not first.
+    signal: >-
+      Separating decide from act is the core. The count ceiling and the
+      allow-list-not-deny-list reasoning are both signs of having reviewed
+      destructive changes. Ending on "try not to delete" rather than on a better
+      delete is the answer that scales.
+    follow_ups:
+      - "Why compute the list once rather than using -delete?"
+      - "What would the count ceiling have caught?"
+      - "When is find -delete fine?"
+
+  - id: i5
+    level: L2
+    question: >-
+      Somebody tests a retention job by copying the directory with `cp -r` and
+      running the job against the copy. It deletes nothing. What do you say?
+    model_answer: >-
+      That the test destroyed the property it was testing, so the result means
+      nothing.
+
+
+      `cp -r` gives every copy the **current** modification time. So nothing in
+      the copy is old enough to match an age-based predicate, and the job
+      correctly deletes nothing — which is equally consistent with the job being
+      perfect and with it being broken.
+
+
+      `cp -a`, or `cp -rp`, preserves timestamps.
+
+
+      The same trap appears in several places worth naming: a tarball extracted
+      without `-p`, a `COPY` in a container build, and a **git checkout**, which
+      sets every file's mtime to the moment of checkout. Any age-based logic
+      tested against freshly checked-out fixtures will appear to do nothing.
+
+
+      What I would actually do is not copy production data at all. Build the
+      fixture with known ages:
+
+
+      ```bash
+      touch -d '6 days ago' t/keep.csv
+      touch -d '7 days ago' t/delete-me.csv
+      touch -d '8 days ago' t/also-delete.csv
+      ```
+
+
+      That puts a file on each side of the boundary deliberately, which is exactly
+      where `-mtime` truncation shows up and where a copied production directory
+      is unlikely to have anything. It also turns the test into documentation of
+      the intended boundary, which a comment cannot do as reliably.
+
+
+      The broader point I would make in the review: **the conclusion drawn was
+      stronger than the evidence.** A test producing no output is ambiguous, and
+      the ambiguity got resolved by assumption rather than by another check.
+    signal: >-
+      Spotting the mtime reset is the technical answer. The discriminator is
+      generalising to git checkouts and container builds, and then proposing a
+      constructed fixture rather than a fixed copy — which is the better practice
+      and shows they think about what a test is for.
+    follow_ups:
+      - "Where else does this bite?"
+      - "How would you build the fixture?"
+      - "What should they have concluded instead?"

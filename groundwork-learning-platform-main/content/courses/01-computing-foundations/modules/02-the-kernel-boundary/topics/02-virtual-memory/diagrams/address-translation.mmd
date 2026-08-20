@@ -1,0 +1,9 @@
+graph LR
+    A["Process A<br/>reads 0x7f2a1000"] --> PTA["Page table A"]
+    B["Process B<br/>reads 0x7f2a1000"] --> PTB["Page table B"]
+    PTA -->|"MMU translates"| P1["Physical page<br/>0x00c41000"]
+    PTB -->|"MMU translates"| P2["Physical page<br/>0x00e07000"]
+    P1 --> RAM["RAM"]
+    P2 --> RAM
+    C["Both libc pages"] -.->|"same physical page,<br/>mapped into both"| SHARED["Physical page<br/>0x00a12000"]
+    SHARED --> RAM

@@ -1,0 +1,204 @@
+topic: topic.the-block-layer
+
+exercises:
+  - id: e1
+    title: Order the journey of one write
+    level: L2
+    objectives: [OBJ-A02.4.1]
+    kind: ordering
+    prompt: >-
+      Put these in the order they happen when a program calls `write()` on a
+      file on an ext4 filesystem, with default settings and no `fsync`:
+
+
+      1. The block layer merges the request with an adjacent one
+
+      2. `write()` returns a byte count
+
+      3. The I/O scheduler dispatches the request to the device queue
+
+      4. The bytes are copied into page-cache pages
+
+      5. The device signals completion
+
+      6. Dirty pages cross `dirty_background_ratio` and kernel threads begin writeback
+
+      7. ext4 allocates blocks and builds bios
+    answer: "4, 2, 6, 7, 1, 3, 5"
+    explanation: >-
+      The thing to notice is where step 2 sits: second. Everything from step 6
+      onwards happens after the application has been told the write succeeded,
+      and none of it is on its thread.
+
+
+      Steps 4 and 2 are the whole of `write()` — a copy and a return. The
+      filesystem has not been consulted, no blocks are allocated, and no device
+      knows anything has happened. The data exists in exactly one place, which
+      is volatile.
+
+
+      Step 6 is the trigger people forget. Below the background threshold
+      nothing at all happens; those pages could sit in memory for thirty seconds
+      (`dirty_expire_centisecs`) before anyone touches them.
+
+
+      The two merge points — steps 1 and 3 — are the two queues. Requests merge
+      in the block layer, then wait in the scheduler queue, then wait again in
+      the device's own. Knowing which of the two is full is most of what
+      diagnosing storage consists of.
+
+
+      If the program had called `fsync`, it would block until step 5, which is
+      the entire reason database performance is a different subject from file
+      copying.
+
+  - id: e2
+    title: Size the dirty thresholds
+    level: L3
+    objectives: [OBJ-A02.4.4]
+    kind: calculation
+    prompt: >-
+      A node has 128 GiB of RAM and a cloud volume that sustains 125 MB/s of
+      writes. The defaults are in place: `dirty_background_ratio 10`,
+      `dirty_ratio 20`.
+
+
+      Compute how much dirty data each threshold permits, and how long it would
+      take to write out. Then propose `vm.dirty_bytes` and
+      `vm.dirty_background_bytes` values that keep the worst-case stall under
+      five seconds, and say what you have traded away.
+    answer: >-
+      Background at 10% is about 12.8 GiB, roughly 105 seconds of writeback.
+      Throttle at 20% is about 25.6 GiB, roughly 210 seconds. For a five-second
+      worst case: `dirty_bytes` ≈ 625 MB and `dirty_background_bytes` ≈ 312 MB.
+      The trade is that bursty writers now reach the throttle sooner and are
+      smoothed rather than absorbed — peak burst throughput falls, and
+      predictability and crash exposure both improve.
+    explanation: >-
+      The arithmetic is the argument. 25.6 GiB at 125 MB/s is about three and a
+      half minutes of writeback sitting in volatile memory — and a crash loses
+      all of it, while a writer that crosses the line stalls until enough of it
+      has drained.
+
+
+      The five-second target gives 125 MB/s × 5 s ≈ 625 MB for the throttle, and
+      half that for the background threshold so writeback starts well before
+      anyone blocks.
+
+
+      What you give up is real and worth stating to whoever asks. A workload
+      that writes 2 GB in a burst and then idles was previously absorbed entirely
+      by cache and now gets throttled part-way through. Its peak number goes
+      down. In exchange, the stall is five seconds rather than three minutes, it
+      is predictable, and a crash loses half a gigabyte rather than twenty-five.
+
+
+      That is usually the right trade for a service, and usually the wrong one
+      for a batch job whose only measure is total elapsed time — which is why
+      this belongs to the node, and mixed-workload nodes need the conversation.
+
+  - id: e3
+    title: Read two iostat rows
+    level: L3
+    objectives: [OBJ-A02.4.5]
+    kind: interpretation
+    prompt: >-
+      Two devices, same ten-second window:
+
+
+      ```text
+      device    r/s     w/s   rkB/s    wkB/s  r_await  w_await  aqu-sz  %util
+      nvme0n1  8200    1400  131200    22400     0.18     0.22     1.8   100.0
+      sdb        40     380    2560    48640    92.40     6.10    18.2   100.0
+      ```
+
+
+      For each: is it saturated, what is the average request size, and what
+      would you do next?
+    answer: >-
+      nvme0n1 is not saturated — queue depth 1.8 and sub-millisecond latency at
+      9600 IOPS; average read 16 KiB. The 100% util is an artefact of concurrent
+      service and there is nothing to do but fix the alert. sdb is in trouble:
+      92 ms reads against 6 ms writes, queue depth 18, only 40 reads per second;
+      average read 64 KiB, average write 128 KiB. Reads are queued behind a
+      write stream — check the scheduler and whether it has a deadline.
+    explanation: >-
+      Both show 100% utilisation and they could hardly be less alike, which is
+      the point of the pair.
+
+
+      **Request size comes from the two rate columns.** 131200 ÷ 8200 = 16 KiB
+      per read on the NVMe; 2560 ÷ 40 = 64 KiB per read on sdb. That matters
+      because it tells you whether the latency is plausible — 64 KiB should not
+      take 92 ms on any working device, so the time is queueing, not transfer.
+
+
+      **Queue depth settles it.** 1.8 on the NVMe means requests are barely
+      waiting for each other; 18.2 on sdb means each request waits behind
+      seventeen others on average.
+
+
+      **The read/write asymmetry names the mechanism.** 92 ms reads against 6 ms
+      writes on the same device is not a hardware fault — the hardware is
+      serving writes perfectly well. It is reads queued behind a write stream,
+      which is what happens when the scheduler has no read deadline.
+
+
+      Next steps differ completely: for the NVMe, change the alert; for sdb,
+      read `/sys/block/sdb/queue/scheduler` and switch to `mq-deadline` if it is
+      set to `none`.
+
+  - id: e4
+    title: Choose a scheduler and a readahead
+    level: L3
+    objectives: [OBJ-A02.4.6]
+    kind: short_answer
+    prompt: >-
+      For each, give the I/O scheduler and say whether you would change
+      `read_ahead_kb` from its default of 128:
+
+
+      **A** — PostgreSQL on local NVMe, mostly random 8 KiB page reads.
+
+
+      **B** — A log archiver on a SATA SSD, streaming large sequential writes
+      alongside occasional reads that must not stall.
+
+
+      **C** — A build server on a rotational disk, shared by several tenants who
+      should each get a fair share.
+    answer: >-
+      A: `none`, and lower `read_ahead_kb` substantially — 16 KiB or less —
+      because every 8 KiB random read is currently pulling 128 KiB off the
+      device and discarding most of it. B: `mq-deadline`, keep readahead at the
+      default; the deadline is what stops the write stream starving the reads.
+      C: `bfq`, keep the default readahead; bfq's proportional sharing is what
+      the fairness requirement asks for, and its CPU cost is acceptable on a
+      build server.
+    explanation: >-
+      Each is decided by the device first and the access pattern second.
+
+
+      **A** — NVMe reorders internally better than the kernel can, so `none`.
+      The readahead change is the larger win and the one people miss: at 128 KiB,
+      a random 8 KiB page read fetches sixteen times what it needs, wasting
+      device bandwidth and evicting useful cache to hold pages nothing will
+      read. For a purely random workload the ideal is close to zero; 16 leaves a
+      little margin for the partially sequential parts.
+
+
+      **B** — the requirement "reads must not stall" is precisely what a read
+      deadline provides. Without one, merging the sequential writes is the
+      efficient choice and the scheduler will keep making it, so a read can wait
+      unboundedly. Readahead stays at the default because the reads that do
+      happen are worth prefetching.
+
+
+      **C** — "each tenant a fair share" is bfq's actual design goal, and no
+      other scheduler here offers it. The cost is CPU, which a build server has.
+      On a rotational disk `mq-deadline` would also be defensible, and the
+      fairness requirement is what tips it.
+
+
+      The general shape: pick by device, then check whether anything must not be
+      starved, then look at request size to decide readahead.

@@ -1,0 +1,225 @@
+id: troubleshooting.the-node-that-was-not-slow
+topic: topic.the-layers
+title: One node is slow and every metric inside it looks normal
+level: L2
+objectives: [OBJ-A05.1.2, OBJ-A05.1.6]
+reveal_policy: progressive
+
+situation: >-
+  Pods scheduled onto `node-11` are roughly 40% slower than identical pods on
+  its eleven siblings. Same image, same limits, same configuration.
+
+
+  On the node itself everything looks fine. CPU utilisation is moderate, memory
+  is comfortable, disk is idle, and the network is quiet. `top` shows nothing
+  unusual. The kubelet is healthy and there are no kernel errors.
+
+
+  The team have cordoned the node, and someone has raised a hardware ticket with
+  the provider on the theory that a CPU is degraded. The provider has run
+  diagnostics and reported no fault.
+
+
+  All twelve nodes are the same instance type, launched from the same image on
+  the same day.
+
+
+  Work out why before reading on.
+
+symptoms:
+  - "Pods on one node are ~40% slower than identical pods elsewhere"
+  - "CPU, memory, disk and network on the node all look normal"
+  - "The provider's hardware diagnostics report no fault"
+  - "All twelve nodes are the same instance type from the same image"
+  - "The slowdown affects every pod on the node, not one workload"
+  - "It varies through the day and is worst in the afternoon"
+
+artifacts:
+  - type: command_output
+    label: top on node-11, header only
+    content: |
+      %Cpu(s): 31.2 us,  4.1 sy,  0.0 ni, 41.6 id,  0.2 wa,  0.0 hi,  0.5 si, 22.4 st
+
+  - type: command_output
+    label: the same header on node-04, which is healthy
+    content: |
+      %Cpu(s): 44.8 us,  5.2 sy,  0.0 ni, 49.3 id,  0.1 wa,  0.0 hi,  0.4 si,  0.2 st
+
+  - type: command_output
+    label: What the nodes are
+    content: |
+      $ grep -o hypervisor /proc/cpuinfo | head -1
+      hypervisor
+
+      $ cat /sys/class/dmi/id/sys_vendor
+      Amazon EC2
+      $ cat /sys/class/dmi/id/product_name
+      t3.xlarge
+
+      $ nproc
+      4
+
+  - type: metric
+    label: Cluster dashboard for node-11
+    content: |
+      node_cpu_utilisation      58%
+      node_memory_utilisation   61%
+      container_cpu_throttling  no significant increase
+      node_load1                2.4   (4 cores)
+
+  - type: log
+    label: Application timings from a pod on node-11
+    content: |
+      request handling (application's own instrumentation): 42 ms
+      total request time observed by the caller:            71 ms
+      difference unaccounted for:                           29 ms
+
+diagnostic_questions:
+  - "Compare the two `top` headers field by field. Which field differs, and what is it?"
+  - "What layer is the node itself running on, and what does that make possible?"
+  - "Why do CPU, memory, disk and network all look normal from inside?"
+  - "What does the instance type suggest about how CPU is allocated?"
+  - "Why does it vary through the day?"
+
+hints:
+  - "The last field on the `top` header line is `st`. Find out what it means."
+  - "Read the DMI output. The node is not a physical machine."
+  - "A metric that is invisible from inside a container may be visible from inside the VM."
+  - "Look up what a burstable instance type does when its credits run out."
+
+root_cause: >-
+  **Steal time.** The node is a VM, and the hypervisor is not giving it the CPU
+  it asks for.
+
+
+  The two `top` headers differ in exactly one field:
+
+
+  ```text
+  node-11:  22.4 st
+  node-04:   0.2 st
+  ```
+
+
+  `st` is **steal** — the percentage of time this vCPU was runnable and the
+  hypervisor was running something else instead. At 22.4%, roughly a fifth of the
+  node's CPU time is being taken by the layer below it, and nothing *inside* the
+  node can see where it went.
+
+
+  That is why every metric looks normal. CPU utilisation, memory, disk and
+  network are all measured from inside the guest, and from inside the guest
+  nothing is wrong — the work simply takes longer per unit of CPU. The 29 ms
+  unaccounted for in the application timings is the same gap seen from the other
+  end: the application's own instrumentation measures its handling, and the time
+  lost to being descheduled by the hypervisor lands outside it.
+
+
+  **The instance type explains the pattern.** `t3.xlarge` is a **burstable** type:
+  it earns CPU credits while idle and spends them when busy, and when credits are
+  exhausted it is throttled to a baseline fraction of the vCPUs it appears to
+  have. The afternoon correlation is credit exhaustion after a busy morning, and
+  it is why the provider's hardware diagnostics found nothing — nothing is broken.
+
+
+  Two layers of the same idea are stacked here, which is what makes it confusing.
+  The **container** layer's throttling shows up as `throttled_usec` and is
+  visible from inside the pod. The **VM** layer's throttling shows up as steal
+  time and is visible only on the node — and neither is visible from where the
+  team was looking.
+
+
+  The hardware ticket was raised against the correct symptom and the wrong layer.
+
+method: >-
+  **1. Diff the two `top` headers field by field.** Both machines were available
+  and the comparison takes seconds. Eight fields, one differs by two orders of
+  magnitude, and that field names the layer. Comparing a broken thing against a
+  working one is faster than reasoning about either alone.
+
+
+  **2. Know that `st` exists.** It is the last field on the line, it is almost
+  always 0.0 on healthy VMs, and most people have never read it. It is the only
+  metric inside a guest that reports on the hypervisor above it, which makes it
+  the single most useful number when a VM is slow for no visible reason.
+
+
+  **3. Establish which layer you are on before choosing metrics.** The census —
+  hypervisor flag present, DMI says `Amazon EC2 t3.xlarge` — takes two commands
+  and tells you a hypervisor is above you and can be the problem. Metrics
+  gathered from inside a guest cannot see it.
+
+
+  **4. Read the instance type as a specification, not a size.** `t3` is
+  burstable, and a burstable instance is *designed* to be throttled once its
+  credits are spent. That is a documented behaviour rather than a fault, and it
+  makes the time-of-day pattern predictable rather than mysterious.
+
+
+  **5. Use the accounting gap.** The application measured 42 ms and the caller
+  observed 71 ms. Time that exists at one boundary and not at the other is time
+  spent somewhere neither is measuring — and once you know a hypervisor is above
+  you, there is an obvious candidate.
+
+
+  **6. Do not stop at "the provider found no fault".** They were asked about
+  hardware and answered correctly. The behaviour is a product feature of the
+  instance type.
+
+
+  The habit: **know which layer you are asking about.** Container throttling and
+  hypervisor steal are the same idea one level apart, and each is invisible from
+  the other's vantage point.
+
+resolution: >-
+  **Immediately:** confirm the credit balance and move the workload off burstable
+  instances if it is a steady-load service.
+
+
+  Burstable types are excellent for genuinely bursty or mostly-idle workloads and
+  a poor fit for anything with a sustained baseline, because the credit model
+  guarantees exactly this failure once the baseline exceeds the earn rate. A
+  fixed-performance type — `m`-family rather than `t`-family — removes it.
+
+
+  If the type must stay, **unlimited mode** trades the throttling for a surcharge,
+  which is at least a predictable cost rather than an unpredictable latency
+  cliff. Decide that deliberately rather than discovering it on a bill.
+
+
+  **Then fix the visibility, which is the durable finding.**
+
+
+  *Alert on steal time.* `node_cpu_seconds_total{mode="steal"}` is exported by
+  node-exporter and is almost never on a dashboard. Anything sustained above a
+  few percent is worth investigating; 22% is an incident. This one metric would
+  have answered the question on the first afternoon.
+
+
+  *Alert on CPU credit balance* where burstable instances are in use. The
+  provider exposes it, and it is a leading indicator — it falls for hours before
+  the latency does.
+
+
+  *Put container throttling and node steal on the same dashboard*, labelled by
+  layer. They are the same failure one level apart, and a team that has both in
+  front of them stops guessing which one they are looking at.
+
+
+  *Add the accounting gap as a standing check.* The difference between what the
+  application measures and what the caller observes is time spent outside the
+  application, and tracking it turns "somewhere else" into a number that can
+  trend.
+
+
+  **And correct the hardware ticket.** The provider was asked about a fault and
+  answered accurately; the behaviour is how the instance type is specified to
+  work. Closing it with "burstable instance, credits exhausted, moving to a
+  fixed-performance type" is worth more than closing it as no-fault-found,
+  because the next person to see 40% on one node will otherwise raise the same
+  ticket.
+
+
+  **One sentence for the postmortem:** every metric we collected was accurate,
+  and all of them were collected from inside a layer that could not see the one
+  causing the problem.

@@ -1,0 +1,386 @@
+id: lab.forwarding-arguments
+topic: topic.how-a-line-becomes-a-command
+title: Pass arguments through three wrappers and find the only form that survives
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.1.5, OBJ-B08.1.8]
+
+intro: >-
+  Wrappers are everywhere in operations — an entrypoint calls a launcher calls
+  the real binary. Every layer is a chance to mangle the arguments, and only one
+  of the three available forms survives the trip.
+
+
+  You will build the chain, push a hostile argument list through it, and find
+  out which form is correct and why the correct one needed a special rule in the
+  shell.
+
+setup:
+  - /opt/lab/seed-shell.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Build three one-line wrappers — one using $@, one using "$@", one using
+      "$*" — and send the same two arguments through each. Save to
+      /tmp/answer-three-forms.
+    hint: >-
+      Use arguments where the difference will show: one containing a space, and
+      one that does not.
+    walkthrough: |
+      export PATH="/tmp/sh:$PATH"
+      mkdir -p /tmp/wrap
+      printf '#!/bin/bash\n/tmp/sh/argc $@\n'    > /tmp/wrap/w-bare;   chmod +x /tmp/wrap/w-bare
+      printf '#!/bin/bash\n/tmp/sh/argc "$@"\n'  > /tmp/wrap/w-at;     chmod +x /tmp/wrap/w-at
+      printf '#!/bin/bash\n/tmp/sh/argc "$*"\n'  > /tmp/wrap/w-star;   chmod +x /tmp/wrap/w-star
+      {
+        echo "sending two arguments: 'a b' and 'c'"
+        echo
+        for w in bare at star; do
+          case $w in
+            bare) form='$@'   ;;
+            at)   form='"$@"' ;;
+            star) form='"$*"' ;;
+          esac
+          printf 'wrapper using %-6s -> ' "$form"
+          /tmp/wrap/w-$w 'a b' c | head -1
+          /tmp/wrap/w-$w 'a b' c | tail -n +2 | sed 's/^/      /'
+        done
+        echo
+        echo "two arguments went in. \$@ produced three, \"\$*\" produced one, and only \"\$@\" produced two."
+        echo
+        echo "\$@ unquoted expands to the arguments and then WORD SPLITS each one, so 'a b' became two. \"\$*\" joins everything into a single word separated by the first character of IFS. \"\$@\" expands each argument as its own word and splits nothing."
+      } > /tmp/answer-three-forms
+      cat /tmp/answer-three-forms
+    verify:
+      - type: file_matches
+        path: /tmp/answer-three-forms
+        pattern: "\\$@ +-> argc = 3"
+        describe: Unquoted $@ split the arguments
+      - type: file_matches
+        path: /tmp/answer-three-forms
+        pattern: '"\$@" +-> argc = 2'
+        describe: Quoted "$@" preserved them
+      - type: file_matches
+        path: /tmp/answer-three-forms
+        pattern: '"\$\*" +-> argc = 1'
+        describe: And "$*" joined them into one
+      - type: file_matches
+        path: /tmp/answer-three-forms
+        pattern: "(?i)first character of IFS"
+        describe: And you explained what "$*" joins with
+
+  - id: s2
+    instruction: >-
+      Find out what each form does with ZERO arguments. One of the answers is
+      the reason the shell needed a special rule. Save to /tmp/answer-empty.
+    hint: >-
+      Call each wrapper with no arguments at all and count what arrives.
+    walkthrough: |
+      mkdir -p /tmp/wrap
+      printf '#!/bin/bash\n/tmp/sh/argc $@\n'    > /tmp/wrap/w-bare;   chmod +x /tmp/wrap/w-bare
+      printf '#!/bin/bash\n/tmp/sh/argc "$@"\n'  > /tmp/wrap/w-at;     chmod +x /tmp/wrap/w-at
+      printf '#!/bin/bash\n/tmp/sh/argc "$*"\n'  > /tmp/wrap/w-star;   chmod +x /tmp/wrap/w-star
+      {
+        echo "calling each wrapper with NO arguments:"
+        for w in bare at star; do
+          case $w in
+            bare) form='$@'   ;;
+            at)   form='"$@"' ;;
+            star) form='"$*"' ;;
+          esac
+          printf '  %-6s -> %s\n' "$form" "$(/tmp/wrap/w-$w | head -1)"
+        done
+        echo
+        echo "\"\$@\" with zero arguments expands to NOTHING - not to one empty string. \"\$*\" expands to one empty argument, which is almost always a bug: the command receives an argument it was never given."
+        echo
+        echo "that is a genuinely special rule. everywhere else in the shell, a quoted expansion produces exactly one word - \"\$e\" with e empty gives one empty argument. \"\$@\" is the exception, and it exists precisely so that forwarding works when there is nothing to forward."
+        echo
+        echo "which is why 'cmd \"\$@\"' is safe as the last line of a wrapper and 'cmd \"\$*\"' is not: with no arguments the first runs cmd, and the second runs cmd with one empty argument."
+      } > /tmp/answer-empty
+      cat /tmp/answer-empty
+    verify:
+      - type: file_matches
+        path: /tmp/answer-empty
+        pattern: '"\$@" +-> argc = 0'
+        describe: "$@ with no arguments expands to nothing"
+      - type: file_matches
+        path: /tmp/answer-empty
+        pattern: '"\$\*" +-> argc = 1'
+        describe: While "$*" produces one empty argument
+      - type: file_matches
+        path: /tmp/answer-empty
+        pattern: "(?i)special rule"
+        describe: And you identified it as an exception to the usual behaviour
+
+  - id: s3
+    instruction: >-
+      Chain the wrappers three deep and push a hostile argument list through.
+      Show that "$@" survives all three layers and the others do not. Save to
+      /tmp/answer-chain.
+    hint: >-
+      Make each wrapper call the next one, ending at argc. Use arguments with a
+      space, an empty string and a glob character.
+    walkthrough: |
+      printf '#!/bin/bash\nexec /tmp/wrap/mid-at "$@"\n'  > /tmp/wrap/top-at
+      printf '#!/bin/bash\nexec /tmp/sh/argc "$@"\n'      > /tmp/wrap/mid-at
+      printf '#!/bin/bash\nexec /tmp/wrap/mid-bare $@\n'  > /tmp/wrap/top-bare
+      printf '#!/bin/bash\nexec /tmp/sh/argc $@\n'        > /tmp/wrap/mid-bare
+      chmod +x /tmp/wrap/top-at /tmp/wrap/mid-at /tmp/wrap/top-bare /tmp/wrap/mid-bare
+      cd /tmp/sh/files
+      {
+        echo "three arguments, chosen to be hostile:"
+        echo "  1: 'a file.log'   contains a space"
+        echo "  2: ''             empty"
+        echo "  3: '*.log'        a glob pattern"
+        echo
+        echo "through two layers of \"\$@\":"
+        /tmp/wrap/top-at 'a file.log' '' '*.log' | sed 's/^/  /'
+        echo
+        echo "through two layers of unquoted \$@:"
+        /tmp/wrap/top-bare 'a file.log' '' '*.log' | sed 's/^/  /'
+        echo
+        echo "\"\$@\" delivered all three intact - the space survived, the empty argument survived, and the glob pattern was NOT expanded because it never went through an unquoted stage."
+        echo
+        echo "unquoted \$@ lost the empty argument entirely, split the first one, and expanded the pattern against whatever directory happened to be current. that last part is the worst of it: the wrapper's behaviour depended on the caller's working directory."
+        echo
+        echo "and the damage compounds per layer. each unquoted hop re-splits and re-globs what the previous one produced, so a three-deep chain has three chances to mangle the same argument."
+      } > /tmp/answer-chain
+      cat /tmp/answer-chain
+    verify:
+      - type: file_matches
+        path: /tmp/answer-chain
+        pattern: "argc = 3"
+        describe: The quoted chain delivered exactly three arguments
+      - type: file_matches
+        path: /tmp/answer-chain
+        pattern: "\\[a file.log\\]"
+        describe: With the space intact
+      - type: file_matches
+        path: /tmp/answer-chain
+        pattern: "(?i)working directory"
+        describe: And you noticed the unquoted chain depended on the caller's cwd
+      - type: file_matches
+        path: /tmp/answer-chain
+        pattern: "(?i)per layer|compounds"
+        describe: And that the damage compounds with each hop
+
+  - id: s4
+    instruction: >-
+      Show what happens when a forwarded argument looks like an option, and fix
+      it. Save to /tmp/answer-options.
+    hint: >-
+      /tmp/sh/files contains files named -n and --force. Try passing one as an
+      argument to a command that has options.
+    walkthrough: |
+      cd /tmp/sh/files
+      {
+        echo "the directory contains files named -n and --force:"
+        ls -b | grep -E '^-' | sed 's/^/  /'
+        echo
+        echo "what 'echo *' does here:"
+        printf '  '; echo *
+        echo "  ^ the -n was consumed as an option and suppressed the trailing newline."
+        echo
+        echo "and a wrapper forwarding a filename beginning with a hyphen:"
+        f='-n'
+        printf '  echo "\$f"  -> ['; echo "$f"; printf ']\n'
+        echo "  the argument was correctly quoted and STILL became an option, because quoting controls word splitting - it says nothing about how the command interprets the word."
+        echo
+        echo "the two fixes, and i want both:"
+        printf '  echo -- "\$f"   -> '; echo -- "$f"
+        printf '  echo "./\$f"    -> '; echo "./$f"
+        echo
+        echo "-- ends option parsing for nearly every GNU tool: everything after it is data. ./ makes the name not start with a hyphen at all, works with tools that do not understand --, and has the advantage of being obvious to a reader."
+        echo
+        echo "note echo itself is a poor example - it has no -- in bash - which is exactly why printf is preferred for anything that matters. but rm, cp, mv, grep and find all honour it, and 'rm -- \"\$f\"' costs three characters."
+        echo
+        echo "this is not only about hostile input. generated identifiers, ticket numbers and branch names all produce a leading hyphen eventually, and the failure is a tool silently doing something else rather than reporting a bad filename."
+      } > /tmp/answer-options
+      cat /tmp/answer-options
+    verify:
+      - type: file_matches
+        path: /tmp/answer-options
+        pattern: "(?i)consumed as an option"
+        describe: You showed a filename becoming a flag
+      - type: file_matches
+        path: /tmp/answer-options
+        pattern: "(?i)quoting controls word splitting"
+        describe: And that quoting does not prevent it
+      - type: file_matches
+        path: /tmp/answer-options
+        pattern: "\\-\\- \"\\$f\"|rm -- "
+        describe: And gave the -- fix
+      - type: file_matches
+        path: /tmp/answer-options
+        pattern: "(?i)generated identifiers|branch names"
+        describe: And where leading hyphens actually come from
+
+  - id: s5
+    instruction: >-
+      Write the wrapper you would actually ship, and say what each part is for.
+      Save to /tmp/answer-wrapper.
+    walkthrough: |
+      cat > /tmp/answer-wrapper <<'W'
+      #!/bin/bash
+      # Wrapper for the reconciliation tool.
+      set -euo pipefail
+
+      : "${TOOL_CONFIG:?TOOL_CONFIG must be set}"
+
+      exec /usr/local/bin/tool \
+        --config "$TOOL_CONFIG" \
+        -- \
+        "$@"
+      W
+      {
+        echo
+        echo "# what each part is for:"
+        echo "#"
+        echo "#   \"\$@\"          the only form that forwards arguments unchanged."
+        echo "#                 preserves spaces, preserves empty arguments, and"
+        echo "#                 expands to nothing when there are none."
+        echo "#"
+        echo "#   --            ends option parsing, so a caller's filename that"
+        echo "#                 begins with a hyphen is treated as data. this is"
+        echo "#                 the line most wrappers omit."
+        echo "#"
+        echo "#   \"\$TOOL_CONFIG\"  quoted like everything else. a path from the"
+        echo "#                 environment is exactly the kind of value that"
+        echo "#                 acquires a space when somebody deploys to a new"
+        echo "#                 directory."
+        echo "#"
+        echo "#   exec          replaces this shell rather than forking. the tool"
+        echo "#                 gets the wrapper's PID, so signals and exit codes"
+        echo "#                 reach it directly instead of being mediated by a"
+        echo "#                 shell that is no longer doing anything useful."
+        echo "#"
+        echo "#   \${VAR:?}      fails immediately with a message naming the"
+        echo "#                 problem, instead of passing an empty --config."
+        echo "#"
+        echo "# and what i would NOT write:"
+        echo "#   tool \$@       splits every argument"
+        echo "#   tool \"\$*\"     collapses them into one"
+        echo "#   tool \$*       does both"
+      } >> /tmp/answer-wrapper
+      cat /tmp/answer-wrapper
+    verify:
+      - type: file_matches
+        path: /tmp/answer-wrapper
+        pattern: '"\$@"'
+        describe: Your wrapper forwards with "$@"
+      - type: file_matches
+        path: /tmp/answer-wrapper
+        pattern: "^  -- "
+        describe: And ends option parsing before the caller's arguments
+      - type: file_matches
+        path: /tmp/answer-wrapper
+        pattern: "(?i)exec +replaces this shell"
+        describe: And you explained why exec is used
+      - type: file_matches
+        path: /tmp/answer-wrapper
+        pattern: "(?i)signals and exit codes"
+        describe: And what that buys
+
+solution: >-
+  **Three forms, three different results.**
+
+
+  Two arguments in — `'a b'` and `'c'`:
+
+
+  | Form | argc | What it did |
+  |---|---|---|
+  | `$@` | **3** | expanded, then word-split each argument |
+  | `"$@"` | **2** | each argument as its own word, nothing split |
+  | `"$*"` | **1** | joined into one word using the first character of `IFS` |
+
+
+  **And with zero arguments, the answer that matters:**
+
+
+  ```text
+  $@    -> argc = 0
+  "$@"  -> argc = 0
+  "$*"  -> argc = 1
+  ```
+
+
+  `"$@"` with no arguments expands to **nothing** — not to one empty string.
+  That is a genuinely special rule: everywhere else a quoted expansion produces
+  exactly one word, and `"$e"` with `e` empty gives one empty argument. `"$@"` is
+  the exception, and it exists precisely so forwarding works when there is
+  nothing to forward.
+
+
+  `"$*"` produces one empty argument, so a wrapper ending `cmd "$*"` runs `cmd`
+  with an argument it was never given.
+
+
+  **Through a chain, the damage compounds.**
+
+
+  Three hostile arguments — a space, an empty string, a glob pattern — through
+  two layers:
+
+
+  ```text
+  "$@" chain:   argc = 3   [a file.log] [] [*.log]
+  $@   chain:   argc = 3   [a] [file.log] [normal.log] ...
+  ```
+
+
+  The quoted chain delivered all three intact, and crucially **did not expand the
+  pattern**, because it never passed through an unquoted stage. The unquoted
+  chain lost the empty argument, split the first, and globbed the third against
+  whatever directory happened to be current — so the wrapper's behaviour depended
+  on the **caller's working directory**.
+
+
+  Each unquoted hop re-splits and re-globs what the previous one produced, so a
+  three-deep chain has three chances to mangle the same argument.
+
+
+  **Quoting does not stop a filename becoming an option.**
+
+
+  ```console
+  $ f='-n'
+  $ echo "$f"        # correctly quoted, still consumed as a flag
+  $
+  $ echo -- "$f"
+  -- -n
+  $ echo "./$f"
+  ./-n
+  ```
+
+
+  Quoting controls **word splitting**; it says nothing about how the command
+  interprets the resulting word. The two fixes are `--`, which ends option
+  parsing for nearly every GNU tool, and a `./` prefix, which works even with
+  tools that do not support `--` and is obvious to a reader.
+
+
+  And this is not only about hostile input — generated identifiers, ticket
+  numbers and branch names all produce a leading hyphen eventually, and the
+  failure is a tool silently doing something else.
+
+
+  **The wrapper worth shipping.**
+
+
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+  : "${TOOL_CONFIG:?TOOL_CONFIG must be set}"
+
+  exec /usr/local/bin/tool --config "$TOOL_CONFIG" -- "$@"
+  ```
+
+
+  `"$@"` forwards unchanged. `--` ends option parsing — the line most wrappers
+  omit. `exec` replaces the shell rather than forking, so the tool gets the
+  wrapper's PID and signals and exit codes reach it directly instead of being
+  mediated by a shell that is no longer doing anything useful.

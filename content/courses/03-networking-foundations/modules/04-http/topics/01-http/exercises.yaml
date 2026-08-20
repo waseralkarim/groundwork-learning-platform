@@ -1,0 +1,207 @@
+topic: topic.http
+
+exercises:
+  - id: e1
+    title: Find the fault in a raw exchange
+    level: L1
+    objectives: [OBJ-A03.4.1]
+    kind: interpretation
+    prompt: >-
+      A server sent this, with line endings shown:
+
+
+      ```text
+      HTTP/1.1 200 OK^M$
+      Content-Type: application/json^M$
+      Content-Length: 27^M$
+      {"id":42,"status":"open"}^M$
+      ```
+
+
+      The client hangs. Identify the fault, say what the client is doing, and
+      give the corrected bytes.
+    answer: >-
+      There is no blank line between the headers and the body, so the headers
+      never end. The client reads `{"id":42,"status":"open"}` as another header
+      line, fails to parse it as `Name: value` or ignores it, and keeps waiting
+      for the empty line that terminates the header block. The fix is a bare CRLF
+      after `Content-Length: 27` and before the body.
+    explanation: >-
+      The blank line is a part of the message format, not formatting, and its
+      absence is one of the two most common hand-written-HTTP bugs.
+
+
+      What makes it confusing to debug is that the *status line* arrives and is
+      parsed, so a client will report `http_code=200` — the response looks like
+      it started successfully. What it will not report is any body, because the
+      body never began. A timeout with a 200 and `size_download=0` is this bug's
+      signature.
+
+
+      The corrected bytes:
+
+
+      ```text
+      HTTP/1.1 200 OK\r\n
+      Content-Type: application/json\r\n
+      Content-Length: 27\r\n
+      \r\n
+      {"id":42,"status":"open"}
+      ```
+
+
+      Note also that the body is 25 bytes and the header says 27, which is a
+      second bug hiding behind the first — the client would then wait for two
+      more bytes that never arrive. Both faults produce a hang, and only the
+      counters distinguish them.
+
+  - id: e2
+    title: Trace a redirect chain
+    level: L2
+    objectives: [OBJ-A03.4.3]
+    kind: ordering
+    prompt: >-
+      A browser requests `http://example.com/docs` and ends up at
+      `https://docs.example.com/latest/`. Put these in the order they happen:
+
+
+      1. GET /latest/ to docs.example.com over TLS
+
+      2. 301 to https://example.com/docs
+
+      3. GET /docs to example.com over TLS
+
+      4. GET /docs to example.com over plain HTTP
+
+      5. 302 to https://docs.example.com/latest/
+
+      6. 200 OK with the page
+    answer: "4, 2, 3, 5, 1, 6"
+    explanation: >-
+      Three requests and two redirects, which is entirely ordinary and is why a
+      page can take three round trips before any content arrives.
+
+
+      **Step 4 → 2 is the HTTP-to-HTTPS upgrade**, and it is correctly a 301: the
+      site permanently prefers TLS, and clients caching that forever is the
+      desired outcome. This is exactly what HSTS then replaces, by telling the
+      browser to skip the plaintext request entirely on subsequent visits.
+
+
+      **Step 3 → 5 is a content move**, and it is a 302 because the destination
+      may change — `/latest/` today, a different version later. Using a 301 there
+      would pin every visitor to whichever version was current when they first
+      arrived, permanently, with no way to correct it.
+
+
+      The choice between the two is the whole lesson: **301 for things that are
+      genuinely permanent and identical for everyone, 302 or 307 for anything
+      conditional.**
+
+
+      Worth noticing operationally: each redirect is a full round trip, and the
+      first one is over plaintext. On a mobile connection this chain can add
+      several hundred milliseconds before the first byte of content, which is why
+      HSTS and correctly-configured canonical URLs are performance work as much
+      as correctness work.
+
+  - id: e3
+    title: Explain a 404 that should not be one
+    level: L2
+    objectives: [OBJ-A03.4.5]
+    kind: short_answer
+    prompt: >-
+      A service is deployed and working. From a laptop,
+      `curl https://shop.example.com/` returns 200. From inside the cluster,
+      `curl http://10.244.7.19:8080/` returns 404, and the application logs show
+      no request at all for the second one.
+
+
+      Explain both results, and give the command that would have made the second
+      test meaningful.
+    answer: >-
+      The first request carries `Host: shop.example.com`, which matches an
+      ingress rule and is routed to the service. The second carries
+      `Host: 10.244.7.19:8080`, matches no rule, and is answered by the ingress
+      controller's default backend with a 404 — so the application never sees it
+      and logs nothing. The meaningful test is
+      `curl -H 'Host: shop.example.com' http://10.244.7.19:8080/`, or
+      `--resolve shop.example.com:443:10.244.7.19` for HTTPS.
+    explanation: >-
+      The two requests differ in exactly one header, and that header is what
+      routing uses.
+
+
+      **The empty log is the confirming evidence**, and people usually treat it
+      as a mystery. If the application had returned the 404, it would have logged
+      the request. Silence plus a 404 means something in front answered — which
+      narrows it to the ingress controller immediately.
+
+
+      **Why `--resolve` rather than `-H` for HTTPS:** TLS negotiates before any
+      HTTP exists, and the server chooses a certificate based on SNI — sent
+      during the handshake. `-H 'Host: …'` sets the HTTP header only, so the
+      handshake still asks for a certificate for the IP address and fails.
+      `--resolve` sets the name for both the connection and the handshake while
+      overriding only the address it connects to.
+
+
+      This is also the general shape of "works from outside, 404 from inside":
+      the outside path goes through something that adds routing information, and
+      the inside path skips it. Reproducing the outside path exactly — the same
+      Host, the same scheme, the same port — is what makes an internal test say
+      anything about external behaviour.
+
+  - id: e4
+    title: Attribute the latency
+    level: L2
+    objectives: [OBJ-A03.4.6]
+    kind: interpretation
+    prompt: >-
+      Three services, all reported as "slow". `curl -w` from the same client:
+
+
+      ```text
+      A  namelookup 0.004  connect 0.006  appconnect 0.009  starttransfer 3.812  total 3.815
+      B  namelookup 2.503  connect 2.505  appconnect 2.509  starttransfer 2.560  total 2.562
+      C  namelookup 0.003  connect 0.005  appconnect 0.812  starttransfer 0.860  total 4.910
+      ```
+
+
+      For each, say where the time is and what you would investigate next.
+    answer: >-
+      A: the server — 3.8 seconds between the TLS handshake completing and the
+      first response byte, with everything before it in single-digit
+      milliseconds. Investigate the application. B: DNS — 2.5 seconds to resolve,
+      and everything after it is fast. Investigate the resolver. C: two things —
+      an 800ms TLS handshake, and 4 seconds transferring the body after the
+      response started. Investigate the certificate chain and the response size
+      or link speed; the application itself took 48ms.
+    explanation: >-
+      Each value is cumulative from the start, so the phases are the differences
+      — and once you subtract, each row points somewhere unambiguous.
+
+
+      **A is the common case** and the one people misattribute. Everything up to
+      `appconnect` is 9 milliseconds; the network is excellent. `starttransfer −
+      appconnect` is 3.8 seconds of the server thinking. No packet capture is
+      needed and none would show anything.
+
+
+      **B is DNS**, which is easy to miss because the total does not look
+      unusual. 2.5 seconds in `namelookup` with everything afterwards fast means
+      a resolver timing out and falling back to a second nameserver — a classic
+      5-second-or-2.5-second signature. It is also invisible in most application
+      metrics, which start timing after resolution.
+
+
+      **C has two separate problems**, and reporting only one would leave half
+      the latency unexplained. An 800ms TLS handshake suggests a long certificate
+      chain requiring an extra fetch, or a slow CPU. Then 4 seconds of transfer
+      after a 48ms server response means a large body or a slow link — nothing to
+      do with the application's processing at all.
+
+
+      The habit: **subtract, then name the phase, then investigate only that.**
+      One command replaces the meeting where three teams each check their own
+      component.

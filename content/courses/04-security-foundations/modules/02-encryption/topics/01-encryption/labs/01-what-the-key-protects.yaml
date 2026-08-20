@@ -1,0 +1,264 @@
+id: lab.what-the-key-protects
+topic: topic.encryption
+title: The key is the secret, and the mode decides what leaks
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A04.2.1, OBJ-A04.2.2, OBJ-A04.2.5]
+
+intro: >-
+  Two things everybody says about encryption, checked against a real
+  implementation. First, that the algorithm is public and the key is the secret —
+  which you will confirm by decrypting with full knowledge of everything except
+  the key, and then with the key.
+
+
+  Second, that "we use AES-256" describes a system. It does not. You will encrypt
+  the same file twice with the same cipher and the same key, and watch one of the
+  results hand an attacker the structure of the data.
+
+setup:
+  - /opt/lab/seed-encryption.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Encrypt a short message with AES-256-CBC and a password, then try to
+      decrypt it with the wrong password. Save both outcomes to
+      /tmp/answer-key-is-secret.
+    hint: >-
+      `openssl enc -aes-256-cbc -pbkdf2 -pass pass:...`, then `-d` to decrypt.
+      Record the exit status of the failed attempt, not just its message.
+    walkthrough: |
+      cd /tmp
+      printf 'the quarterly numbers are not good' > msg.txt
+      openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:correct-horse -in msg.txt -out msg.enc
+      {
+        echo "ciphertext bytes: $(wc -c < msg.enc) (plaintext was $(wc -c < msg.txt))"
+        echo
+        echo "decrypt with the wrong password:"
+        openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:wrong-horse -in msg.enc 2>&1 | head -2
+        echo "rc=$?"
+        echo
+        echo "decrypt with the right password:"
+        openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:correct-horse -in msg.enc
+        echo "rc=$?"
+        echo
+        echo "i knew the algorithm, the mode, the iteration count and the ciphertext, and none of that was enough. the key is the only secret in the system."
+      } > /tmp/answer-key-is-secret
+      cat /tmp/answer-key-is-secret
+    verify:
+      - type: file_matches
+        path: /tmp/answer-key-is-secret
+        pattern: "the quarterly numbers are not good"
+        describe: The right password recovered the message
+      - type: file_matches
+        path: /tmp/answer-key-is-secret
+        pattern: "(?i)bad decrypt|error|rc=1"
+        describe: And the wrong one failed rather than returning something plausible
+      - type: file_matches
+        path: /tmp/answer-key-is-secret
+        pattern: "only secret|key is the only"
+        describe: And you recorded what that establishes about where the security lives
+
+  - id: s2
+    instruction: >-
+      A password is not a key. Show what stands between them by printing the
+      derived key for one password twice, and for a second password once. Save
+      to /tmp/answer-derivation.
+    hint: >-
+      `-p` prints the salt, key and IV that were derived. Run the same password
+      twice and compare — the result may not be what you expect.
+    walkthrough: |
+      cd /tmp
+      {
+        echo "same password, run 1:"
+        openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:hunter2 -in msg.txt -out /dev/null -p
+        echo "same password, run 2:"
+        openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:hunter2 -in msg.txt -out /dev/null -p
+        echo "different password:"
+        openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:different -in msg.txt -out /dev/null -p
+        echo
+        echo "the same password produced two different keys, because a fresh random salt is generated each time and stored in the ciphertext. a password is an input to a key derivation function, not a key."
+      } > /tmp/answer-derivation
+      cat /tmp/answer-derivation
+    verify:
+      - type: command_exit
+        command: "test $(grep -c '^salt=' /tmp/answer-derivation) -eq 3"
+        exit_code: 0
+        describe: You captured the derivation parameters for three runs
+      - type: command_exit
+        command: "test $(grep '^key=' /tmp/answer-derivation | sort -u | wc -l) -eq 3"
+        exit_code: 0
+        describe: All three derived keys differ — including the two from the same password
+      - type: file_matches
+        path: /tmp/answer-derivation
+        pattern: "salt"
+        describe: And you identified the salt as the reason
+
+  - id: s3
+    instruction: >-
+      Encrypt /tmp/structured/payroll.bin with AES-128-ECB using a raw key, and
+      dump the ciphertext as 16-byte rows. Save the dump to /tmp/answer-ecb.
+    hint: >-
+      `openssl enc -aes-128-ecb -K <32 hex chars>` avoids the KDF so the blocks
+      line up exactly. Use `od -An -tx1 -w16` to see one cipher block per row.
+    walkthrough: |
+      cd /tmp
+      echo "plaintext, 16 bytes per row:" > /tmp/answer-ecb
+      od -An -tx1 -w16 /tmp/structured/payroll.bin >> /tmp/answer-ecb
+      echo "ECB ciphertext, 16 bytes per row:" >> /tmp/answer-ecb
+      openssl enc -aes-128-ecb -K 00112233445566778899aabbccddeeff \
+        -in /tmp/structured/payroll.bin 2>/dev/null | od -An -tx1 -w16 >> /tmp/answer-ecb
+      cat /tmp/answer-ecb
+    verify:
+      - type: file_exists
+        path: /tmp/answer-ecb
+        describe: You dumped the ECB ciphertext
+      - type: command_exit
+        command: "test $(grep -c '^\\*$' /tmp/answer-ecb) -ge 2"
+        exit_code: 0
+        describe: od collapsed repeated ciphertext rows — identical blocks encrypted identically
+
+  - id: s4
+    instruction: >-
+      Encrypt the same file with AES-128-CBC and the same key, dump it the same
+      way, and save to /tmp/answer-cbc. Then count the distinct 16-byte
+      ciphertext blocks each mode produced.
+    hint: >-
+      CBC additionally needs `-iv`. Count distinct rows with `sort -u | wc -l`
+      over the hex dump, ignoring the offset column.
+    walkthrough: |
+      cd /tmp
+      openssl enc -aes-128-cbc -K 00112233445566778899aabbccddeeff \
+        -iv 000102030405060708090a0b0c0d0e0f \
+        -in /tmp/structured/payroll.bin -out cbc.bin 2>/dev/null
+      openssl enc -aes-128-ecb -K 00112233445566778899aabbccddeeff \
+        -in /tmp/structured/payroll.bin -out ecb.bin 2>/dev/null
+      ecb=$(od -An -tx1 -w16 -v ecb.bin | sort -u | grep . | wc -l)
+      cbc=$(od -An -tx1 -w16 -v cbc.bin | sort -u | grep . | wc -l)
+      blocks=$(( $(wc -c < ecb.bin) / 16 ))
+      {
+        echo "CBC ciphertext, 16 bytes per row:"
+        od -An -tx1 -w16 cbc.bin
+        echo
+        echo "total blocks: $blocks"
+        echo "distinct blocks under ECB: $ecb"
+        echo "distinct blocks under CBC: $cbc"
+        echo
+        echo "same cipher, same key, same file. ECB produced repeated ciphertext blocks wherever the plaintext repeated, so the record structure and the position of the one different record are both visible without decrypting anything. CBC chains each block to the previous ciphertext, so every block differs."
+      } > /tmp/answer-cbc
+      cat /tmp/answer-cbc
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/distinct blocks under ECB: //p' /tmp/answer-cbc) -lt $(sed -n 's/distinct blocks under CBC: //p' /tmp/answer-cbc)"
+        exit_code: 0
+        describe: ECB produced strictly fewer distinct blocks than CBC over the same data
+      - type: file_matches
+        path: /tmp/answer-cbc
+        pattern: "same cipher, same key"
+        describe: And you noted that only the mode differed
+      - type: file_matches
+        path: /tmp/answer-cbc
+        pattern: "structure|repeat"
+        describe: And named what ECB leaked
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-mode-matters what an attacker learns from the ECB
+      ciphertext without any key, and what that means for the claim "the data is
+      encrypted with AES-256".
+    hint: >-
+      You know the file is fixed-width records. Look again at where the
+      non-repeating block sits in the ECB dump.
+    walkthrough: |
+      {
+        echo "from the ECB ciphertext alone, with no key, an attacker learns:"
+        echo "- the file is made of 16-byte repeating records"
+        echo "- exactly how many records there are"
+        echo "- that one record differs from all the others, and precisely where it sits"
+        echo "- if they can get the service to encrypt a record they choose, they can match its ciphertext block against the capture and confirm the contents of any record"
+        echo
+        echo "the salary field was found without breaking aes. the cipher was never attacked."
+        echo
+        echo "so 'encrypted with AES-256' does not describe a system. the mode is a larger decision than the cipher or the key size, and a 256-bit key in ECB protects less than a 128-bit key in an authenticated mode."
+      } > /tmp/answer-mode-matters
+      cat /tmp/answer-mode-matters
+    verify:
+      - type: file_matches
+        path: /tmp/answer-mode-matters
+        pattern: "how many records|number of records|16-byte repeating"
+        describe: You identified the structural information ECB exposed
+      - type: file_matches
+        path: /tmp/answer-mode-matters
+        pattern: "mode is a larger decision|mode matters|larger decision"
+        describe: And concluded that the mode outweighs the key size
+
+solution: >-
+  **The key is the only secret.**
+
+
+  You had the algorithm, the mode, the iteration count, the salt and the
+  ciphertext, and none of it helped. With the wrong password `openssl` reported a
+  bad decrypt and exited non-zero; with the right one the message came back.
+
+
+  That is Kerckhoffs's principle demonstrated rather than quoted: everything
+  except the key can be public, and a cipher whose security needs the algorithm
+  hidden is a cipher nobody has reviewed. It also sets up the question the rest
+  of the course keeps returning to — every problem about an encrypted system
+  reduces to *where is the key*.
+
+
+  **A password is not a key.**
+
+
+  The same password produced three different derived keys across three runs,
+  because a fresh random salt is generated each time and stored in the
+  ciphertext. Between the password and the key sits a derivation function, which
+  is the previous topic's subject wearing a different hat — and `-pbkdf2 -iter`
+  is what makes that function expensive enough to matter.
+
+
+  **ECB leaks structure, and you saw it in hex.**
+
+
+  ```text
+  5301d1251af08a9ea49cf85982d8df6e
+  *
+  a1515645f0803ee0c9531256c72127a7
+  5301d1251af08a9ea49cf85982d8df6e
+  *
+  ```
+
+
+  The `*` is `od` collapsing repeated rows. Six identical records became six
+  identical ciphertext blocks, and the one block between them that differs is the
+  salary record — located precisely, without the key, without attacking AES.
+
+
+  CBC over the same file with the same key produced entirely distinct blocks,
+  because each block is XORed with the previous ciphertext before encryption, so
+  identical plaintext no longer means identical ciphertext.
+
+
+  **What this means for a claim you will hear.**
+
+
+  "The data is encrypted with AES-256" describes a cipher and a key length, and
+  neither is the interesting decision. A 256-bit key in ECB protects less than a
+  128-bit key in an authenticated mode. The question to ask is always **which
+  mode**, and it is the same shape as the previous topic's **what work factor**:
+  the headline names the algorithm, and the parameter decides the outcome.
+
+
+  One more thing the ECB dump enables that is worth noticing. If an attacker can
+  get the system to encrypt a record they choose, they can compare its ciphertext
+  block against the captured data and confirm whether any record matches — a
+  chosen-plaintext attack that needs no cryptanalysis at all, only the property
+  that identical inputs give identical outputs.
+
+
+  CBC is not the answer either, and the next lab shows why: it hides the
+  structure and still lets an attacker change what the file decrypts to.

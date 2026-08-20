@@ -1,0 +1,455 @@
+id: quiz.searching-text
+topic: topic.searching-text
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.3.1]
+    stem: What does grep's exit status 1 mean?
+    options:
+      - id: a
+        text: No lines matched — a result, not a failure
+        correct: true
+      - id: b
+        text: An error occurred while searching
+        note: >-
+          That is status 2, and conflating the two is what makes health checks
+          report the wrong thing.
+      - id: c
+        text: Exactly one line matched
+        note: >-
+          The status does not carry a count. `grep -c` does.
+      - id: d
+        text: The pattern was invalid
+        note: >-
+          Also status 2 — an error rather than a result.
+    explanation: >-
+      grep distinguishes three outcomes: 0 matched, 1 no match, 2 error. Almost
+      nobody uses the third, and merging 1 with failure means "the thing I
+      searched for is absent" and "the search could not be performed" become the
+      same event — which are opposite findings.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.3.1, OBJ-B08.3.4]
+    stem: >-
+      Under `set -euo pipefail`, what does a bare `grep ' 401 ' access.log` do
+      when there are no 401 lines?
+    options:
+      - id: a
+        text: Exits the script, silently, with status 1
+        correct: true
+      - id: b
+        text: Prints nothing and continues
+        note: >-
+          It prints nothing and returns 1, and `set -e` treats that as a failure.
+      - id: c
+        text: Prints a warning about no matches
+        note: >-
+          grep is silent on no match — the status is the only signal.
+      - id: d
+        text: Continues, because `set -e` ignores grep
+        note: >-
+          `set -e` has exemptions, and a bare command as a statement is not one
+          of them.
+    explanation: >-
+      This is the topic's headline failure: a health check exits **because the
+      system is healthy**, and the healthier it is the sooner it dies. `set -e`
+      exits silently, so the symptom is a script stopping partway with no message
+      — which reads like an infrastructure problem rather than a bug in the
+      check.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.3.2]
+    stem: Which tools use extended regular expressions by default?
+    options:
+      - id: a
+        text: "`grep -E`, `sed -E`, and `awk`"
+        correct: true
+      - id: b
+        text: "`grep` and `sed`"
+        note: >-
+          Both default to *basic* regular expressions, where `+` and `?` are
+          literal.
+      - id: c
+        text: All of them — the dialects were unified years ago
+        note: >-
+          They were not. `grep` and `sed` still default to BRE.
+      - id: d
+        text: Only `awk`
+        note: >-
+          `grep -E` and `sed -E` opt into the same dialect.
+    explanation: >-
+      `grep` and `sed` default to **basic** regular expressions, where `+ ? | ( )
+      { }` are literal characters. `grep -E`, `sed -E` and `awk` use **extended**
+      ones, where they are operators. Using `-E` by default gives you the dialect
+      you already know from every other language.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.3.2, OBJ-B08.3.3]
+    stem: "In basic regular expressions, what does the pattern `a+` match?"
+    options:
+      - id: a
+        text: The literal two-character text `a+`
+        correct: true
+      - id: b
+        text: One or more `a` characters
+        note: >-
+          That is ERE. In BRE you would write `a\+` for that.
+      - id: c
+        text: Nothing — it is a syntax error
+        note: >-
+          It is perfectly valid; `+` is simply an ordinary character there.
+      - id: d
+        text: The same as in ERE — `+` behaves identically in both
+        note: >-
+          The escaping is inverted between them, which is exactly the trap.
+    explanation: >-
+      The escaping is **inverted**: in BRE a backslash turns the operator *on*
+      (`a\+`), in ERE it turns it *off* (`a\+` is a literal plus). So a pattern
+      copied between `grep` and `grep -E` silently changes meaning rather than
+      erroring.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.3, OBJ-B08.3.5]
+    stem: >-
+      A config value is the literal text `[warn]`. How many of 16 log lines does
+      `grep "$value"` match?
+    options:
+      - id: a
+        text: All 16 — it is a character class matching any of w, a, r or n
+        correct: true
+      - id: b
+        text: One — the line actually containing `[warn]`
+        note: >-
+          That is `grep -F`. Unquoted, the brackets are a character class.
+      - id: c
+        text: None — the brackets make it an invalid pattern
+        note: >-
+          It is valid, which is why it fails silently rather than erroring.
+      - id: d
+        text: Two — the literal line plus one accidental match
+        note: >-
+          Almost every English line contains one of those four letters.
+    explanation: >-
+      Square brackets are a character class, so `[warn]` means "any one of w, a,
+      r, n". There is no error — grep answers a different question from the one
+      intended. **If the pattern came from a variable, a config file, a filename
+      or a user, use `grep -F`.**
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.3]
+    stem: >-
+      Why is searching for the version string `1.2.3` as a regex risky?
+    options:
+      - id: a
+        text: "`.` matches any character, so it also matches `1x2y3`"
+        correct: true
+      - id: b
+        text: Digits need escaping in basic regular expressions
+        note: >-
+          Digits are ordinary characters in every dialect.
+      - id: c
+        text: It is not risky — a version string contains no metacharacters
+        note: >-
+          It contains dots, which are the most common metacharacter there is.
+      - id: d
+        text: The pattern is too short to be anchored
+        note: >-
+          Length is not the issue; the dots are.
+    explanation: >-
+      Version strings are made of dots, which makes them the most common real
+      example of this problem. Either use `grep -F`, or anchor and escape
+      deliberately — hoping that data contains no metacharacters is not a plan.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.3]
+    stem: >-
+      `grep dev hosts` returns four lines but you wanted only the host named
+      exactly `dev`. What is the shortest fix?
+    options:
+      - id: a
+        text: "`grep -x dev hosts`, or `grep -w` if it appears within a line"
+        correct: true
+      - id: b
+        text: "`grep '^dev$' hosts` — anchors are the only way"
+        note: >-
+          Correct and longer; `-x` says the same thing more clearly.
+      - id: c
+        text: "`grep -F dev hosts`"
+        note: >-
+          `-F` makes the pattern literal; it does not stop it matching a
+          substring.
+      - id: d
+        text: "`grep -i dev hosts`"
+        note: >-
+          Case insensitivity would match *more*, not fewer.
+    explanation: >-
+      grep matches **anywhere in a line** unless told otherwise, which is why a
+      short string is found inside `device`, `devops` and `sandbox-dev2`. `-w`
+      restricts to whole words, `-x` to whole lines, and anchors do the same by
+      hand. Half the "why is this matching that" questions are one of these.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.4]
+    stem: >-
+      Which form correctly counts matches when zero is an acceptable answer,
+      under `set -e`?
+    options:
+      - id: a
+        text: "`count=$(grep -c PATTERN file || true)`"
+        correct: true
+      - id: b
+        text: "`count=$(grep -c PATTERN file)`"
+        note: >-
+          `grep -c` still exits 1 when the count is zero, so `set -e` ends the
+          script.
+      - id: c
+        text: "`count=$(grep PATTERN file | wc -l)`"
+        note: >-
+          It works — `wc` exits 0 — and it hides a genuine grep error too, since
+          the pipeline reports `wc`'s status.
+      - id: d
+        text: "`set +e; count=$(grep -c PATTERN file); set -e`"
+        note: >-
+          Works and disables the safety net for a whole region rather than one
+          command.
+      - id: e
+        text: "`count=$(grep -cq PATTERN file)`"
+        note: >-
+          `-q` suppresses output, so there would be no count to capture.
+    explanation: >-
+      `grep -c` reports the count on stdout **and** still exits 1 when that count
+      is zero, which surprises people. `|| true` is the narrow fix, and it
+      deserves a comment saying which case it covers — it also swallows status 2,
+      so a missing file becomes a silent zero.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.4]
+    stem: >-
+      In a script that checks for a problem, which form expresses the intent
+      best?
+    options:
+      - id: a
+        text: "`if grep -q ' 500 ' \"$LOG\"; then echo FAIL >&2; exit 1; fi`"
+        correct: true
+      - id: b
+        text: "`grep ' 500 ' \"$LOG\" || exit 1`"
+        note: >-
+          Backwards: it exits when there are **no** errors.
+      - id: c
+        text: "`grep ' 500 ' \"$LOG\"`"
+        note: >-
+          Under `set -e` this exits when the log is clean — the failure this
+          topic opens with.
+      - id: d
+        text: "`grep -v ' 500 ' \"$LOG\" && exit 1`"
+        note: >-
+          Exits whenever any line is *not* a 500, which is almost always.
+    explanation: >-
+      `-q` is the right form when you only want the answer: it exits at the first
+      match, prints nothing, and is faster on a large file. Branching on it makes
+      the intent — *presence is the failure* — explicit, which the bare form
+      inverts and the `|| exit 1` form gets exactly backwards.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.5]
+    stem: When should you reach for `grep -F`?
+    options:
+      - id: a
+        text: Whenever the pattern came from a variable, a file, a filename or a user
+        correct: true
+      - id: b
+        text: Only when the pattern is known to contain metacharacters
+        note: >-
+          That requires knowing what every value will ever contain, which is the
+          assumption that fails.
+      - id: c
+        text: When searching very large files, because it is faster
+        note: >-
+          It often is faster, and that is a side benefit rather than the reason.
+      - id: d
+        text: Never — escaping the pattern is always better
+        note: >-
+          Escaping correctly for a dialect is harder than declaring the pattern
+          literal, and gets it wrong more often.
+    explanation: >-
+      This mirrors B08.1's quoting rule and for the same reason: the failure mode
+      is **silent**. A pattern containing `.`, `[`, `$` or `?` still matches
+      something, so you get a plausible wrong answer rather than an error.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.5]
+    stem: >-
+      You need a pattern that is partly literal and partly a wildcard. What is
+      the safe approach?
+    options:
+      - id: a
+        text: >-
+          Build it deliberately, escaping the literal portion for the dialect you
+          are using
+        correct: true
+      - id: b
+        text: Interpolate the variable and rely on `-E` to handle it
+        note: >-
+          The dialect does not make data safe; it changes which characters are
+          dangerous.
+      - id: c
+        text: Use `-F` and accept that the wildcard will be literal too
+        note: >-
+          That is safe and does not do what was asked.
+      - id: d
+        text: Wrap the variable in `[[ ]]` so the shell escapes it
+        note: >-
+          The shell does not escape regex metacharacters — that is a different
+          layer entirely.
+    explanation: >-
+      There is no flag for "half of this is data". Either escape the literal part
+      explicitly, or restructure so the data is matched by a separate literal step
+      — `grep -F "$value" | grep -E 'pattern'` is often clearer and always safer
+      than one hand-built pattern.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.6]
+    stem: >-
+      Why does `cut -d' ' -f2` return nothing on the output of `ps` or a
+      column-aligned log?
+    options:
+      - id: a
+        text: >-
+          It splits on exactly one space, so runs of spaces produce empty fields
+        correct: true
+      - id: b
+        text: "`cut` cannot handle spaces as a delimiter at all"
+        note: >-
+          It handles them exactly as specified — one character, once.
+      - id: c
+        text: The output uses tabs rather than spaces
+        note: >-
+          Sometimes true, and the general failure is runs of spaces.
+      - id: d
+        text: "`-f2` counts from zero, so it selects the wrong column"
+        note: >-
+          `cut` fields are 1-based.
+    explanation: >-
+      Column-aligned output separates fields with **runs** of spaces, so field 2
+      is the empty string between the first and second. `awk`'s default treats a
+      run of whitespace as one separator, which is why it works where `cut` does
+      not — and the failure is silent, producing empty strings rather than an
+      error.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.6]
+    stem: >-
+      A tool adds a new column at the start of its output. Which extraction
+      survives?
+    options:
+      - id: a
+        text: "`awk '{print $NF}'`"
+        correct: true
+      - id: b
+        text: "`awk '{print $3}'`"
+        note: >-
+          Now returns whatever moved into position 3 — silently, and usually
+          plausibly.
+      - id: c
+        text: "`cut -d' ' -f3`"
+        note: >-
+          Broken by the new column *and* by runs of spaces.
+      - id: d
+        text: All of them — awk renumbers fields automatically
+        note: >-
+          Nothing renumbers. `$3` is position 3, whatever is there.
+    explanation: >-
+      `NF` is the field count, so `$NF` is the last field and `$(NF-1)` the one
+      before. **Columns are added on the left** — a timestamp, a request ID, a pod
+      name — so counting from the right is the more stable choice. Better still,
+      ask the tool for named fields with `--format` or `-o custom-columns`.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.7]
+    stem: "What does `awk 'NR > 1 {sum += $2} END {print sum+0}'` do?"
+    options:
+      - id: a
+        text: >-
+          Sums field 2 over every line except the first, printing 0 rather than
+          empty if there were none
+        correct: true
+      - id: b
+        text: Sums field 2 over the first line only
+        note: >-
+          `NR > 1` skips the first line — it is the header-skipping idiom.
+      - id: c
+        text: Prints the number of lines with more than one field
+        note: >-
+          `NR` is the record number, not the field count. `NF` is the field
+          count.
+      - id: d
+        text: Fails if any line has fewer than two fields
+        note: >-
+          A missing field is empty, which adds zero. awk does not error.
+    explanation: >-
+      `NR` is the record number, so `NR > 1` skips a header. `END` runs once
+      after the last line, which is where totals belong. And `sum+0` matters: an
+      awk variable never assigned prints as **empty**, not zero, and an empty
+      total in a report reads as a missing value rather than a good result.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.3.8]
+    stem: >-
+      What is the best first move when you need one field from a command's
+      output?
+    options:
+      - id: a
+        text: >-
+          Ask the command for structured output or for exactly that field —
+          `--format`, `-o json`, `-o custom-columns`
+        correct: true
+      - id: b
+        text: "`awk '{print $N}'`, counting the column"
+        note: >-
+          The right fallback, and it depends on a format nobody promised.
+      - id: c
+        text: "`cut -dX -fN`, choosing a delimiter"
+        note: >-
+          Only correct for genuinely delimited data, not human-readable output.
+      - id: d
+        text: A regex with a capture group, via `grep -o`
+        note: >-
+          Works and encodes the format even more tightly than a field number
+          does.
+    explanation: >-
+      **The output of a command is not an API.** `ps`, `df`, `kubectl` and every
+      cloud CLI produce text for humans, and that format changes when a column is
+      added or a width shifts — with no warning, because nothing promised. Asking
+      for structured output removes the entire class, and it is usually *shorter*
+      than the parsing it replaces.

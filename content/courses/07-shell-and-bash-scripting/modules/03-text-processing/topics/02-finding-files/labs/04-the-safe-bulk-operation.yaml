@@ -1,0 +1,371 @@
+id: lab.the-safe-bulk-operation
+topic: topic.finding-files
+title: "Challenge: fix a retention job with three faults"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.4.7, OBJ-B08.4.8]
+
+intro: >-
+  `/tmp/find/cleanup.sh` deletes archived logs older than the retention period.
+  It has run weekly for two years and has never reported a failure.
+
+
+  It keeps a file it was told to delete, reports success when every deletion
+  fails, and forks once per file. Find all three, then build a bulk-delete
+  pattern that can be reviewed before it runs.
+
+
+  It deletes things. Copy the archive first — and copy it correctly.
+
+setup:
+  - /opt/lab/seed-find.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Make a working copy of the archive and confirm the copy is a valid test
+      subject. Save to /tmp/answer-copy.
+    hint: >-
+      The job selects files by age. What does an ordinary recursive copy do to
+      modification times?
+    walkthrough: |
+      cd /tmp/find
+      {
+        rm -rf c-plain c-preserved
+        cp -r archive c-plain
+        cp -a archive c-preserved
+        echo "the same file, copied two ways:"
+        printf '  original   age-30d.log mtime: %s\n' "$(find archive     -name 'age-30d.log' -printf '%TY-%Tm-%Td')"
+        printf '  cp -r      age-30d.log mtime: %s\n' "$(find c-plain     -name 'age-30d.log' -printf '%TY-%Tm-%Td')"
+        printf '  cp -a      age-30d.log mtime: %s\n' "$(find c-preserved -name 'age-30d.log' -printf '%TY-%Tm-%Td')"
+        echo
+        echo "cp -r gave every copy TODAY'S timestamp. so a retention job run against that copy correctly deletes nothing, and the test passes for entirely the wrong reason."
+        echo
+        echo "cp -a (or cp -rp) preserves timestamps and is the only valid test subject here."
+        echo
+        echo "this is worth generalising: copying a directory to test an age-based job DESTROYS THE PROPERTY BEING TESTED. the same applies to a tarball extracted without -p, and to a git checkout, which sets every file's mtime to the checkout time."
+      } > /tmp/answer-copy
+      cat /tmp/answer-copy
+    verify:
+      - type: file_matches
+        path: /tmp/answer-copy
+        pattern: "(?i)TODAY'S timestamp"
+        describe: You found that cp -r resets the mtimes
+      - type: file_matches
+        path: /tmp/answer-copy
+        pattern: "cp -a"
+        describe: And identified the correct form
+      - type: file_matches
+        path: /tmp/answer-copy
+        pattern: "(?i)git checkout"
+        describe: And generalised where else this bites
+
+  - id: s2
+    instruction: >-
+      Run the job against a valid copy and find which file it should have
+      deleted and did not. Save to /tmp/answer-kept.
+    walkthrough: |
+      cd /tmp/find
+      {
+        rm -rf victim; cp -a archive victim
+        echo "before: $(find victim -name '*.log' -printf '%f ' | tr ' ' '\n' | sort | tr '\n' ' ')"
+        bash cleanup.sh /tmp/find/victim 7 >/dev/null 2>&1
+        echo "after:  $(find victim -name '*.log' -printf '%f ' | tr ' ' '\n' | sort | tr '\n' ' ')"
+        echo
+        echo "the policy says 'older than 7 days'. these files are 7 whole days old and were kept:"
+        now=$(date +%s)
+        find victim -name '*.log' -printf '%T@ %f\n' | while read -r ts name; do
+          age=$(( (now - ${ts%.*}) / 86400 ))
+          [ "$age" -ge 7 ] && printf '    %-16s %s whole days\n' "$name" "$age"
+        done
+        echo
+        echo "FAULT 1: -mtime +7 means STRICTLY MORE THAN 7 whole 24-hour periods. a file that is exactly 7 days old has completed 7, so 'more than 7' is false and it survives another full day."
+        echo
+        echo "so the retention window is actually EIGHT days. the job reports success, the policy document says seven, and nothing indicates the discrepancy."
+      } > /tmp/answer-kept
+      cat /tmp/answer-kept
+    verify:
+      - type: command_exit
+        command: "grep -q 'age-8d' /tmp/answer-kept && grep 'after:' /tmp/answer-kept | grep -q 'age-7d.log'"
+        exit_code: 0
+        describe: The job kept the seven-day file
+      - type: file_matches
+        path: /tmp/answer-kept
+        pattern: "(?i)STRICTLY MORE THAN"
+        describe: And you named the rule
+      - type: file_matches
+        path: /tmp/answer-kept
+        pattern: "(?i)EIGHT days"
+        describe: And what the policy actually implements
+
+  - id: s3
+    instruction: >-
+      Find the other two faults — one about failure reporting, one about cost.
+      Save to /tmp/answer-faults.
+    walkthrough: |
+      cd /tmp/find
+      {
+        echo "FAULT 2: -exec rm {} \\; discards the command's exit status."
+        find archive -name '*.log' -exec false \; 2>/dev/null
+        echo "    find with a command that ALWAYS fails -> rc=$?"
+        find archive -name '*.log' -exec false {} + 2>/dev/null
+        echo "    the same with + instead of \\;         -> rc=$?"
+        echo "  so every rm can fail - read-only filesystem, wrong owner, full disk -"
+        echo "  and the job still exits 0 and prints 'cleanup complete'."
+        echo
+        echo "  and there is a second reporting hole: find itself returns 1 when it"
+        echo "  cannot read part of the tree, and this script never checks it."
+        mkdir -p victim/locked && : > victim/locked/x.log && chmod 000 victim/locked
+        find victim -name '*.log' >/dev/null 2>&1
+        echo "    find over a tree with an unreadable directory -> rc=$?"
+        chmod 755 victim/locked
+        echo "  those files are simply never deleted, silently, every run."
+        echo
+        echo "FAULT 3: one process per file."
+        printf '    -exec ... \\;  invocations: %s\n' "$(find archive -name '*.log' -exec echo x \; | wc -l)"
+        printf '    -exec ... +   invocations: %s\n' "$(find archive -name '*.log' -exec echo x {} + | wc -l)"
+        echo "  on a directory with 50,000 logs that is 50,000 forks against 1."
+        echo
+        echo "the three faults are independent, and the first two both fail SILENTLY toward doing less than asked - which is why two years without an incident says nothing about whether the job works."
+      } > /tmp/answer-faults
+      cat /tmp/answer-faults
+    verify:
+      - type: file_matches
+        path: /tmp/answer-faults
+        pattern: "ALWAYS fails -> rc=0"
+        describe: You showed the per-file form hiding failures
+      - type: file_matches
+        path: /tmp/answer-faults
+        pattern: "unreadable directory -> rc=1"
+        describe: And that find reports an unreadable tree
+      - type: file_matches
+        path: /tmp/answer-faults
+        pattern: "\\\\;  invocations: 8"
+        describe: And the process cost
+      - type: file_matches
+        path: /tmp/answer-faults
+        pattern: "(?i)fail SILENTLY toward doing less"
+        describe: And characterised the failure direction
+
+  - id: s4
+    instruction: >-
+      Rewrite it as a reviewable bulk operation — compute the list, show it, then
+      act on it. Save to /tmp/answer-fixed and demonstrate it.
+    walkthrough: |
+      cat > /tmp/answer-fixed <<'FIX'
+      #!/bin/bash
+      # Delete archived logs older than the retention period.
+      set -euo pipefail
+
+      DIR=${1:?DIR required}
+      DAYS=${2:?DAYS required}
+      DRY_RUN=${DRY_RUN:-yes}
+      LIST=$(mktemp)
+      trap 'rm -f "$LIST"' EXIT
+
+      # an allow-list, not a deny-list: the first unusual value is the one
+      # a deny-list would not have contained
+      case "$DIR" in
+        /tmp/find/*|/srv/archive/*) ;;
+        *) echo "refusing to operate on $DIR" >&2; exit 1 ;;
+      esac
+
+      # compute the set ONCE, with a predicate that does not truncate
+      if ! find "$DIR" -type f -name '*.log' ! -newermt "-${DAYS} days" -print0 > "$LIST"; then
+        echo "find could not read part of $DIR — refusing to act on a partial list" >&2
+        exit 1
+      fi
+
+      n=$(tr -dc '\0' < "$LIST" | wc -c)
+      printf '%s selected %d files under %s\n' "$(date -Is)" "$n" "$DIR"
+      tr '\0' '\n' < "$LIST" | head -20 | sed 's/^/  would delete: /'
+
+      [ "$n" -le 10000 ] || { echo "refusing: $n exceeds the safety limit" >&2; exit 1; }
+
+      if [ "$DRY_RUN" = yes ]; then
+        echo "DRY_RUN=yes — nothing deleted. re-run with DRY_RUN=no to act."
+        exit 0
+      fi
+
+      xargs -0 -r rm -- < "$LIST"
+      printf '%s deleted %d files\n' "$(date -Is)" "$n"
+      FIX
+      chmod +x /tmp/answer-fixed
+      cd /tmp/find
+      rm -rf v2; cp -a archive v2
+      {
+        echo "dry run (the default):"
+        bash /tmp/answer-fixed /tmp/find/v2 7 2>&1 | sed 's/^/  /'
+        echo
+        echo "for real:"
+        DRY_RUN=no bash /tmp/answer-fixed /tmp/find/v2 7 2>&1 | tail -2 | sed 's/^/  /'
+        echo "  remaining: $(find v2 -name '*.log' -printf '%f ' | tr ' ' '\n' | sort | tr '\n' ' ')"
+        echo
+        echo "refusing a path outside the allow-list:"
+        bash /tmp/answer-fixed /etc 7 2>&1 | sed 's/^/  /'
+      } >> /tmp/answer-fixed
+      tail -14 /tmp/answer-fixed
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "newermt"
+        describe: You used a predicate without the truncation
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "(?i)DRY_RUN"
+        describe: And made a dry run the default
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "(?i)refusing to operate on"
+        describe: And refused a path outside the allow-list
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "xargs -0 -r rm --"
+        describe: And acted on the computed list safely
+      - type: command_exit
+        command: "test $(find /tmp/find/v2 -name 'age-7d.log' | wc -l) -eq 0"
+        exit_code: 0
+        describe: And the seven-day file is now correctly deleted
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-policy what you would monitor for this job, and what
+      you would do instead of deleting.
+    walkthrough: |
+      {
+        echo "what to monitor - the job's own success is the weakest signal available:"
+        echo
+        echo "  emit both numbers every run:"
+        echo "    date deleted=N remaining=M"
+        echo
+        echo "  and alert on the SHAPE rather than on absence:"
+        echo "    deleted=0 for several consecutive runs where it is normally"
+        echo "      non-zero  -> the predicate has probably stopped matching"
+        echo "    deleted far above the usual range -> it is matching too much"
+        echo "    remaining GROWING run over run -> the job is losing ground"
+        echo
+        echo "the third is the one worth having. whether the job ran is a proxy; whether the backlog is shrinking is the outcome, and it is the only one of the three that notices a job which is working correctly and simply cannot keep up."
+        echo
+        echo "what i would do INSTEAD of deleting, in order of preference:"
+        echo
+        echo "  1. let the storage layer do it - object-store lifecycle rules, log"
+        echo "     rotation with a maxage, a database TTL. declarative, visible in"
+        echo "     configuration, and not running as root on a machine."
+        echo "  2. move to a quarantine directory and delete THAT on a longer"
+        echo "     schedule. the first delete becomes reversible, so a wrong"
+        echo "     predicate is discovered while the files still exist."
+        echo "  3. rotate rather than delete, so retention is a COUNT of files"
+        echo "     rather than an age computation - which removes this topic's"
+        echo "     entire class of off-by-one."
+        echo
+        echo "find -delete is what i reach for when none of those fit, not first."
+        echo
+        echo "and the habit that costs two seconds: test the predicate with -print, read the output, THEN replace -print with the action. most of this topic's risk disappears at that point."
+      } > /tmp/answer-policy
+      cat /tmp/answer-policy
+    verify:
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)remaining GROWING"
+        describe: You proposed monitoring the outcome rather than the run
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)quarantine"
+        describe: And a reversible alternative
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)storage layer|lifecycle"
+        describe: And a declarative one
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)test the predicate with -print"
+        describe: And the cheapest habit of all
+
+solution: >-
+  **The copy has to preserve timestamps.**
+
+
+  ```text
+  original   age-30d.log mtime: 2026-07-19
+  cp -r      age-30d.log mtime: 2026-08-18   ← today
+  cp -a      age-30d.log mtime: 2026-07-19
+  ```
+
+
+  `cp -r` gives every copy the current time, so an age-based job run against it
+  correctly deletes nothing and **the test passes for the wrong reason**. The
+  same applies to a tarball extracted without `-p` and to a git checkout, which
+  sets every file's mtime to the checkout time.
+
+
+  **Fault 1 — it keeps a file it was told to delete.**
+
+
+  `-mtime +7` means *strictly more than* seven whole 24-hour periods. A file
+  exactly seven days old has completed seven, so it survives another full day.
+  **The retention window is eight days**, the policy document says seven, and
+  nothing indicates the discrepancy.
+
+
+  **Fault 2 — it cannot report a failure.** Two independent holes:
+
+
+  ```text
+  -exec false \;  -> find rc=0      the command's status is discarded
+  -exec false +   -> find rc=1
+  find over an unreadable directory -> rc=1, never checked
+  ```
+
+
+  So every `rm` can fail — read-only filesystem, wrong owner, full disk — and the
+  job prints `cleanup complete` and exits 0. And files in a directory it could
+  not read are silently never deleted, every run.
+
+
+  **Fault 3 — one process per file.** Eight files, eight forks; on 50,000 logs,
+  50,000.
+
+
+  All three fail **silently toward doing less than asked**, which is why two
+  years without an incident says nothing about whether the job works.
+
+
+  **The rewrite is a pattern, not a fix.**
+
+
+  ```bash
+  find "$DIR" -type f -name '*.log' ! -newermt "-${DAYS} days" -print0 > "$LIST" \
+    || { echo "find could not read part of $DIR" >&2; exit 1; }
+
+  n=$(tr -dc '\0' < "$LIST" | wc -c)
+  tr '\0' '\n' < "$LIST" | head -20
+  [ "$n" -le 10000 ] || { echo "refusing: $n exceeds the limit" >&2; exit 1; }
+  [ "$DRY_RUN" = yes ] && exit 0
+  xargs -0 -r rm -- < "$LIST"
+  ```
+
+
+  Six properties, each answering a failure: `-newermt` has no truncation; the
+  list is **computed once** so nothing changes between deciding and acting;
+  find's status is **checked**, so a partial walk refuses rather than deletes
+  less; the list is **printable**, so it can be reviewed; a **count ceiling**
+  catches a predicate that is right against input that is not; and `DRY_RUN`
+  defaults to yes.
+
+
+  The path check is an **allow-list** deliberately — a deny-list is a list of the
+  dangerous paths somebody thought of, and the first unusual value is the one
+  that was not on it.
+
+
+  **And what to monitor:** emit `deleted=N remaining=M` every run, then alert on
+  **remaining growing run over run**. Whether the job ran is a proxy; whether the
+  backlog is shrinking is the outcome, and it is the only signal that notices a
+  job working correctly and unable to keep up.
+
+
+  Better still, do not delete: storage-layer lifecycle rules are declarative and
+  do not run as root; a quarantine directory makes the first delete reversible;
+  and rotating by **count** removes this topic's entire class of off-by-one.

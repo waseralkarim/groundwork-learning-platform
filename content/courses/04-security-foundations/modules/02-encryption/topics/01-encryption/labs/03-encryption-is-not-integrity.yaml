@@ -1,0 +1,283 @@
+id: lab.encryption-is-not-integrity
+topic: topic.encryption
+title: Change the amount in an encrypted payment without the key
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A04.2.6, OBJ-A04.2.5]
+
+intro: >-
+  /tmp/payment holds an encrypted payment instruction. You are going to alter
+  what it says — not corrupt it, alter it, to a value you choose — without
+  learning the key, and the recipient will decrypt it successfully and act on it.
+
+
+  Then you will look for the tool's answer to that problem and discover it does
+  not have one.
+
+setup:
+  - /opt/lab/seed-encryption.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Look at what you have in /tmp/payment. Decrypt the instruction with the key
+      that is there, so you know what the honest message says, and save it to
+      /tmp/answer-original.
+    hint: >-
+      The key and IV are in the directory as hex. `openssl enc -d -aes-256-ctr
+      -K "$(cat key.hex)" -iv "$(cat iv.hex)"`.
+    walkthrough: |
+      cd /tmp/payment
+      ls -1
+      {
+        echo "ciphertext bytes: $(wc -c < instruction.enc)"
+        echo "decrypted with the key:"
+        openssl enc -d -aes-256-ctr -K "$(cat key.hex)" -iv "$(cat iv.hex)" -in instruction.enc
+        echo
+        echo "the ciphertext is exactly as long as the plaintext, which is what a stream mode does: no padding, no block boundaries."
+      } > /tmp/answer-original
+      cat /tmp/answer-original
+    verify:
+      - type: file_matches
+        path: /tmp/answer-original
+        pattern: "TRANSFER 0100 GBP TO ACCT 55512"
+        describe: You read the honest instruction
+      - type: file_matches
+        path: /tmp/answer-original
+        pattern: "ciphertext bytes: 31"
+        describe: And noticed the ciphertext is the same length as the plaintext
+
+  - id: s2
+    instruction: >-
+      Now be the attacker. Working only from the ciphertext — no key — change the
+      amount from 0100 to 0000 by flipping bits in the ciphertext, and save what
+      you did to /tmp/answer-tamper.
+    hint: >-
+      In counter mode, ciphertext byte n XOR keystream byte n gives plaintext
+      byte n. So XORing a ciphertext byte with `'1' XOR '0'` changes that
+      plaintext character from 1 to 0. Count the offset carefully.
+    walkthrough: |
+      cd /tmp/payment
+      export LC_ALL=C
+      cp instruction.enc tampered.enc
+      # "TRANSFER 0100 GBP..." — offsets 0-8 are "TRANSFER ", so the amount
+      # starts at 9. The '1' is at offset 10.
+      delta=$(( $(printf '%d' "'1") ^ $(printf '%d' "'0") ))
+      old=$(od -An -tu1 -j10 -N1 -v tampered.enc | tr -d ' ')
+      new=$(( old ^ delta ))
+      printf "$(printf '\\%03o' "$new")" | dd of=tampered.enc bs=1 seek=10 count=1 conv=notrunc 2>/dev/null
+      {
+        echo "target: the '1' in '0100', at plaintext offset 10"
+        echo "xor delta needed: '1' xor '0' = $delta"
+        echo "ciphertext byte 10: $old -> $new"
+        echo
+        echo "bytes that differ between original and tampered ciphertext:"
+        cmp -l instruction.enc tampered.enc | wc -l
+      } > /tmp/answer-tamper
+      cat /tmp/answer-tamper
+    verify:
+      - type: command_exit
+        command: "test $(cmp -l /tmp/payment/instruction.enc /tmp/payment/tampered.enc | wc -l) -eq 1"
+        exit_code: 0
+        describe: Exactly one ciphertext byte was changed
+      - type: file_matches
+        path: /tmp/answer-tamper
+        pattern: "xor delta needed: .*= 1$"
+        describe: And you computed the delta from the characters rather than guessing
+
+  - id: s3
+    instruction: >-
+      Be the recipient. Decrypt the tampered ciphertext with the real key and
+      save the result and the exit status to /tmp/answer-decrypted.
+    hint: >-
+      Same decrypt command as step 1, pointed at the tampered file. Record the
+      exit status — that is the part that matters.
+    walkthrough: |
+      cd /tmp/payment
+      {
+        echo "recipient decrypts the tampered message:"
+        openssl enc -d -aes-256-ctr -K "$(cat key.hex)" -iv "$(cat iv.hex)" -in tampered.enc
+        echo "rc=$?"
+        echo
+        echo "no error. no warning. the recipient has a valid-looking instruction that differs from what was sent, and nothing in the decryption told them so."
+      } > /tmp/answer-decrypted
+      cat /tmp/answer-decrypted
+    verify:
+      - type: file_matches
+        path: /tmp/answer-decrypted
+        pattern: "TRANSFER 0000 GBP TO ACCT 55512"
+        describe: The tampered message decrypted to the amount you chose
+      - type: file_matches
+        path: /tmp/answer-decrypted
+        pattern: "rc=0"
+        describe: And decryption reported success
+      - type: file_matches
+        path: /tmp/answer-decrypted
+        pattern: "no error|no warning"
+        describe: And you recorded that nothing signalled the change
+
+  - id: s4
+    instruction: >-
+      Find out whether `openssl enc` can prevent this. List the cipher modes it
+      supports, count the authenticated ones, and try to use one. Save the
+      result to /tmp/answer-no-aead.
+    hint: >-
+      `openssl enc -ciphers` lists everything the subcommand supports. Look for
+      GCM or Poly1305, then try `-aes-256-gcm` anyway and read the error.
+    walkthrough: |
+      cd /tmp
+      {
+        echo "cipher modes openssl enc supports:"
+        openssl enc -ciphers 2>&1 | head -20
+        echo
+        echo "authenticated modes in that list: $(openssl enc -ciphers 2>&1 | grep -ci 'gcm\|poly1305')"
+        echo
+        echo "trying to use one anyway:"
+        printf test > t.txt
+        openssl enc -aes-256-gcm -pbkdf2 -pass pass:x -in t.txt -out t.enc 2>&1 | head -2
+        echo "rc=$?"
+        echo
+        echo "the subcommand cannot do authenticated encryption at all. it predates aead and was never extended, so every file it produces is malleable and it gives no indication of that."
+      } > /tmp/answer-no-aead
+      cat /tmp/answer-no-aead
+    verify:
+      - type: file_matches
+        path: /tmp/answer-no-aead
+        pattern: "authenticated modes in that list: 0"
+        describe: There are no authenticated modes in the list
+      - type: file_matches
+        path: /tmp/answer-no-aead
+        pattern: "AEAD ciphers not supported"
+        describe: And the tool refuses one explicitly
+      - type: file_matches
+        path: /tmp/answer-no-aead
+        pattern: "malleable|cannot do authenticated"
+        describe: And you drew the conclusion about every file it has ever produced
+
+  - id: s5
+    instruction: >-
+      Show what an authenticated scheme would have done, by adding the missing
+      check by hand. HMAC the ciphertext, tamper with it again, and verify.
+      Save to /tmp/answer-with-mac.
+    hint: >-
+      Compute an HMAC over the ciphertext with a separate key, then recompute it
+      after tampering and compare. The previous topic's `openssl dgst -hmac`
+      does this.
+    walkthrough: |
+      cd /tmp/payment
+      export LC_ALL=C
+      MACKEY='mac-key-not-the-encryption-key'
+      tag=$(openssl dgst -sha256 -hmac "$MACKEY" -r < instruction.enc | cut -d' ' -f1)
+      tag2=$(openssl dgst -sha256 -hmac "$MACKEY" -r < tampered.enc | cut -d' ' -f1)
+      {
+        echo "tag over the honest ciphertext:   $tag"
+        echo "tag over the tampered ciphertext: $tag2"
+        if [ "$tag" = "$tag2" ]; then echo "ACCEPTED"; else echo "REJECTED - the recipient discards the message and never decrypts it"; fi
+        echo
+        echo "that is what an aead mode does in one operation, with one key, and without a separate mac key to manage."
+        echo "doing it by hand is possible and is where people go wrong: the order matters (encrypt-then-mac is the safe one), the mac must cover the iv as well as the ciphertext, and the comparison must be constant-time. aes-256-gcm or chacha20-poly1305 gets all three right for free."
+      } > /tmp/answer-with-mac
+      cat /tmp/answer-with-mac
+    verify:
+      - type: file_matches
+        path: /tmp/answer-with-mac
+        pattern: "REJECTED"
+        describe: The MAC caught the tampering the cipher could not
+      - type: file_matches
+        path: /tmp/answer-with-mac
+        pattern: "encrypt-then-mac|order matters"
+        describe: And you noted that hand-building this has its own traps
+      - type: file_matches
+        path: /tmp/answer-with-mac
+        pattern: "gcm|poly1305"
+        describe: And named the modes that do it correctly in one operation
+
+solution: >-
+  **You changed a payment instruction without the key.**
+
+
+  One byte of ciphertext, chosen deliberately, and `TRANSFER 0100` became
+  `TRANSFER 0000`. Decryption returned exit code 0 and a clean, valid-looking
+  message. There is no error to log, no exception to catch, and nothing the
+  recipient could have inspected to notice.
+
+
+  The mechanism is arithmetic rather than a weakness in AES. Counter mode
+  produces a keystream and XORs it with the plaintext:
+
+
+  ```text
+  ciphertext = plaintext XOR keystream
+  ```
+
+
+  So flipping a bit in the ciphertext flips exactly the corresponding bit of the
+  plaintext, and nothing else. Because XOR is its own inverse, the change you
+  need is `'1' XOR '0'` — computed from the characters, without touching the key.
+  Knowing the message *format* is sufficient; knowing its contents is not even
+  required.
+
+
+  This is **malleability**, and every unauthenticated mode has it. CBC's version
+  is messier — a tampered block turns to noise and flips chosen bits in the
+  *next* block — which makes it harder to use and no safer. Messy is not a
+  security property.
+
+
+  **The tool has no answer.**
+
+
+  `openssl enc -ciphers` lists CBC, CFB, CTR, ECB and OFB. Not one authenticated
+  mode. Ask for one directly and it says so:
+
+
+  ```text
+  enc: AEAD ciphers not supported
+  ```
+
+
+  So the subcommand most people reach for to encrypt a file **cannot** produce
+  ciphertext that detects tampering. It is not a misconfiguration and there is no
+  flag. Every file `openssl enc` has ever produced is malleable, and it never
+  warned anybody.
+
+
+  That is the practical finding to carry out of this lab. When you see
+  `openssl enc` in a deployment script or a backup job, the question is not "is
+  it encrypted" — it is **what stops someone modifying that file**, and the
+  answer is usually nothing.
+
+
+  **What the fix looks like.**
+
+
+  Adding an HMAC over the ciphertext caught the tampering immediately: the tags
+  differed, so the recipient rejects the message and never decrypts it at all.
+  That last part matters — the plaintext is never produced, so there is no
+  chance of acting on it before the check.
+
+
+  But do not build this yourself. Three things have to be right and each is a
+  known way to fail:
+
+
+  - **Order.** Encrypt-then-MAC is the safe construction. MAC-then-encrypt and
+    encrypt-and-MAC both have published attacks.
+
+  - **Coverage.** The MAC must cover the IV and any associated headers, not just
+    the ciphertext. An attacker who can change the IV can change the first block.
+
+  - **Comparison.** Constant-time, for the reason the previous topic established.
+
+
+  `AES-256-GCM` and `ChaCha20-Poly1305` do all three in one operation with one
+  key. Use `age`, `gpg`, or your language's AEAD API, and the whole class of
+  problem disappears.
+
+
+  **The sentence worth remembering:** encryption answers *who can read this*. It
+  says nothing about *has this been changed*, and in an unauthenticated mode it
+  actively helps an attacker, because the ciphertext looks tamper-proof and is
+  not.

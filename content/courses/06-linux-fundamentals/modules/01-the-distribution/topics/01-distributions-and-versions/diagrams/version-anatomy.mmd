@@ -1,0 +1,18 @@
+flowchart TB
+    V["4:14.2.0-1"]
+
+    V --> E["epoch — 4<br/><i>optional, rare</i><br/>a manual override, used when<br/>upstream versioning went backwards"]
+    V --> U["upstream — 14.2.0<br/>what the authors released"]
+    V --> R["revision — 1<br/>what the distribution changed:<br/>a patch, a rebuild, a backport"]
+
+    E --> P["Compared FIRST, and decisively.<br/>1:1.0 &gt; 99.0"]
+    U --> N["Compared numerically, in parts.<br/>1.10 &gt; 1.9"]
+    R --> S["Compared last.<br/>3.5.6-2 &gt; 3.5.6-1"]
+
+    SUF["Suffixes<br/><br/>~deb13u2 — a security or point update<br/>+b9 — rebuilt, no source change"]
+    SUF --> T["~ sorts BEFORE nothing → 1.0~rc1 &lt; 1.0<br/>+ sorts AFTER nothing → 2.0-1+b1 &gt; 2.0-1"]
+
+    P --> ASK["None of this is string comparison.<br/>dpkg --compare-versions settles it."]
+    N --> ASK
+    S --> ASK
+    T --> ASK

@@ -1,0 +1,249 @@
+id: project.what-it-runs-on
+slug: what-it-runs-on
+title: "Capstone: what it runs on, what it survives, what it costs"
+level: L3
+requires_topics:
+  - topic.the-layers
+  - topic.service-models-and-responsibility
+  - topic.regions-and-failure-domains
+estimated_hours: 12
+
+summary: >-
+  Take a service somebody else deployed and produce an infrastructure account of
+  it: the layers it actually stands on, the responsibilities that are yours, the
+  single event that takes it down, and the monthly bill — every figure measured
+  from the running system or computed from published prices.
+
+brief: |
+  Ask a team what their service runs on and you will get an architecture
+  diagram. Ask what it survives and you will get "it's highly available". Ask
+  what it costs and you will usually get a number nobody can decompose.
+
+  All three questions have specific, checkable answers, and almost nobody has
+  them written down in one place.
+
+  This capstone produces that document. It is deliberately not a design
+  exercise — you are not proposing an architecture, you are establishing what is
+  true about one that already exists, in a form somebody else could verify.
+
+  ## Choose your subject
+
+  A deployed service you did not configure, that you can reach a shell inside
+  and read a bill for. It needs to be real: something with users, or at minimum
+  something running continuously that somebody would notice the absence of.
+
+  Good candidates, roughly in order of how much they will teach you:
+
+  - A service in a managed Kubernetes cluster you have access to
+  - Anything on a cloud VM with a managed database behind it
+  - A self-hosted stack of your own that you set up long enough ago to have
+    forgotten
+  - This platform, deployed somewhere other than your laptop
+
+  If the only thing available runs on your own machine, that still works for
+  four of the five sections — say so, and be explicit about which figures are
+  from a laptop rather than from production.
+
+  ## What you are producing
+
+  Five sections. Each one answers a question with a measurement or a
+  computation, never with an adjective.
+
+  **1. What does it actually run on?** Take the layer census from inside the
+  running process: is the CPU virtualised, by what, whose kernel is it, is it
+  containerised, what silicon is underneath. Then the numbers that lie — what
+  `nproc` and `MemTotal` report against what the cgroup actually allows, and
+  whether anything in the stack sized itself from the wrong one. If something
+  did, measure the throttling it is causing.
+
+  **2. Which responsibilities are yours?** Enumerate every layer and mark it
+  yours, the provider's, or shared. Then the part that matters: for each shared
+  layer, name the mechanism and the human who owns it. If a shared layer has no
+  owner, that is a finding, and it is the most common one.
+
+  **3. What single event takes it down?** Census the failure domains, then find
+  what shares a fate. Include the things that are never on a diagram —
+  secrets, DNS, the registry, identity, CI. Check specifically whether anything
+  on a health check path leaves its failure domain, and where any quorum sits.
+
+  **4. What does it actually promise?** Compose the availability of every
+  required dependency from the provider's published figures, and convert it to
+  minutes per month. Compare that against whatever the team believes or has
+  promised. Then say what the arithmetic does not model.
+
+  **5. What does it cost, and what is that buying?** Get the real monthly bill
+  and decompose it by layer. Then compute what the alternatives would have cost:
+  the same workload one layer down, one layer up, and with the redundancy it
+  does not currently have. Every figure from a published price list, cited.
+
+  ## The test that makes it real
+
+  Sections 1 to 4 produce predictions. Section 3 in particular claims a specific
+  event takes the service down and that specific others do not.
+
+  **Test one of them.** Cordon a zone, kill a node, block a dependency — whatever
+  your access and your change process allow, in the safest environment you have.
+  Predict the outcome in writing first, then run it, then record what actually
+  happened.
+
+  A prediction you tested is worth more than four you did not, and where you
+  cannot test, say so rather than implying you did.
+
+  ## Why this is the capstone
+
+  The three topics in this course each gave you one instrument: a census, a
+  boundary, and some arithmetic. Used separately they produce three interesting
+  facts. Used together on one real system they produce the document that answers
+  the question every incident review eventually asks — **what is this thing, and
+  what did we think it would do?**
+
+  It is also the first time in this track you have to put a cost next to a
+  design decision. That is not a separate skill bolted on; it is what makes the
+  other four sections into a recommendation somebody can act on.
+
+constraints:
+  - "Every claim needs its command and raw output, or its arithmetic and the price list it came from. A sentence with neither is a finding you have not made."
+  - "Measure the running system, never the manifest. Where they disagree, that disagreement is itself one of the more valuable findings."
+  - "Section 4's availability figure must be composed from every required dependency, including the ones absent from the architecture diagram. List what you added."
+  - "You must test at least one prediction, with the prediction written down before the test. Where you cannot test, state what stopped you."
+  - "Every cost figure must cite the price list and the date. Cloud pricing changes, and an uncited number is unverifiable six months later."
+  - "For every shared responsibility layer, name a human owner or record that there is none. 'The platform team' is not a human."
+  - "State at least one thing you believed before measuring that turned out to be wrong."
+
+deliverables:
+  - "The layer census: what the service runs on, measured from inside, including the gap between what the standard interfaces report and what the cgroup allows."
+  - "A responsibility table: every layer marked yours, the provider's or shared — with a named owner and a mechanism for each shared row."
+  - "A failure domain map: what shares a fate, the single event that takes the service down, and an explicit check of whether anything on a health check path leaves its domain."
+  - "A composed availability figure in minutes per month, with the full dependency list, compared against what the team believes."
+  - "A cost decomposition by layer, plus what one layer down, one layer up, and the missing redundancy would each cost — every figure cited."
+  - "One tested prediction: what you expected, what you did, what happened."
+  - "A recommendation list ordered by what it changes, with a cost against each item."
+  - "A short reflection: what you believed that measurement overturned, and which instrument you should have reached for first."
+
+rubric:
+  - id: r1
+    criterion: The layer census is measured from inside the running system
+    excellent: >-
+      Identifies every layer from silicon upward with the evidence for each, and
+      reports the visible-versus-allowed gap for CPU and memory with the cgroup
+      values read directly. Where a runtime sized itself from the wrong number,
+      the resulting throttling is measured rather than inferred.
+    adequate: >-
+      Identifies the layers correctly and reports the limits, without measuring
+      any consequence.
+    inadequate: >-
+      Describes the architecture from a diagram or a manifest, or reports
+      `nproc` as the CPU count available to the service.
+    evidence: The commands run inside the service and their output
+    weight: 3
+
+  - id: r2
+    criterion: Shared responsibilities are named with owners, not just identified
+    excellent: >-
+      Every layer is assigned, and each shared layer carries a named human, a
+      mechanism and a cadence. Layers with no owner are recorded as findings
+      rather than quietly assigned to the provider.
+    adequate: >-
+      Layers are assigned correctly and the shared ones are identified without
+      owners or mechanisms.
+    inadequate: >-
+      Reproduces the provider's two-column diagram, or treats shared layers as
+      the provider's.
+    evidence: The responsibility table, and specifically its owner column
+    weight: 3
+
+  - id: r3
+    criterion: The failure domain analysis finds something not on the diagram
+    excellent: >-
+      Names the single event that takes the service down, traces at least one
+      dependency that appears on no architecture diagram, explicitly checks
+      whether anything on a health check path leaves its failure domain, and
+      states where any quorum sits and what it survives.
+    adequate: >-
+      Identifies the obvious failure domains and a plausible single point of
+      failure.
+    inadequate: >-
+      Counts replicas, or concludes the service is highly available because it
+      has redundancy.
+    evidence: The failure domain map and the health-check-path check
+    weight: 4
+
+  - id: r4
+    criterion: Availability is composed from real dependencies and honestly qualified
+    excellent: >-
+      Composes every required dependency including the ones added to the list
+      during the exercise, converts to minutes per month, compares against what
+      the team believes, and states what the arithmetic does not model —
+      including that changes cause most downtime.
+    adequate: >-
+      Composes the obvious dependencies correctly and converts to time.
+    inadequate: >-
+      Quotes a single vendor SLA as the service's availability, or presents a
+      composed figure as a prediction.
+    evidence: The composition, the dependency list, and the qualification
+    weight: 3
+
+  - id: r5
+    criterion: Cost is decomposed and the alternatives are priced
+    excellent: >-
+      Breaks the real bill down by layer, prices the same workload one layer
+      down and one layer up, prices the redundancy the service does not have,
+      and cites a dated price list for every figure.
+    adequate: >-
+      Reports the bill by layer with some alternatives priced, with partial
+      citation.
+    inadequate: >-
+      Reports a total, or estimates costs without reference to published
+      prices.
+    evidence: The cost table and its citations
+    weight: 3
+
+  - id: r6
+    criterion: A prediction was written down and then tested
+    excellent: >-
+      States a specific prediction before acting, describes what was done and in
+      which environment, and records the actual outcome including any respect in
+      which the prediction was wrong.
+    adequate: >-
+      Tests something and reports the result without having committed to a
+      prediction first.
+    inadequate: >-
+      Reasons about what would happen, or reports a test with no prediction and
+      no surprise.
+    evidence: The prediction, dated before the test, and the outcome
+    weight: 4
+
+  - id: r7
+    criterion: The recommendations are ordered by effect and carry costs
+    excellent: >-
+      Every recommendation names what it changes in sections 3 or 4, carries a
+      cost, and the list is ordered by effect per unit cost rather than by
+      severity label — with the cheap high-value items first.
+    adequate: >-
+      Recommendations are appropriate and costed, ordered conventionally.
+    inadequate: >-
+      A generic hardening or resilience checklist, or recommendations with no
+      cost attached.
+    evidence: The recommendation list and its stated ordering
+    weight: 3
+
+  - id: r8
+    criterion: The document is honest about what it could not establish
+    excellent: >-
+      Records at least one belief that measurement overturned, names an
+      instrument that should have been reached for earlier, and states
+      explicitly what could not be determined and why.
+    adequate: >-
+      Notes some gaps without reflecting on the process.
+    inadequate: >-
+      Presents complete coverage, or omits everything that did not resolve.
+    evidence: The reflection and the could-not-determine list
+    weight: 2
+
+going_further:
+  - "Halve a resource limit and predict, in writing, what each figure in your account will do — then measure. An account that predicts is worth more than one that describes."
+  - "Hand the failure domain map to somebody who knows the service and ask them to find something you missed. What they find is the difference between reading a system and operating one."
+  - "Repeat the whole account after a migration — a version upgrade, a region move, a managed service adoption — and diff the two. The differences are the infrastructure release notes nobody wrote."
+  - "Turn the layer census and the availability composition into a script that runs against any workload, and see how much of this is mechanisable. What is left over is the part that needed judgement."
+  - "Take the cheapest item on your recommendation list and actually do it. A capstone that changed one thing is worth more than one that recommended ten."
+  - "Write the runbook entry for the single event you identified in section 3, in the shape used in docs/runbooks: what it means, how urgent, how to confirm, what to do."

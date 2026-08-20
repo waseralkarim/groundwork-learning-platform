@@ -1,0 +1,218 @@
+id: project.what-a-compromise-reaches
+slug: what-a-compromise-reaches
+title: "Capstone: what a compromise actually reaches"
+level: L3
+requires_topics:
+  - topic.hashing-and-passwords
+  - topic.encryption
+  - topic.certificates-and-tls
+  - topic.identity-and-least-privilege
+estimated_hours: 10
+
+summary: >-
+  Take a running service you did not configure and produce a security assessment
+  where every claim is a command and its output — how it stores credentials, what
+  it actually serves on the wire, where its keys live, and what an attacker
+  reaches from inside it.
+
+brief: |
+  Security review usually produces a document nobody can check. It says the data
+  is encrypted, the certificates are valid, the containers are non-root — all
+  plausible, all unverifiable, and all describing a manifest rather than a
+  running system.
+
+  This capstone produces the other kind. Every claim in it is a command and its
+  output, taken from a system that is actually running, and the conclusions are
+  about what an attacker gets rather than about which boxes are ticked.
+
+  The four topics in this course each ended on the same lesson: the primitive is
+  almost never the weakness, and naming it is how a design avoids discussing the
+  parts that are. "We use SHA-512" omits the work factor. "We use AES-256" omits
+  the mode and the key custody. "The certificate is valid" omits which verifier
+  said so. "It runs as non-root" omits what it holds. This project is where you
+  stop accepting those sentences.
+
+  ## Choose your subject
+
+  A containerised service you did not configure, that you can run locally and
+  put under a debugger's level of scrutiny. It must have at least three of:
+  stored credentials, a TLS endpoint, encrypted data at rest, mounted secrets,
+  and a non-trivial permission model.
+
+  Good candidates, in rough order of how much they will teach you:
+
+  - An off-the-shelf application from Docker Hub with authentication and HTTPS
+  - A database with TLS enabled and a password-authenticated user
+  - A self-hosted tool your team already runs, in a copy you can break
+  - This platform, if you have not been reading it — and note that finding
+    something wrong here is a legitimate outcome, not a failure of the exercise
+
+  ## What you are producing
+
+  A **reachability assessment**: four measured sections and one conclusion that
+  names, concretely, what an attacker gets from each of three starting positions.
+
+  **1. How are credentials stored?** Find where the service keeps user or service
+  credentials and read the format. Name the algorithm and its parameters, and
+  measure the cost of one verification on your hardware. Then state how long a
+  realistic wordlist takes against one account, in a unit a manager understands.
+  If it is a fast hash, say so with the number.
+
+  **2. What is actually on the wire?** Connect to its TLS endpoint and read what
+  it serves — chain depth, expiry, SAN, protocol and cipher. Verify it with two
+  different clients whose policies differ, and account for any disagreement. If
+  anything is unencrypted, find it by looking rather than by assuming.
+
+  **3. Where are the keys and secrets?** For every secret the service holds:
+  where it lives, who can read it, what it opens, and what else holds a copy.
+  Encryption at rest is a claim about a specific threat — say which one, and
+  what it does not cover.
+
+  **4. What identity does it run with?** From the running process, not the
+  manifest. Uid, groups, effective *and* bounding capability sets, setuid
+  binaries reachable, filesystem writability, network egress.
+
+  **5. What does a compromise reach?** Three starting positions, each answered as
+  a list rather than a paragraph: an attacker with a stolen user credential; an
+  attacker with code execution inside the service container; an attacker who has
+  obtained a backup or a disk image.
+
+  ## Why this is the capstone
+
+  Every lab in this course handed you a system built to demonstrate one property.
+  This one gives you a system built to do a job, where the security properties
+  are incidental, undocumented and sometimes accidental — which is every system
+  you will ever be asked about.
+
+  The measure of Security Foundations is not whether you can define preimage
+  resistance or name an AEAD mode. It is whether, handed something running and
+  asked "is this safe", you can convert that unanswerable question into four
+  measurements and three lists.
+
+constraints:
+  - "Every claim needs the command and its raw output in the document. A sentence without evidence is a finding you have not made."
+  - "Measure the running system, never the manifest. Where they disagree, that disagreement is itself a finding worth reporting."
+  - "You must verify the TLS endpoint with two clients whose policies differ, and explain any disagreement rather than picking the answer you prefer."
+  - "For every secret, name every other holder of the same value. A secret's blast radius is the union of what it opens across everything that has a copy."
+  - "Report the bounding capability set, not only the effective one, and say what the difference permits."
+  - "Where you cannot determine something, write what you could not determine and why. An assessment with no gaps is an assessment that stopped looking."
+  - "At least one finding must be something you initially got wrong, with the measurement that corrected you."
+  - "No recommendation may be `--insecure`, `verify=False`, or any equivalent. If that is the only fix you can find, say so and explain what it costs."
+
+deliverables:
+  - "The assessment: four measured sections, each claim carrying its command and raw output, with an explicit list of what could not be determined."
+  - "A credential storage finding: the algorithm, its parameters, a measured cost per verification, and time-to-exhaust a realistic wordlist against one account."
+  - "A wire report: what the endpoint actually serves, verified by two clients with differing policies, with any disagreement explained by naming the policy that differs."
+  - "A secret inventory: every secret, where it lives, who can read it, what it opens, and every other holder of the same value."
+  - "A reachability conclusion: three attacker starting positions, each answered as a concrete list of what is reached."
+  - "A remediation list ordered by what it removes from those three lists — not by severity label, and not by ease."
+  - "A short reflection: one thing you believed before measuring that turned out to be wrong, and one measurement you should have taken earlier."
+
+rubric:
+  - id: r1
+    criterion: Credential storage is read from the system and quantified
+    excellent: >-
+      Locates the stored credential format, names the algorithm and its
+      parameters, measures verification cost on their own hardware with a
+      defensible method, and converts it into time-to-exhaust for a realistic
+      wordlist against a single account.
+    adequate: >-
+      Identifies the algorithm and reports its parameters without measuring cost
+      or converting to a time.
+    inadequate: >-
+      Reports that passwords are "hashed" or quotes a configuration value
+      without reading a stored credential.
+    evidence: The format read from storage, and the timing method alongside its result
+    weight: 3
+
+  - id: r2
+    criterion: The wire is measured, and verifier disagreement is explained
+    excellent: >-
+      Reports chain depth, expiry, SAN, protocol and cipher from a live
+      connection; verifies with two clients of differing policy; and where they
+      disagree, names the specific policy difference rather than choosing a
+      winner.
+    adequate: >-
+      Reports the served certificate accurately from one client.
+    inadequate: >-
+      Quotes the certificate from a file or a configuration block, or reports
+      "TLS is enabled" without reading what is served.
+    evidence: The s_client output and the second client's result side by side
+    weight: 3
+
+  - id: r3
+    criterion: Secrets are inventoried by reach, including other holders
+    excellent: >-
+      Every secret listed with location, readers, what it opens and every other
+      holder of the same value; encryption-at-rest claims are stated against a
+      named threat, with what they do not cover made explicit.
+    adequate: >-
+      Lists the secrets and where they live, without tracing other holders or
+      qualifying at-rest claims.
+    inadequate: >-
+      Reports that secrets are "stored securely" or repeats the deployment's own
+      description of them.
+    evidence: The secret inventory, and the other-holders column in particular
+    weight: 4
+
+  - id: r4
+    criterion: Identity and privilege are measured on the running process
+    excellent: >-
+      Reports uid, groups, effective and bounding capability sets, reachable
+      setuid binaries, filesystem writability and egress — all from inside the
+      running container — and states what the effective/bounding gap permits.
+    adequate: >-
+      Reports uid and capabilities from the running process without
+      distinguishing effective from bounding.
+    inadequate: >-
+      Quotes the securityContext or Dockerfile USER line.
+    evidence: The commands run inside the container and their output
+    weight: 4
+
+  - id: r5
+    criterion: Reachability is answered as three concrete lists
+    excellent: >-
+      Each of the three starting positions answered as a specific list of what is
+      reached, with items traceable to the four measured sections, and the
+      differences between the three positions made explicit.
+    adequate: >-
+      Answers the positions in prose, with plausible but partly untraceable
+      conclusions.
+    inadequate: >-
+      Assesses risk with severity labels, or answers only the position that was
+      easiest to determine.
+    evidence: The three lists, and the traceability of their items to measurements
+    weight: 4
+
+  - id: r6
+    criterion: Remediation is ordered by what it removes from the lists
+    excellent: >-
+      Every recommendation names which item it removes from which reachability
+      list, ordered by that rather than by severity label or by ease, and no
+      recommendation disables verification.
+    adequate: >-
+      Recommendations are appropriate and ordered by conventional severity.
+    inadequate: >-
+      A generic hardening checklist, or a recommendation to disable a check.
+    evidence: The remediation list and its stated ordering rationale
+    weight: 3
+
+  - id: r7
+    criterion: The assessment is honest about its limits and its errors
+    excellent: >-
+      States explicitly what could not be determined and why, records at least
+      one belief that measurement overturned, and names a measurement that should
+      have been taken earlier.
+    adequate: >-
+      Notes some gaps without reflecting on where the process itself went wrong.
+    inadequate: >-
+      Presents complete coverage, or omits everything that did not resolve.
+    evidence: The could-not-determine list and the reflection
+    weight: 2
+
+going_further:
+  - "Hand the reachability lists to a colleague without the measurements and ask them to guess the service. If they can, your findings are generic; if they cannot, you have measured something real."
+  - "Re-run the whole assessment against the same service one major version later and diff it. The differences are the security release notes nobody wrote."
+  - "Take the single worst item on the code-execution list and try to actually reach it in a copy you can break. An assessment you have tested is worth more than one you have reasoned."
+  - "Write the four measurements as a script that runs against any container, and see how much of this assessment is mechanisable. What is left is the part that needed you."
+  - "Do it again on a service your team owns and present it to them. The difference between a finding and a change is almost entirely in how the second conversation goes."

@@ -1,0 +1,278 @@
+id: troubleshooting.the-job-that-ran-twice
+topic: topic.concurrency-and-locking
+title: The locked job that ran twice anyway
+level: L3
+objectives: [OBJ-B08.8.3, OBJ-B08.8.7]
+reveal_policy: progressive
+
+situation: >-
+  Invoices are being generated twice. Not every night — perhaps one night in
+  twelve — and always for the whole batch, never for part of it.
+
+
+  The generator has taken a `flock` for two years. The guard was added after
+  exactly this problem, it was reviewed, and it works: two runs started by hand
+  at the same moment reliably produce one run's worth of invoices and one
+  "already running" message.
+
+
+  The engineer who added it re-tests it in front of the team. It works.
+
+
+  Someone notices that on the affected nights the job's log shows **two** runs
+  starting, several minutes apart, with no "already running" line from either.
+
+
+  The lock file is present. Nobody has an explanation for how two runs, minutes
+  apart, both acquired a lock that demonstrably works when tested.
+
+
+  Work out how a correct-looking `flock` guard lets two runs through.
+
+symptoms:
+  - "Invoices duplicated roughly one night in twelve, always the whole batch"
+  - "Two runs start minutes apart and neither reports the lock as held"
+  - "Testing two simultaneous runs by hand always behaves correctly"
+  - "The lock file exists and the flock guard is present and correct"
+  - "Nothing fails; both runs exit 0"
+
+artifacts:
+  - type: config
+    label: The generator's guard and cleanup
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      LOCK=/var/lock/invoices.lock
+
+      exec 9>"$LOCK"
+      if ! flock -n 9; then
+        echo "invoices: another run holds the lock - exiting"
+        exit 0
+      fi
+
+      cleanup() {
+        rm -f "$LOCK"          # tidy up after ourselves
+        rm -rf "$WORKDIR"
+      }
+      WORKDIR=$(mktemp -d)
+      trap cleanup EXIT
+
+      generate_invoices "$WORKDIR"
+      publish "$WORKDIR"
+
+  - type: log
+    label: A normal night
+    content: |
+      02:00:01  invoices: start
+      02:04:37  invoices: 8,412 invoices published
+      02:04:37  invoices: done
+
+  - type: log
+    label: An affected night
+    content: |
+      02:00:01  invoices: start
+      02:07:52  invoices: 8,439 invoices published
+      02:07:52  invoices: done
+      02:08:03  invoices: start
+      02:12:19  invoices: 8,439 invoices published
+      02:12:19  invoices: done
+
+  - type: config
+    label: The schedule
+    content: |
+      # /etc/cron.d/invoices
+      0,8,16,24 2 * * *  invoices  /opt/jobs/generate-invoices.sh
+
+  - type: command_output
+    label: What a lock is attached to
+    content: |
+      $ exec 9>/tmp/demo.lock; flock -n 9 && echo held
+      held
+      $ stat -c%i /tmp/demo.lock
+      280033
+      $ rm -f /tmp/demo.lock
+      $ readlink /proc/self/fd/9
+      /tmp/demo.lock (deleted)
+      $ bash -c 'flock -n 9 && echo "acquired anyway"' 9>/tmp/demo.lock
+      acquired anyway
+      $ stat -c%i /tmp/demo.lock
+      280034
+
+  - type: command_output
+    label: The lock file's age, checked during the day
+    content: |
+      $ stat -c '%i %y' /var/lock/invoices.lock
+      1179841  2026-08-18 02:12:19.000000000 +0600
+
+diagnostic_questions:
+  - "Two runs, minutes apart, both acquired. What must have been true of the lock between them?"
+  - "What is a flock actually attached to — the path, or something else?"
+  - "Read the cleanup. What does it do that the lock depends on?"
+  - "Why does testing two SIMULTANEOUS runs never reproduce it?"
+  - "The schedule runs the job four times, eight minutes apart. Why does that matter?"
+
+hints:
+  - "Compare the inode numbers in the artifacts before and after the rm."
+  - "The affected night's first run took longer than eight minutes."
+  - "A trap runs on the success path too."
+  - "The lock file's mtime is the moment a run finished, not the moment one started."
+
+root_cause: >-
+  **The cleanup removes the lock file, and a `flock` is held on the inode rather
+  than the path.**
+
+
+  On a normal night the job finishes in under eight minutes and only one run
+  exists at a time — so the removal is harmless and nothing is ever contended.
+
+
+  On a slow night the first run is still going when the next scheduled run
+  starts. That second run does `exec 9>"$LOCK"`, opening the file. If the first
+  run's `cleanup` fires in the window between that open and the second run's
+  `flock` call — two instructions apart — then:
+
+
+  - the first run's descriptor closes, releasing its lock
+  - `rm -f "$LOCK"` unlinks the path
+  - the second run's `flock` succeeds on the now-**nameless** inode
+  - the third scheduled run opens the path, which **creates a new inode**, and
+    locks that
+
+
+  Two runs, two inodes, no mutual exclusion. Neither prints "already running",
+  because neither was ever refused.
+
+
+  **Why testing never reproduces it.** Two simultaneous runs contend on the
+  *same* inode and the kernel arbitrates correctly — which is what the engineer
+  demonstrated, and it was a valid demonstration of a property that holds. The
+  defect needs a run that has **already finished** to have removed the file, so
+  it only appears when a run overruns its schedule. That is roughly one night in
+  twelve, and it is not a state anybody constructs by hand.
+
+
+  **Why it is always the whole batch.** The second run is not interrupted or
+  partial — it is a complete, correct run that should never have started. Both
+  publish 8,439 invoices because both did the whole job.
+
+
+  **The evidence in plain sight** is the lock file's mtime: it matches the moment
+  a run *finished*, not the moment one started, because it is recreated by the
+  next run's `exec 9>`. A lock file whose mtime tracks job completions is a lock
+  file being deleted and recreated.
+
+
+  Nothing failed. `flock` behaved exactly as documented, the guard is correct,
+  and the cleanup is the kind of tidiness that passes review.
+
+method: >-
+  **1. Take the timing seriously.** Two runs *minutes apart* is the whole clue.
+  Simultaneous runs contending is the case the guard handles; sequential runs
+  both acquiring means the lock was not shared between them, which points at the
+  lock's identity rather than at the locking.
+
+
+  **2. Ask what a `flock` is attached to.** Not the path — an open file
+  description, which points at an inode. Once that is in mind, "what could make
+  two runs hold locks on different inodes at the same path" has one answer.
+
+
+  **3. Read the cleanup, not just the guard.** The guard is correct and everybody
+  reads it. The `rm -f "$LOCK"` is four lines further down, in a function called
+  `cleanup`, doing what cleanup functions do. It runs on the **success** path,
+  which is why the problem scales with how reliably the job works.
+
+
+  **4. Reproduce it small, and by hand.** Three descriptors in one shell, with
+  the removal placed deliberately between the second run's open and its `flock`.
+  Deterministic, ten seconds, no cron and no invoices. If a demonstration needs
+  the real job, it has not been reduced far enough.
+
+
+  **5. Check the lock file's mtime against the job's history.** It should be old
+  — created once, never touched. If it tracks recent *completions*, something is
+  deleting and recreating it, and that is the bug rather than a symptom of it.
+
+
+  **6. Do not accept a passing test as evidence about a different case.** The
+  engineer's demonstration was sound and proved a real property. It said nothing
+  about the case where a previous run has already exited, and nobody noticed the
+  gap because the test looked like it covered "concurrency".
+
+
+  The habit: **when a guard works under test and fails in production, ask what
+  state production has that the test did not** — and here it is the simplest
+  possible one, a run that already finished.
+
+resolution: >-
+  **Immediately:** find the duplicated invoice batches by date, and check whether
+  anything downstream acted on them. Then take the job off the eight-minute
+  schedule until it is fixed — a longer interval makes overruns rarer without
+  fixing anything, but it stops the bleeding.
+
+
+  **Delete one line.**
+
+
+  ```bash
+  cleanup() {
+    rm -rf "$WORKDIR"          # the work directory, and NOT the lock file
+  }
+  ```
+
+
+  The lock file is created once and left forever. It costs one inode, it lives in
+  `/var/lock`, and that directory is cleared on reboot — when no process can be
+  holding a lock. **Never delete a lock file**: not in a trap, not in a
+  `/var/lock` tidy-up job, not by hand during an incident.
+
+
+  **Fix the ordering while you are there.** `WORKDIR` is assigned *after*
+  `cleanup` is defined but the trap is installed after the assignment, which is
+  correct — but under `set -u` an early failure between them would make `cleanup`
+  reference an unset variable. Assign first, then define, then trap.
+
+
+  **Add the invariant test**, which is one line and deterministic:
+
+
+  ```bash
+  ./generate-invoices.sh --dry-run
+  [ -e /var/lock/invoices.lock ] || { echo "the run removed its own lock file"; exit 1; }
+  ```
+
+
+  Do **not** try to test the race. It needs a run to open the lock file in the
+  two instructions between another run's exit and its own `flock` call; a test
+  built from `sleep`s would pass almost every time and fail in CI once a month,
+  which is worse than no test. **When a concurrency bug needs timing to
+  reproduce, find the invariant it violates and assert that instead.**
+
+
+  **Then bound the run**, because the overrun is what exposed this and will
+  expose the next thing:
+
+
+  ```bash
+  timeout -k 60 900 generate_invoices "$WORKDIR"
+  ```
+
+
+  and alert on **consecutive skips** and **time since the last successful
+  completion** — the metric that distinguishes "skipped because a run is in
+  progress" from "has not run since Tuesday".
+
+
+  **Audit for the shape:** `grep -rln 'rm -f.*lock' /opt/jobs/` finds every other
+  script doing this. Expect more than one; it is a natural thing to write.
+
+
+  **For the postmortem:** `flock` worked exactly as documented, the guard was
+  correct, and it was reviewed by someone who understood locking. The defect was
+  in a `cleanup` function doing the most ordinary thing a cleanup function does,
+  and it only manifested when the job **succeeded** and then overran its
+  schedule — so the more reliable the job became, the more collisions it armed.
+  Two general findings: a lock lives on an inode, so the file must outlive every
+  run; and a test that passes proves something about the case it exercised, which
+  is not the same as the case that fails.

@@ -1,0 +1,239 @@
+id: troubleshooting.the-amount-that-changed
+topic: topic.encryption
+title: The settlement file was encrypted and the totals are still wrong
+level: L2
+objectives: [OBJ-A04.2.6, OBJ-A04.2.7]
+reveal_policy: progressive
+
+situation: >-
+  A payments platform sends a nightly settlement file to a partner bank. The
+  file is encrypted, uploaded to an SFTP drop, and collected by the bank the
+  next morning.
+
+
+  On Tuesday the bank's totals were £41,000 higher than the platform's. Both
+  sides re-ran their reconciliation and each got its own number again.
+
+
+  The platform's position, stated firmly in the incident channel, is that
+  tampering is impossible: the file is encrypted with AES-256, the key has never
+  left the two organisations, and the bank decrypted it successfully — a
+  tampered file would not have decrypted at all.
+
+
+  The bank's position is that they processed exactly what they received.
+
+
+  Both are describing what they observed accurately. Work out what happened
+  before reading on.
+
+symptoms:
+  - "The bank's settlement total exceeds the platform's by £41,000"
+  - "The file decrypted successfully at the bank with no errors"
+  - "Both sides' internal reconciliations are self-consistent"
+  - "The SFTP drop is on a third-party host neither organisation runs"
+  - "The same pipeline has run nightly for two years without a discrepancy"
+  - "File sizes recorded at upload and download are identical"
+
+artifacts:
+  - type: config
+    label: The platform's send script
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      openssl enc -aes-256-ctr \
+        -K "$SETTLEMENT_KEY" \
+        -iv "$SETTLEMENT_IV" \
+        -in "$OUTDIR/settlement-$(date +%F).csv" \
+        -out "$OUTDIR/settlement-$(date +%F).enc"
+
+      sftp -b - partner@drop.example.net <<EOF
+      put $OUTDIR/settlement-$(date +%F).enc /incoming/
+      EOF
+
+  - type: config
+    label: The deployment's environment
+    content: |
+      SETTLEMENT_KEY=8f2a1c94b7d3e05a...   # 64 hex chars, in the secrets manager
+      SETTLEMENT_IV=00000000000000000000000000000001
+
+      # Both values set at pipeline creation, 2024-03-11. Never changed.
+
+  - type: command_output
+    label: File sizes, upload and download
+    content: |
+      platform upload log   : settlement-2026-08-11.enc  1,284,733 bytes
+      bank download log     : settlement-2026-08-11.enc  1,284,733 bytes
+      byte count identical.
+
+  - type: log
+    label: The bank's decryption step
+    content: |
+      2026-08-12 06:02:11  decrypt settlement-2026-08-11.enc -> csv   OK (rc=0)
+      2026-08-12 06:02:14  parse 8,412 rows, 0 malformed
+      2026-08-12 06:02:19  reconcile complete
+
+  - type: command_output
+    label: Diff of the two CSVs, obtained afterwards
+    content: |
+      $ diff platform-sent.csv bank-received.csv
+      4172c4172
+      < MERCH-4471,2026-08-11,GBP,00190000,SETTLED
+      ---
+      > MERCH-4471,2026-08-11,GBP,04290000,SETTLED
+
+      (one row, one field, same length)
+
+diagnostic_questions:
+  - "The file decrypted without error. Does that establish it was unaltered?"
+  - "What is the mode, and what does that mode do when a ciphertext byte changes?"
+  - "The changed field is the same length as the original. Why would that be, and what does it tell you about the attacker?"
+  - "What is wrong with the IV, beyond this incident?"
+  - "Who had the opportunity, given where the file sat overnight?"
+
+hints:
+  - "Read the mode in the send script, and ask what CTR does to a single altered byte."
+  - "`openssl enc` supports no authenticated mode at all. Check what that means for detecting a change."
+  - "Compare the two field values character by character. The lengths match exactly."
+  - "The IV has been the same value since March 2024, across every nightly file."
+
+root_cause: >-
+  **The file was altered in the SFTP drop, and CTR mode let the change be
+  precise while providing nothing that could detect it.**
+
+
+  The platform's reasoning is wrong at exactly one step. "A tampered file would
+  not have decrypted" is true of an *authenticated* mode and false of every
+  other one — and `openssl enc` cannot do authenticated encryption at all. Its
+  cipher list contains CBC, CFB, CTR, ECB and OFB and no AEAD mode; ask for
+  `-aes-256-gcm` and it answers `enc: AEAD ciphers not supported`.
+
+
+  So decryption returning `rc=0` establishes nothing about integrity. It was
+  never capable of establishing it.
+
+
+  In counter mode, `ciphertext = plaintext XOR keystream`. Flipping bits in the
+  ciphertext flips exactly the corresponding plaintext bits and changes nothing
+  else. An attacker who knows the file format — a fixed-width amount field in a
+  CSV — can compute the XOR between the digits they see and the digits they want
+  and apply it directly, without the key.
+
+
+  Two details confirm this rather than random corruption. The changed field is
+  **exactly the same length**, which is forced: CTR cannot insert or remove bytes,
+  only substitute them, and the identical byte counts at upload and download
+  agree. And the change is a **valid, plausible amount** in the one field worth
+  changing, which corruption does not produce.
+
+
+  **The IV is the deeper defect, and it is why this was easy.**
+  `00000000000000000000000000000001` has been the IV for every nightly file
+  since March 2024 — roughly 900 files under one key and one nonce. Every one of
+  them shares a keystream. An attacker holding two captures gets the XOR of two
+  settlement files; holding hundreds of highly-structured files with a
+  predictable format, recovering the plaintext is routine. They did not need to
+  guess where the amount field was — they could read the file.
+
+
+  The amounts are in pence, and the gap is exactly `04290000 - 00190000` =
+  4,100,000 pence = £41,000, landed on one merchant. Two digits changed.
+
+
+  Nobody's account of what they observed is wrong. The platform sent one file,
+  the bank received a different one, and the thing both sides believed would
+  detect that was never doing so.
+
+method: >-
+  **1. Check whether the integrity claim was ever true.** "It decrypted, so it
+  was not tampered with" is the assertion the whole investigation rests on, and
+  it is a property of the mode rather than of encryption. One command settles it:
+  `openssl enc -ciphers` — no GCM, no Poly1305, nothing authenticated. The check
+  everyone believed was running has never existed.
+
+
+  **2. Read the mode, and know what it does under modification.** CTR is a stream
+  mode: altered ciphertext bytes alter exactly the corresponding plaintext bytes.
+  That makes a *chosen* change possible, not merely corruption, and it makes the
+  result look entirely normal to a parser.
+
+
+  **3. Treat equal lengths as evidence.** Identical byte counts at both ends, and
+  a substituted field of identical width, are what a stream-mode substitution
+  looks like. Corruption of an encrypted file usually produces unparseable rows;
+  8,412 rows parsed with 0 malformed is not corruption.
+
+
+  **4. Diff the plaintexts, not the ciphertexts.** Ciphertexts tell you only that
+  bytes differ. The plaintext diff names the merchant, the field and the amount,
+  and converts "our totals disagree" into "this row was changed by this much".
+
+
+  **5. Look at the IV, not just this file.** A constant IV across 900 files is a
+  much larger finding than the £41,000 — it means every settlement file ever
+  sent is readable to anyone who kept copies. The incident is the tampering; the
+  exposure is two years of data.
+
+
+  **6. Ask who had the opportunity.** The file sat overnight on a third-party
+  host neither organisation controls. That is the window, and it should have been
+  in the threat model from the start — it is precisely why the file was encrypted.
+
+
+  The habit worth taking: **"it decrypted successfully" is not an integrity
+  check.** When someone offers it as one, ask which mode, and whether that mode
+  has an authentication tag.
+
+resolution: >-
+  **Immediately.**
+
+
+  Treat the settlement key and IV as compromised and rotate both — not because
+  the key was necessarily taken, but because you cannot show it was not, and the
+  IV reuse means every historical file is decryptable by anyone who kept them.
+
+
+  Re-verify Tuesday's settlement from the platform's own records rather than from
+  either decrypted file, and correct MERCH-4471. Then re-verify the preceding
+  nights: nothing in this pipeline could have detected an earlier alteration, so
+  "this was the first time" is an assumption rather than a finding. If the
+  platform keeps its own copies, hashing them against the bank's is the check
+  that was missing.
+
+
+  **Fix the pipeline properly.**
+
+
+  Replace `openssl enc` with an authenticated scheme. `age` is the simplest
+  correct answer for file-at-rest transfer; `gpg` works; a small program using
+  the language's AEAD API works. Whatever is chosen must produce an
+  authentication tag, so that a modified file **fails to decrypt** rather than
+  decrypting into the reconciliation.
+
+
+  Generate a fresh nonce per file and send it alongside. A nonce is per-message
+  state and belongs nowhere near an environment variable set once at pipeline
+  creation — that is the shape of the mistake, and it is worth writing down as
+  such in the postmortem, because the same pattern will appear elsewhere.
+
+
+  Sign the file as well as encrypting it, so the bank can establish it came from
+  the platform and not merely that it decrypted. Encryption answers *who can read
+  this*; it never answered *who sent this*, and a settlement pipeline needs both.
+
+
+  **Then fix the reasoning, which is the durable part.**
+
+
+  The platform's belief — encrypted means unalterable — is held widely and is
+  what made two years of exposure invisible. The postmortem should state plainly
+  that confidentiality and integrity are separate properties requiring separate
+  mechanisms, and that the tool in use could not provide the second one at all.
+
+
+  **And add the check that would have caught it in one line.** The platform
+  hashes the plaintext before encrypting and sends the digest over a different
+  channel; the bank compares after decrypting. That is not a substitute for AEAD
+  and should not replace it — but it is a five-minute change that turns a silent
+  £41,000 discrepancy into a failed job at 06:02.

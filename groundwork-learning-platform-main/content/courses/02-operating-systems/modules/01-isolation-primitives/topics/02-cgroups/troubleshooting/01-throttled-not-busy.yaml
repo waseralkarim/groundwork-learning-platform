@@ -1,0 +1,195 @@
+id: troubleshooting.throttled-not-busy
+topic: topic.cgroups
+title: The dashboards are green and the p99 is four seconds
+level: L3
+objectives: [OBJ-A02.2.8, OBJ-A02.2.5]
+reveal_policy: progressive
+
+situation: >-
+  A Go API service went from a p99 of 80ms to a p99 of about four seconds over
+  the course of a week. Nothing was deployed. Traffic grew roughly 20%.
+
+
+  Every dashboard the team has is green. CPU utilisation sits at 48% of the
+  limit, memory at 30%, no restarts, no errors, no OOM kills. The database is
+  fast. Traces show the time is spent inside the service, spread evenly across
+  every span rather than concentrated in one.
+
+
+  The team has scaled from 6 replicas to 18 over three days. The p99 did not
+  move. They are now asking for a bigger node type, and the platform team wants
+  a reason before approving it.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "p99 latency ~4s, p50 still around 40ms"
+  - "CPU utilisation steady at 48% of the limit, flat"
+  - "Tripling the replica count changed nothing"
+  - "Latency is spread across all spans rather than concentrated in one"
+  - "No OOM kills, no restarts, no error rate change"
+  - "The same binary on a developer laptop has a p99 of 60ms under the same load"
+
+artifacts:
+  - type: command_output
+    label: Inside one of the pods
+    content: |
+      $ nproc
+      64
+
+      $ cat /sys/fs/cgroup/cpu.max
+      50000 100000
+
+      $ cat /sys/fs/cgroup/cpu.stat
+      usage_usec      1180043221
+      user_usec       1021884320
+      system_usec      158158901
+      nr_periods      214880
+      nr_throttled    211944
+      throttled_usec  8801244930
+
+      $ cat /sys/fs/cgroup/cpu.pressure
+      some avg10=61.44 avg60=59.80 avg300=58.11 total=1904772311
+      full avg10=61.40 avg60=59.77 avg300=58.09 total=1903991044
+
+  - type: config
+    label: The deployment's resources block
+    content: |
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: 500m
+          memory: 1Gi
+
+  - type: metric
+    label: What the dashboard shows
+    content: |
+      container_cpu_usage_seconds_total (rate, 5m)   0.48 cores
+      container_spec_cpu_quota / period               0.50 cores
+      utilisation vs limit                            96%  -- "healthy, near capacity"
+      container_memory_working_set_bytes              310 MiB / 1 GiB
+      kube_pod_container_status_restarts_total        0
+
+  - type: log
+    label: The service's own startup line
+    content: |
+      2026-08-10T02:11:04Z INFO starting api v2.14.0 GOMAXPROCS=64 workers=64 buildinfo=...
+
+diagnostic_questions:
+  - "What does `nr_throttled / nr_periods` come to, and what does that mean per period?"
+  - "Why is `throttled_usec` larger than the wall-clock time the pod has been running?"
+  - "Why are `some` and `full` almost identical in cpu.pressure?"
+  - "What did the service size GOMAXPROCS from, and what was it entitled to?"
+  - "Why did tripling the replica count not help?"
+
+hints:
+  - "The utilisation number and the throttling ratio are both correct. Only one of them is about the work."
+  - "Compare the two answers to 'how many CPUs do I have' — they are in the first artifact."
+  - "throttled_usec is a sum over tasks, not a duration. Ask how many tasks."
+  - "If each replica is throttled, what does adding replicas change about each one?"
+
+root_cause: >-
+  The service sets `GOMAXPROCS` from `nproc`, which reports the node's 64 CPUs,
+  while the cgroup allows half of one. Sixty-four runnable OS threads consume
+  the 50ms quota within a few milliseconds of each 100ms period, and then every
+  one of them is stopped until the period rolls over.
+
+
+  `nr_throttled / nr_periods` is 211944 / 214880 — **98.6%**. In almost every
+  period, the cgroup is stopped before the period ends. A request that arrives
+  during the stopped portion waits for the next period, so tail latency inherits
+  the period length, multiplied by how many periods a request needs.
+
+
+  The utilisation figure is correct and useless. The container is allowed half a
+  CPU and uses 0.48 of it, so utilisation-against-limit reads 96% — which is
+  also exactly what a perfectly sized, entirely healthy container looks like.
+  The graph cannot distinguish the two cases, and no amount of staring at it
+  will make it.
+
+
+  Scaling to 18 replicas did nothing because every replica has the same quota
+  and the same 64 threads. Three times as many equally throttled pods is three
+  times the throughput and identically bad latency per request, and latency was
+  the complaint.
+
+method: >-
+  **1. Get the ratio before anything else.** `nr_throttled / nr_periods` is one
+  division and it separates "busy" from "throttled" immediately. 98.6% means
+  this is not a capacity question about the node — it is a quota question about
+  the container, and the node's size is irrelevant to it.
+
+
+  **2. Read `throttled_usec` for what it is.** 8801 seconds of throttled time in
+  a pod that has been up for about six hours is not a contradiction — it is a
+  sum over tasks. That number being far larger than wall clock is itself
+  evidence that there are many threads, which points at the next step.
+
+
+  **3. Use the pressure lines as a second opinion.** `some` at 61% and `full` at
+  61.4% being essentially equal is the quota-throttling fingerprint. Ordinary
+  CPU contention leaves `full` well below `some`, because some tasks run while
+  others wait; a spent quota stops everything at once.
+
+
+  **4. Ask the two-file question.** `nproc` says 64, `cpu.max` says half a CPU,
+  and the startup log says `GOMAXPROCS=64`. That is the whole causal chain, and
+  it took three readings.
+
+
+  **5. Explain the failed remedy before proposing a new one.** Tripling
+  replicas did not help, and being able to say *why* is what makes the next
+  proposal credible. Each replica is independently throttled; adding replicas
+  adds throughput and cannot improve the latency of a single request. A bigger
+  node type would have made it worse, because `nproc` would have gone up.
+
+
+  The general habit: when a fix that should obviously work does not, the model
+  is wrong, not the fix. Stop applying more of it.
+
+resolution: >-
+  Two changes, and the first one is free.
+
+
+  **Make the runtime honest about its quota.** For Go, either set `GOMAXPROCS`
+  explicitly from the limit or import `go.uber.org/automaxprocs`, which reads
+  `cpu.max` at startup and sets it for you. With a 500m limit, `GOMAXPROCS=1`.
+  This costs one line and typically recovers most of the tail latency on its
+  own, because the scheduler stops thrashing 64 threads through a quota that
+  fits one.
+
+
+  The same defect has a different name in every runtime, and it is worth
+  checking the neighbours while you are here: `UV_THREADPOOL_SIZE` and cluster
+  workers in Node, `worker_processes` in nginx, GC and common-pool threads in
+  older JVMs, `make -j$(nproc)` in build containers.
+
+
+  **Then size the limit from a measurement.** Raise `limits.cpu` until
+  `nr_throttled / nr_periods` is near zero at target throughput, and record the
+  measurement in a comment next to the number. 500m was a round number rather
+  than an observation, and the replacement should not be another one.
+
+
+  Consider dropping the CPU limit entirely for this service. With
+  `requests.cpu` set, `cpu.weight` still protects everyone under contention, and
+  removing the ceiling removes the throttling. The argument against is that one
+  buggy replica can then consume a node's spare CPU — a real risk, and one you
+  can now weigh with numbers rather than instinct.
+
+
+  **Finally, fix the dashboard, because it lied.** Add the throttling ratio and
+  `container_pressure_cpu_stalled_seconds_total` next to the utilisation panel:
+
+
+  ```promql
+  rate(container_cpu_cfs_throttled_periods_total[5m])
+    / rate(container_cpu_cfs_periods_total[5m])
+  ```
+
+
+  A week of green dashboards during a fourfold latency regression is its own
+  incident, and it will happen again to the next service unless the panel exists.

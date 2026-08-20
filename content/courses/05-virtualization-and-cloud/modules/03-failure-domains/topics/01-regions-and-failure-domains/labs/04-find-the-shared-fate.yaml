@@ -1,0 +1,319 @@
+id: lab.find-the-shared-fate
+topic: topic.regions-and-failure-domains
+title: "Challenge: four redundant topologies, four shared fates"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A05.3.6, OBJ-A05.3.7, OBJ-A05.3.8]
+
+intro: >-
+  Four topologies in /tmp/topologies, each described by its owners as highly
+  available. You have already computed alpha and bravo.
+
+
+  Charlie and delta are the interesting ones. Charlie spans three zones properly
+  and still has a single event that takes it down. Delta is genuinely well placed
+  within its region — and has a different problem, which is the more useful
+  finding.
+
+
+  For each, name what single event takes it down and what the redundancy actually
+  protects against.
+
+setup:
+  - /opt/lab/seed-domains.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read all four topologies. Before analysing charlie and delta, commit to
+      which single event takes each of the four down, in /tmp/hypotheses.
+    hint: >-
+      For each, look for something there is exactly one of. It will not be the
+      thing with a replica count next to it.
+    walkthrough: |
+      cat /tmp/topologies/*.txt
+      {
+        echo "alpha:   losing node-7, or losing AZ-a"
+        echo "bravo:   losing AZ-a - takes etcd quorum and the database primary together"
+        echo "charlie: losing AZ-a - the vault cluster is there and every replica needs it"
+        echo "delta:   losing the region, or a bad deploy reaching all nine replicas"
+      } > /tmp/hypotheses
+      cat /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You committed to an answer before analysing
+      - type: command_exit
+        command: "test $(wc -l < /tmp/hypotheses) -ge 4"
+        exit_code: 0
+        describe: With a line for each topology
+
+  - id: s2
+    instruction: >-
+      Charlie spans three zones with a multi-AZ database and a multi-AZ load
+      balancer. Find the single event that takes it down and compute its effect.
+      Save to /tmp/answer-charlie.
+    walkthrough: |
+      cat /tmp/topologies/charlie.txt
+      {
+        echo "charlie's placement is genuinely good: 4 replicas across 3 zones, database multi-AZ with one replica per zone, load balancer spanning three."
+        echo
+        echo "the single event: LOSING AZ-a. secrets are fetched at startup from a vault cluster in AZ-a only."
+        echo
+        echo "what that costs depends on timing, which is what makes it nasty:"
+        echo "- running replicas keep serving, because they fetched their secrets at startup and already hold them"
+        echo "- any replica that RESTARTS cannot start, because it cannot fetch secrets"
+        echo "- so the service degrades gradually as pods are rescheduled, rather than failing immediately"
+        echo "- and a deploy during the outage replaces every healthy replica with one that cannot start"
+        echo
+        echo "the arithmetic:"
+        echo -n "  4 replicas in parallel at 0.995:            "
+        /tmp/avail parallel 0.995 0.995 0.995 0.995
+        echo -n "  the same, with a single-zone vault at 0.999: "
+        /tmp/avail series 0.999999999 0.999
+        echo
+        echo "the redundancy produced essentially perfect availability and the vault set the real number. a dependency in series with every replica decides the composite, and adding replicas does not move it."
+      } > /tmp/answer-charlie
+      cat /tmp/answer-charlie
+    verify:
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "(?i)vault"
+        describe: You found the single-zone dependency
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "(?i)restart"
+        describe: And that the failure is delayed until a restart
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "99\\.9"
+        describe: And computed what the shared dependency does to the composite
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "(?i)deploy"
+        describe: And that deploying during the outage would make it total
+
+  - id: s3
+    instruction: >-
+      Delta is well placed within its region. Identify what it does not survive
+      and save it to /tmp/answer-delta, with the events ordered by how likely
+      they are.
+    walkthrough: |
+      cat /tmp/topologies/delta.txt
+      {
+        echo "delta's zone-level placement is correct: 9 replicas 3/3/3, database multi-AZ, load balancer multi-AZ, secrets replicated across all three zones. it survives any single zone loss and it does so statically - nothing has to act."
+        echo
+        echo "what it does not survive, most likely first:"
+        echo
+        echo "1. A BAD DEPLOY. 20+ per day, reaching all nine replicas within minutes. redundancy provides zero protection - nine copies of broken code is nine broken copies. this is by far the most likely event on the list."
+        echo "2. THE CI SYSTEM, which is in the same region. during a regional event they can neither deploy a fix nor roll back."
+        echo "3. THE REGION - every service listed is regional, including the control plane. a regional control-plane failure is much more common than a datacentre being destroyed."
+        echo "4. DNS - single provider, single zone. it is above the region in the domain hierarchy and is not listed as a dependency anywhere."
+        echo
+        echo "the useful finding is the ordering. delta's owners have solved the failure they can compute and left the two most likely events - a change, and a regional control plane - unaddressed."
+        echo "that is the general shape: zone-level redundancy is cheap, computable and satisfying, so it gets done, while the larger terms are neither computable nor satisfying."
+      } > /tmp/answer-delta
+      cat /tmp/answer-delta
+    verify:
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)deploy"
+        describe: You identified a bad deployment as the most likely event
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)region"
+        describe: And the region as a single failure domain
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)dns"
+        describe: And a dependency above the region
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)ordering|most likely"
+        describe: And ordered them by likelihood rather than severity
+
+  - id: s4
+    instruction: >-
+      Rank the four topologies by what they would actually cost to fix, cheapest
+      first, and say which fix buys the most. Save to /tmp/answer-ranking.
+    walkthrough: |
+      {
+        echo "cheapest first:"
+        echo
+        echo "1. ALPHA - add topology spread constraints so the three replicas are not on one node, and move the database and load balancer across zones. the constraint is a few lines of yaml and costs nothing; the zone spread costs a third zone, which in a cloud region is close to free."
+        echo "2. CHARLIE - spread the vault across three zones, and stop fetching secrets at startup only. small change, removes the single event entirely."
+        echo "3. BRAVO - move etcd to 1/1/1 across three zones. also nearly free, and it removes both the quorum problem and the primary-colocation problem at once."
+        echo "4. DELTA - the remaining fixes are progressive rollout with fast rollback (cheap, and the highest value on this whole list), then a CI system outside the region (moderate), then multi-region (expensive and complex)."
+        echo
+        echo "the fix that buys the most across all four: PROGRESSIVE ROLLOUT AND FAST ROLLBACK on delta. it addresses the single most likely cause of downtime for every one of these systems, it appears in no availability calculation, and it is cheaper than any of the infrastructure changes."
+        echo
+        echo "the uncomfortable pattern: three of the four topologies have nearly-free zone-level fixes that were not done, and the most valuable control on the list is not an infrastructure change at all."
+      } > /tmp/answer-ranking
+      cat /tmp/answer-ranking
+    verify:
+      - type: file_matches
+        path: /tmp/answer-ranking
+        pattern: "(?i)spread constraint|topology spread"
+        describe: You identified alpha's cheapest fix
+      - type: file_matches
+        path: /tmp/answer-ranking
+        pattern: "(?i)rollback|progressive"
+        describe: And that change controls buy the most
+      - type: file_matches
+        path: /tmp/answer-ranking
+        pattern: "(?i)no availability calculation|appears in no"
+        describe: And that they appear in no availability calculation
+
+  - id: s5
+    instruction: >-
+      Write the review questions to /tmp/answer-questions — the ones that would
+      have caught all four of these — and say which one is not on a standard
+      checklist.
+    walkthrough: |
+      {
+        echo "1. what single event takes this down?"
+        echo "2. which dependencies are in series that are not on the diagram? (secrets, dns, registry, identity, ci)"
+        echo "3. where is the quorum, and does it survive one zone? compute it, do not assume."
+        echo "4. does anything on the HEALTH CHECK PATH leave this failure domain?"
+        echo "5. if a zone fails, does anything have to act - or does it just keep working?"
+        echo "6. what happens when we deploy something broken, and how fast can we undo it?"
+        echo "7. when did we last test any of this?"
+        echo
+        echo "question 4 is the one that is not on a standard checklist, and it is what caught the seeded incident: a readiness probe reading from a single-zone vault removed every replica in every zone. anything a health check touches is a hard dependency of the entire service, and health checks are written casually."
+        echo
+        echo "question 5 is static stability, and it separates designs that survive a control plane outage from ones that need rescuing during it."
+        echo "question 6 addresses the largest real term and appears in no availability arithmetic at all."
+      } > /tmp/answer-questions
+      cat /tmp/answer-questions
+    verify:
+      - type: file_matches
+        path: /tmp/answer-questions
+        pattern: "(?i)health check"
+        describe: Your questions include the health check path
+      - type: file_matches
+        path: /tmp/answer-questions
+        pattern: "(?i)not on a standard checklist"
+        describe: And you identified which one is routinely missing
+      - type: file_matches
+        path: /tmp/answer-questions
+        pattern: "(?i)static stability|have to act"
+        describe: And included static stability
+      - type: file_matches
+        path: /tmp/answer-questions
+        pattern: "(?i)deploy|broken"
+        describe: And the largest real cause of downtime
+
+solution: >-
+  **Charlie — good placement, one dependency.**
+
+
+  Four replicas across three zones, multi-AZ database, multi-AZ load balancer.
+  The placement is genuinely correct. And secrets are fetched at startup from a
+  vault cluster in AZ-a only.
+
+
+  What makes it nasty is the **timing**. Running replicas keep serving, because
+  they already hold their secrets. Any replica that *restarts* cannot start. So
+  the service degrades gradually as pods are rescheduled — and a deploy during
+  the outage replaces every healthy replica with one that cannot start, turning a
+  partial failure into a total one at the worst possible moment.
+
+
+  ```text
+  4 replicas in parallel at 0.995    100.000000%   ← rounds to 100 at six places
+  the same, + a single-zone vault     99.900000%
+  ```
+
+
+  The redundancy is so good it rounds to 100% at the calculator's precision — and
+  the vault sets the real number anyway, exactly. **A dependency in series with
+  every replica decides the composite**, and adding replicas does not move it.
+
+
+  That rounding is worth a second's attention on its own: an availability model
+  that reports 100% is telling you the calculation has run out of significant
+  figures, not that the thing cannot fail.
+
+
+  **Delta — well placed, and solving the wrong problem.**
+
+
+  Nine replicas 3/3/3, multi-AZ database and load balancer, secrets replicated
+  across all three zones. It survives any single zone loss, statically — nothing
+  has to act. That is correct and worth having.
+
+
+  What it does not survive, ordered by **likelihood** rather than severity:
+
+
+  1. **A bad deploy.** 20+ per day, reaching all nine replicas in minutes.
+     Redundancy provides zero protection; nine copies of broken code is nine
+     broken copies. By far the most likely event here.
+
+  2. **The CI system**, in the same region — during a regional event they can
+     neither deploy a fix nor roll back.
+
+  3. **The region.** Every service listed is regional, including the control
+     plane, and a regional control-plane failure is far more common than a
+     datacentre being destroyed.
+
+  4. **DNS** — single provider, single zone, above the region in the domain
+     hierarchy, and listed as a dependency nowhere.
+
+
+  The finding is the ordering. Delta's owners solved the failure they could
+  *compute* and left the two most likely events unaddressed. That is the general
+  shape: zone-level redundancy is cheap, computable and satisfying, so it gets
+  done; the larger terms are none of those things.
+
+
+  **Ranked by cost to fix:**
+
+
+  1. **Alpha** — topology spread constraints (a few lines, free) plus a third
+     zone for the database and load balancer.
+
+  2. **Charlie** — spread the vault across three zones.
+
+  3. **Bravo** — etcd to 1/1/1, which removes both the quorum problem and the
+     primary-colocation problem at once.
+
+  4. **Delta** — progressive rollout with fast rollback, then CI outside the
+     region, then multi-region.
+
+
+  **The fix that buys the most is delta's first item**, and it is not an
+  infrastructure change. Progressive rollout and fast rollback address the most
+  likely cause of downtime for *all four* systems, cost less than any of the
+  placement changes, and appear in no availability calculation whatsoever.
+
+
+  Three of the four have nearly-free zone-level fixes that were not done, and the
+  most valuable control on the list is not in the arithmetic at all.
+
+
+  **The review questions**, and the one that is missing from standard
+  checklists:
+
+
+  ```text
+  1. What single event takes this down?
+  2. Which dependencies are in series that are not on the diagram?
+  3. Where is the quorum, and does it survive one zone? (compute it)
+  4. Does anything on the HEALTH CHECK PATH leave this failure domain?
+  5. If a zone fails, does anything have to act — or does it just keep working?
+  6. What happens when we deploy something broken, and how fast can we undo it?
+  7. When did we last test any of this?
+  ```
+
+
+  **Question 4** is the one nobody asks, and it caught the seeded incident: a
+  readiness probe reading from a single-zone vault removed every replica in every
+  zone. Anything a health check touches is a hard dependency of the whole
+  service.
+
+
+  Question 5 is static stability. Question 6 addresses the largest real term and
+  is absent from every availability calculation in this topic.

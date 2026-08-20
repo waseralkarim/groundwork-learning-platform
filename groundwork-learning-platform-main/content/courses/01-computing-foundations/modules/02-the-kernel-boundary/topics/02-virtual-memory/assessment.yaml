@@ -1,0 +1,168 @@
+id: assessment.virtual-memory
+topic: topic.virtual-memory
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain the three numbers
+    kind: explain
+    objectives: [OBJ-A01.4.3]
+    prompt: >-
+      A colleague asks why `ps` shows their service using 2.1 GB in one column
+      and 84 MB in another, and which figure they should put on a dashboard.
+
+
+      Answer in about 150 words. Cover what each number counts, why they differ,
+      and what you would actually put on the dashboard — including the case
+      where the service runs in a container.
+    rubric:
+      - "Defines VSZ as mapped address space, including untouched pages"
+      - "Defines RSS as physical memory currently held"
+      - "Explains lazy allocation — memory becomes real when touched — as the reason for the gap"
+      - "Notes that RSS counts shared pages in full and so does not sum across processes"
+      - "For a container, points at cgroup memory.current against memory.max rather than any per-process number"
+    model_answer: >-
+      VSZ is everything the process has mapped: reservations it has never
+      touched, files it has never read, guard regions that will never hold
+      anything. RSS is the physical memory it actually holds right now.
+
+
+      They differ because allocation is lazy. Asking for memory only records
+      that a range is valid; a physical page appears on the first touch, via a
+      page fault. A runtime that reserves 2 GB of address space and uses 84 MB is
+      behaving normally.
+
+
+      For a dashboard: not VSZ, which tracks allocator habits. RSS is closer but
+      counts every shared page in full, so it must never be summed across
+      processes — PSS is the figure that adds up.
+
+
+      In a container, neither is the number that matters. The kernel compares
+      the cgroup's `memory.current` against `memory.max`, and that includes page
+      cache no per-process figure knows about. Plot that.
+    common_failures:
+      - "Treating VSZ as 'memory used' and alerting on it"
+      - "Summing per-process RSS to get a machine total"
+      - "Not distinguishing the container case, where per-process numbers miss page cache entirely"
+      - "Describing the difference without explaining lazy allocation, which makes it sound arbitrary"
+
+  - id: B
+    title: Read a cgroup and predict what happens next
+    kind: diagnose
+    objectives: [OBJ-A01.4.5]
+    prompt: >-
+      Two containers, both with a 1 GiB limit, both sitting at 96% of it.
+
+
+      **Container A** — `anon 128 MiB`, `file 850 MiB`
+
+
+      **Container B** — `anon 910 MiB`, `file 68 MiB`
+
+
+      For each: is it in danger, what happens if the application asks for
+      another 100 MiB, and what would you do about it? Explain what makes the
+      two cases different despite the identical percentage.
+    rubric:
+      - "Identifies A as healthy — the charge is reclaimable page cache"
+      - "Identifies B as one allocation from an OOM kill"
+      - "Explains that the kernel reclaims file pages silently and cannot reclaim anonymous ones"
+      - "Notes that with swap disabled anonymous memory has nowhere to go"
+      - "Concludes that memory usage percentage alone is a poor alert, and names the split as the fix"
+      - "Proposes proportionate action: nothing for A, investigation or a limit change for B"
+    model_answer: >-
+      **A is fine.** 850 MiB of its charge is page cache — file data the kernel
+      is keeping because nothing needs the memory more. Ask for another 100 MiB
+      and the kernel drops cache to make room, silently, and the allocation
+      succeeds. The only cost is that those files must be read again later. A
+      container that reads files will always drift toward its limit; this is what
+      healthy looks like.
+
+
+      **B is one allocation from death.** 910 MiB is anonymous — heap and stack,
+      with no file to reclaim to and, with swap off, nowhere to be put. There is
+      only 68 MiB of cache to give back, so a 100 MiB request exhausts it and the
+      kernel kills the largest process in the group. Exit 137, no handler, no
+      final log line.
+
+
+      Identical percentages, opposite situations. This is why "memory usage %" is
+      a poor alert: it cannot distinguish them. The alert should be on the
+      anon/file split — or, more simply, on the OOM kill counter, which is never
+      a false positive.
+
+
+      For B I would find out whether that heap is genuinely needed, leaking, or
+      an unbounded in-process cache, before deciding between fixing the
+      application and raising the limit.
+    common_failures:
+      - "Treating both as equally dangerous because the percentage is the same"
+      - "Assuming page cache is a leak or waste"
+      - "Forgetting that no swap means anonymous memory cannot be reclaimed at all"
+      - "Recommending a limit increase for B without first asking why the heap is that size"
+
+  - id: C
+    title: Take over a memory investigation
+    kind: reason
+    objectives: [OBJ-A01.4.6, OBJ-A01.4.8]
+    prompt: >-
+      You inherit a service that is restarted weekly "because of a memory leak".
+      RSS climbs from 200 MB to 1.7 GB over six days against a 2 GB limit, then
+      flattens. It has never been OOM-killed. The runtime reports its own heap
+      steady at around 220 MB throughout.
+
+
+      Say what you would measure, in what order, and what each result would tell
+      you. Then say what you would do — including under what circumstances the
+      answer is "nothing".
+    rubric:
+      - "Checks the anon/file split first, to rule out page cache in one command"
+      - "Compares the application's heap figure against RSS, and knows a leak moves both together"
+      - "Identifies the flat heap with growing RSS as allocator-retained memory rather than a leak"
+      - "Treats the plateau as evidence — leaks do not plateau, high-water marks do"
+      - "Names heap profiling and a diff as the way to confirm a real leak"
+      - "Is willing to conclude no action, and says why that differs from not looking"
+      - "Proposes an alert that would make the weekly restart unnecessary"
+    model_answer: >-
+      **First, `memory.stat`.** If the growth were `file`, it would be page cache
+      and the investigation would end there. Growing `anon` means it really is
+      the process's own memory, so it is worth continuing.
+
+
+      **Second, compare the two curves.** The runtime says 220 MB while RSS says
+      1.7 GB. That gap is the whole finding. In a genuine leak the application's
+      own figure climbs too — it believes it holds more because it does. A flat
+      application figure with growing RSS is memory the allocator has freed and
+      not returned to the kernel.
+
+
+      **Third, ask the allocator.** A large idle-heap figure against a small
+      in-use figure quantifies exactly that, and turns an inference into a number.
+
+
+      **Fourth, take the plateau seriously.** A leak has no reason to stop.
+      Retained arenas stop at the high-water mark of demand, which usually
+      corresponds to a traffic peak.
+
+
+      **Then decide.** If it is retained memory, the service is within its limit,
+      latency is unaffected and nothing is at risk — the correct action is to
+      delete the weekly restart and record why, so the next person does not
+      reinstate it. Choosing to do nothing after measuring is a different act
+      from doing nothing because nobody looked.
+
+
+      If reclaim genuinely matters, the levers are the allocator's — `GOMEMLIMIT`,
+      `malloc_trim`, or smoothing the peak that set the high-water mark.
+
+
+      Either way I would add an alert on the OOM kill counter and on RSS as a
+      fraction of the limit. Both would have stayed quiet all week, correctly,
+      which is what makes them better than the restart.
+    common_failures:
+      - "Accepting 'leak' from the runbook and going straight to heap profiling"
+      - "Missing that the flat application heap is the decisive evidence"
+      - "Ignoring the plateau, which is visible on the graph the team already had"
+      - "Recommending a limit increase for a service that has never been killed"
+      - "Being unwilling to conclude that nothing needs fixing"

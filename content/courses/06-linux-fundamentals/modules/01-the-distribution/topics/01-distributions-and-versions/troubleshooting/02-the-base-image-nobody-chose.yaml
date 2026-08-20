@@ -1,0 +1,241 @@
+id: troubleshooting.the-base-image-nobody-chose
+topic: topic.distributions-and-versions
+title: The same Dockerfile builds two different images
+level: L2
+objectives: [OBJ-B06.1.8, OBJ-B06.1.5]
+reveal_policy: progressive
+
+situation: >-
+  A service has been failing intermittently in staging for a week, and only in
+  staging. Production is fine. The image is built from the same Dockerfile by the
+  same pipeline.
+
+
+  A developer rebuilt the image locally to investigate and could not reproduce
+  the failure. The CI-built image fails; the locally-built one does not. Both
+  were built from the same commit.
+
+
+  The team's working theory is a race condition that only appears under staging's
+  load.
+
+
+  Then somebody noticed the two images have different sizes, and different
+  package versions inside.
+
+
+  The Dockerfile has not changed in four months.
+
+
+  Work out why two builds of the same commit differ.
+
+symptoms:
+  - "Intermittent failure in staging only; production unaffected"
+  - "CI-built image fails, locally-built image does not, from the same commit"
+  - "The Dockerfile has not changed in four months"
+  - "The two images differ in size and in installed package versions"
+  - "No error mentions a version"
+
+artifacts:
+  - type: config
+    label: The Dockerfile, unchanged since April
+    content: |
+      FROM debian:13-slim
+
+      RUN apt-get update && apt-get install -y --no-install-recommends \
+            ca-certificates curl libpq5 \
+          && rm -rf /var/lib/apt/lists/*
+
+      COPY --from=build /app/server /usr/local/bin/server
+      ENTRYPOINT ["/usr/local/bin/server"]
+
+  - type: command_output
+    label: The two images, compared
+    content: |
+      $ docker run --rm ci-image      dpkg-query -W -f='${Version}\n' libpq5
+      17.2-1~deb13u1
+
+      $ docker run --rm local-image   dpkg-query -W -f='${Version}\n' libpq5
+      17.6-0+deb13u1
+
+      $ docker run --rm ci-image      cat /etc/debian_version
+      13.2
+      $ docker run --rm local-image   cat /etc/debian_version
+      13.6
+
+  - type: log
+    label: The CI build log, the relevant line
+    content: |
+      Step 1/4 : FROM debian:13-slim
+       ---> Using cache
+       ---> a9c2f10e4b77
+      (this layer has been cached since 2026-04-02)
+
+  - type: config
+    label: How the two builds differ
+    content: |
+      CI runner:  persistent build cache, never pruned
+                  no --pull flag on docker build
+      Developer:  fresh laptop, pulled debian:13-slim yesterday
+
+  - type: log
+    label: What the application error actually says
+    content: |
+      connection to database failed: SSL error: unsupported protocol
+      (intermittent — succeeds on retry against a different replica)
+
+diagnostic_questions:
+  - "The Dockerfile is unchanged. What else determines what goes into the image?"
+  - "What does `FROM debian:13-slim` resolve to, and when?"
+  - "Why do the two images have different point releases of Debian?"
+  - "Why is production unaffected?"
+  - "Is the failure actually intermittent, or does it only look that way?"
+
+hints:
+  - "`13-slim` is a tag. What does a tag point to over time?"
+  - "Read the CI build log line about the cache and its date."
+  - "Compare the libpq5 versions and think about what changed between them."
+  - "Staging's database replicas may not all be the same version."
+
+root_cause: >-
+  **The base image tag moved, and CI has been building from a cached layer that
+  is four months old.**
+
+
+  `FROM debian:13-slim` is a **tag, not a version**. It moves as Debian ships
+  point releases — 13.2 in April, 13.6 now — and each point release brings
+  updated packages including security fixes.
+
+
+  The developer's laptop pulled `debian:13-slim` yesterday and got 13.6, with
+  `libpq5 17.6-0+deb13u1`. The CI runner has a persistent cache, no `--pull`
+  flag, and resolved `FROM` against a layer cached on 2026-04-02 — Debian 13.2,
+  with `libpq5 17.2-1~deb13u1`.
+
+
+  Same Dockerfile, same commit, two different distributions underneath. The
+  Dockerfile has not changed in four months and neither has the base image CI
+  is using, which is precisely the problem.
+
+
+  **Why it looks intermittent.** The error is a TLS negotiation failure against
+  the database, and it succeeds on retry against a different replica. The old
+  `libpq5` cannot negotiate with replicas that have been updated, and staging's
+  replicas were updated at different times — so the failure depends on which
+  replica the connection lands on. It is not a race condition; it is a
+  deterministic incompatibility sampled randomly.
+
+
+  **Why production is fine.** Production's image was built after a cache eviction,
+  or its replicas are uniformly on the older version — either way the mismatch is
+  absent there. That difference is what made the team look for load-related
+  causes, because "only in staging" reads as an environment problem.
+
+
+  Nothing here is a bug in Debian, in Docker, or in the application. The
+  Dockerfile expresses an intention — "the current Debian 13" — and the CI
+  configuration silently converted it into "whatever Debian 13 was in April".
+
+method: >-
+  **1. When the same commit produces different artefacts, stop debugging the
+  application.** Two builds that differ from identical source means an input
+  outside the repository changed. The Dockerfile is not the whole input.
+
+
+  **2. Compare the images rather than the code.** `dpkg-query -W` inside each is
+  the fastest comparison available, and it found the difference immediately. So
+  did `/etc/debian_version` — 13.2 against 13.6, which names the base image
+  divergence directly.
+
+
+  **3. Read `FROM` as a tag.** `debian:13-slim` is a moving pointer, by design,
+  so that images pick up security fixes. What it resolves to depends on when you
+  last pulled it, which is a property of the *builder* rather than of the
+  repository.
+
+
+  **4. Read the build log for `Using cache`.** The line is there and it carries a
+  date. A cached `FROM` layer from four months ago is the finding, and CI logs
+  are full of that line so it takes a deliberate look.
+
+
+  **5. Re-read "intermittent" sceptically.** It succeeds on retry against a
+  different replica, which is a strong hint that the variation is in the
+  *target*, not in timing. A deterministic incompatibility sampled across a
+  heterogeneous fleet looks exactly like a race condition and is not one.
+
+
+  **6. Treat "only in staging" as a difference to find, not an explanation.**
+  Production being fine is a clue about which images and which replicas exist
+  there, and the team read it as evidence of a load-dependent bug.
+
+
+  The habit: **a tag is a claim about identity and a digest is a proof of it** —
+  the same lesson as A04.1's image digests, arriving from the packaging side. When
+  two things built from one source differ, find the input that is not in the
+  source.
+
+resolution: >-
+  **Immediately:** make CI pull the base image.
+
+
+  ```bash
+  docker build --pull ...
+  ```
+
+
+  That resolves `FROM` against the registry on every build instead of trusting a
+  cached layer, and it is the one-line fix for this instance.
+
+
+  **Then decide what you actually want**, because `--pull` alone trades one
+  problem for another:
+
+
+  *For patches*, track the tag and pull. The image picks up point releases and
+  security fixes, and builds are not reproducible — two builds a week apart
+  legitimately differ.
+
+
+  *For reproducibility*, pin the digest:
+
+
+  ```dockerfile
+  FROM debian:13-slim@sha256:9f2a...
+  ```
+
+
+  Now every build produces the same base, forever, and you get no security
+  updates until somebody changes that line. Which means the pin needs an owner
+  and a cadence — a bot that opens a pull request when the tag moves is the
+  usual answer, and it converts a silent drift into a reviewable change.
+
+
+  The honest position is that you want both at different points: **track the tag
+  in CI so patches arrive, pin the digest in release manifests so a deploy is
+  reproducible.** That is the same split the A05.1 topic described for container
+  images generally.
+
+
+  **Record the base image version in the image.** A label costs nothing and makes
+  this diagnosable in seconds next time:
+
+
+  ```dockerfile
+  RUN . /etc/os-release && echo "$VERSION" > /etc/image-base-version
+  ```
+
+
+  Or a build argument capturing the resolved digest, which is better because it
+  is exact.
+
+
+  **And prune the CI cache on a schedule.** A cache that is never evicted is a
+  build environment that silently ages, and this failure will recur for a
+  different package in a few months.
+
+
+  **For the postmortem:** the Dockerfile expressed "the current Debian 13" and
+  the CI configuration quietly turned it into "Debian 13 as of April". Nobody
+  chose that base image — it was chosen by a cache, four months ago, and the
+  investigation spent a week on a race condition that does not exist.

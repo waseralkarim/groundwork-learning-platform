@@ -1,0 +1,6 @@
+graph TD
+    A["A packet arrives for a port<br/>with nothing bound"] --> B{"Which protocol?"}
+    B -->|"TCP"| C["Kernel sends <b>RST</b><br/>counted in <code>Tcp: OutRsts</code>"]
+    C --> D["Sender's connect() fails immediately<br/>counted in <code>Tcp: AttemptFails</code><br/><b>The sender knows</b>"]
+    B -->|"UDP"| E["Kernel counts <code>Udp: NoPorts</code><br/>and may send ICMP port unreachable"]
+    E --> F["sendto() already returned success.<br/>The ICMP may be dropped or ignored<br/><b>The sender usually never finds out</b>"]

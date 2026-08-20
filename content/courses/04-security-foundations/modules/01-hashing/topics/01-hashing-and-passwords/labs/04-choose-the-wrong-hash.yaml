@@ -1,0 +1,286 @@
+id: lab.choose-the-wrong-hash
+topic: topic.hashing-and-passwords
+title: "Challenge: four services, four defences of SHA-256"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A04.1.8, OBJ-A04.1.2]
+
+intro: >-
+  Four teams each chose SHA-256 and each wrote down why. Every justification is
+  a true statement about SHA-256. Exactly one of the four choices is correct.
+
+
+  Your job is to say which, and for each of the other three to name the specific
+  failure the choice buys — and then demonstrate at least two of those failures
+  rather than asserting them.
+
+setup:
+  - /opt/lab/seed-hashing.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read all four files in /tmp/systems. Before analysing any of them, write to
+      /tmp/answer-first-read which single one you believe is correct, and why —
+      one line each.
+    hint: >-
+      Ask what each service needs the hash to *do*. Three of the four jobs want
+      different properties from the one they got.
+    walkthrough: |
+      cat /tmp/systems/*.txt
+      {
+        echo "bravo is correct: naming an artefact by the hash of its contents is content addressing, which wants exactly what sha256 provides - speed over large inputs and collision resistance."
+        echo "alpha is wrong: password storage wants slowness, and sha256 is the fastest thing available."
+        echo "charlie is wrong: a hand-built keyed hash by concatenation is not hmac."
+        echo "delta is wrong: hashing a low-entropy identifier is not anonymisation."
+      } > /tmp/answer-first-read
+      cat /tmp/answer-first-read
+    verify:
+      - type: file_exists
+        path: /tmp/answer-first-read
+        describe: You committed to an answer before analysing
+      - type: command_exit
+        command: "test $(wc -l < /tmp/answer-first-read) -ge 4"
+        exit_code: 0
+        describe: With a line on each of the four services
+
+  - id: s2
+    instruction: >-
+      Demonstrate alpha's failure. Measure how long it takes to hash 20,000
+      password candidates with SHA-256, and extrapolate to a three-billion
+      candidate wordlist. Save the measurement and the extrapolation to
+      /tmp/answer-alpha.
+    hint: >-
+      Generate the candidates with `awk`, hash them in one `sha256sum` pass over
+      a file per line, and time it with `date +%s%N`. Then scale the result.
+    walkthrough: |
+      cd /tmp
+      awk 'BEGIN{for(i=0;i<20000;i++) print "candidate" i}' > cands.txt
+      t0=$(date +%s%N)
+      while read -r c; do printf '%s' "$c" | sha256sum; done < cands.txt > /dev/null
+      t1=$(date +%s%N)
+      shell_ms=$(( (t1 - t0) / 1000000 ))
+      rate=$(openssl speed -seconds 3 sha256 2>/dev/null | awk '/^sha256/{printf "%d", $2*1000/16}')
+      secs=$(( 3000000000 / rate ))
+      {
+        echo "note: hashing 20000 candidates one process at a time took ${shell_ms}ms, which measures process startup rather than sha256. the real rate comes from openssl speed, which hashes in-process."
+        echo "measured sha256 rate on one core: ${rate} hashes/sec"
+        echo "a three billion candidate wordlist takes ${secs} seconds on one core = $(( secs / 60 )) minutes"
+        echo "alpha has 2.4 million accounts and no salt, so one pass of that wordlist attacks every account simultaneously"
+        echo "failure: the password database is recoverable in minutes. sha256 being NIST-approved is true and irrelevant - the job wanted slowness and they chose the fastest available option."
+      } > /tmp/answer-alpha
+      cat /tmp/answer-alpha
+    verify:
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "measured sha256 rate on one core: [0-9]{6,}"
+        describe: You measured a rate of at least a hundred thousand hashes per second
+      - type: command_exit
+        command: "test $(sed -n 's/.*= \\([0-9]*\\) minutes/\\1/p' /tmp/answer-alpha) -lt 120"
+        exit_code: 0
+        describe: And the whole wordlist completes in under two hours on a single core
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "slow"
+        describe: And you named slowness as the property the job actually needed
+
+  - id: s3
+    instruction: >-
+      Demonstrate charlie's failure category. Show that `sha256(secret + body)`
+      and a real HMAC of the same body under the same secret are different
+      values, and save to /tmp/answer-charlie what an attacker does with
+      charlie's construction that they cannot do with HMAC.
+    walkthrough: |
+      cd /tmp
+      secret='whsec_7Kd92mQpLx4vNs1a'
+      body='{"transfer":100}'
+      {
+        echo "charlie's construction, sha256(secret + body):"
+        printf '%s%s' "$secret" "$body" | sha256sum | cut -d' ' -f1
+        echo
+        echo "a real hmac of the same body under the same secret:"
+        printf '%s' "$body" | openssl dgst -sha256 -hmac "$secret" -r | cut -d' ' -f1
+        echo
+        echo "different values, and the difference matters. sha-256 is a merkle-damgard construction: the digest it outputs IS its internal state after consuming the input."
+        echo "so an attacker who sees sha256(secret + body) - without knowing the secret - can resume the hash from that state and compute sha256(secret + body + padding + anything_they_choose), producing a valid signature for a message they extended. that is a length extension attack."
+        echo "against hmac they cannot, because hmac hashes twice and the visible output is the result of an outer hash, not an internal state anyone can resume from."
+        echo "charlie's justification - the secret is mixed in, so only we can produce the value - is false for exactly this reason."
+      } > /tmp/answer-charlie
+      cat /tmp/answer-charlie
+    verify:
+      - type: command_exit
+        command: "test $(grep -cE '^[0-9a-f]{64}$' /tmp/answer-charlie) -eq 2"
+        exit_code: 0
+        describe: You produced both constructions and they are different values
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "length extension"
+        describe: And named the attack the construction is vulnerable to
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "internal state|resume"
+        describe: And explained why the digest being an internal state is the cause
+
+  - id: s4
+    instruction: >-
+      Demonstrate delta's failure. Show that a hashed identifier is recoverable
+      when the input space is small, by recovering an address from its digest by
+      enumeration alone. Save it to /tmp/answer-delta.
+    walkthrough: |
+      cd /tmp
+      target=$(printf 'user4812@example.com' | sha256sum | cut -d' ' -f1)
+      found=""
+      i=0
+      while [ $i -lt 6000 ]; do
+        c="user${i}@example.com"
+        if [ "$(printf '%s' "$c" | sha256sum | cut -d' ' -f1)" = "$target" ]; then found="$c"; break; fi
+        i=$((i+1))
+      done
+      rate=$(sed -n 's/.*rate on one core: \([0-9]*\).*/\1/p' /tmp/answer-alpha)
+      {
+        echo "target digest (the 'anonymised' identifier): $target"
+        echo "recovered by enumeration: $found"
+        echo
+        echo "the address space here was six thousand candidates. the real one is not much harder: there are on the order of four billion email addresses in circulation, and at ${rate} hashes/sec on one core that whole space is enumerable in about $(( 4000000000 / rate / 60 )) minutes."
+        echo "failure: hashing does not anonymise a low-entropy identifier. it is one-way, but one-wayness only helps when the attacker cannot guess the input, and email addresses, phone numbers and ip addresses are all enumerable."
+        echo "delta's dataset is pseudonymous at best - a hashed address is still an address with an index, and it joins across datasets exactly as the plaintext would."
+      } > /tmp/answer-delta
+      cat /tmp/answer-delta
+    verify:
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "recovered by enumeration: user4812@example\\.com"
+        describe: You recovered the address from its digest alone
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "low-entropy|enumerab|guess the input"
+        describe: And identified why one-wayness did not protect it
+
+  - id: s5
+    instruction: >-
+      Write your verdict to /tmp/answer-verdict: which service was right, what
+      each of the other three should use instead, and the single question that
+      would have caught all three mistakes.
+    walkthrough: |
+      {
+        echo "correct: bravo. content addressing wants speed over large inputs and collision resistance, which is what sha256 provides. naming an artefact by its digest makes the name a proof of its contents."
+        echo
+        echo "alpha should use argon2id, or bcrypt or scrypt if argon2id is unavailable. the job wants slowness and memory hardness, which are the opposite of what sha256 offers."
+        echo "charlie should use hmac-sha256 from a standard library, and compare tags in constant time. the job wants proof of origin, which needs a key used in a construction that is not length-extendable."
+        echo "delta should not hash at all - it should tokenise, mapping each address to a random identifier held in a separate table, or drop the identifier entirely. the job wants unlinkability, which a deterministic function of the identifier cannot provide."
+        echo
+        echo "the question that catches all three: WHAT IS THE JOB, AND WHAT PROPERTY DOES IT NEED?"
+        echo "every justification given was a true statement about sha256 - it is fast, it is nist-approved, it is one-way, it mixes its input. not one of them mentions what the service needed. a hash is chosen against a job, and naming the algorithm without naming the job is how all four of these decisions were made."
+      } > /tmp/answer-verdict
+      cat /tmp/answer-verdict
+    verify:
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "correct: bravo"
+        describe: You identified the one correct choice
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "argon2|bcrypt|scrypt"
+        describe: And gave alpha a password hashing function
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "hmac"
+        describe: And gave charlie a real keyed construction
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "token|random identifier|separate table|unlink"
+        describe: And recognised that delta's problem is not solved by a different hash
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "(?i)job"
+        describe: And named the job as the thing every justification omitted
+
+solution: >-
+  **Bravo is the only correct one.**
+
+
+  Naming an artefact by the hash of its contents is content addressing. The job
+  wants speed over multi-gigabyte inputs and collision resistance, and SHA-256
+  provides both. The name becomes a proof: fetch it, hash what arrived, compare —
+  and you need not trust whatever served it. This is the same mechanism as a
+  container image digest or a Git commit id.
+
+
+  Bravo's justification even names the right property — "fast enough to hash a
+  4GB build output" is a statement about the job.
+
+
+  **Alpha: the fastest available option for the one job that wants slowness.**
+
+
+  You measured the rate: around four million per second on a single core, so a
+  three-billion-candidate wordlist finishes in minutes. With no salt, that single
+  pass attacks all 2.4 million accounts at once — the work is shared across the
+  entire table.
+
+
+  "SHA-256 is a modern, secure, NIST-approved hash" is entirely true and entirely
+  beside the point. It is approved for hashing. Password storage is not hashing
+  in the sense the approval covers; it is *deliberately expensive* hashing, and
+  the fix is Argon2id, or bcrypt or scrypt where that is not available.
+
+
+  **Charlie: a construction that is not what they think it is.**
+
+
+  `sha256(secret + body)` looks like a keyed hash and is not one. SHA-2 is a
+  Merkle–Damgård construction, and the digest it emits **is** its internal state
+  after consuming the input. An attacker who sees a tag — without ever learning
+  the secret — can resume the hash from that state and produce a valid tag for
+  `body + padding + whatever they choose`.
+
+
+  So "the secret is mixed in, so only we can produce the value" is false, and
+  falsifiably so. Against 40 partners and three million requests a day, any of
+  those partners can forge a request that extends one they legitimately received.
+
+
+  HMAC's two-pass structure exists for exactly this. Use the standard library
+  function, and compare with a constant-time comparison.
+
+
+  **Delta: one-way is not the same as unguessable.**
+
+
+  You recovered an address from its digest by enumerating six thousand
+  candidates. Nothing was reversed — the digest was matched against a guess, and
+  that is always available. There are on the order of four billion email
+  addresses in circulation, and at the rate you measured, that entire space is
+  enumerable on one core in about the length of a meeting.
+
+
+  "Hashing is one-way, so the emails cannot be recovered" confuses two different
+  things. One-wayness protects an input an attacker cannot guess. Email
+  addresses, phone numbers, IP addresses, national ID numbers and postcodes are
+  all enumerable, and hashing them produces a **pseudonym**, not an anonymisation
+  — a stable identifier that still joins across datasets exactly as the plaintext
+  would.
+
+
+  Delta's fix is not a different hash. It is tokenisation — a random identifier
+  with the mapping held separately, so the identifier carries no information
+  about the input — or not collecting the identifier at all. This is the one of
+  the three where reaching for a better hash makes the situation no better.
+
+
+  **The question that catches all three.**
+
+
+  Every justification was a true statement about SHA-256, and not one of them
+  mentions what the service needed. That is the pattern:
+
+
+  > **What is the job, and what property does it need?**
+
+
+  Speed, collision resistance, slowness, memory hardness, key binding,
+  unlinkability. Six properties, and the algorithm is chosen last. Naming the
+  algorithm first — "we use SHA-256, which is secure" — is how all three of these
+  decisions were made, and it is how you will see them made again.

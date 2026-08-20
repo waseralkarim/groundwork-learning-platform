@@ -1,0 +1,376 @@
+id: lab.the-environment-snapshot
+topic: topic.environment-and-shell-startup
+title: Watch a secret survive being unset
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B06.4.5, OBJ-B06.4.6]
+
+intro: >-
+  Every process has two environments and most tooling does not distinguish them.
+  One is live. The other was frozen at `execve` and never changes again.
+
+
+  You will prove they are different, watch a credential remain readable after
+  being unset, and then evaluate the four routes a secret can take into a
+  process — using the machine to check rather than reasoning about it.
+
+setup:
+  - /opt/lab/seed-environment.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Show that a variable exported after a process starts appears in `env` but
+      not in that process's /proc entry. Save to /tmp/answer-snapshot.
+    hint: >-
+      Use `/proc/$$/environ` for the current shell — note that a NUL separates
+      each entry, so `tr` is needed to read it.
+    walkthrough: |
+      export LATE_VAR=added-after-exec
+      {
+        echo "a variable exported after this shell started:"
+        echo "  env sees LATE_VAR:              $(env | grep -c LATE_VAR)"
+        echo "  /proc/\$\$/environ sees LATE_VAR: $(tr '\0' '\n' < /proc/$$/environ | grep -c LATE_VAR)"
+        echo
+        echo "  vars in the live environment:   $(env | wc -l)"
+        echo "  vars in /proc/\$\$/environ:       $(tr -cd '\0' < /proc/$$/environ | wc -c)"
+        echo
+        echo "they are different lists. /proc/PID/environ records what the kernel copied in at execve and NOTHING UPDATES IT afterwards - it is a snapshot, not a view."
+        echo
+        echo "which makes it the right tool for exactly one question: what was this process actually STARTED with? that is usually what i want when a service behaves as though it never received its configuration."
+      } > /tmp/answer-snapshot
+      cat /tmp/answer-snapshot
+    verify:
+      - type: file_matches
+        path: /tmp/answer-snapshot
+        pattern: "env sees LATE_VAR: +1"
+        describe: The live environment has the new variable
+      - type: file_matches
+        path: /tmp/answer-snapshot
+        pattern: "environ sees LATE_VAR: +0"
+        describe: And the snapshot does not
+      - type: file_matches
+        path: /tmp/answer-snapshot
+        pattern: "(?i)snapshot, not a view|snapshot"
+        describe: And you named what /proc/PID/environ actually is
+      - type: file_matches
+        path: /tmp/answer-snapshot
+        pattern: "(?i)started with"
+        describe: And which question it is the right tool for
+
+  - id: s2
+    instruction: >-
+      Set a credential, unset it, and determine whether it is really gone. Save
+      to /tmp/answer-unset.
+    hint: >-
+      Check both the live environment and the snapshot after unsetting. Then work
+      out what would actually remove it.
+    walkthrough: |
+      export API_TOKEN=tok-abc123
+      {
+        echo "before unset:"
+        echo "  env:                    $(env | grep -c API_TOKEN)"
+        echo "  /proc/\$\$/environ:       $(tr '\0' '\n' < /proc/$$/environ | grep -c API_TOKEN)"
+        echo
+        echo "NOTE: /proc/\$\$/environ shows 0 here because API_TOKEN was exported AFTER this shell started - it was never in the snapshot. so to test the real case i need a process that was STARTED with it."
+        echo
+        echo "starting a child that inherits it, then unsetting inside that child:"
+        API_TOKEN=tok-abc123 bash -c '
+          echo "  child: env before unset:      $(env | grep -c API_TOKEN)"
+          echo "  child: environ before unset:  $(tr "\0" "\n" < /proc/$$/environ | grep -c API_TOKEN)"
+          unset API_TOKEN
+          echo "  child: env AFTER unset:       $(env | grep -c API_TOKEN)"
+          echo "  child: environ AFTER unset:   $(tr "\0" "\n" < /proc/$$/environ | grep -c API_TOKEN)"
+          echo "  child: and the value is still $(tr "\0" "\n" < /proc/$$/environ | grep API_TOKEN)"
+        '
+        echo
+        echo "unset removed it from the LIVE copy and not from the SNAPSHOT. the value stays readable for as long as that process exists."
+        echo
+        echo "what actually clears it - a fresh execve without the variable:"
+        API_TOKEN=tok-abc123 env -u API_TOKEN bash -c 'echo "  re-exec: environ has it: $(tr "\0" "\n" < /proc/$$/environ | grep -c API_TOKEN)"'
+        echo
+        echo "so 'the application unsets the secret after startup' is a mitigation people put in security reviews and it does not do what they think. it protects CHILDREN started afterwards, because those are copied from the live list. it does nothing about the process itself, and anything that can read /proc/PID/environ - the same user, root, a debugger, a core dump - still gets the value."
+      } > /tmp/answer-unset
+      cat /tmp/answer-unset
+    verify:
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "child: env AFTER unset: +0"
+        describe: unset removed it from the live environment
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "child: environ AFTER unset: +1"
+        describe: And did not remove it from the snapshot
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "API_TOKEN=tok-abc123"
+        describe: And the value is still readable
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "re-exec: environ has it: 0"
+        describe: And you found what does clear it
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "(?i)protects children"
+        describe: And stated precisely what the mitigation does achieve
+
+  - id: s3
+    instruction: >-
+      Find every way one process's environment is visible to another on this
+      machine. Save to /tmp/answer-exposure.
+    hint: >-
+      There is the /proc route and there is a tool that does it for you. Check
+      the permissions on the /proc file too.
+    walkthrough: |
+      {
+        DB_PASSWORD=s3cr3t-from-compose sleep 30 &
+        p=$!
+        sleep 0.3
+        echo "a child process holding a credential, pid $p:"
+        echo
+        echo "1. via /proc:"
+        tr '\0' '\n' < /proc/$p/environ | grep DB_PASSWORD | sed 's/^/     /'
+        echo "   permissions on that file: $(stat -c '%A owner=%U' /proc/$p/environ)"
+        echo "   mode 0400 - owner only. which means EVERY process running as this"
+        echo "   user can read EVERY other one's, and root can read all of them."
+        echo
+        echo "2. via ps, no /proc archaeology needed:"
+        ps eww -p $p 2>/dev/null | tail -1 | grep -o 'DB_PASSWORD=[^ ]*' | sed 's/^/     /'
+        echo
+        echo "3. from outside the container entirely - docker inspect on the host"
+        echo "   shows Config.Env to anyone who can reach the daemon. that value"
+        echo "   is stored on disk, survives the container stopping, and ends up"
+        echo "   in whatever backs up the docker state directory."
+        echo
+        echo "4. every child process inherits the whole list, including third-party"
+        echo "   tools the application shells out to - and anything one of those"
+        echo "   logs on error may contain it."
+        kill $p 2>/dev/null
+        echo
+        echo "these compound rather than overlap. closing the /proc route does not help while ps works, and neither matters if docker inspect is available."
+      } > /tmp/answer-exposure
+      cat /tmp/answer-exposure
+    verify:
+      - type: file_matches
+        path: /tmp/answer-exposure
+        pattern: "DB_PASSWORD=s3cr3t-from-compose"
+        describe: You read another process's environment
+      - type: file_matches
+        path: /tmp/answer-exposure
+        pattern: "(?i)ps eww|via ps"
+        describe: And found the tool that does it without /proc
+      - type: file_matches
+        path: /tmp/answer-exposure
+        pattern: "(?i)docker inspect"
+        describe: And the route that works from outside the container
+      - type: file_matches
+        path: /tmp/answer-exposure
+        pattern: "(?i)compound"
+        describe: And that the exposures compound rather than overlap
+
+  - id: s4
+    instruction: >-
+      Read /tmp/env/secret-routes.txt and evaluate all four routes against its
+      six questions. Save your answers to /tmp/answer-routes.
+    hint: >-
+      Two of the four are the same thing once the process is running. The
+      deciding question is the last one.
+    walkthrough: |
+      cat /tmp/env/secret-routes.txt
+      {
+        printf '%-28s %-6s %-6s %-8s %-8s %s\n' QUESTION "A -e" "B file" "C /run" "D fetch" ""
+        printf '%-28s %-6s %-6s %-8s %-8s\n' "1. same-user process reads" yes yes "only if readable" no
+        printf '%-28s %-6s %-6s %-8s %-8s\n' "2. in ps eww"               yes yes no no
+        printf '%-28s %-6s %-6s %-8s %-8s\n' "3. in /proc/PID/environ"    "yes, forever" "yes, forever" no no
+        printf '%-28s %-6s %-6s %-8s %-8s\n' "4. in docker inspect"       yes yes no no
+        printf '%-28s %-6s %-6s %-8s %-8s\n' "5. inherited by children"   yes yes no no
+        echo
+        echo "A and B are THE SAME once the container is running. --env-file only keeps the secret out of my shell history and out of the process list of whoever ran docker run. after that it is an environment variable like any other, and docker inspect prints it."
+        echo
+        echo "6. if it leaks, what do i have to do, and can i tell?"
+        echo "   A/B  rotate the credential, then RESTART every process holding it,"
+        echo "        because a variable is fixed for the life of the process. and i"
+        echo "        cannot tell it leaked - reading /proc or docker inspect leaves"
+        echo "        no trace anywhere."
+        echo "   C    replace the file. running processes can pick it up without a"
+        echo "        restart if they re-read it. file access can be audited."
+        echo "   D    revoke at the issuer. the credential was short-lived anyway,"
+        echo "        the issuer has a log of every issuance and use, and i can tell"
+        echo "        which workload used it and when."
+        echo
+        echo "question 6 is the one that decides it, and it is the one nobody asks. a secret i cannot rotate without a restart is a secret that will be years old, and a leak i cannot detect is a leak i will hear about from somebody else."
+        echo
+        echo "reasonable position: configuration in environment variables, secrets in files. if a secret must be a variable, treat its lifetime as the process's lifetime and plan rotation around a restart - deliberately, rather than discovering it during an incident."
+      } > /tmp/answer-routes
+      cat /tmp/answer-routes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-routes
+        pattern: "(?i)A and B are THE SAME"
+        describe: You identified that --env-file changes nothing at runtime
+      - type: file_matches
+        path: /tmp/answer-routes
+        pattern: "(?i)restart every process"
+        describe: And what rotation costs for a variable
+      - type: file_matches
+        path: /tmp/answer-routes
+        pattern: "(?i)no trace|cannot tell"
+        describe: And that the leak is undetectable
+      - type: file_matches
+        path: /tmp/answer-routes
+        pattern: "(?i)configuration in environment|secrets in files"
+        describe: And reached a defensible position
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-position what you would say in a review where somebody
+      proposes fixing a secrets finding by unsetting the variable after startup.
+    hint: >-
+      They are not wrong that it helps. Be specific about what it helps with.
+    walkthrough: |
+      {
+        echo "the proposal helps with exactly one thing, and it is worth saying that first rather than rejecting it."
+        echo
+        echo "what it genuinely fixes: children started after the unset do not inherit the credential. if the application shells out to third-party tools - and most do - that removes a real exposure, because those tools receive the whole environment and anything they log on error may contain it. that is worth doing."
+        echo
+        echo "what it does not fix, demonstrably:"
+        echo "  - /proc/PID/environ still contains the value for the life of the"
+        echo "    process. i can show that in one command."
+        echo "  - ps eww still prints it."
+        echo "  - docker inspect still prints it, from outside the container,"
+        echo "    to anyone who can reach the daemon."
+        echo "  - a core dump still contains it."
+        echo
+        echo "so the risk it addresses is 'a child process or its logs leak the secret', and the risk everyone thinks it addresses is 'the secret is not sitting in memory where it can be read'. those are different, and only the first one is true."
+        echo
+        echo "my concern with accepting it as the fix is not technical - it is that the finding gets closed. a control that is believed to work is worse than no control, because nobody looks again."
+        echo
+        echo "what i would propose instead: keep the unset, and move the secret to a file. a file is absent from ps, from the exec snapshot and from docker inspect, is not inherited, can be rotated without restarting anything, and its access can be audited. that last pair is what actually changes the outcome after a leak - and if the answer is that a file is too much work right now, then record the residual risk rather than marking it resolved."
+      } > /tmp/answer-position
+      cat /tmp/answer-position
+    verify:
+      - type: file_matches
+        path: /tmp/answer-position
+        pattern: "(?i)genuinely fixes|worth doing"
+        describe: You credited what the proposal does achieve
+      - type: file_matches
+        path: /tmp/answer-position
+        pattern: "(?i)core dump|docker inspect"
+        describe: And named what it does not
+      - type: file_matches
+        path: /tmp/answer-position
+        pattern: "(?i)believed to work"
+        describe: And why accepting it as the fix is the real risk
+      - type: file_matches
+        path: /tmp/answer-position
+        pattern: "(?i)residual risk"
+        describe: And offered a path that does not require winning the argument
+
+solution: >-
+  **Two environments, one process.**
+
+
+  ```console
+  $ export LATE_VAR=added-after-exec
+  $ env | grep -c LATE_VAR
+  1
+  $ tr '\0' '\n' < /proc/$$/environ | grep -c LATE_VAR
+  0
+  ```
+
+
+  `/proc/PID/environ` records what the kernel copied in at `execve` and nothing
+  updates it. It is a **snapshot, not a view** — which makes it the right tool for
+  exactly one question: *what was this process actually started with?*
+
+
+  **And the consequence for a credential.**
+
+
+  ```console
+  child: env before unset:      1
+  child: environ before unset:  1
+  child: env AFTER unset:       0
+  child: environ AFTER unset:   1
+  child: and the value is still API_TOKEN=tok-abc123
+  ```
+
+
+  `unset` removed it from the live copy and not from the snapshot. Only a fresh
+  `execve` without the variable clears it.
+
+
+  So **"the application unsets the secret after startup" does not do what people
+  think.** It protects children started afterwards, because those are copied from
+  the live list. It does nothing about the process itself, and anything that can
+  read `/proc/PID/environ` — the same user, root, a debugger, a core dump — still
+  gets the value.
+
+
+  **Four exposures, compounding.**
+
+
+  ```console
+  $ tr '\0' '\n' < /proc/1234/environ | grep DB_PASSWORD
+  DB_PASSWORD=s3cr3t-from-compose
+  $ stat -c '%A' /proc/1234/environ
+  -r--------
+  $ ps eww -p 1234 | grep -o 'DB_PASSWORD=[^ ]*'
+  DB_PASSWORD=s3cr3t-from-compose
+  ```
+
+
+  Mode `0400` sounds restrictive and means *every process running as that user*
+  can read *every other one's*. `ps eww` needs no `/proc` knowledge at all.
+  `docker inspect` works from outside the container, to anyone who can reach the
+  daemon, and the value is on disk and survives the container stopping. And every
+  child inherits the whole list.
+
+
+  They compound rather than overlap — closing the `/proc` route does not help
+  while `ps` works, and neither matters if `docker inspect` is available.
+
+
+  **The four routes.**
+
+
+  | | `-e VAR=` | `--env-file` | file at `/run/secrets` | fetched at start |
+  |---|---|---|---|---|
+  | In `ps eww` | yes | yes | no | no |
+  | In `/proc/PID/environ` | **forever** | **forever** | no | no |
+  | In `docker inspect` | yes | yes | no | no |
+  | Inherited by children | yes | yes | no | no |
+
+
+  **A and B are the same thing once the container is running.** `--env-file` only
+  keeps the secret out of your shell history and out of the process list of
+  whoever ran `docker run`.
+
+
+  The deciding question is the sixth, and it is the one nobody asks: *if it leaks,
+  what do you have to do, and can you tell?* A variable is fixed for the life of
+  the process, so rotation means restarting everything that holds it — which is
+  why estates with environment-variable secrets have credentials that are years
+  old. And reading `/proc` or `docker inspect` leaves no trace, so the leak is
+  undetectable. A file can be replaced underneath a running process and its access
+  can be audited.
+
+
+  **A defensible position:** configuration in environment variables, secrets in
+  files. If a secret must be a variable, treat its lifetime as the process's
+  lifetime and plan rotation around a restart deliberately, rather than
+  discovering it during an incident.
+
+
+  **And in a review**, credit the unset proposal for what it does — it genuinely
+  removes the child-process exposure, which matters because most applications
+  shell out to tools that receive the whole environment. Then be specific that
+  `/proc`, `ps`, `docker inspect` and core dumps are unaffected.
+
+
+  The real objection is not technical: **a control that is believed to work is
+  worse than no control**, because the finding gets closed and nobody looks again.
+  If a file is too much work today, record the residual risk rather than marking
+  it resolved — which is an argument you can win without winning the argument.

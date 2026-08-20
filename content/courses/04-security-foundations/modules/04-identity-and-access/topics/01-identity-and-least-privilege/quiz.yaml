@@ -1,0 +1,462 @@
+id: quiz.identity-and-least-privilege
+topic: topic.identity-and-least-privilege
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.4.1]
+    stem: >-
+      An API returns 403 to a request carrying a valid, unexpired token. Which
+      failure is this?
+    options:
+      - id: a
+        text: Authorization — the identity is established and is not permitted to do this
+        correct: true
+      - id: b
+        text: Authentication — the token must be invalid
+        note: >-
+          A failed authentication is 401. The token was accepted; the action was
+          not.
+      - id: c
+        text: Both, since 403 covers either case
+        note: >-
+          The two have distinct status codes precisely so they can be told
+          apart.
+      - id: d
+        text: Neither — 403 indicates a server fault
+        note: >-
+          Server faults are 5xx. 403 is a deliberate refusal.
+    explanation: >-
+      401 means *I do not know who you are*; 403 means *I know exactly who you
+      are and the answer is no*. Getting this backwards wastes hours — people
+      rotate credentials to fix an authorization problem, or widen permissions to
+      fix a failed login. The same split appears at the filesystem:
+      `Permission denied (publickey)` is authentication, `EACCES` on a file is
+      authorization.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.4.1]
+    stem: Why does least privilege matter more than strong authentication?
+    options:
+      - id: a
+        text: It bounds the damage after any successful entry, however that entry happened
+        correct: true
+      - id: b
+        text: It prevents attackers getting in at all
+        note: >-
+          It does nothing to prevent entry. It constrains what entry is worth.
+      - id: c
+        text: It replaces the need for authentication
+        note: >-
+          Both are needed. They answer different questions.
+      - id: d
+        text: Authentication is solved and no longer needs attention
+        note: >-
+          Credential compromise remains the most common initial access. The
+          point is that it will sometimes succeed.
+    explanation: >-
+      Assume entry succeeds — through a phished credential, a leaked token, a
+      vulnerability. What decides the cost is what the compromised identity could
+      reach. Both controls matter and only one of them still applies after the
+      attacker is inside, which is why "if this is fully compromised, what does
+      the attacker reach" is the question worth asking of every component.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.4.2]
+    stem: >-
+      A container is configured `runAsUser: 10001` and the image has no account
+      with that uid. What happens?
+    options:
+      - id: a
+        text: It runs normally; the kernel enforces on the number and the name is only a lookup
+        correct: true
+      - id: b
+        text: It fails to start, because the user does not exist
+        note: >-
+          No account is required. `runAsUser` sets a number.
+      - id: c
+        text: It falls back to running as root
+        note: >-
+          There is no such fallback, and it would be a serious flaw if there
+          were.
+      - id: d
+        text: The kernel creates the account automatically
+        note: >-
+          The kernel has no concept of accounts. `/etc/passwd` is a userspace
+          file.
+    explanation: >-
+      The kernel knows uids and gids as numbers; names come from `/etc/passwd`
+      for human convenience. `whoami` will fail with no matching entry while
+      `id -u` happily reports 10001. This is why file ownership survives across
+      containers that disagree about names, and why `runAsUser` and an account
+      existing in the image are two independent facts.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.4.2]
+    stem: >-
+      Which is the most reliable source for what identity a process is running
+      with?
+    options:
+      - id: a
+        text: "`/proc/<pid>/status` — the kernel's own view"
+        correct: true
+      - id: b
+        text: The deployment manifest
+        note: >-
+          Intent, not fact. It is what this whole topic exists to distinguish.
+      - id: c
+        text: "`whoami`"
+        note: >-
+          It resolves a name and fails outright when the uid has no account,
+          which is exactly when the answer matters.
+      - id: d
+        text: The image's Dockerfile `USER` line
+        note: >-
+          Overridable at run time, and frequently overridden.
+    explanation: >-
+      `/proc/self/status` reports the Uid, Gid and Groups lines as the kernel
+      holds them. Everything else is either a statement of intent or a lookup
+      that can fail. The `Uid:` line carries four values — real, effective, saved
+      and filesystem — and the differences between them are what setuid
+      manipulates.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.3]
+    stem: What does the execute bit permit on a directory?
+    options:
+      - id: a
+        text: Traversing it — resolving a name inside it
+        correct: true
+      - id: b
+        text: Listing its contents
+        note: >-
+          That is the read bit. The two are independent.
+      - id: c
+        text: Running programs stored in it
+        note: >-
+          Execution is governed by the bits on the program file itself.
+      - id: d
+        text: Creating files inside it
+        note: >-
+          That is the write bit, and it also needs execute to be useful.
+    explanation: >-
+      `r` lets you list; `x` lets you resolve a name inside. You need `x` on
+      **every** directory along a path to reach anything at the end of it. A
+      directory with `r` and no `x` can be listed while nothing inside can be
+      opened — and the resulting error names the file rather than the directory
+      that refused.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.3]
+    stem: >-
+      `cat data/report.txt` gives Permission denied. `ls -l data/report.txt`
+      shows mode 644 and your ownership. What is wrong?
+    options:
+      - id: a
+        text: Some directory on the path lacks the execute bit
+        correct: true
+      - id: b
+        text: The file's mode is wrong despite appearances
+        note: >-
+          644 with your ownership is readable. The file is not the problem.
+      - id: c
+        text: The file is held open by another process
+        note: >-
+          Open files do not produce EACCES on read.
+      - id: d
+        text: The filesystem is mounted read-only
+        note: >-
+          That blocks writes, not reads.
+    explanation: >-
+      The error names what you asked for, not what refused. `namei -l
+      data/report.txt` walks every component and prints its mode and owner,
+      making the culprit immediately visible. Without it this becomes guesswork
+      up the tree, which is how `chmod -R 777` gets typed — it does fix the
+      symptom and creates a far larger problem.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.3]
+    stem: You own a file with mode 077. Can you read it?
+    options:
+      - id: a
+        text: No — the owner class matches first and grants nothing
+        correct: true
+      - id: b
+        text: Yes, since the group and other bits allow reading
+        note: >-
+          The check stops at the first matching class. It does not fall through
+          to more permissive ones.
+      - id: c
+        text: Yes, because owners can always read their own files
+        note: >-
+          Only root bypasses the bits. An ordinary owner is bound by them.
+      - id: d
+        text: Only if you are also in the file's group
+        note: >-
+          Being the owner means the owner class applies and the group class is
+          never consulted.
+    explanation: >-
+      The kernel checks owner, then group, then other, and **stops at the first
+      match**. As the owner you get `---`. So a `chmod 077` intended to lock a
+      file down locks out the only account that needed it while opening it to
+      the whole system — and in `ls` it looks restrictive.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.4]
+    stem: >-
+      A container reports `CapEff: 0000000000000000`. Is it unprivileged?
+    options:
+      - id: a
+        text: It holds nothing now, but the bounding set decides what it could regain
+        correct: true
+      - id: b
+        text: Yes — an empty effective set means no privilege is possible
+        note: >-
+          Effective is the floor. A setuid binary can raise it up to the
+          bounding set.
+      - id: c
+        text: No — an empty effective set is impossible for a running process
+        note: >-
+          It is both possible and the desirable state.
+      - id: d
+        text: Only if it also runs as uid 0
+        note: >-
+          Running as root with an empty effective set is possible and still
+          leaves the bounding set as the ceiling.
+    explanation: >-
+      **CapEff** is what is held now; **CapBnd** is the ceiling on what could
+      ever be regained, including across an `execve` of a setuid binary. An audit
+      stopping at CapEff measures the floor and calls it done. This is why
+      `capabilities.drop: ["ALL"]` and `allowPrivilegeEscalation: false` are
+      separate settings — one lowers the floor, the other the ceiling.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.4]
+    stem: >-
+      Which command finds privileged binaries that a permission-mode search will
+      miss entirely?
+    options:
+      - id: a
+        text: "`getcap -r /`"
+        correct: true
+      - id: b
+        text: "`find / -perm -4000`"
+        note: >-
+          That finds setuid binaries, which is the search being compared
+          against.
+      - id: c
+        text: "`ls -lR /usr/bin`"
+        note: >-
+          Capabilities are extended attributes and do not appear in the mode
+          column.
+      - id: d
+        text: "`ps -eo user,comm`"
+        note: >-
+          That shows what is running, not what could escalate.
+    explanation: >-
+      A binary can hold file capabilities without being setuid, and it appears in
+      no mode-based search — `ls` shows an ordinary `-rwxr-xr-x`. `getcap -r /`
+      is the only way to see them, and it is the step people omit from privilege
+      audits, so it is worth adding to the same sweep as the setuid search.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.5]
+    stem: >-
+      How does an unprivileged user change their password, given `/etc/shadow` is
+      mode 0640 root:shadow?
+    options:
+      - id: a
+        text: "`passwd` is setuid root, so it runs as its owner rather than its caller"
+        correct: true
+      - id: b
+        text: The shadow group is writable by all users
+        note: >-
+          The group is `shadow` and typically has no members at all.
+      - id: c
+        text: The kernel makes an exception for password changes
+        note: >-
+          The kernel has no such concept. The mechanism is entirely userspace
+          plus the setuid bit.
+      - id: d
+        text: A daemon performs the change on the user's behalf
+        note: >-
+          On a typical Linux system the setuid binary is the mechanism.
+    explanation: >-
+      `-rwsr-xr-x` — the `s` where an ordinary binary has `x` — makes the process
+      run as root, doing one narrow job. It is a real, deliberate escalation, and
+      it is why every setuid binary is attack surface: a bug in any of them is a
+      path to root for anyone who can execute it.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.5]
+    stem: >-
+      Installing a package added a setuid binary you did not ask for. How should
+      that be treated?
+    options:
+      - id: a
+        text: As new attack surface acquired without a decision, worth counting and justifying
+        correct: true
+      - id: b
+        text: As irrelevant, since the package was installed deliberately
+        note: >-
+          The package was chosen; the escalation path came along with it and was
+          never evaluated.
+      - id: c
+        text: As harmless, because distribution packages are audited
+        note: >-
+          Audited software still has bugs, and setuid bugs are the ones that
+          matter most.
+      - id: d
+        text: As a packaging error to report upstream
+        note: >-
+          It is usually intentional and correct for that tool's purpose. The
+          question is whether you need it.
+    explanation: >-
+      This is how attack surface actually grows — not through a bad decision but
+      through a reasonable one nobody counted. Adding `openssh-client` to this
+      lab image for a single topic added `/usr/lib/openssh/ssh-keysign` to the
+      setuid list. Minimal images, and a periodic `find / -perm -4000`, are the
+      controls that catch it.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.6]
+    stem: In SSH public key authentication, what travels to the server?
+    options:
+      - id: a
+        text: A signature over a challenge — the private key never leaves the client
+        correct: true
+      - id: b
+        text: The private key, encrypted with the session key
+        note: >-
+          The private key never leaves the client under any circumstances.
+      - id: c
+        text: The passphrase protecting the private key
+        note: >-
+          The passphrase only decrypts the local key file. It is never sent.
+      - id: d
+        text: A hash of the private key
+        note: >-
+          Nothing derived from the private key is transmitted.
+    explanation: >-
+      The server sends a challenge containing a session nonce; the client signs
+      it; the server verifies against the public key it already holds. No secret
+      crosses the wire in either direction — nothing to intercept, nothing to
+      replay because the challenge differs each session, and nothing for a
+      compromised server to steal, because it only ever had the public half.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.6]
+    stem: >-
+      A private key file's header declares `aes256-ctr` and `bcrypt`. What does
+      that tell you?
+    options:
+      - id: a
+        text: It is passphrase-protected — encrypted with AES, the key derived by a slow KDF
+        correct: true
+      - id: b
+        text: It uses AES for authentication instead of Ed25519
+        note: >-
+          Those fields describe protection of the file, not the signature
+          algorithm.
+      - id: c
+        text: The key is stored on a hardware token
+        note: >-
+          A token-backed key would not be in the file at all.
+      - id: d
+        text: The key has been compromised and re-encrypted
+        note: >-
+          It is simply the normal encrypted-at-rest format.
+    explanation: >-
+      Both previous topics in one line. `bcrypt` because a private key file is a
+      stealable offline target and a deliberately slow KDF is the only thing in
+      front of the passphrase; `aes256-ctr` because that protects the material
+      once the key is derived. A key declaring `none` twice is plaintext on disk,
+      and anyone who reads it has that identity.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.7]
+    stem: >-
+      Why does `authorized_keys` accumulate entries that nobody can account for?
+    options:
+      - id: a
+        text: The format has no expiry, no revocation and no verified identity — only an unverified comment
+        correct: true
+      - id: b
+        text: SSH regenerates it automatically on upgrade
+        note: >-
+          Nothing writes to it but administrators.
+      - id: c
+        text: Keys are added by the server when a client connects
+        note: >-
+          Entries are added deliberately, never automatically.
+      - id: d
+        text: Old entries are retained for audit purposes
+        note: >-
+          There is no audit mechanism in the file at all, which is part of the
+          problem.
+    explanation: >-
+      Adding is urgent and feels safe; removing risks an outage and nobody can
+      prove who a key belongs to, because the comment is free text. So the list
+      only grows, and each line is a permanent unexpiring credential. Diligence
+      does not fix an append-only format — short-lived SSH certificates do, by
+      making access expire by default.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.4.8]
+    stem: >-
+      Which question most usefully evaluates whether a workload is
+      over-privileged?
+    options:
+      - id: a
+        text: "If this is fully compromised, what does the attacker reach that they should not?"
+        correct: true
+      - id: b
+        text: "Does it follow least-privilege best practice?"
+        note: >-
+          Unanswerable as stated, and it produces a discussion rather than a
+          list.
+      - id: c
+        text: "Does it run as root?"
+        note: >-
+          Useful and narrow. The most common real fault is a mounted secret on a
+          non-root workload.
+      - id: d
+        text: "Has it passed a security scan?"
+        note: >-
+          Scanners check images and settings, not what a credential opens.
+    explanation: >-
+      It has a finite answer that can be written as a list, and two engineers
+      produce nearly the same one — which makes it a review rather than an
+      opinion. It also reframes the argument: "you should not run as root"
+      invites a debate about necessity, while "compromising the log shipper
+      currently yields the cloud admin key" invites a fix.

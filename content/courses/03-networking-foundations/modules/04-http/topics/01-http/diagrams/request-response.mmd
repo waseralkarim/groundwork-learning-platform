@@ -1,0 +1,17 @@
+graph TD
+    subgraph REQ["Request"]
+        R1["<b>GET /path?q=1 HTTP/1.1</b><br/><i>method, target, version</i>"]
+        R2["Host: api.example.com<br/>User-Agent: curl/8.14.1<br/>Accept: */*<br/><i>headers, one per line</i>"]
+        R3["<b>(blank line)</b><br/><i>ends the headers</i>"]
+        R4["<i>body, if any</i>"]
+        R1 --> R2 --> R3 --> R4
+    end
+    subgraph RES["Response"]
+        S1["<b>HTTP/1.1 200 OK</b><br/><i>version, status, reason</i>"]
+        S2["Content-Type: text/plain<br/>Content-Length: 5<br/><i>headers</i>"]
+        S3["<b>(blank line)</b>"]
+        S4["hello<br/><i>body</i>"]
+        S1 --> S2 --> S3 --> S4
+    end
+    REQ --> RES
+    R3 -.->|"every line ends CR LF —<br/>the blank line is CRLF CRLF"| S3

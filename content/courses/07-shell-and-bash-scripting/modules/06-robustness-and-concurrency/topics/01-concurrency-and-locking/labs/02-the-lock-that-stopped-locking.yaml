@@ -1,0 +1,429 @@
+id: lab.the-lock-that-stopped-locking
+topic: topic.concurrency-and-locking
+title: Delete a lock file while it is held
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.8.3]
+
+intro: >-
+  `/tmp/lock/guarded.sh` takes a `flock` and removes the lock file in its cleanup
+  trap, which looks like good hygiene.
+
+
+  You will find out what a lock is actually attached to, and why the tidier
+  script is the one that stops working.
+
+setup:
+  - /opt/lab/seed-lock.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read guarded.sh, note what its cleanup does, and confirm the lock works in
+      the simple case. Save to /tmp/answer-baseline.
+    walkthrough: |
+      {
+        echo "the guard and the cleanup:"
+        grep -n 'exec 9\|flock\|cleanup\|trap' /tmp/lock/guarded.sh | sed 's/^/    /'
+        echo
+        echo "two overlapping runs, the normal case:"
+        ( HOLD_SECONDS=1 bash /tmp/lock/guarded.sh A &
+          sleep 0.2
+          HOLD_SECONDS=1 bash /tmp/lock/guarded.sh B &
+          wait ) 2>&1
+        echo
+        echo "the lock works. B was refused."
+        echo
+        echo "and afterwards:"
+        echo "    lock file present? $([ -e /tmp/lock/guarded.lock ] && echo YES || echo NO)"
+        echo
+        echo "the cleanup removed it. so far this looks tidy rather than dangerous."
+      } > /tmp/answer-baseline
+      cat /tmp/answer-baseline
+    verify:
+      - type: file_matches
+        path: /tmp/answer-baseline
+        pattern: 'rm -f "\$LOCK"'
+        describe: You found what the cleanup does
+      - type: file_matches
+        path: /tmp/answer-baseline
+        pattern: '(?i)\[B\] another run holds the lock'
+        describe: And the lock works in the simple case
+      - type: file_matches
+        path: /tmp/answer-baseline
+        pattern: 'lock file present\? NO'
+        describe: And the file is gone afterwards
+
+  - id: s2
+    instruction: >-
+      Now delete the lock file while a run is holding it, and try to acquire it
+      again. Save to /tmp/answer-broken.
+    hint: >-
+      Start a long-running holder, `rm` the lock file, then start another run.
+    walkthrough: |
+      rm -f /tmp/lock/g2.lock
+      {
+        holder() {
+          exec 9>/tmp/lock/g2.lock
+          flock -n 9 || { echo "  [$1] refused"; return 1; }
+          echo "  [$1] acquired  (inode $(stat -c%i /tmp/lock/g2.lock))"
+          sleep "$2"
+          echo "  [$1] done"
+        }
+
+        echo "A takes the lock and holds it:"
+        holder A 1.5 &
+        sleep 0.3
+
+        echo "  --- rm /tmp/lock/g2.lock ---"
+        rm -f /tmp/lock/g2.lock
+
+        echo "B now tries:"
+        holder B 0.4 &
+        wait
+        echo
+        echo "BOTH ACQUIRED. and the inode numbers are different."
+        echo
+        echo "a flock is held on an OPEN FILE DESCRIPTION, which points at an INODE -"
+        echo "not at a path. rm does not release anything; it unlinks a NAME."
+        echo
+        echo "  A still holds its lock, on an inode that no longer has a name"
+        echo "  B opens the same PATH, which creates a BRAND NEW inode, and locks that"
+        echo "  two locks, two inodes, no mutual exclusion"
+        echo
+        echo "the unlinked inode is still alive while A holds it open:"
+        ( exec 9>/tmp/lock/g3.lock
+          echo "    inode before rm: $(stat -c%i /tmp/lock/g3.lock)"
+          rm -f /tmp/lock/g3.lock
+          echo "    still open on fd 9? $( [ -e /proc/self/fd/9 ] && echo yes )"
+          echo "    /proc/self/fd/9 -> $(readlink /proc/self/fd/9)" )
+      } > /tmp/answer-broken
+      cat /tmp/answer-broken
+    verify:
+      - type: file_matches
+        path: /tmp/answer-broken
+        pattern: '\[A\] acquired'
+        describe: A took the lock
+      - type: file_matches
+        path: /tmp/answer-broken
+        pattern: '\[B\] acquired'
+        describe: And after the rm, B acquired it too
+      - type: file_matches
+        path: /tmp/answer-broken
+        pattern: '(?i)BOTH ACQUIRED'
+        describe: You stated the result
+      - type: file_matches
+        path: /tmp/answer-broken
+        pattern: '(?i)OPEN FILE DESCRIPTION'
+        describe: And what a lock is attached to
+      - type: file_matches
+        path: /tmp/answer-broken
+        pattern: '\(deleted\)'
+        describe: And showed the unlinked inode still open
+
+  - id: s3
+    instruction: >-
+      Show that guarded.sh's own cleanup trap causes exactly this, with nobody
+      running `rm` by hand. Save to /tmp/answer-selfinflicted.
+    hint: >-
+      The window is between one run opening the lock file and locking it. Drive
+      it deterministically with three descriptors in one shell.
+    walkthrough: |
+      L=/tmp/lock/seq.lock
+      rm -f "$L"; : > "$L"
+      {
+        echo "three runs, driven step by step so the ordering is deterministic."
+        echo "fd 8 is run A, fd 7 is run B, fd 6 is run C."
+        echo
+        echo "  the path names inode $(stat -c%i "$L")"
+        exec 8>"$L"; flock -n 8 && echo "  A: acquired"
+        exec 7>"$L"; echo "  B: opened the same path - has NOT called flock yet"
+        echo "  --- A finishes. its fd closes, and its EXIT trap removes the file ---"
+        exec 8>&-; rm -f "$L"
+        echo "  B's fd now points at: $(readlink /proc/self/fd/7)"
+        flock -n 7 && echo "  B: acquired the unlinked inode"
+        exec 6>"$L"
+        echo "  C recreated the path as inode $(stat -c%i "$L")"
+        flock -n 6 && echo "  C: ACQUIRED TOO - two holders, two inodes, no exclusion"
+        exec 7>&- 6>&-
+        echo
+        echo "NOBODY TYPED rm. the only removal was guarded.sh's own cleanup trap,"
+        echo "firing on its SUCCESS path."
+        echo
+        echo "the window is between B opening the file and B locking it - two"
+        echo "instructions apart. A's trap fires in that gap, so B ends up holding a"
+        echo "lock on an inode with no name, and C creates a fresh one by opening the"
+        echo "path."
+        echo
+        echo "every run that exits arms the next collision, so THE MORE RELIABLY THE"
+        echo "SCRIPT RUNS, THE MORE OFTEN THIS HAPPENS - which is the opposite of how"
+        echo "people expect a race to behave, and why it survives so long."
+        echo
+        echo "THE CLEANUP IS THE BUG. removing your own lock file is the one piece of"
+        echo "tidying that must not be done, and it is the piece that looks most like"
+        echo "good practice."
+        echo
+        echo "the fix is to delete the line. an empty lock file costs one inode, and"
+        echo "/var/lock is cleared on reboot - when no process can be holding one."
+      } > /tmp/answer-selfinflicted
+      cat /tmp/answer-selfinflicted
+    verify:
+      - type: file_matches
+        path: /tmp/answer-selfinflicted
+        pattern: 'A: acquired'
+        describe: A took the lock
+      - type: file_matches
+        path: /tmp/answer-selfinflicted
+        pattern: '\(deleted\)'
+        describe: And its trap unlinked the file while B held it open
+      - type: file_matches
+        path: /tmp/answer-selfinflicted
+        pattern: 'B: acquired the unlinked inode'
+        describe: So B locked an inode with no name
+      - type: file_matches
+        path: /tmp/answer-selfinflicted
+        pattern: '(?i)C: ACQUIRED TOO'
+        describe: And C locked a different one
+      - type: file_matches
+        path: /tmp/answer-selfinflicted
+        pattern: '(?i)NOBODY TYPED rm'
+        describe: You showed it is self-inflicted
+      - type: file_matches
+        path: /tmp/answer-selfinflicted
+        pattern: '(?i)THE MORE RELIABLY THE\s+SCRIPT RUNS'
+        describe: And why it gets worse with reliability
+
+  - id: s4
+    instruction: >-
+      Write the corrected script to /tmp/fixed-guarded.sh and prove three
+      staggered runs behave. Save to /tmp/answer-fixed.
+    walkthrough: |
+      cat > /tmp/fixed-guarded.sh <<'F'
+      #!/bin/bash
+      set -uo pipefail
+
+      NAME=${1:-guarded}
+      LOCK=/tmp/lock/fixed.lock
+
+      exec 9>"$LOCK"
+      if ! flock -n 9; then
+        echo "  [$NAME] another run holds the lock - skipping"
+        exit 0
+      fi
+      echo "$$ $(date -Is)" >&9        # information, INSIDE the lock
+
+      WORK=$(mktemp -d)
+      cleanup() {
+        [ -n "${WORK:-}" ] && rm -rf "$WORK"     # the WORK dir, never the lock
+        WORK=
+      }
+      trap cleanup EXIT
+      trap 'cleanup; exit 143' TERM
+
+      echo "  [$NAME] start"
+      sleep "${HOLD_SECONDS:-1}"
+      echo "  [$NAME] finish"
+      F
+      chmod 0755 /tmp/fixed-guarded.sh
+      rm -f /tmp/lock/fixed.lock
+
+      {
+        echo "the same three-run sequence that broke the original:"
+        HOLD_SECONDS=0.3 bash /tmp/fixed-guarded.sh A &
+        sleep 0.5
+        echo "  --- A has exited ---"
+        echo "  lock file present? $([ -e /tmp/lock/fixed.lock ] && echo YES || echo NO)"
+        HOLD_SECONDS=1.2 bash /tmp/fixed-guarded.sh B &
+        sleep 0.3
+        HOLD_SECONDS=0.3 bash /tmp/fixed-guarded.sh C &
+        wait
+        echo
+        echo "C was refused. the lock file survived A's exit, so B and C contended over"
+        echo "the SAME inode and the kernel arbitrated correctly."
+        echo
+        echo "what changed:"
+        echo "  - the cleanup removes the WORK DIRECTORY and not the lock file"
+        echo "  - the lock file is created once and left alone forever"
+        echo "  - the PID is written INTO the lock file as information for a human,"
+        echo "    which is a fine use of it. what makes a lock a lock is the flock,"
+        echo "    not the contents."
+        echo
+        echo "and the inode stayed the same throughout:"
+        echo "    inode now: $(stat -c%i /tmp/lock/fixed.lock)"
+      } > /tmp/answer-fixed
+      cat /tmp/answer-fixed
+    verify:
+      - type: file_exists
+        path: /tmp/fixed-guarded.sh
+        describe: You wrote the fix
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: 'lock file present\? YES'
+        describe: The lock file survives a run's exit
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: '\[B\] start'
+        describe: B acquires
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: '(?i)\[C\] another run holds the lock - skipping'
+        describe: And C is correctly refused
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: '(?i)what makes a lock a lock is the flock'
+        describe: And you distinguished the file's contents from the lock
+
+  - id: s5
+    instruction: >-
+      Write the test that would have caught this, and say why testing the race
+      itself is the wrong approach. Save to /tmp/answer-test.
+    hint: >-
+      The race needs precise timing to reproduce. The defect that causes it does
+      not.
+    walkthrough: |
+      cat > /tmp/lock-test.sh <<'T'
+      #!/bin/bash
+      # Two deterministic checks. usage: lock-test.sh SCRIPT LOCKFILE
+      prog=$1; lock=$2
+      run() { HOLD_SECONDS=${2:-0.6} bash "$prog" "$1" 2>&1; }
+      pass=0 fail=0
+      ok()  { printf '   PASS  %s\n' "$1"; pass=$((pass+1)); }
+      bad() { printf '   FAIL  %s\n' "$1"; fail=$((fail+1)); }
+
+      # 1. the obvious test: two simultaneous runs, exactly one works
+      rm -f "$lock"
+      n=$( { run A & sleep 0.15; run B & wait; } | grep -c 'start' )
+      [ "$n" -eq 1 ] && ok "two at once: 1 started" || bad "two at once: $n started"
+
+      # 2. THE INVARIANT: the lock file outlives a run that used it
+      rm -f "$lock"
+      run A 0.2 >/dev/null 2>&1
+      [ -e "$lock" ] && ok "lock file survives a completed run" \
+                     || bad "lock file was REMOVED by the run that held it"
+
+      printf '   %s passed, %s failed\n' "$pass" "$fail"
+      [ "$fail" -eq 0 ]
+      T
+      chmod 0755 /tmp/lock-test.sh
+
+      {
+        echo "=== the ORIGINAL ==="
+        bash /tmp/lock-test.sh /tmp/lock/guarded.sh /tmp/lock/guarded.lock
+        echo
+        echo "=== the FIXED version ==="
+        bash /tmp/lock-test.sh /tmp/fixed-guarded.sh /tmp/lock/fixed.lock
+        echo
+        echo "TEST 1 PASSES ON THE BROKEN SCRIPT. it really does exclude two"
+        echo "simultaneous runs - that is the test everybody writes, and it does not"
+        echo "see this defect at all."
+        echo
+        echo "TEST 2 IS AN INVARIANT, NOT A RACE - and that is the point."
+        echo
+        echo "the failure in step 3 needed a run to open the lock file in the two"
+        echo "instructions between another run's exit and its own flock call. i could"
+        echo "only make that happen by driving the descriptors by hand. a test that"
+        echo "tried to hit it with sleeps would pass almost every time and fail in CI"
+        echo "once a month, which is worse than no test at all."
+        echo
+        echo "so do not test the race. TEST THE PROPERTY THAT MAKES THE RACE POSSIBLE:"
+        echo "the lock file must still exist after a run that held it has finished."
+        echo "one line, deterministic, and it fails on the broken script every time."
+        echo
+        echo "the general form: WHEN A CONCURRENCY BUG NEEDS TIMING TO REPRODUCE, FIND"
+        echo "THE INVARIANT IT VIOLATES AND ASSERT THAT INSTEAD. the race is the"
+        echo "symptom; the broken invariant is the bug, and invariants are testable."
+      } > /tmp/answer-test
+      cat /tmp/answer-test
+    verify:
+      - type: file_exists
+        path: /tmp/lock-test.sh
+        describe: You wrote the test
+      - type: file_matches
+        path: /tmp/answer-test
+        pattern: '(?s)the ORIGINAL ===.*FAIL  lock file was REMOVED'
+        describe: The invariant fails on the broken script
+      - type: file_matches
+        path: /tmp/answer-test
+        pattern: '(?s)the FIXED version ===(.|\n)*2 passed, 0 failed'
+        describe: And the fixed one passes both
+      - type: file_matches
+        path: /tmp/answer-test
+        pattern: '(?i)TEST 1 PASSES ON THE BROKEN SCRIPT'
+        describe: You noted the obvious test misses it
+      - type: file_matches
+        path: /tmp/answer-test
+        pattern: '(?i)INVARIANT, NOT A RACE'
+        describe: And why the invariant is the thing to assert
+      - type: file_matches
+        path: /tmp/answer-test
+        pattern: '(?i)fail in CI\s+once a month'
+        describe: And why a timing-based test would be worse than none
+
+
+solution: >-
+  **What a lock is attached to.** `flock` holds a lock on an **open file
+  description**, which points at an **inode** — not at a path. `rm` does not
+  release anything; it unlinks a *name*.
+
+
+  Delete the lock file while it is held, and:
+
+
+  ```console
+    [A] acquired  (inode 4271)
+    --- rm /tmp/lock/g2.lock ---
+    [B] acquired  (inode 5108)
+  ```
+
+
+  **Both acquired**, on different inodes. A still holds a lock on an inode that
+  no longer has a name — visible as `/proc/self/fd/9 -> /tmp/lock/g3.lock
+  (deleted)` — while B created a fresh one by opening the path.
+
+
+  **`guarded.sh` does this to itself.** Its EXIT trap removes the lock file on
+  the **success** path, so every run that finishes arms the next collision:
+
+
+  1. A acquires, works, exits — the trap deletes the lock file.
+  2. B opens the path, creating a new inode, and locks it.
+  3. C opens the same path and gets the inode the path *now* names, while B still
+     holds the old one. Both run.
+
+
+  Nobody typed `rm`. **The cleanup is the bug**, and it is the piece that looks
+  most like good practice, which is why it survives review. The more reliably the
+  script runs, the more often it happens.
+
+
+  **The fix is to delete the line.** The cleanup removes the work directory and
+  never the lock file; the lock file is created once and left alone. Writing the
+  PID *into* it is fine — information for a human. What makes a lock a lock is
+  the `flock`, not the contents.
+
+
+  **Do not test the race — test the invariant it violates.**
+
+
+  | Test | Broken | Fixed |
+  |---|---|---|
+  | two at once | pass | pass |
+  | **lock file survives a completed run** | **fail** | pass |
+
+
+  The first is the one everybody writes, and the broken script passes it: it does
+  exclude two simultaneous runs.
+
+
+  The race needed a run to open the lock file in the two instructions between
+  another run's exit and its own `flock` call — reproducible only by driving the
+  descriptors by hand. A test that tried to hit that with `sleep`s would pass
+  almost every time and fail in CI once a month, which is worse than no test.
+
+
+  **When a concurrency bug needs timing to reproduce, find the invariant it
+  violates and assert that instead.** Here the invariant is one line — the lock
+  file must still exist after a run that held it has finished — and it fails on
+  the broken script every time.

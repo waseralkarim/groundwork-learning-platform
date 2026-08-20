@@ -1,0 +1,211 @@
+id: troubleshooting.metrics-that-mostly-arrive
+topic: topic.tcp-and-udp
+title: About 4% of our metrics never show up
+level: L2
+objectives: [OBJ-A03.3.8, OBJ-A03.3.5]
+reveal_policy: progressive
+
+situation: >-
+  A StatsD collector receives metrics over UDP from about 400 application pods.
+  Dashboards have been slightly wrong for months: counters that should be exact
+  are consistently a few percent low, and the gap widens during peak hours.
+
+
+  The platform team have opened a ticket with the network provider, citing
+  "approximately 4% packet loss". The provider has run tests and reports no loss
+  on any path.
+
+
+  Somebody has suggested switching the pipeline to TCP so that nothing is lost.
+  A design document is circulating.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "Counters are consistently 3–5% below the values applications report sending"
+  - "The gap widens at peak and nearly closes overnight"
+  - "Every sender reports success; no application logs any send failure"
+  - "The network provider reports no loss on any path"
+  - "The collector's own logs show nothing unusual"
+  - "Restarting the collector briefly makes it worse, then it settles back"
+
+artifacts:
+  - type: command_output
+    label: On the collector host
+    content: |
+      $ awk '/^Udp:/ { n++; if (n==2) print }' /proc/net/snmp
+      Udp: 8814402213 12 0 40218 388420115 0 0 0 0
+      #    InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors ...
+
+  - type: command_output
+    label: The collector's socket
+    content: |
+      $ ss -uanm | grep -A1 ':8125'
+      UNCONN 212992 0    0.0.0.0:8125    0.0.0.0:*    users:(("statsd",pid=1841,fd=11))
+           skmem:(r212992,rb212992,t0,tb212992,f1792,w0,o0,bl0,d388420115)
+
+  - type: command_output
+    label: Buffer settings on the host
+    content: |
+      $ sysctl net.core.rmem_default net.core.rmem_max
+      net.core.rmem_default = 212992
+      net.core.rmem_max = 212992
+
+  - type: metric
+    label: Correlation with load
+    content: |
+      hour   datagrams/s   RcvbufErrors/s   loss %
+      03:00       18000              14      0.08
+      09:00      140000            5100      3.64
+      13:00      171000            7900      4.62
+      21:00       42000             180      0.43
+
+  - type: log
+    label: From the design document
+    content: |
+      "Moving to TCP will guarantee delivery of every metric and eliminate the
+       4% loss. The collector already supports a TCP listener; we would change
+       the client library's transport setting and redeploy all 400 services."
+
+diagnostic_questions:
+  - "Which UDP counter is large, and what does it count?"
+  - "What is the socket's receive buffer size, and what is the host's maximum?"
+  - "Why does the loss scale with load rather than being constant?"
+  - "The provider says there is no loss. Are they wrong?"
+  - "What would TCP change about the collector being too slow?"
+
+hints:
+  - "Read the fifth field of the Udp line, not the second."
+  - "Compare `rb` in the skmem output with `net.core.rmem_max`."
+  - "Look at the last column of the correlation table against the first."
+  - "The loss is on the receiving machine. Ask what is dropping it and why."
+
+root_cause: >-
+  The collector's socket receive buffer is overflowing. `RcvbufErrors` is
+  388420115 — datagrams that arrived correctly and were discarded because the
+  application had not read the previous ones.
+
+
+  The buffer is 212992 bytes, which is exactly `net.core.rmem_default`, and
+  `net.core.rmem_max` is the same value — so even if statsd asked for a larger
+  `SO_RCVBUF`, the kernel would refuse. The `skmem` output confirms both the
+  size (`rb212992`) and the drop count (`d388420115`).
+
+
+  The loss is entirely inside the receiving machine. Nothing was lost in the
+  network, which is why the provider's tests are clean — they are right.
+
+
+  It scales with load because it is a queue overflow: at 18000 datagrams a
+  second the reader keeps up and loss is 0.08%, and at 171000 it cannot and loss
+  is 4.6%. That correlation with *your own traffic* is the signature, and
+  genuine network loss almost never tracks it so neatly.
+
+
+  The senders report success because `sendto()` returns when the kernel accepts
+  the datagram. There is no acknowledgement and no connection, so nothing could
+  ever have told them.
+
+
+  Restarting the collector makes it briefly worse because datagrams arriving
+  while nothing is bound are discarded outright — counted in `NoPorts`, which is
+  12 and therefore not the story here.
+
+method: >-
+  **1. Read the right field.** `NoPorts` is 12 and `RcvbufErrors` is 388 million.
+  Those count different failures, and the large one names the problem
+  immediately: the datagrams arrived and the receiver threw them away.
+
+
+  **2. Take the correlation seriously.** Loss that scales with your own traffic
+  volume is a queue overflow, not a network fault. A network dropping 4% would
+  do so at 03:00 as well; this one drops 0.08% at 03:00 and 4.6% at peak. That
+  table alone should have redirected the ticket before it was raised.
+
+
+  **3. Believe the provider.** They are right, and the evidence agrees with
+  them. Being willing to accept that is what moves the investigation onto the
+  host rather than into a second round of arguing.
+
+
+  **4. Check the buffer against the ceiling.** `rb212992` equals
+  `net.core.rmem_default` equals `net.core.rmem_max`. The application either did
+  not ask for more or asked and was capped — and with `rmem_max` at the default,
+  it cannot be granted more regardless.
+
+
+  **5. Test the proposed fix against the mechanism.** TCP does not make the
+  collector read faster. It replaces silent loss with backpressure, so a
+  collector that cannot keep up will fill its receive window, then the senders'
+  buffers, and then block or grow until something is OOM-killed. That converts a
+  monitoring inaccuracy into an application outage — and 400 services would be
+  redeployed to get it.
+
+
+  The habit: **when a system is designed to shed load, "fixing" the shedding
+  without fixing the capacity just moves the failure somewhere worse.**
+
+resolution: >-
+  **Raise the ceiling, then have the application ask for it.** Both halves are
+  required — raising the sysctl alone changes nothing if statsd never requests a
+  larger buffer.
+
+
+  ```bash
+  sysctl -w net.core.rmem_max=16777216
+  # persist in /etc/sysctl.d/, and set the collector's own receive buffer
+  # option — for statsd, the socket is created with SO_RCVBUF from config
+  ```
+
+
+  Then confirm the change took, which is a step people skip:
+
+
+  ```bash
+  ss -uanm | grep -A1 ':8125'      # rb should now be the larger value
+  ```
+
+
+  Expect this to remove the loss at 140000 datagrams a second and to leave it at
+  171000, because a bigger buffer buys **burst tolerance** rather than
+  throughput. If the reader is persistently slower than the arrival rate, a
+  larger buffer only delays the drop.
+
+
+  **So measure whether the reader is the limit.** If loss persists at peak with a
+  16 MB buffer, the collector cannot process 171000 datagrams a second and the
+  answers are: more collector instances behind a load-balanced UDP service;
+  aggregation in the client library so 100 increments become one datagram; or
+  sampling with a known rate that the dashboards multiply back out.
+
+
+  Client-side aggregation is usually the largest win and the least discussed —
+  it reduces the datagram count by an order of magnitude and costs nothing at the
+  collector.
+
+
+  **Reject the TCP proposal, and explain the trade rather than just declining.**
+  UDP's loss is the chosen failure mode: it keeps a slow collector from ever
+  affecting the applications. TCP removes the loss and introduces backpressure
+  into 400 production services, which is a much worse failure for a monitoring
+  path. If delivery genuinely mattered — for billing events, say — the answer
+  would be TCP *with a bounded local queue and an explicit drop policy*, so the
+  application still never blocks.
+
+
+  **Then add the alert that would have caught this in a day rather than months:**
+
+
+  ```promql
+  rate(node_netstat_Udp_RcvbufErrors[5m]) > 0
+  ```
+
+
+  Any non-zero rate is worth knowing about. It is a counter the kernel maintains
+  for free, and nobody was reading it.
+
+
+  **Finally, close the loop with the provider.** They spent time on tests
+  because of a claim that was wrong, and saying so is both fair and the thing
+  that makes the next ticket credible.

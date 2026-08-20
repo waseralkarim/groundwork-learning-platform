@@ -1,0 +1,7 @@
+graph LR
+    A["<b>LISTEN</b><br/><i>a socket waiting</i>"] -->|"SYN arrives"| B["SYN-RECV<br/><i>in the accept queue</i>"]
+    B -->|"handshake completes"| C["<b>ESTABLISHED</b><br/><i>both ends can send</i>"]
+    C -->|"we close first"| D["FIN-WAIT → <b>TIME-WAIT</b><br/><i>held ~60s</i>"]
+    C -->|"they close first"| E["CLOSE-WAIT<br/><i>waiting for our app to close</i>"]
+    D --> F["<i>TIME-WAIT is on whichever side<br/>closed first, and it is correct —<br/>it absorbs late duplicates</i>"]
+    E --> G["<i>CLOSE-WAIT piling up is an<br/>application bug: it is not<br/>calling close()</i>"]

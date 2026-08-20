@@ -1,0 +1,18 @@
+flowchart TB
+    subgraph T["One stack. Four places to draw the line."]
+        direction TB
+        L1["data · access control · configuration"]
+        L2["application code"]
+        L3["application runtime · database software"]
+        L4["container runtime · OS · OS patching"]
+        L5["hypervisor · firmware · hardware"]
+        L6["power · cooling · physical security"]
+        L1 --- L2 --- L3 --- L4 --- L5 --- L6
+    end
+
+    C["COLOCATION<br/>yours: 14"] -.->|"line here"| L6
+    I["IaaS<br/>yours: 11"] -.->|"line here"| L5
+    P["PaaS<br/>yours: 8 + 3 shared"] -.->|"line here"| L4
+    S["SaaS<br/>yours: 3"] -.->|"line here"| L2
+
+    L1 --> N["These three never move.<br/>Yours at every model, SaaS included.<br/><br/>A public bucket, an IAM role with * on *,<br/>and a default password are all in here —<br/>and no service model takes them from you."]

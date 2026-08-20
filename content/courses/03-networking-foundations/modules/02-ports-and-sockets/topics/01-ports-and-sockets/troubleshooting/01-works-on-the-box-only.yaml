@@ -1,0 +1,222 @@
+id: troubleshooting.works-on-the-box-only
+topic: topic.ports-and-sockets
+title: The health check passes and no traffic gets through
+level: L2
+objectives: [OBJ-A03.2.8, OBJ-A03.2.3]
+reveal_policy: progressive
+
+situation: >-
+  A new API was deployed to Kubernetes this morning. The pod is Running and
+  Ready, its readiness probe has never failed, and its own logs say
+  `listening on port 8080`.
+
+
+  Every request through the Service returns 502. The team have restarted the
+  deployment, recreated the Service, checked the selector labels twice, and
+  raised a ticket against the ingress controller.
+
+
+  The application developer has pointed out that the service works — they exec
+  into the pod and curl it, and it returns 200 every time.
+
+
+  Everyone is telling the truth. Work out what is happening before reading on.
+
+symptoms:
+  - "Pod is Running and Ready; readiness probe has never failed"
+  - "Logs say `listening on port 8080`"
+  - "curl from inside the pod returns 200"
+  - "Every request through the Service returns 502"
+  - "Restarting the deployment changes nothing"
+  - "The same image worked on the developer's laptop"
+
+artifacts:
+  - type: command_output
+    label: Sockets inside the pod
+    content: |
+      $ kubectl exec deploy/api -- ss -tlnp
+      State  Recv-Q Send-Q  Local Address:Port  Peer Address:Port  Process
+      LISTEN 0      4096       127.0.0.1:8080        0.0.0.0:*     users:(("api",pid=1,fd=7))
+
+  - type: command_output
+    label: The developer's test, from inside the pod
+    content: |
+      $ kubectl exec deploy/api -- curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/healthz
+      200
+
+  - type: command_output
+    label: The same test from another pod on the same node
+    content: |
+      $ kubectl exec deploy/debug -- curl -s -m 3 -o /dev/null -w '%{http_code}\n' http://10.244.7.19:8080/healthz
+      curl: (7) Failed to connect to 10.244.7.19 port 8080 after 1 ms: Connection refused
+
+  - type: config
+    label: The probe and the Service
+    content: |
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+          host: 127.0.0.1        # added last week "to stop the probe being flaky"
+      ---
+      apiVersion: v1
+      kind: Service
+      spec:
+        selector: { app: api }
+        ports:
+          - port: 80
+            targetPort: 8080
+
+  - type: config
+    label: The application's configuration
+    content: |
+      # config.yaml — shipped in the image
+      server:
+        host: "127.0.0.1"      # default from the framework's quickstart
+        port: 8080
+
+diagnostic_questions:
+  - "Which address is the socket bound to, and which addresses can reach it?"
+  - "Why does curl from inside the pod succeed?"
+  - "Why does the readiness probe pass?"
+  - "What does 'Connection refused' from the neighbouring pod prove, and what does it eliminate?"
+  - "Why did restarting and recreating the Service change nothing?"
+
+hints:
+  - "Read the Local Address column of the `ss` output, not just the port."
+  - "The probe has a `host:` field. Ask what it is testing."
+  - "A refusal in 1ms is not a network problem. What is it?"
+  - "curl from inside the pod uses which address?"
+
+root_cause: >-
+  The application is bound to `127.0.0.1:8080` — the pod's own loopback — and
+  nothing outside the pod's network namespace shares that.
+
+
+  `ss` says it in one line: `LISTEN 127.0.0.1:8080`. The Service forwards to the
+  pod's real address, `10.244.7.19:8080`, where no socket is bound, so the kernel
+  replies with a reset and the ingress reports 502.
+
+
+  Both "working" tests were testing the wrong thing. `curl localhost:8080` from
+  inside the pod goes over the same loopback the socket is bound to, so it
+  succeeds. And the readiness probe was changed last week to use
+  `host: 127.0.0.1`, which makes the kubelet probe loopback rather than the
+  pod's address — so it passes for exactly the same reason and the pod is
+  marked Ready while being unreachable.
+
+
+  That probe change is what turned a five-minute problem into a morning. Without
+  it the probe would have used the pod IP, failed immediately, and the pod would
+  never have gone Ready — which is the readiness probe doing precisely the job it
+  exists for.
+
+
+  The neighbouring pod's result is the decisive evidence and it was already
+  collected: `Connection refused` after **1 ms**. A refusal means the packet
+  arrived at the pod and the kernel actively answered — so the CNI, the routing,
+  the Service selector and the ingress are all working. Nothing about the
+  network is wrong.
+
+
+  Restarting and recreating changed nothing because the binding is in the image's
+  shipped configuration, which is the framework quickstart default.
+
+method: >-
+  **1. Read the Local Address column, not the port.** `ss -tlnp` inside the pod
+  is one command and the answer is in it. Everyone had checked "is it listening
+  on 8080" and nobody had checked "on what address".
+
+
+  **2. Take the refusal seriously.** `Connection refused` in 1 ms from a pod on
+  the same node eliminates the entire network in one observation: the packet
+  reached the target's network namespace and the kernel answered. A CNI problem,
+  a wrong selector or a broken ingress would all produce a timeout or an error
+  before the packet ever arrived. This single result invalidated three of the
+  four things the team had already investigated.
+
+
+  **3. Distrust tests that pass.** Two things reported success, and both were
+  reaching the service by loopback — the one path that works. A test that does
+  not travel the route real traffic travels is not evidence about real traffic.
+
+
+  **4. Read the probe as a test, and ask what it tests.** `host: 127.0.0.1` was
+  added to stop the probe being flaky, and it worked by removing the probe's
+  ability to detect this class of failure. A probe that can never fail is not
+  monitoring anything.
+
+
+  **5. Notice what the failed remedies rule out.** Restarting and recreating the
+  Service changed nothing, which says the fault is not transient state — it is in
+  something that is recreated identically every time, which means the image or
+  its configuration.
+
+
+  The habit: **when something works from one place and not another, compare the
+  paths rather than the components.** Here the two paths differ only in which
+  address they use, and that is exactly where the fault is.
+
+resolution: >-
+  **Bind the wildcard address.** In the shipped configuration:
+
+
+  ```yaml
+  server:
+    host: "0.0.0.0"
+    port: 8080
+  ```
+
+
+  Confirm with `ss` rather than by waiting for traffic:
+
+
+  ```bash
+  kubectl exec deploy/api -- ss -tlnp | grep :8080
+  # expect 0.0.0.0:8080, not 127.0.0.1:8080
+  ```
+
+
+  In a pod, `0.0.0.0` is safe in a way it is not on a host: the pod has its own
+  network namespace and its own address, so a wildcard bind exposes the service
+  on the pod's address and nothing else. Network policy, not bind address, is the
+  right control for who may reach it.
+
+
+  **Then revert the probe change**, and say why in the commit message:
+
+
+  ```yaml
+  readinessProbe:
+    httpGet:
+      path: /healthz
+      port: 8080          # no host: — the kubelet uses the pod's own address
+  ```
+
+
+  A readiness probe should travel the same path as real traffic. Probing loopback
+  tests that the process is alive and tests nothing about whether anyone can
+  reach it — which is the entire question readiness exists to answer. The
+  original flakiness had a cause and it is worth finding, but hiding the probe
+  from the network was not a fix.
+
+
+  **Then check the fleet for the same shape**, because it comes from a framework
+  default and will not be unique to this service:
+
+
+  ```bash
+  for p in $(kubectl get pods -o name); do
+    kubectl exec "$p" -- ss -tln 2>/dev/null | grep -q '127.0.0.1:' && echo "$p"
+  done
+  ```
+
+
+  Any pod listening on loopback is either wrong or deliberately internal, and
+  both are worth knowing about.
+
+
+  **Finally, write down the two rules this cost a morning to relearn.** A test
+  that reaches a service by a path real traffic does not use proves nothing about
+  real traffic. And "connection refused" is not a network failure — it is the
+  network working perfectly and reporting that nothing is bound.

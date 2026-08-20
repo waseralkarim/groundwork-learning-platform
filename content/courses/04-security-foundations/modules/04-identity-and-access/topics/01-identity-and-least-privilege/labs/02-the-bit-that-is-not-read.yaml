@@ -1,0 +1,304 @@
+id: lab.the-bit-that-is-not-read
+topic: topic.identity-and-least-privilege
+title: Predict access from the bits, then find out which object refused
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A04.4.3, OBJ-A04.4.7]
+
+intro: >-
+  Four directories in /tmp/perms. For each you will predict two things — can you
+  list it, and can you read a file inside it given the name — and then test both.
+
+
+  Two of the four produce an error naming an object that is not the problem. That
+  error is responsible for a great deal of wasted time, and there is a command
+  that resolves it in one line.
+
+setup:
+  - /opt/lab/seed-identity.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/perms/README.txt and the modes of the four directories. Write
+      your predictions to /tmp/hypotheses before testing anything — for each
+      directory, whether listing and reading will succeed.
+    hint: >-
+      `ls -ld` on each, not `ls -l`. On a directory, `r` and `x` do different
+      things — decide what each does before you look it up.
+    walkthrough: |
+      cd /tmp/perms
+      cat README.txt
+      ls -ld listable traversable locked normal
+      {
+        echo "listable    mode 644: r but no x. predict list=yes read=no"
+        echo "traversable mode 111: x but no r. predict list=no  read=yes"
+        echo "locked      mode 000: neither.    predict list=no  read=no"
+        echo "normal      mode 755: both.       predict list=yes read=yes"
+      } > /tmp/hypotheses
+      cat /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You committed to predictions before testing
+      - type: command_exit
+        command: "test $(wc -l < /tmp/hypotheses) -ge 4"
+        exit_code: 0
+        describe: With a prediction for each of the four directories
+
+  - id: s2
+    instruction: >-
+      Test all four. For each, attempt to list it and to read the file inside,
+      and save the results to /tmp/answer-tested.
+    hint: >-
+      The filenames are data.txt, known.txt, open.txt and file.txt respectively.
+      Record whether each attempt succeeded, not the file contents.
+    walkthrough: |
+      cd /tmp/perms
+      {
+        for d in listable traversable locked normal; do
+          case $d in
+            listable)    f=data.txt ;;
+            traversable) f=known.txt ;;
+            locked)      f=open.txt ;;
+            normal)      f=file.txt ;;
+          esac
+          printf '%-12s mode=%-4s list=%-7s read=%s\n' "$d" "$(stat -c %a $d)" \
+            "$(ls $d >/dev/null 2>&1 && echo yes || echo DENIED)" \
+            "$(cat $d/$f >/dev/null 2>&1 && echo yes || echo DENIED)"
+        done
+      } > /tmp/answer-tested
+      cat /tmp/answer-tested
+    verify:
+      - type: file_matches
+        path: /tmp/answer-tested
+        pattern: "listable *mode=644 *list=yes *read=DENIED"
+        describe: The readable-but-not-traversable directory lists and does not open
+      - type: file_matches
+        path: /tmp/answer-tested
+        pattern: "traversable *mode=111 *list=DENIED *read=yes"
+        describe: And the traversable-but-not-readable one does the opposite
+      - type: file_matches
+        path: /tmp/answer-tested
+        pattern: "normal *mode=755 *list=yes *read=yes"
+        describe: With the control behaving normally
+
+  - id: s3
+    instruction: >-
+      Look at the error from the `listable` case, and at the mode of the file it
+      names. Save both to /tmp/answer-wrong-object with an explanation of what is
+      misleading.
+    hint: >-
+      Try to inspect the file the error named — `ls -l` on it, and `ls -l` on the
+      directory. What you get back is the point of the step.
+    walkthrough: |
+      cd /tmp/perms
+      {
+        echo "the error:"
+        cat listable/data.txt 2>&1 | head -1
+        echo
+        echo "trying to inspect the file it named:"
+        ls -l listable/data.txt 2>&1 | head -1
+        stat -c '%A %n' listable/data.txt 2>&1 | head -1
+        echo
+        echo "and listing the directory in long form:"
+        ls -l listable 2>&1 | tail -1
+        echo
+        echo "the name is visible and every attribute is a question mark. the read bit on the directory lets me enumerate names; stat on an entry needs traversal, which needs x, and the directory has none."
+        echo "so i cannot even inspect the object the error named. the error says data.txt because that is what i asked for; the object that refused is the directory above it."
+        echo
+        echo "granting traversal briefly shows what was there all along:"
+        chmod u+x listable
+        ls -l listable/data.txt
+        chmod u-x listable
+        echo "mode 644, owned by me, readable the whole time. every instinct is to chmod the file, which was never the problem."
+      } > /tmp/answer-wrong-object
+      cat /tmp/answer-wrong-object
+    verify:
+      - type: file_matches
+        path: /tmp/answer-wrong-object
+        pattern: "Permission denied"
+        describe: You captured the misleading error
+      - type: file_matches
+        path: /tmp/answer-wrong-object
+        pattern: "\\?\\?\\?\\?\\?\\?\\?\\?\\?"
+        describe: And found the file's attributes are entirely unreadable
+      - type: file_matches
+        path: /tmp/answer-wrong-object
+        pattern: "rw-r--r--"
+        describe: And showed, once traversal was granted, that it was readable all along
+      - type: file_matches
+        path: /tmp/answer-wrong-object
+        pattern: "(?i)directory"
+        describe: And identified the directory as the object that actually refused
+
+  - id: s4
+    instruction: >-
+      Find the tool that resolves this in one command. Run it against the failing
+      path and save the output to /tmp/answer-namei, with the component that
+      caused the failure identified.
+    hint: >-
+      `namei` walks a path and reports each component. The `-l` flag adds modes
+      and ownership.
+    walkthrough: |
+      {
+        namei -l /tmp/perms/listable/data.txt
+        echo
+        echo "every component of the path is printed with its mode and owner. the culprit is visible: listable is drw-r--r-- with no execute bit, so path resolution stops there."
+        echo "this turns a guessing game up the directory tree into one command, and it is the first thing to reach for on any permission denied that does not immediately make sense."
+      } > /tmp/answer-namei
+      cat /tmp/answer-namei
+    verify:
+      - type: file_matches
+        path: /tmp/answer-namei
+        pattern: "drw-r--r--"
+        describe: namei showed the directory mode with no execute bit
+      - type: file_matches
+        path: /tmp/answer-namei
+        pattern: "Permission denied"
+        describe: And pinned the failure to a specific path component
+      - type: command_ran
+        pattern: "namei"
+        describe: And you used namei to do it
+
+  - id: s5
+    instruction: >-
+      Demonstrate two more rules that catch people. Show what umask does to a new
+      file, and show that permission classes do not combine, by making a file you
+      own that you cannot read. Save both to /tmp/answer-rules.
+    hint: >-
+      For the second: the kernel checks owner, then group, then other, and stops
+      at the first match. What mode would that make unreadable to its owner and
+      readable to everyone else?
+    walkthrough: |
+      cd /tmp
+      {
+        echo "umask is $(umask)"
+        rm -f newfile; touch newfile; mkdir -p newdir
+        ls -l newfile | awk '{print $1, $NF}'
+        ls -ld newdir | awk '{print $1, $NF}'
+        echo "files start from 666 and directories from 777, minus the umask - which is why nothing is ever created executable."
+        echo
+        echo "classes do not combine. a file i own, mode 077:"
+        echo "secret contents" > mine.txt
+        chmod 077 mine.txt
+        ls -l mine.txt | awk '{print $1, $3, $NF}'
+        echo -n "reading my own file: "
+        cat mine.txt 2>&1 | head -1
+        echo
+        echo "the kernel checks owner first, matches, and stops. the owner bits are --- so i am refused, while group and other can both read it. a chmod 077 intended to 'lock down' a file locks out the one account that needed it and opens it to everything else."
+        chmod 600 mine.txt
+      } > /tmp/answer-rules
+      cat /tmp/answer-rules
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rules
+        pattern: "umask is 0022"
+        describe: You recorded the active umask
+      - type: file_matches
+        path: /tmp/answer-rules
+        pattern: "-rw-r--r-- newfile"
+        describe: And showed a new file is 644 rather than 666
+      - type: file_matches
+        path: /tmp/answer-rules
+        pattern: "Permission denied"
+        describe: And that you cannot read your own file at mode 077
+      - type: file_matches
+        path: /tmp/answer-rules
+        pattern: "(?i)stops|first"
+        describe: And explained that the first matching class wins
+
+solution: >-
+  **The four cases.**
+
+
+  ```text
+  listable     644  list=yes     read=DENIED
+  traversable  111  list=DENIED  read=yes
+  locked       000  list=DENIED  read=DENIED
+  normal       755  list=yes     read=yes
+  ```
+
+
+  On a directory, `r` and `x` are independent and mean different things:
+
+
+  - **`r`** — you may list the contents.
+
+  - **`x`** — you may *traverse*: resolve a name inside it.
+
+
+  So `listable` at 644 can be listed and nothing inside it can be opened, and
+  `traversable` at 111 refuses to tell you what is in it while happily opening
+  `known.txt` if you already know the name. That second pattern is legitimate and
+  common — it is how `/home` is often configured, so users can reach their own
+  directory without enumerating everyone else's.
+
+
+  Note the mode `111` rather than `711`: **you own these directories**, so the
+  owner bits are the ones that apply. A mode of `711` would leave the owner with
+  full `rwx` and demonstrate nothing, which is a mistake worth having made once.
+
+
+  **The error names the wrong object.**
+
+
+  ```text
+  $ cat listable/data.txt
+  cat: listable/data.txt: Permission denied
+
+  $ ls -l listable/data.txt
+  -rw-r--r-- 1 learner learner 62 data.txt
+  ```
+
+
+  The file is 644 and perfectly readable. The **directory** refused, because the
+  path could not be resolved through it — and the error names what you asked for
+  rather than what said no.
+
+
+  Every instinct is to `chmod` the file. The file is already correct, so nothing
+  changes, and then people escalate to `chmod -R 777` on the tree, which does fix
+  it and creates a much larger problem.
+
+
+  **The command that ends the guessing.**
+
+
+  ```text
+  $ namei -l /tmp/perms/listable/data.txt
+  f: /tmp/perms/listable/data.txt
+  drwxr-xr-x root    root    /
+  drwxrwxrwt root    root    tmp
+  drwxr-xr-x learner learner perms
+  drw-r--r-- learner learner listable      ← no x
+                              data.txt - Permission denied
+  ```
+
+
+  Every component of the path, with mode and owner, and the culprit visible as
+  `drw-r--r--`. This is the first thing to reach for on any `Permission denied`
+  that does not immediately make sense, and it is the reason to remember that
+  **you need `x` on every directory along a path**, not just on the last one.
+
+
+  **Two more rules that catch people.**
+
+
+  *umask.* Files are created from 666 and directories from 777, minus the umask —
+  which is 0022 here, giving 644 and 755. Files are never created executable,
+  which is why the base is 666. A umask of `0077` makes everything private to the
+  owner and is the right default for anything handling secrets; it is the default
+  nowhere.
+
+
+  *Classes do not combine.* A file you own with mode `077` is **unreadable to
+  you** and readable by everyone else. The kernel checks owner, matches, and
+  stops — it does not fall through to the more permissive group and other bits.
+
+
+  That one is not a curiosity. A `chmod 077` intended to lock a file down locks
+  out the only account that needed it while opening it to the entire system, and
+  the file *looks* restrictive in `ls`.

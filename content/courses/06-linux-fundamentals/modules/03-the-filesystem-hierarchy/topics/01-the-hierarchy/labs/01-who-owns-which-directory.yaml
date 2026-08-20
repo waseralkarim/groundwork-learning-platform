@@ -1,0 +1,321 @@
+id: lab.who-owns-which-directory
+topic: topic.the-filesystem-hierarchy
+title: Ask the package database who owns each directory
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B06.3.1, OBJ-B06.3.2, OBJ-B06.3.3]
+
+intro: >-
+  The directory layout is usually presented as a convention you memorise. It is
+  better than that: it is a contract, and the package database on this machine
+  will confirm every clause of it.
+
+
+  You will measure where the bytes actually are, find out what `/bin` has
+  become, and then find the three directories the package system refuses to
+  claim — and prove the refusal is deliberate rather than an oversight.
+
+setup:
+  - /opt/lab/seed-hierarchy.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Measure where this image's bytes actually live, and record the top-level
+      shape in /tmp/answer-shape.
+    hint: >-
+      `du -sh` on each top-level directory. Then look inside the largest one to
+      see what dominates it.
+    walkthrough: |
+      {
+        echo "top-level sizes:"
+        du -sh /usr /var /etc /opt /home 2>/dev/null | sed 's/^/  /'
+        echo
+        echo "usr MB: $(du -sm /usr | cut -f1)"
+        echo
+        echo "inside /usr:"
+        du -sh /usr/* 2>/dev/null | sort -rh | head -5 | sed 's/^/  /'
+        echo
+        echo "so this image essentially IS /usr - 306 of roughly 320 MB. everything a package installed landed there, and nothing under it changes while the system runs."
+        echo "that second property is what makes the first one useful: a directory that never changes can be mounted read-only, shared between machines, or shipped as an immutable container layer. same fact, three uses."
+      } > /tmp/answer-shape
+      cat /tmp/answer-shape
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/^usr MB: //p' /tmp/answer-shape) -ge 250"
+        exit_code: 0
+        describe: You measured /usr and found it dominates the image
+      - type: file_matches
+        path: /tmp/answer-shape
+        pattern: "/usr/lib"
+        describe: And found what dominates /usr
+      - type: file_matches
+        path: /tmp/answer-shape
+        pattern: "(?i)never changes|does not change|read-only"
+        describe: And connected that to why /usr can be immutable
+
+  - id: s2
+    instruction: >-
+      Find out what /bin, /sbin, /lib and /lib64 actually are on this system, and
+      what follows from it. Save to /tmp/answer-usrmerge.
+    hint: >-
+      List the root directory and look at the file types. Then check whether
+      /bin/sh and /usr/bin/sh are the same file.
+    walkthrough: |
+      {
+        echo "symlinks at the root:"
+        echo "count: $(ls -l / | grep -c '^l')"
+        ls -l / | awk '$1 ~ /^l/ {print "  " $9 " -> " $11}'
+        echo
+        echo "so /bin is not a directory. checking the consequence:"
+        echo "  /bin/sh     -> $(readlink -f /bin/sh)"
+        echo "  /usr/bin/sh -> $(readlink -f /usr/bin/sh)"
+        echo "  same inode? $(stat -c '%d:%i' /bin/sh) and $(stat -c '%d:%i' /usr/bin/sh)"
+        echo
+        echo "this is the usr-merge. the split used to mean something: /bin held what was needed to boot and repair a system before /usr was mounted, so /usr could live on a separate or remote disk. the initramfs made that unnecessary - the tools needed that early live in the initramfs image now."
+        echo
+        echo "two consequences i will actually meet. /bin/sh and /usr/bin/sh are the SAME FILE, so any script comparing paths as strings is wrong. and /usr alone is now a complete installed system, which is exactly what lets a container image be one directory tree i can hash."
+      } > /tmp/answer-usrmerge
+      cat /tmp/answer-usrmerge
+    verify:
+      - type: file_matches
+        path: /tmp/answer-usrmerge
+        pattern: "count: 4"
+        describe: You found the four symlinks at the root
+      - type: file_matches
+        path: /tmp/answer-usrmerge
+        pattern: "bin -> usr/bin"
+        describe: And where /bin actually points
+      - type: file_matches
+        path: /tmp/answer-usrmerge
+        pattern: "(?i)usr-merge"
+        describe: And named what this is
+      - type: file_matches
+        path: /tmp/answer-usrmerge
+        pattern: "(?i)same file|same inode"
+        describe: And that /bin/sh and /usr/bin/sh are one file
+
+  - id: s3
+    instruction: >-
+      Ask the package database who owns each of these — /usr/local, /opt, /srv,
+      /var/log, /usr/bin — and save the pattern you find to /tmp/answer-owners.
+    hint: >-
+      `dpkg -S` on each. Two of the five answer very differently from the other
+      three, and the contrast is the point.
+    walkthrough: |
+      {
+        echo "who owns each directory:"
+        for d in /usr/local /usr/local/bin /opt /srv /var/log /usr/bin; do
+          printf '  %-16s %s\n' "$d" "$(dpkg -S "$d" 2>&1 | head -1 | cut -c1-52)"
+        done
+        echo
+        echo "the pattern: /usr/local, /opt and /srv are owned by NOTHING. /var/log and /usr/bin are owned by real packages."
+        echo
+        echo "so the package system is perfectly capable of claiming a directory - it claimed /var/log. it DECLINES to claim those three."
+      } > /tmp/answer-owners
+      cat /tmp/answer-owners
+    verify:
+      - type: file_matches
+        path: /tmp/answer-owners
+        pattern: "/usr/local +dpkg-query: no path found"
+        describe: You found that no package owns /usr/local
+      - type: file_matches
+        path: /tmp/answer-owners
+        pattern: "/var/log +base-files"
+        describe: And that /var/log is owned
+      - type: file_matches
+        path: /tmp/answer-owners
+        pattern: "(?i)declines|refuses"
+        describe: And read the contrast as a deliberate refusal
+
+  - id: s4
+    instruction: >-
+      Prove the refusal is policy rather than an accident: check whether any
+      package anywhere ships a file under /usr/local or /opt, and find out how
+      those directories came to exist. Save to /tmp/answer-policy.
+    hint: >-
+      Every package's file list is under /var/lib/dpkg/info/*.list. And
+      base-files has maintainer scripts in the same directory.
+    walkthrough: |
+      {
+        echo "does ANY of the 162 packages ship a file under those paths?"
+        echo "  package lists mentioning usr/local: $(grep -rl 'usr/local' /var/lib/dpkg/info/*.list 2>/dev/null | wc -l)"
+        echo "  package lists shipping under /opt:  $(grep -rl '^/opt/' /var/lib/dpkg/info/*.list 2>/dev/null | wc -l)"
+        echo
+        echo "zero and zero. so how do the directories exist at all?"
+        echo
+        echo "from base-files.postinst:"
+        grep -n 'install_local_dir' /var/lib/dpkg/info/base-files.postinst | head -6 | sed 's/^/  /'
+        echo "  (calls: $(grep -c install_local_dir /var/lib/dpkg/info/base-files.postinst))"
+        echo
+        echo "there is a function whose name is the whole explanation. the directories are CREATED by a maintainer script at install time so they exist for me to use, and are deliberately not listed as package contents so that nothing owns them."
+        echo
+        echo "debian policy forbids any package from installing files under /usr/local. that is the clause, and this is what enforcement looks like from the database side."
+        echo
+        echo "the practical payoff: the hierarchy tells me IN ADVANCE which parts of the filesystem will answer 'no package owns this'. an empty dpkg -S under /usr/local or /opt is the system working as designed. the same answer under /usr/bin is a real finding."
+      } > /tmp/answer-policy
+      cat /tmp/answer-policy
+    verify:
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "mentioning usr/local: 0"
+        describe: You proved no package ships anything under /usr/local
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "install_local_dir"
+        describe: And found the script that creates the directories
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)policy forbids|debian policy"
+        describe: And identified the rule being enforced
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)in advance|working as designed"
+        describe: And what that lets you predict about dpkg -S results
+
+  - id: s5
+    instruction: >-
+      Find which top-level directories are empty on this machine, and write to
+      /tmp/answer-vestigial what that says about the hierarchy in a container.
+    hint: >-
+      Count the entries in each. The layout was designed for a machine that a
+      container is not.
+    walkthrough: |
+      {
+        echo "entries in each top-level directory:"
+        for d in /boot /media /mnt /srv /var/tmp /var/spool /home /opt /usr/local; do
+          printf '  %-12s %s\n' "$d" "$(ls -A $d 2>/dev/null | wc -l)"
+        done
+        echo
+        echo "empty: /boot /media /mnt /srv /var/tmp - and /usr/local has directories but $(find /usr/local -type f 2>/dev/null | wc -l) files."
+        echo
+        echo "what that says: the hierarchy was designed for a machine with a boot loader, removable media, mount points for other disks, and users who log in. a container has none of those, so a third of the standard layout is vestigial here."
+        echo
+        echo "that is not waste, it is a contract being honoured. the directories exist because software is entitled to assume they exist, and the cost of an empty directory is nothing."
+        echo
+        echo "and the useful corollary: /opt and /usr/local being empty is a REAL FACT about this machine, not an absence of information. it says nobody installed anything outside the package system - which is the fastest available answer to 'what here is not being patched', and it took one ls."
+      } > /tmp/answer-vestigial
+      cat /tmp/answer-vestigial
+    verify:
+      - type: file_matches
+        path: /tmp/answer-vestigial
+        pattern: "/boot +0"
+        describe: You found the empty top-level directories
+      - type: file_matches
+        path: /tmp/answer-vestigial
+        pattern: "(?i)vestigial|designed for a machine"
+        describe: And why they are empty in a container
+      - type: file_matches
+        path: /tmp/answer-vestigial
+        pattern: "(?i)entitled to assume|contract being honoured"
+        describe: And why they still exist
+      - type: file_matches
+        path: /tmp/answer-vestigial
+        pattern: "(?i)not being patched|outside the package system"
+        describe: And what an empty /opt actually tells you
+
+solution: >-
+  **Where the bytes are.**
+
+
+  ```console
+  $ du -sh /usr /var /etc
+  306M   /usr
+  8.8M   /var
+  1.4M   /etc
+  ```
+
+
+  306 MB of a roughly 320 MB image. **The image essentially is `/usr`** — and
+  since nothing under `/usr` changes while the system runs, that single property
+  is what lets it be mounted read-only, shared between machines, or shipped as an
+  immutable layer.
+
+
+  **What `/bin` has become.**
+
+
+  ```console
+  $ ls -l / | grep '^l'
+  bin   -> usr/bin
+  lib   -> usr/lib
+  lib64 -> usr/lib64
+  sbin  -> usr/sbin
+  ```
+
+
+  The **usr-merge**. The old split meant `/bin` held what was needed to boot and
+  repair a system before `/usr` was mounted; the initramfs made that unnecessary.
+
+
+  Two consequences you will meet. `/bin/sh` and `/usr/bin/sh` are **the same
+  inode**, so comparing paths as strings is wrong. And `/usr` alone is now a
+  complete installed system — which is exactly what makes a container image one
+  hashable directory tree.
+
+
+  **The three directories nobody owns.**
+
+
+  ```console
+  $ dpkg -S /usr/local
+  dpkg-query: no path found matching pattern /usr/local
+  $ dpkg -S /opt
+  dpkg-query: no path found matching pattern /opt
+  $ dpkg -S /srv
+  dpkg-query: no path found matching pattern /srv
+  $ dpkg -S /var/log
+  base-files, apt: /var/log
+  ```
+
+
+  The last line is what makes the first three meaningful. The package system is
+  perfectly capable of claiming a directory — it claimed `/var/log`. It
+  **declines** to claim the other three.
+
+
+  **And the refusal is policy.**
+
+
+  ```console
+  $ grep -rl "usr/local" /var/lib/dpkg/info/*.list | wc -l
+  0
+  $ grep -n install_local_dir /var/lib/dpkg/info/base-files.postinst
+  80:  install_local_dir /usr/local
+  83:  install_local_dir /usr/local/bin
+  ...
+  ```
+
+
+  Zero of 162 packages ship anything there. The directories are **created by a
+  maintainer script** so they exist for you to use, and deliberately not listed as
+  package contents so nothing owns them. Debian policy forbids a package from
+  installing files under `/usr/local`, and this is what enforcement looks like
+  from the database side.
+
+
+  The payoff is predictive. **The hierarchy tells you in advance which parts of
+  the filesystem will answer "no package owns this".** An empty `dpkg -S` under
+  `/usr/local` or `/opt` is the system working as designed. The identical answer
+  under `/usr/bin` is a genuine finding.
+
+
+  **What is empty, and why that is information.**
+
+
+  `/boot`, `/media`, `/mnt`, `/srv` and `/var/tmp` are all empty, and
+  `/usr/local` contains ten directories and zero files. The layout was designed
+  for a machine with a boot loader, removable media and users who log in; a
+  container has none of those, so a third of the standard hierarchy is vestigial.
+
+
+  They still exist because software is entitled to assume they do, and an empty
+  directory costs nothing.
+
+
+  The corollary is the useful part: **`/opt` and `/usr/local` being empty is a
+  fact, not an absence of one.** It says nobody installed anything outside the
+  package system on this machine — the fastest available answer to "what here is
+  not being patched", and it took one `ls`.

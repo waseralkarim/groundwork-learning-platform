@@ -1,0 +1,243 @@
+id: troubleshooting.the-failover-that-made-it-worse
+topic: topic.regions-and-failure-domains
+title: The regional failover turned 20 minutes into 6 hours
+level: L2
+objectives: [OBJ-A05.3.7, OBJ-A05.3.3]
+reveal_policy: progressive
+
+situation: >-
+  At 14:02 the primary region's managed Kubernetes control plane became
+  unavailable. Pods kept running and kept serving; the provider's status page
+  acknowledged the incident at 14:09 and resolved it at 14:23 — 21 minutes.
+
+
+  At 14:11, following the runbook, the on-call engineer initiated a failover to
+  the secondary region.
+
+
+  Service was fully restored at 20:14.
+
+
+  The secondary region had been built two years ago, is deployed to by the same
+  pipeline, and has been reporting healthy in monitoring throughout. It had never
+  been used.
+
+
+  The incident review has been booked as "provider outage — 6 hours". The
+  engineer who ran the failover has asked whether they should have done something
+  different.
+
+
+  Work out what actually happened.
+
+symptoms:
+  - "A 21-minute provider control-plane incident became a 6-hour outage"
+  - "Traffic was serving normally until the failover began"
+  - "The secondary region had reported healthy for two years"
+  - "The secondary had never been used"
+  - "The runbook was followed correctly"
+
+artifacts:
+  - type: log
+    label: The timeline
+    content: |
+      14:02  primary control plane unavailable; pods keep serving; traffic normal
+      14:09  provider acknowledges incident
+      14:11  failover initiated per runbook
+      14:12  DNS updated to secondary region  (TTL 3600)
+      14:14  secondary receiving ~4% of traffic, rising
+      14:31  secondary at 60% of traffic; p99 climbing; errors begin
+      14:38  secondary saturated; 5xx across the board
+      14:23  (primary control plane had already recovered)
+      15:10  attempt to fail back; DNS TTL still expiring
+      16:40  traffic split across both regions; database write conflicts
+      18:20  secondary scaled up manually
+      20:14  restored
+
+  - type: config
+    label: The secondary region's capacity
+    content: |
+      primary:    18 nodes,  54 replicas   (steady state)
+      secondary:   3 nodes,   6 replicas   (autoscaling min=3 max=18)
+
+      # autoscaler scale-up rate: 1 node per 60s, max 4 concurrent
+      # node boot to ready: ~90s
+
+  - type: command_output
+    label: Database replication at 14:11
+    content: |
+      $ psql -h secondary -c 'SELECT status, replay_lag FROM pg_stat_replication;'
+       status  | replay_lag
+      ---------+------------
+       streaming | 00:00:04
+
+      # after failover, secondary promoted to primary
+      # primary region's database was NOT demoted — it was unreachable, not down
+
+  - type: config
+    label: The DNS configuration
+    content: |
+      checkout.example.com  A  <primary-lb>   TTL 3600
+
+  - type: log
+    label: What the monitoring said about the secondary
+    content: |
+      2 years of: secondary-region-health = OK
+      (the check requests /healthz on the secondary's load balancer,
+       which 3 replicas answer successfully)
+
+diagnostic_questions:
+  - "What was the actual user impact between 14:02 and 14:11?"
+  - "How long would it take the secondary to reach primary's capacity?"
+  - "What did the 3600-second DNS TTL do to the failover, and to the fail-back?"
+  - "What was the state of the two databases between 14:11 and 16:40?"
+  - "What had two years of green monitoring actually established?"
+
+hints:
+  - "Read the first three timeline entries. Was anything wrong before 14:11?"
+  - "Compare 6 replicas against 54, and work out how long the autoscaler needs."
+  - "A TTL of 3600 seconds is one hour. It applies in both directions."
+  - "The primary database was unreachable from the control plane, not down."
+
+root_cause: >-
+  **There was no user-facing outage until the failover started. The failover was
+  the incident.**
+
+
+  Between 14:02 and 14:11 the control plane was unavailable and the data plane
+  was unaffected — pods kept running and traffic was normal. The service was
+  **frozen, not down**: nothing could be deployed, scaled or rescheduled, and
+  nothing needed to be. The correct action at 14:11 was to wait, and the
+  provider resolved it twelve minutes later.
+
+
+  Four separate failures then compounded.
+
+
+  **Capacity.** The secondary ran 6 replicas against the primary's 54. The
+  autoscaler adds a node every 60 seconds, four concurrently, with ~90 seconds to
+  ready — so reaching 18 nodes takes on the order of ten minutes *if* everything
+  succeeds, while traffic arrived over about twenty. The secondary saturated at
+  14:38 and started returning 5xx. A secondary sized for a fraction of real
+  traffic is not a secondary.
+
+
+  **DNS TTL.** 3600 seconds means resolvers cache the answer for up to an hour.
+  Failing over took an hour to take full effect, and — the part that hurt — so
+  did failing *back*. At 15:10 they were committed to the secondary for another
+  hour regardless of what they wanted.
+
+
+  **Split brain.** The primary's database was *unreachable from the control
+  plane*, not down. Promoting the secondary while the primary was still accepting
+  writes from cached DNS gave two writable primaries, and by 16:40 there were
+  write conflicts to reconcile — which is what turned a capacity problem into a
+  data problem and accounts for most of the remaining hours.
+
+
+  **Monitoring that established nothing.** Two years of green came from a health
+  check that requested `/healthz` on the secondary's load balancer, which three
+  replicas answered. It proved the region existed and could serve one request. It
+  never established that it could serve *production traffic*, which is the only
+  property anyone cared about.
+
+
+  The runbook was followed correctly and the runbook was wrong: it treated
+  failover as the response to a control-plane incident, when the data plane was
+  statically stable and unaffected.
+
+method: >-
+  **1. Establish user impact before acting.** The first question in any provider
+  incident is *are users affected right now*. Between 14:02 and 14:11 they were
+  not. A control-plane outage with a healthy data plane is frozen, not down, and
+  freezing is survivable for a period that is usually shorter than a failover.
+
+
+  **2. Compare the two risks explicitly.** Waiting risks the outage getting worse
+  and lasting longer. Failing over risks an untested path. Failover is a
+  procedure with its own failure modes, so it should be a response to *actual*
+  user impact, not to a provider status page.
+
+
+  **3. Know your secondary's capacity as a number.** 6 against 54 is not
+  redundancy; it is a smoke test. Multiply by the autoscaler's realistic rate to
+  get time-to-capacity, and compare it against how fast traffic will arrive.
+
+
+  **4. Read the TTL before failing over.** It governs both directions. An hour
+  TTL means an hour to fail over and an hour to change your mind, and knowing
+  that beforehand changes whether you start.
+
+
+  **5. Check what the old primary is doing.** "Unreachable from the control
+  plane" is not "down". Promoting a secondary while the old primary still accepts
+  writes creates split brain, which converts a recoverable availability incident
+  into a data-reconciliation one.
+
+
+  **6. Ask what the monitoring established.** Two years of green proved the
+  secondary could answer one request. It never tested capacity, replication under
+  load, or the failover path. A health check that would pass on an empty region
+  is a check that means nothing.
+
+
+  The habit: **an untested failover is a plan, not a capability** — and executing
+  an untested plan during an incident that is not yet an outage is how a
+  21-minute event becomes a six-hour one.
+
+resolution: >-
+  **Change the runbook first, because it is the proximate cause.**
+
+
+  Failover should be triggered by *user-facing impact that is not recovering*,
+  not by a provider incident. Add explicit criteria: sustained error rate above a
+  threshold, for a stated duration, with no provider ETA — and an explicit
+  instruction that a control-plane outage with a healthy data plane is a **wait**,
+  with a named person able to authorise otherwise.
+
+
+  **Then make the secondary real, or stop calling it one.**
+
+
+  *Capacity.* Either run it warm at a meaningful fraction of primary — 50% is
+  common — or pre-scale it as the first step of the failover procedure and wait
+  for capacity before moving traffic. Six replicas cannot take 54 replicas' worth
+  of traffic and no runbook step changes that.
+
+
+  *Lower the DNS TTL* to 60 seconds, permanently. The cost is more queries; the
+  benefit is that both failover and fail-back become minutes instead of an hour.
+  Better still, use health-check-based routing so the decision is not DNS at all.
+
+
+  *Fence the old primary.* The failover procedure must demote or isolate the
+  previous database before promoting the secondary. Without that step the
+  procedure creates split brain by construction, and no amount of care during
+  the incident prevents it.
+
+
+  **Fix the monitoring, which is the finding with the longest reach.**
+
+
+  A check that three replicas can answer `/healthz` establishes that the region
+  exists. Replace it with something that would fail if the region could not do
+  its job: assert node count and replica count against a threshold, assert
+  replication lag is within the RPO, and — the one that matters — **run a real
+  failover on a schedule**.
+
+
+  **Test it deliberately.** Quarterly, in business hours, with everyone watching
+  and a fail-back planned. Every one of the four failures here would have been
+  found on the first attempt, at a cost of a planned maintenance window instead
+  of six hours of live traffic.
+
+
+  **And correct the framing of the review.** Booking it as "provider outage — 6
+  hours" is inaccurate in a way that prevents learning: the provider's incident
+  was 21 minutes and caused no user impact. The remaining five and a half hours
+  were ours, and every contributing factor is something we control.
+
+
+  The engineer who ran the failover followed the runbook correctly. The runbook,
+  the capacity, the TTL, the fencing and the monitoring were all wrong, and none
+  of that was discoverable at 14:11.

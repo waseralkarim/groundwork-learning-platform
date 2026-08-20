@@ -1,0 +1,246 @@
+id: troubleshooting.the-certificate-that-renewed-itself
+topic: topic.certificates-and-tls
+title: The certificate was renewed on time and the site went down anyway
+level: L2
+objectives: [OBJ-A04.3.4, OBJ-A04.3.8]
+reveal_policy: progressive
+
+situation: >-
+  `checkout.example.com` started returning certificate errors to all users at
+  02:00 on Sunday. The on-call engineer was paged by customer reports rather than
+  by monitoring.
+
+
+  The certificate had been renewed automatically eleven days earlier. The renewal
+  job logged success. The file on disk has a Not After date three months in the
+  future. The certificate monitoring — which watches that file — has been green
+  throughout and is still green now.
+
+
+  The engineer's first action was to re-run the renewal, which reported "not due
+  for renewal" and changed nothing. Their second was to add `-k` to the internal
+  health check, which turned that alert green.
+
+
+  Users are still seeing errors.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "All users see certificate errors from 02:00 Sunday"
+  - "Renewal ran eleven days ago and logged success"
+  - "The certificate file on disk is valid for another three months"
+  - "File-based certificate monitoring is green"
+  - "Re-running renewal reports 'not due' and changes nothing"
+  - "No deployment or configuration change on Saturday or Sunday"
+
+artifacts:
+  - type: command_output
+    label: What the endpoint is serving
+    content: |
+      $ openssl s_client -connect checkout.example.com:443 \
+          -servername checkout.example.com </dev/null 2>&1 \
+          | grep -E '^depth=|Verify return code'
+      depth=2 CN=Example Root CA
+      depth=1 CN=Example Issuing CA
+      depth=0 CN=checkout.example.com
+      Verify return code: 10 (certificate has expired)
+
+  - type: command_output
+    label: The file on disk
+    content: |
+      $ openssl x509 -in /etc/ssl/live/checkout/fullchain.pem -noout -dates
+      notBefore=Aug  6 09:14:02 2026 GMT
+      notAfter=Nov  4 09:14:02 2026 GMT
+
+  - type: command_output
+    label: The certificate actually being served
+    content: |
+      $ openssl s_client -connect checkout.example.com:443 \
+          -servername checkout.example.com </dev/null 2>/dev/null \
+          | openssl x509 -noout -dates -serial
+      notBefore=May  8 09:14:02 2026 GMT
+      notAfter=Aug 16 09:14:02 2026 GMT
+      serial=03A1F79C2B4E
+
+      $ openssl x509 -in /etc/ssl/live/checkout/fullchain.pem -noout -serial
+      serial=04C2E81D6F09
+
+  - type: log
+    label: The renewal job
+    content: |
+      2026-08-06 09:14:02  renewing checkout.example.com
+      2026-08-06 09:14:05  challenge validated
+      2026-08-06 09:14:06  certificate written to /etc/ssl/live/checkout/
+      2026-08-06 09:14:06  renewal successful
+      (no reload, no restart, no post-hook configured)
+
+  - type: config
+    label: The monitoring check
+    content: |
+      - name: checkout-cert-expiry
+        type: file
+        path: /etc/ssl/live/checkout/fullchain.pem
+        assert: days_until_expiry > 14
+
+  - type: command_output
+    label: Process start time
+    content: |
+      $ ps -o lstart= -p $(pgrep -o nginx)
+      Tue May  8 09:20:11 2026
+
+diagnostic_questions:
+  - "The file and the served certificate have different serial numbers. What does that tell you?"
+  - "When did the nginx process start, relative to the renewal?"
+  - "What is the monitoring check actually asserting, and what would it never notice?"
+  - "Why did re-running renewal change nothing?"
+  - "What did adding `-k` to the health check accomplish?"
+
+hints:
+  - "Compare the two serial numbers, and the two Not After dates."
+  - "The renewal log has a line missing that most renewal jobs have."
+  - "nginx reads certificates at startup and holds them in memory."
+  - "The monitoring path points at a file. What do users connect to?"
+
+root_cause: >-
+  **The renewal wrote a new certificate to disk and nothing ever told nginx to
+  read it. The process has been serving the old certificate from memory since
+  May, and that certificate expired at 02:00 Sunday.**
+
+
+  The two serial numbers are the whole diagnosis. The file is `04C2E81D6F09`,
+  valid until November. What the server sends is `03A1F79C2B4E`, which expired on
+  16 August. They are different certificates, and only one of them reaches users.
+
+
+  nginx reads its certificates at startup and keeps them in memory. The process
+  started on 8 May; the renewal ran on 6 August and wrote files; no reload was
+  ever issued — the renewal log has no post-hook line, which is the omission.
+  From nginx's point of view nothing happened.
+
+
+  **Why every check missed it.** The monitoring asserts
+  `days_until_expiry > 14` **on a file**. That file was renewed correctly and is
+  green, accurately, and will stay green forever regardless of what the server
+  serves. The check has never once looked at the endpoint, and there is no state
+  of the world in which it could have caught this.
+
+
+  **Why re-running renewal did nothing.** The certificate on disk genuinely is
+  not due for renewal — it is valid for three more months. The ACME client
+  behaved correctly. Renewal was never the problem; loading was.
+
+
+  **What `-k` accomplished.** It silenced the internal health check by disabling
+  verification, so the one remaining signal that could still have detected the
+  fault was removed. Users continued to see errors. The alert went green because
+  it stopped asking the question.
+
+
+  This is the most common shape of certificate outage that is not simply "nobody
+  renewed it": renewal automated, reload not, and monitoring pointed at the
+  artefact rather than at the behaviour.
+
+method: >-
+  **1. Compare what is served against what is on disk.** Serial number and dates,
+  from both. If they differ, you are finished — everything else is detail. This
+  is the single highest-value command in a certificate incident and it takes
+  seconds:
+
+
+  ```bash
+  openssl s_client -connect host:443 -servername host </dev/null 2>/dev/null \
+    | openssl x509 -noout -serial -dates
+  openssl x509 -in /path/to/fullchain.pem -noout -serial -dates
+  ```
+
+
+  **2. Check the process start time against the renewal time.** A process older
+  than its certificate file is serving something it read earlier. `ps -o lstart=`
+  answers it directly and is quicker than reasoning about reload semantics.
+
+
+  **3. Read the renewal log for what is absent.** Every line present says
+  success, and the missing line is the deploy hook. Absence is harder to notice
+  than error, which is why this survives review.
+
+
+  **4. Read what monitoring asserts, not whether it is green.** A file-based
+  expiry check is monitoring the artefact and not the behaviour. Ask "what state
+  of the world would make this alert fire", and if the answer does not include
+  "the endpoint is broken", the check is not doing the job its name claims.
+
+
+  **5. Treat a workaround that greens an alert as a change to your instruments.**
+  Adding `-k` did not affect users at all; it removed the last remaining detector.
+  During an incident, that is worse than doing nothing, because it converts a
+  signal into silence.
+
+
+  The general habit: **monitor the behaviour, not the artefact.** The file being
+  correct, the config being correct and the job reporting success were all true
+  simultaneously with the service being down.
+
+resolution: >-
+  **Immediately:** reload nginx so it reads what is already on disk.
+
+
+  ```bash
+  nginx -t && nginx -s reload
+  ```
+
+
+  No new certificate is needed. Then confirm from outside, and confirm the
+  *serial* rather than just the status:
+
+
+  ```bash
+  openssl s_client -connect checkout.example.com:443 \
+    -servername checkout.example.com </dev/null 2>/dev/null \
+    | openssl x509 -noout -serial -dates
+  ```
+
+
+  It must now match the file. Then **remove the `-k`** from the health check —
+  it is protecting nothing and hiding everything.
+
+
+  **Fix the renewal so it completes.**
+
+
+  Add a deploy hook, and make it verify rather than assume:
+
+
+  ```bash
+  --deploy-hook '/usr/local/bin/reload-and-verify checkout.example.com'
+  ```
+
+
+  where the script reloads, waits, connects to the live endpoint and asserts the
+  served serial equals the file's. A renewal that does not check what it produced
+  is half a renewal, and this is the half that failed.
+
+
+  **Replace the monitoring, which is the finding that matters.**
+
+
+  The file check should be deleted rather than supplemented — it produces false
+  confidence and cannot detect any real failure. What replaces it:
+
+
+  - connect to the live endpoint from outside and assert days remaining on the
+    **served** certificate, at 30 and 14 days
+  - assert the served chain reaches a trust anchor, from a clean trust store
+  - assert the served serial matches the deployed file, which catches exactly
+    this failure the day it happens rather than three months later
+  - record the failure **message**, not just the exit status
+  - alert on any check with verification disabled
+
+
+  **And write down the general lesson**, because the same shape recurs well
+  beyond TLS: **automation that produces an artefact is not finished until
+  something consumes it, and monitoring the artefact tells you nothing about
+  whether anything did.** The same pattern hides behind config files that are
+  written and never reloaded, secrets rotated in a store and never re-read, and
+  DNS records updated while a resolver caches the old value.

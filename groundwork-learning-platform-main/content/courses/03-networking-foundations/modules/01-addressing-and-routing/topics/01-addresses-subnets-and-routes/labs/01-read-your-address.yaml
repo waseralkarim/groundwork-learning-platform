@@ -1,0 +1,218 @@
+id: lab.read-your-address
+topic: topic.addresses-subnets-and-routes
+title: Read your own address, and check the kernel's arithmetic
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A03.1.1, OBJ-A03.1.2]
+
+intro: >-
+  This container is on a network of its own — one interface, one address, and
+  nothing else in the world. That makes it an unusually clean place to read what
+  an address actually consists of.
+
+
+  You will find your interfaces, read the address and the prefix beside it, and
+  then check something worth checking: the broadcast address the kernel reports
+  is not stored anywhere. It computed it from the address and the mask, and you
+  can do the same arithmetic and see whether you agree.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      List every interface and address on this machine, and save it to
+      /tmp/answer-interfaces.
+    hint: "`ip -br addr > /tmp/answer-interfaces` gives the compact form."
+    walkthrough: |
+      ip -br addr > /tmp/answer-interfaces
+      cat /tmp/answer-interfaces
+    verify:
+      - type: file_matches
+        path: /tmp/answer-interfaces
+        pattern: '^lo\s'
+        describe: The loopback interface is present
+      - type: file_matches
+        path: /tmp/answer-interfaces
+        pattern: '^eth0(@\S+)?\s+UP'
+        describe: And eth0 is up, with an address
+
+  - id: s2
+    instruction: >-
+      Save just eth0's IPv4 address with its prefix — in `a.b.c.d/nn` form and
+      nothing else — to /tmp/answer-cidr.
+    hint: >-
+      `ip -o -4 addr show eth0` puts the CIDR in the fourth field. `awk` can
+      take it from there.
+    walkthrough: |
+      ip -o -4 addr show eth0 | awk '{print $4}' > /tmp/answer-cidr
+      cat /tmp/answer-cidr
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cidr
+        pattern: '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$'
+        describe: An address and a prefix length, with nothing else
+
+  - id: s3
+    instruction: >-
+      Save the broadcast address the kernel reports for eth0 to
+      /tmp/answer-broadcast.
+
+
+      It is on the same line, labelled `brd`.
+    hint: "`ip -o -4 addr show eth0` again — find the field after `brd`."
+    walkthrough: |
+      ip -o -4 addr show eth0 | grep -o 'brd [0-9.]*' | awk '{print $2}' > /tmp/answer-broadcast
+      cat /tmp/answer-broadcast
+    verify:
+      - type: file_matches
+        path: /tmp/answer-broadcast
+        pattern: '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+        describe: A broadcast address was captured
+
+  - id: s4
+    instruction: >-
+      Now compute it yourself and check. Work out the broadcast address from
+      the CIDR in /tmp/answer-cidr and save your answer to
+      /tmp/answer-computed.
+
+
+      The block size is 2 to the power of (32 minus the prefix). The network is
+      the address rounded down to a multiple of that; the broadcast is the
+      network plus block size minus one.
+    hint: >-
+      Convert the address to a single integer — `a*16777216 + b*65536 + c*256 +
+      d` — do the arithmetic, and convert back.
+    walkthrough: |
+      awk -v cidr="$(cat /tmp/answer-cidr)" '
+        function dotted(n) { return int(n/16777216)"."int(n%16777216/65536)"."int(n%65536/256)"."(n%256) }
+        BEGIN {
+          split(cidr, p, "/"); split(p[1], o, ".")
+          ip = o[1]*16777216 + o[2]*65536 + o[3]*256 + o[4]
+          size = 2 ^ (32 - p[2])
+          net = int(ip / size) * size
+          print dotted(net + size - 1)
+        }' > /tmp/answer-computed
+      cat /tmp/answer-computed
+    verify:
+      - type: command_exit
+        command: "test \"$(cat /tmp/answer-computed)\" = \"$(cat /tmp/answer-broadcast)\""
+        exit_code: 0
+        describe: Your arithmetic agrees with the kernel's, exactly
+
+  - id: s5
+    instruction: >-
+      Read the interface's hardware address and its MTU, and save both to
+      /tmp/answer-link.
+    hint: "`ip -o link show eth0` has both — `link/ether` and `mtu`."
+    walkthrough: |
+      {
+        echo "mac=$(ip -o link show eth0 | grep -o 'link/ether [0-9a-f:]*' | awk '{print $2}')"
+        echo "mtu=$(ip -o link show eth0 | grep -o 'mtu [0-9]*' | awk '{print $2}')"
+      } > /tmp/answer-link
+      cat /tmp/answer-link
+    verify:
+      - type: file_matches
+        path: /tmp/answer-link
+        pattern: 'mac=([0-9a-f]{2}:){5}[0-9a-f]{2}'
+        describe: A six-octet hardware address
+      - type: file_matches
+        path: /tmp/answer-link
+        pattern: 'mtu=1500'
+        describe: And an MTU of 1500 — ordinary Ethernet
+
+  - id: s6
+    instruction: >-
+      eth0's name has a suffix. Save the full interface name to
+      /tmp/answer-peer, and note what the number after the `@` refers to.
+    hint: >-
+      `ip -o link show eth0` prints it as `eth0@ifN`. N is an interface index —
+      but not one on this machine.
+    walkthrough: |
+      ip -o link show eth0 | awk '{print $2}' | tr -d ':' > /tmp/answer-peer
+      cat /tmp/answer-peer
+    verify:
+      - type: file_matches
+        path: /tmp/answer-peer
+        pattern: '^eth0@if[0-9]+$'
+        describe: The name carries the index of this veth's other end
+
+  - id: s7
+    instruction: >-
+      Last one. Write to /tmp/answer-what-mask-decides one sentence saying what
+      the prefix length actually decides for this machine.
+    hint: >-
+      When this machine sends a packet, the prefix determines one thing about
+      the destination. What?
+    walkthrough: |
+      echo "the prefix decides which destinations are on this machine's own network and therefore reachable directly by arp and a frame, and which are not and therefore have to be handed to a router" > /tmp/answer-what-mask-decides
+    verify:
+      - type: file_matches
+        path: /tmp/answer-what-mask-decides
+        pattern: "direct|router|gateway|neighbour|neighbor"
+        describe: You identified the direct-versus-router decision
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-what-mask-decides) -ge 12"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+solution: |
+  ```bash
+  ip -br addr
+  ip -o -4 addr show eth0 | awk '{print $4}'                    # 172.24.0.2/16
+  ip -o -4 addr show eth0 | grep -o 'brd [0-9.]*'               # 172.24.255.255
+  ip -o link show eth0                                          # mac, mtu, veth peer
+  ```
+
+  **What you just read.**
+
+  **An address belongs to an interface, not a machine.** This container has two
+  — `lo` and `eth0` — and a machine with three network cards has three
+  addresses. "The IP address of the server" is a phrase that stops being useful
+  the moment a machine has more than one.
+
+  **The prefix is where the meaning is.** `/16` says the first sixteen bits
+  identify the network and the remaining sixteen identify the host on it.
+  Everything else is arithmetic on that split.
+
+  **The broadcast address is computed, not stored.** That is why checking it was
+  worth doing. The kernel took your address, applied the mask, filled the host
+  bits with ones, and reported the result — and your arithmetic produced exactly
+  the same value. The method transfers to any CIDR you are ever handed:
+
+  ```text
+  block size = 2^(32 - prefix)
+  network    = address rounded down to a multiple of the block size
+  broadcast  = network + block size - 1
+  ```
+
+  **`mtu 1500` is ordinary Ethernet.** It is the largest frame this interface
+  will carry, and anything bigger has to be fragmented or refused. Seeing a
+  number *below* 1500 is worth noticing immediately: it means a tunnel — a VPN,
+  an overlay network, GRE — and it produces a characteristic failure where small
+  requests succeed and large ones hang.
+
+  **`eth0@if4829` is half of a wire.** A veth pair is two linked virtual
+  interfaces, one in each of two network namespaces, and everything sent into
+  one comes out of the other. `if4829` is the interface index of the other end,
+  which lives on the host. That is the physical link between a container and the
+  machine it runs on, and it is visible from inside the container without any
+  privilege at all.
+
+  **What the mask decides, precisely.** When this machine sends a packet it
+  compares the destination against its own networks. Inside one: ARP for the
+  destination's MAC address and send the frame directly, with no router
+  involved. Outside all of them: send the frame to a router instead — addressed
+  to the *router's* MAC, but still carrying the *destination's* IP.
+
+  That single comparison is what an address needs a mask for, and it is why two
+  machines on the same wire with mismatched masks can fail to talk to each other
+  in one direction only.
+
+  **Where this goes.** The next lab does the arithmetic on blocks you have not
+  seen, until it is automatic — which matters because the same calculation is
+  behind every firewall rule, every VPC subnet plan and every Kubernetes cluster
+  CIDR you will ever be asked to review.

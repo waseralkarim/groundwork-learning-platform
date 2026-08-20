@@ -1,0 +1,254 @@
+id: troubleshooting.the-retention-job-that-kept-an-extra-day
+topic: topic.finding-files
+title: The retention window that is 14% longer than the policy
+level: L2
+objectives: [OBJ-B08.4.3, OBJ-B08.4.8]
+reveal_policy: progressive
+
+situation: >-
+  A compliance audit samples the export archive and finds records that should
+  have been deleted. The retention policy is seven days; several files are eight
+  days old and still present.
+
+
+  The cleanup job runs nightly, reports success every night, and its log shows a
+  plausible number of deletions each time.
+
+
+  The engineer who wrote it points out — correctly — that the predicate says
+  `+7`, the policy says 7, and the job has never failed.
+
+
+  A second team member re-runs the job by hand against the archive. It deletes
+  nothing, because there is nothing left to delete.
+
+
+  Work out why eight-day-old files survive a nightly job that deletes anything
+  older than seven days.
+
+symptoms:
+  - "Files older than the seven-day policy are present in the archive"
+  - "The cleanup job reports success and a plausible deletion count every night"
+  - "The predicate reads -mtime +7 and the policy reads 7 days"
+  - "Running it by hand deletes nothing, because the backlog is already clear"
+  - "No error has ever been logged"
+
+artifacts:
+  - type: config
+    label: The cleanup job
+    content: |
+      # /opt/jobs/prune-exports.sh
+      find /srv/archive/exports -type f -name '*.csv' -mtime +7 -delete
+      echo "prune complete"
+
+  - type: config
+    label: The policy, from the compliance document
+    content: |
+      RET-04: Exported records are retained for seven (7) days from creation
+              and deleted thereafter. Retention beyond this period requires
+              a documented exception.
+
+  - type: command_output
+    label: What the audit found
+    content: |
+      $ find /srv/archive/exports -type f -printf '%TY-%Tm-%Td %f\n' | sort | head -4
+      2026-08-10 export-88213.csv
+      2026-08-10 export-88214.csv
+      2026-08-11 export-88301.csv
+      2026-08-11 export-88302.csv
+
+      $ date +%F
+      2026-08-18
+
+  - type: command_output
+    label: The predicate, tested against files of known age
+    content: |
+      $ find archive -name '*.log' -mtime +7 -printf '%f '
+      age-8d.log age-10d.log age-30d.log
+
+      $ find archive -name '*.log' -mtime +6 -printf '%f '
+      age-7d.log age-7d2h.log age-8d.log age-10d.log age-30d.log
+
+  - type: log
+    label: The job's log, a typical week
+    content: |
+      2026-08-12 02:00 prune complete
+      2026-08-13 02:00 prune complete
+      2026-08-14 02:00 prune complete
+      2026-08-15 02:00 prune complete
+
+  - type: log
+    label: From the audit finding
+    content: |
+      Sampled 400 exports. 47 exceeded the seven-day retention period.
+      Oldest observed: 8 days. None older than 8 days.
+
+diagnostic_questions:
+  - "The audit found files at 8 days but none older. What does that bound tell you?"
+  - "What exactly does `-mtime +7` compare?"
+  - "How many whole 24-hour periods has a seven-day-old file completed?"
+  - "Why does the job's log look completely normal?"
+  - "Why did running it by hand delete nothing?"
+
+hints:
+  - "Compare the `-mtime +7` and `-mtime +6` outputs in the artifacts."
+  - "`-mtime` counts whole 24-hour periods, truncated. What does `+` mean on top of that?"
+  - "The oldest file found is exactly one day over. That is not a coincidence."
+  - "The job is working. The question is what it was told to do."
+
+root_cause: >-
+  **`-mtime +7` means *strictly more than seven whole 24-hour periods*, so it
+  never matches a file until it is eight days old. The retention window is eight
+  days, not seven.**
+
+
+  `-mtime` truncates the age to whole 24-hour periods. A file that has existed
+  for seven days and a few hours has completed **seven** periods, and `+7`
+  requires *more than* seven — so it is excluded. It becomes eligible the moment
+  it completes its eighth period.
+
+
+  The artifacts show it directly: `-mtime +7` selects the 8-, 10- and 30-day
+  files; `-mtime +6` also selects the 7-day ones.
+
+
+  **The audit's bound is the confirmation.** It found files at 8 days and **none
+  older**. That is exactly the signature of a window that is one day too long —
+  not a job that fails sometimes, which would leave a scatter of ages, and not a
+  job that never runs, which would leave everything. One extra day, uniformly.
+
+
+  **Why the log looks normal.** The job *is* deleting files every night — the
+  ones that have just crossed into their ninth day. The count is plausible
+  because the volume is the same as it would be with a correct window, just
+  shifted by 24 hours. There is nothing anomalous to notice.
+
+
+  **Why running it by hand deleted nothing.** By then the nightly run had already
+  cleared everything over eight days. The manual run confirmed the job works, and
+  the question was never whether it works.
+
+
+  **Nothing failed.** find behaved correctly, `-delete` behaved correctly, the
+  script has no bug in the ordinary sense, and the engineer's reading of it was
+  reasonable. The defect is that **the English phrase "older than seven days" and
+  the predicate `-mtime +7` mean different things**, and nothing in the code, the
+  log or the policy document connects them.
+
+method: >-
+  **1. Read the shape of the audit finding, not just the fact of it.** Files at
+  8 days and none older is a *uniform* one-day overrun. An intermittently failing
+  job scatters ages; a stopped job leaves everything. A consistent boundary
+  points at the boundary condition.
+
+
+  **2. Test the predicate against files of known age.** Two commands settle it:
+
+
+  ```bash
+  touch -d '7 days ago' seven; touch -d '8 days ago' eight
+  find . -mtime +7 -printf '%f '     # eight
+  find . -mtime +6 -printf '%f '     # seven eight
+  ```
+
+
+  Building a fixture with `touch -d` is better than copying production data,
+  because it puts a file on each side of the boundary deliberately.
+
+
+  **3. Read `-mtime` precisely.** Truncation to whole 24-hour periods, and `+`
+  meaning *strictly greater*. Together those cost a full day, and neither half is
+  obvious from the flag.
+
+
+  **4. Do not treat a normal-looking log as evidence.** The job deletes a
+  plausible number every night — it is simply deleting a different set from the
+  one intended. A count that looks right is not a check.
+
+
+  **5. Distrust a manual re-run that finds nothing to do.** It proves the backlog
+  is clear at that moment, which is what a working job produces *and* what a job
+  with a longer window produces once it has caught up.
+
+
+  **6. Compare the code against the written policy, word by word.** "Seven days"
+  and `+7` look like the same number. That is the entire failure, and it is only
+  visible when the two are put side by side deliberately.
+
+
+  The habit: **when a predicate encodes a policy, write the policy next to it in
+  a comment** — so the next reader compares the intent with the implementation
+  rather than re-deriving it.
+
+resolution: >-
+  **Immediately:** delete the over-retained files, and record the exposure window
+  for the audit — everything has been retained one day longer than the policy
+  since the job was written.
+
+
+  **Fix the predicate**, and choose the form a reviewer can check:
+
+
+  ```bash
+  find /srv/archive/exports -type f -name '*.csv' ! -newermt '-7 days' -delete
+  ```
+
+
+  `-newermt` compares against a real moment with no truncation, so the boundary
+  means what the policy says. `-mtime +6` selects the same files and reads as
+  "six" to anybody auditing it against a seven-day policy — which is how this
+  gets "corrected" back to `+7` in two years.
+
+
+  **Put the policy next to the predicate:**
+
+
+  ```bash
+  # RET-04: retained seven days from creation, deleted thereafter.
+  # ! -newermt '-7 days' is used rather than -mtime +7, which truncates to
+  # whole 24h periods and would keep everything for eight days.
+  find "$DIR" -type f -name '*.csv' ! -newermt '-7 days' -delete
+  ```
+
+
+  Three lines that make the next reader compare intent with implementation
+  instead of re-deriving it.
+
+
+  **Then add the check that would have caught it**, because the job's own success
+  proved nothing:
+
+
+  ```bash
+  # nothing in the archive should exceed the policy after a run
+  over=$(find "$DIR" -type f ! -newermt '-7 days' | wc -l)
+  [ "$over" -eq 0 ] || { echo "RET-04 violation: $over files over retention" >&2; exit 1; }
+  ```
+
+
+  That asserts the **outcome** rather than the run. It is the same shape as
+  checking a backup's size rather than its exit status: the job's success is an
+  opinion, and the state of the archive is evidence.
+
+
+  **And add a fixture test**, which is cheap and permanent:
+
+
+  ```bash
+  touch -d '6 days ago' t/keep.csv
+  touch -d '7 days ago' t/delete-me.csv
+  touch -d '8 days ago' t/delete-me-too.csv
+  # run the predicate; assert exactly keep.csv survives
+  ```
+
+
+  Three files on either side of the boundary. This class of off-by-one cannot
+  recur once a test states which side each file falls on — and the test also
+  documents the intended boundary better than any comment.
+
+
+  **For the postmortem:** find worked correctly, `-delete` worked correctly, the
+  job never failed, and the archive was out of compliance from the day it was
+  written. The gap is between an English phrase and a flag that look like the
+  same number and are not — and there was no artefact anywhere connecting the
+  compliance document to the line of shell implementing it.

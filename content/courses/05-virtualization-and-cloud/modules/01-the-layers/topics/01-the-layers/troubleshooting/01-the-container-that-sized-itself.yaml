@@ -1,0 +1,246 @@
+id: troubleshooting.the-container-that-sized-itself
+topic: topic.the-layers
+title: The service is at 4% CPU and missing its latency budget
+level: L2
+objectives: [OBJ-A05.1.5, OBJ-A05.1.4]
+reveal_policy: progressive
+
+situation: >-
+  A search API has a p99 latency budget of 200 ms. Since it was moved from VMs
+  to Kubernetes three weeks ago, p99 has been between 900 ms and 2 s. Throughput
+  is unchanged.
+
+
+  Every dashboard is green. CPU utilisation sits at 4%. Memory is at 40% of its
+  limit. There are no errors, no restarts, no OOM kills, and the database is
+  answering in under 10 ms.
+
+
+  The team's conclusion is that Kubernetes networking is adding latency, and they
+  have opened a ticket with the platform team. The platform team have measured
+  the service mesh at under 2 ms and pushed back.
+
+
+  Someone has proposed raising the CPU limit "to see if it helps", and someone
+  else has proposed adding replicas.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "p99 is 5-10x the budget since moving from VMs to Kubernetes"
+  - "Throughput is unchanged from the VM deployment"
+  - "CPU utilisation shows 4%"
+  - "No errors, no restarts, no OOM kills"
+  - "The database and the service mesh have both been measured and cleared"
+  - "The same image ran fine on the VMs"
+
+artifacts:
+  - type: config
+    label: The deployment
+    content: |
+      resources:
+        requests: { cpu: "250m", memory: "1Gi" }
+        limits:   { cpu: "500m", memory: "2Gi" }
+      env:
+        - name: WORKER_THREADS
+          value: "auto"
+
+  - type: command_output
+    label: What the pod reports about itself
+    content: |
+      $ kubectl exec deploy/search -- nproc
+      64
+
+      $ kubectl exec deploy/search -- cat /sys/fs/cgroup/cpu.max
+      50000 100000
+
+      $ kubectl exec deploy/search -- sh -c 'ps -eLf | wc -l'
+      67
+
+  - type: command_output
+    label: cpu.stat, sampled 60 seconds apart
+    content: |
+      # first sample
+      nr_periods     18432
+      nr_throttled   18401
+      throttled_usec 214880000000
+
+      # 60 seconds later
+      nr_periods     19032
+      nr_throttled   19001
+      throttled_usec 218998000000
+
+  - type: metric
+    label: The CPU dashboard
+    content: |
+      container_cpu_usage_seconds_total, rate over 5m: 0.49 cores
+      node has 64 cores
+      displayed as: 0.49 / 64 = 0.77%  → rounded and smoothed to "4%" on the panel
+
+  - type: log
+    label: What the old VM deployment looked like
+    content: |
+      VM: 4 vCPU, 8 GB
+      WORKER_THREADS=auto  → 4 workers
+      p99: 140 ms
+
+diagnostic_questions:
+  - "How many CPUs does the process think it has, and how many does it actually get?"
+  - "What did WORKER_THREADS=auto resolve to, on the VM and in the pod?"
+  - "What fraction of periods is the container being throttled in?"
+  - "What is the CPU dashboard measuring against, and is that the right denominator?"
+  - "Why did throughput stay the same while latency got much worse?"
+
+hints:
+  - "Compare `nproc` against `cpu.max`. Divide the two numbers in cpu.max."
+  - "The pod has 67 threads. Where would that number have come from?"
+  - "Look at nr_throttled as a fraction of nr_periods, not as an absolute count."
+  - "The VM had 4 vCPUs and `auto` gave 4 workers. What does `auto` read?"
+
+root_cause: >-
+  **`WORKER_THREADS=auto` resolved to 64 in a container limited to 0.5 cores.**
+
+
+  On the VM, `auto` read the machine's CPU count — 4 vCPUs — and started 4
+  workers, which matched the 4 cores it actually had. Correct by coincidence:
+  the VM *was* the machine, so the machine's number was the right number.
+
+
+  In Kubernetes the pod sees the **node's** 64 cores, because `/proc/cpuinfo` and
+  `nproc` describe the machine and there is no CPU namespace. So `auto` started
+  64 workers. `cpu.max` is `50000 100000` — **0.5 cores**. Sixty-four workers
+  sharing half a core.
+
+
+  The throttling data settles it: **19001 throttled periods out of 19032** —
+  99.8% of every period ends with the container stopped. And `throttled_usec`
+  grew by 4.1 seconds in 60 seconds of wall clock, aggregated across all those
+  threads.
+
+
+  **Why the dashboard says 4%.** The panel divides the container's CPU usage by
+  the *node's* capacity: 0.49 cores of 64 is 0.77%, smoothed and rounded to
+  something around 4%. The container is using its **entire quota** — 0.49 of 0.5
+  — and is completely saturated. The denominator is wrong, so a saturated
+  container renders as an idle one.
+
+
+  **Why throughput held while latency collapsed.** Total work is bounded by the
+  quota, and the quota did not change, so requests per second is roughly what it
+  was. What changed is that each request now waits behind 63 other workers for
+  slices of half a core, so time-in-system multiplied while completion rate did
+  not.
+
+
+  Both proposed fixes are wrong in instructive ways. **Raising the CPU limit**
+  helps a little and leaves 64 workers on whatever the new limit is — the ratio
+  stays broken. **Adding replicas** multiplies the problem: each new pod also
+  reads 64 and starts 64 workers.
+
+
+  Neither the mesh nor the network was ever involved.
+
+method: >-
+  **1. Ask the process what it thinks it has, then what it actually has.** Two
+  commands — `nproc` and `cat /sys/fs/cgroup/cpu.max` — and the ratio is 128:1.
+  This should be the first check on any "slow after moving to containers" report,
+  because the move is exactly when a number that was accidentally correct stops
+  being correct.
+
+
+  **2. Read `nr_throttled` as a fraction of `nr_periods`, not as a count.** An
+  absolute count always looks large on a long-running pod. 19001 of 19032 is
+  99.8%, and that fraction is the number to put in the ticket.
+
+
+  **3. Check the dashboard's denominator.** A container's CPU usage divided by
+  the node's capacity is a meaningless ratio that renders saturation as idleness.
+  It should be divided by the container's limit — 0.49 of 0.5 is 98%, which is
+  the panel that would have made this obvious on day one.
+
+
+  **4. Count the threads.** `ps -eLf | wc -l` returning 67 in a pod limited to
+  half a core is the whole story in one number. Nobody configured 64; something
+  read it.
+
+
+  **5. Treat "unchanged throughput, much worse latency" as a queueing
+  signature.** It says the work is bounded by the same limit and is now waiting
+  longer inside the system. That points at concurrency and contention rather than
+  at anything on the path — which is why the mesh investigation was never going
+  to find it.
+
+
+  **6. Diff against what changed.** The image is the same and the config is the
+  same; the *environment* changed. `auto` is a value that depends on the
+  environment, so it is the first configuration to re-examine when the
+  environment moves.
+
+
+  The habit: **in a container, `auto` means auto from the host's numbers.** Any
+  setting that says auto, default, or "number of CPUs" is suspect until you know
+  which file it read.
+
+resolution: >-
+  **Immediately:** set the worker count explicitly, from the limit rather than
+  from the host.
+
+
+  ```yaml
+  env:
+    - name: WORKER_THREADS
+      value: "2"
+  ```
+
+
+  With a 500m limit, one or two workers is right. Then confirm from inside:
+
+
+  ```bash
+  kubectl exec deploy/search -- sh -c 'ps -eLf | wc -l'
+  kubectl exec deploy/search -- cat /sys/fs/cgroup/cpu.stat
+  ```
+
+
+  `nr_throttled` should stop tracking `nr_periods`. Expect p99 to fall by most
+  of the gap immediately — the queue drains as soon as the contention goes away.
+
+
+  **Then decide the limit deliberately.** 500m may still be too little for the
+  actual work; that is now a separate, answerable question rather than a guess,
+  and it can be measured with a sane worker count in place.
+
+
+  **Fix the class of problem, not the instance.**
+
+
+  *Audit every `auto` in the estate.* Worker counts, thread pools, GC threads,
+  connection pools, and anything reading `nproc`, `os.cpu_count()` or
+  `MemTotal`. Each one was correct on VMs and is wrong in containers, and they
+  will all have moved at the same time.
+
+
+  *Prefer settings that derive from the limit.* `-XX:MaxRAMPercentage=75` rather
+  than a fixed `-Xmx`; `GOMAXPROCS` from `cpu.max`; explicit worker counts. The
+  test is whether the value stays correct when somebody changes the limit
+  without telling anybody.
+
+
+  *Fix the dashboards, which is the finding with the widest reach.* Divide
+  container CPU by the **container's limit**, and add a panel for
+  `rate(container_cpu_cfs_throttled_periods_total)`. A dashboard that renders a
+  saturated container as 4% will hide this again on the next service, and the
+  panel that reveals it is one query.
+
+
+  *Alert on throttling*, not only on utilisation. In this incident every
+  utilisation alert was quiet by design, for three weeks.
+
+
+  **And close the ticket accurately.** The platform team were right and were
+  asked to prove a negative for three weeks. The postmortem should say that the
+  service was throttled at 99.8% of periods, that the dashboard's denominator
+  hid it, and that the trigger was `auto` resolving against a different machine
+  after a migration — because the next team to move from VMs to Kubernetes has
+  the same bug waiting.

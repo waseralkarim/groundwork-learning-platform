@@ -1,0 +1,301 @@
+id: lab.config-state-and-cache
+topic: topic.the-filesystem-hierarchy
+title: Classify a service's paths, then fix its backup
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B06.3.4, OBJ-B06.3.8]
+
+intro: >-
+  A service touches seventeen paths. Some are code, some are decisions, some are
+  irreplaceable, and some are 210 GB of files that can be regenerated in an
+  afternoon.
+
+
+  Telling them apart is the whole of backup policy, volume layout and disaster
+  recovery, and the hierarchy has already done most of the work for you. You
+  will classify all seventeen, then find the two things wrong with the backup
+  job that has been reporting success for fourteen months.
+
+setup:
+  - /opt/lab/seed-hierarchy.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/fhs/service-tree.txt and classify every path into code, config,
+      state, cache or ephemeral. Save your classification to /tmp/answer-classify.
+    hint: >-
+      The directory usually decides it. Where it does not — and there are two
+      such cases — the question is whether the data can be regenerated.
+    walkthrough: |
+      cat /tmp/fhs/service-tree.txt
+      {
+        echo "CODE - rebuilt by reinstalling; never back up"
+        echo "  /usr/bin/ledger                    12M"
+        echo "  /usr/lib/ledger/plugins/          104M"
+        echo
+        echo "CONFIG - decisions about this deployment"
+        echo "  /etc/ledger/ledger.conf"
+        echo "  /etc/ledger/conf.d/50-database.conf"
+        echo "  /etc/ledger/tls/server.key         <- a SECRET, not just config"
+        echo
+        echo "STATE - cannot be regenerated. this is the backup."
+        echo "  /var/lib/ledger/ledger.db          47G"
+        echo "  /var/lib/ledger/uploads/           12G   user-supplied, irreplaceable"
+        echo
+        echo "CACHE - regenerable. never back up."
+        echo "  /var/lib/ledger/render-cache/     210G   <- a CACHE inside /var/lib"
+        echo "  /var/cache/ledger/thumbnails/      34G"
+        echo
+        echo "EPHEMERAL - this boot or this run only"
+        echo "  /run/ledger/ledger.pid"
+        echo "  /run/ledger/ledger.sock"
+        echo "  /tmp/ledger-upload-*.part"
+        echo
+        echo "LOGS - history; usually shipped elsewhere already"
+        echo "  /var/log/ledger/access.log        890M"
+        echo "  /var/log/ledger/audit.log         1.2G  <- audit may be legally retained"
+        echo
+        echo "OUTSIDE THE PACKAGE SYSTEM - owned by nothing"
+        echo "  /usr/local/bin/ledger-migrate     2.1M"
+        echo "  /opt/vendor-scanner/bin/scan       68M"
+        echo
+        echo "AND ONE THAT IS A PROBLEM BY ITSELF"
+        echo "  /root/.ledger-admin-token          a credential in root's home directory"
+        echo
+        echo "the two cases the directory does NOT decide:"
+        echo "  render-cache is 210G of CACHE sitting in /var/lib, which is the state directory. real services do this constantly, which is why the rule cannot be 'back up /var/lib' - it has to be 'back up what cannot be regenerated', applied per path."
+        echo "  audit.log is in /var/log with the access log, but audit trails are frequently retained by law. same directory, completely different obligation."
+      } > /tmp/answer-classify
+      cat /tmp/answer-classify
+    verify:
+      - type: file_matches
+        path: /tmp/answer-classify
+        pattern: "(?i)render-cache"
+        describe: You classified the cache that lives in the state directory
+      - type: file_matches
+        path: /tmp/answer-classify
+        pattern: "(?i)cannot be regenerated"
+        describe: And used regenerability as the test for state
+      - type: file_matches
+        path: /tmp/answer-classify
+        pattern: "(?i)audit"
+        describe: And noticed the audit log is not like the access log
+      - type: file_matches
+        path: /tmp/answer-classify
+        pattern: "(?i)secret|credential"
+        describe: And flagged the material that is neither config nor state
+
+  - id: s2
+    instruction: >-
+      Read /tmp/fhs/backup-manifest.txt and find the two things wrong with it.
+      Save your findings to /tmp/answer-backup-faults.
+    hint: >-
+      One fault makes the backup enormously bigger than it needs to be. The other
+      means step 4 of the restore procedure cannot work.
+    walkthrough: |
+      cat /tmp/fhs/backup-manifest.txt
+      {
+        echo "FAULT 1 - it backs up 244G of regenerable cache, every night."
+        echo "  INCLUDE /var captures /var/lib/ledger/render-cache (210G) and"
+        echo "  /var/cache/ledger/thumbnails (34G). the actual irreplaceable data"
+        echo "  is ledger.db (47G) plus uploads (12G) = 59G."
+        echo "  so the backup is roughly five times the size it needs to be, which"
+        echo "  costs storage, window, and restore time - the last one during an incident."
+        echo
+        echo "FAULT 2 - the restore procedure cannot work, because nothing captures /opt or /usr/local."
+        echo "  the runbook says: install the base OS, apt-get install ledger, restore the archive."
+        echo "  that assumes every binary came from a package. two did not:"
+        echo "    /usr/local/bin/ledger-migrate   - needed to bring the schema up"
+        echo "    /opt/vendor-scanner/bin/scan    - a vendor tool installed by a script"
+        echo "  neither is in INCLUDE /etc /var /home, and neither is reinstalled by"
+        echo "  apt-get. the restored machine comes up missing both, and nobody finds"
+        echo "  out until the first migration or the first scan."
+        echo
+        echo "the two faults are the same mistake in opposite directions: the manifest was written by naming DIRECTORIES instead of naming what each path is for."
+        echo "/var was included wholesale because it sounded like 'the data', and /opt was omitted because nobody thought of it - and the hierarchy would have told them, because /opt is one of exactly three directories reserved for software the package system does not manage."
+      } > /tmp/answer-backup-faults
+      cat /tmp/answer-backup-faults
+    verify:
+      - type: file_matches
+        path: /tmp/answer-backup-faults
+        pattern: "(?i)FAULT 1"
+        describe: You found the first fault
+      - type: file_matches
+        path: /tmp/answer-backup-faults
+        pattern: "(?i)FAULT 2"
+        describe: And the second
+      - type: file_matches
+        path: /tmp/answer-backup-faults
+        pattern: "/opt"
+        describe: And identified what the restore procedure cannot reproduce
+      - type: file_matches
+        path: /tmp/answer-backup-faults
+        pattern: "(?i)naming directories|instead of naming"
+        describe: And named the common cause of both
+
+  - id: s3
+    instruction: >-
+      Write the corrected backup manifest, path by path, with a reason for every
+      line. Save to /tmp/answer-manifest.
+    hint: >-
+      Name paths rather than trees, and say why each is included or skipped. The
+      reason column is what lets somebody update it in two years.
+    walkthrough: |
+      {
+        echo "BACKUP   /var/lib/ledger/ledger.db          state - cannot be regenerated"
+        echo "BACKUP   /var/lib/ledger/uploads/           state - user-supplied, irreplaceable"
+        echo "BACKUP   /var/log/ledger/audit.log          retained by policy, not by preference"
+        echo "CAPTURE  /opt/vendor-scanner/               outside the archive; apt cannot restore it"
+        echo "CAPTURE  /usr/local/bin/ledger-migrate      outside the archive; needed by the restore itself"
+        echo "SECRET   /etc/ledger/tls/server.key         to the secret store, not the backup archive"
+        echo
+        echo "SKIP     /var/lib/ledger/render-cache/      cache living in a state directory - 210G"
+        echo "SKIP     /var/cache/ledger/                 regenerable by definition"
+        echo "SKIP     /var/log/ledger/access.log         already shipped to the log system"
+        echo "SKIP     /etc/ledger/*.conf                 generated from the config repo; restore from there"
+        echo "SKIP     /run /tmp                          tmpfs; empty at every boot by design"
+        echo "SKIP     /usr                               reinstalled by the package manager"
+        echo
+        echo "size: 59G of state instead of 303G of everything."
+        echo
+        echo "three things this gets right that the original did not:"
+        echo "  1. it names PATHS, not trees, so a cache inside /var/lib can be excluded"
+        echo "  2. it captures /opt, so the restore procedure is actually executable"
+        echo "  3. every line has a reason, so in two years somebody can update it"
+        echo "     rather than guess - which is when the paths will have changed."
+        echo
+        echo "and one thing worth saying out loud: the tls key should not be in a backup archive at all. it goes to the secret store, and the restore pulls it from there. a backup that contains private keys is a second copy of your secrets with a different, usually weaker, access policy."
+      } > /tmp/answer-manifest
+      cat /tmp/answer-manifest
+    verify:
+      - type: file_matches
+        path: /tmp/answer-manifest
+        pattern: "SKIP.*render-cache"
+        describe: Your manifest excludes the cache inside the state directory
+      - type: file_matches
+        path: /tmp/answer-manifest
+        pattern: "(?i)(BACKUP|CAPTURE).*(/opt|vendor-scanner)"
+        describe: And captures the software apt cannot restore
+      - type: file_matches
+        path: /tmp/answer-manifest
+        pattern: "(?i)secret store"
+        describe: And keeps the private key out of the archive
+      - type: file_matches
+        path: /tmp/answer-manifest
+        pattern: "(?i)every line has a reason|reason"
+        describe: And records why each decision was made
+
+  - id: s4
+    instruction: >-
+      Check the machine you are on: how much of its own state is what, and where
+      does it live? Save to /tmp/answer-this-machine.
+    hint: >-
+      Look at /var/lib, /etc and /var/cache here. One directory dominates the
+      state, and it should be familiar.
+    walkthrough: |
+      {
+        echo "state on this machine:"
+        du -sh /var/lib/* 2>/dev/null | sort -rh | head -4 | sed 's/^/  /'
+        echo
+        echo "var/lib total:  $(du -sh /var/lib 2>/dev/null | cut -f1)"
+        echo "var/cache total: $(du -sh /var/cache 2>/dev/null | cut -f1)"
+        echo "etc files:       $(find /etc -type f 2>/dev/null | wc -l)"
+        echo "tracked conffiles: $(dpkg-query -W -f='${Conffiles}\n' | grep -c '^ */')"
+        echo
+        echo "/var/lib/dpkg is nearly all of /var/lib. the state of this machine is almost entirely THE RECORD OF WHAT IS INSTALLED ON IT, which is a fair description of a container: no user data, no application state, just an account of its own contents."
+        echo
+        echo "and /etc: about two thirds of its files are package-supplied conffiles that dpkg tracks by checksum. the other third is neither shipped nor tracked - which is where local decisions and local drift both live."
+        echo
+        echo "the practical read: on a machine like this, a backup is pointless. everything is either reinstallable from the archive or regenerable from the image. that is not a limitation, it is the goal - a container with nothing worth backing up is a container you can destroy without a meeting."
+      } > /tmp/answer-this-machine
+      cat /tmp/answer-this-machine
+    verify:
+      - type: file_matches
+        path: /tmp/answer-this-machine
+        pattern: "/var/lib/dpkg"
+        describe: You found what dominates this machine's state
+      - type: file_matches
+        path: /tmp/answer-this-machine
+        pattern: "(?i)record of what is installed"
+        describe: And what that state actually is
+      - type: command_exit
+        command: "test $(sed -n 's/^tracked conffiles: //p' /tmp/answer-this-machine) -ge 50"
+        exit_code: 0
+        describe: And counted how much of /etc dpkg is tracking
+      - type: file_matches
+        path: /tmp/answer-this-machine
+        pattern: "(?i)nothing worth backing up|destroy without"
+        describe: And drew the conclusion about disposable machines
+
+solution: >-
+  **The classification.**
+
+
+  | Class | Paths | Total |
+  |---|---|---|
+  | Code | `/usr/bin/ledger`, `/usr/lib/ledger/plugins/` | 116 MB |
+  | Config | `/etc/ledger/*` — including a **private key** | small |
+  | State | `ledger.db`, `uploads/` | **59 GB** |
+  | Cache | `render-cache/`, `thumbnails/` | **244 GB** |
+  | Ephemeral | `/run/ledger/*`, `/tmp/*.part` | — |
+  | Outside the archive | `/usr/local/bin/ledger-migrate`, `/opt/vendor-scanner/` | 70 MB |
+
+
+  **Two paths the directory does not classify.** `render-cache` is 210 GB of
+  cache sitting inside `/var/lib`, the state directory — real services do this
+  constantly, which is why the rule cannot be "back up `/var/lib`" but has to be
+  "back up what cannot be regenerated", applied per path. And `audit.log` sits
+  beside `access.log` in `/var/log` while carrying a completely different
+  retention obligation.
+
+
+  **The two faults.**
+
+
+  **It backs up 244 GB of regenerable cache every night.** `INCLUDE /var` sweeps
+  in `render-cache` and `thumbnails`. The genuinely irreplaceable data is 59 GB,
+  so the backup is roughly five times the size it needs to be — costing storage,
+  window, and restore time, the last of which is spent during an incident.
+
+
+  **The restore procedure cannot work.** It says: install the OS, `apt-get
+  install ledger`, restore the archive. That assumes every binary came from a
+  package. Two did not — `ledger-migrate` in `/usr/local/bin` and the vendor
+  scanner in `/opt`. Neither is in `INCLUDE /etc /var /home`, and neither is
+  reinstalled by `apt-get`. The restored machine comes up missing both, and
+  nobody finds out until the first migration.
+
+
+  **Both faults are the same mistake in opposite directions:** the manifest names
+  **directories** instead of naming what each path is *for*. `/var` was included
+  wholesale because it sounded like "the data"; `/opt` was omitted because nobody
+  thought of it — and the hierarchy would have prompted them, because `/opt` is
+  one of exactly three directories reserved for software the package system does
+  not manage.
+
+
+  **The corrected manifest** names paths, gives every line a reason, sends the
+  private key to a secret store rather than an archive, and comes to 59 GB
+  instead of 303 GB.
+
+
+  A backup archive containing private keys is a second copy of your secrets with
+  a different and usually weaker access policy — worth saying out loud, because
+  "back up `/etc`" quietly creates one.
+
+
+  **And this machine.** `/var/lib/dpkg` is 6.9 MB of the 7.0 MB in `/var/lib`:
+  the state of this container is almost entirely **the record of what is
+  installed on it**. About two thirds of `/etc` is package-supplied conffiles
+  tracked by checksum; the rest is where local decisions and local drift both
+  live.
+
+
+  Which gives the honest conclusion: on a machine like this a backup is
+  pointless, because everything is either reinstallable from the archive or
+  regenerable from the image. That is not a limitation — it is the goal. **A
+  container with nothing worth backing up is a container you can destroy without
+  a meeting.**

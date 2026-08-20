@@ -1,0 +1,8 @@
+id: module.identity-and-access
+slug: identity-and-access
+title: Identity and Access
+summary: >-
+  Who a process actually is, what it is actually allowed to do, and the gap
+  between those two answers and the ones written in the manifest — measured on a
+  running system rather than read from configuration.
+order: 4

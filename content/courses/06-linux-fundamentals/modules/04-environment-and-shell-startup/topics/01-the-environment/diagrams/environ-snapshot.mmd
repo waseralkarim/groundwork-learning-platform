@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph exec["At execve()"]
+        P["parent process<br/>its environment"] -- "copied, once" --> C["new process<br/>environment"]
+        C --> SNAP["/proc/PID/environ<br/><b>frozen here, forever</b>"]
+    end
+
+    subgraph life["While the process runs"]
+        C --> LIVE["the process's live copy<br/><i>what env and getenv see</i>"]
+        LIVE -- "export LATE=1" --> LIVE2["live copy: LATE=1 present"]
+        LIVE -- "unset SECRET" --> LIVE3["live copy: SECRET gone"]
+    end
+
+    SNAP -.-> S1["still has no LATE"]
+    SNAP -.-> S2["still has SECRET=value<br/><b>unset did not remove it</b>"]
+
+    LIVE2 --> CH["children started later<br/><i>inherit the LIVE copy</i>"]
+    LIVE3 --> CH
+
+    style SNAP fill:#fdecea,stroke:#c0392b
+    style S2 fill:#fdecea,stroke:#c0392b
+    style LIVE fill:#e8f4ea,stroke:#2f7d4f

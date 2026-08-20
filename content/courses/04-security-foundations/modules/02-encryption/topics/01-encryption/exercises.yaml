@@ -1,0 +1,248 @@
+topic: topic.encryption
+
+exercises:
+  - id: e1
+    title: Pick the primitive for four requirements
+    level: L1
+    objectives: [OBJ-A04.2.1]
+    kind: interpretation
+    prompt: >-
+      For each requirement, say whether it needs symmetric encryption, asymmetric
+      encryption, both, or neither:
+
+
+      1. A backup written nightly to object storage, restorable by the same
+         service
+
+      2. Anyone in the world being able to send your service a secret without
+         prior arrangement
+
+      3. Proving a firmware image came from your build system
+
+      4. Ten thousand IoT devices reporting telemetry to one collector
+    answer: >-
+      1. **Symmetric.** One party encrypts and decrypts, so there is no
+         distribution problem. AES-256-GCM with the key in a KMS.
+
+      2. **Both — hybrid.** Asymmetric is the only thing that works without prior
+         arrangement, and it cannot carry the payload, so it carries a symmetric
+         key that does.
+
+      3. **Neither — this is signing.** A signature uses the key pair, but it is
+         not encryption: the image is public and the requirement is authenticity,
+         not confidentiality.
+
+      4. **Both, and the interesting part is key management.** One shared
+         symmetric key across ten thousand devices means one extracted device
+         compromises the fleet. Per-device keys, or a key exchange at
+         registration, so that compromising a device compromises that device.
+    explanation: >-
+      Item 3 is the one worth dwelling on. "Prove it came from us" is reflexively
+      answered with "encrypt it", and encryption is the wrong primitive twice
+      over: the firmware is meant to be readable, and encryption does not
+      establish origin anyway. It is a signature, and confusing the two is common
+      enough that the phrase "encrypted with the private key" persists as a
+      misleading description of signing.
+
+
+      Item 4 is where the real design lives. The cipher is the same in both
+      answers; what differs is the blast radius of one compromised device, and
+      that is a key management decision rather than a cryptographic one.
+
+  - id: e2
+    title: Compute why hybrid encryption is not optional
+    level: L2
+    objectives: [OBJ-A04.2.3]
+    kind: calculation
+    prompt: >-
+      You measure AES-256 at 1.2 GB/s and RSA-2048 private-key operations at
+      2,200/s, with a 245-byte payload limit.
+
+
+      A service must encrypt a 500 MB backup nightly and make it readable by a
+      recovery system holding only a public key's counterpart.
+
+
+      Compute the time for a pure-RSA approach and for hybrid, and state the
+      non-time reason pure RSA is not an option.
+    answer: >-
+      **Pure RSA.** 500 MB is 524,288,000 bytes. At 245 bytes per operation that
+      is 2,139,951 operations. Encryption uses the *public* key and is fast, but
+      **decryption** on the recovery system uses the private key at 2,200/s:
+      2,139,951 ÷ 2,200 ≈ **973 seconds, about 16 minutes** — for a restore, on
+      top of everything else, and CPU-bound throughout.
+
+
+      **Hybrid.** One RSA operation on a 32-byte key (well under a millisecond)
+      plus 500 MB of AES at 1.2 GB/s ≈ **0.42 seconds**. Call it half a second
+      against sixteen minutes, roughly **2,300×**.
+
+
+      **The non-time reason:** there is no chunking scheme. RSA does not split
+      input, so a pure-RSA approach means inventing a format that fragments the
+      backup into 2.1 million pieces, orders them, and reassembles them — a
+      bespoke protocol, with its own bugs, replacing one that already exists. The
+      245-byte limit is a refusal, not a slow path.
+    explanation: >-
+      Both halves of the answer matter and people usually give only the first.
+      The timing argument is persuasive; the structural one is decisive, because
+      an engineer who hears "16 minutes is acceptable for a restore" still cannot
+      build it without inventing a chunking format.
+
+
+      Note also which direction was measured. Encrypting with the public key is
+      thirty times faster than decrypting with the private one, so a benchmark of
+      the write path would have made this look far more viable than it is. The
+      cost lands on the restore, which is exactly when nobody wants to discover
+      it.
+
+  - id: e3
+    title: Read a hex dump and name the mode
+    level: L2
+    objectives: [OBJ-A04.2.5]
+    kind: interpretation
+    prompt: >-
+      Two 96-byte ciphertexts of the same 96-byte plaintext, dumped 16 bytes per
+      row:
+
+
+      ```text
+      A:  7f3a...  7f3a...  7f3a...  c41e...  7f3a...  7f3a...
+      B:  9d02...  4b71...  e8c5...  1a36...  b90f...  2d84...
+      ```
+
+
+      Say which mode produced each, what an attacker learns from A without a key,
+      and whether B is therefore safe to ship.
+    answer: >-
+      **A is ECB.** Five of its six blocks are identical, which can only happen
+      when blocks are encrypted independently — so the plaintext has five
+      identical 16-byte sections and one that differs, in position four.
+
+
+      **B is CBC** (or CTR, or any chaining/streaming mode). Every block differs
+      because each depends on what came before.
+
+
+      **What A leaks with no key:** that the data is 16-byte repeating records;
+      that there are six of them; and that exactly one differs, at a known
+      offset. If the attacker can get the system to encrypt a record of their
+      choosing, they can compare ciphertext blocks and confirm the contents of
+      any record — a chosen-plaintext attack requiring no cryptanalysis.
+
+
+      **Is B safe? No.** It fixes the structure leak and nothing else. B is
+      unauthenticated, so an attacker can still alter the ciphertext and it will
+      decrypt without error to something different. Safe means an AEAD mode —
+      AES-GCM or ChaCha20-Poly1305 — where tampering fails to decrypt at all.
+    explanation: >-
+      The trap is the last part. Having identified ECB as the villain, the
+      natural conclusion is that the other one is the hero — and CBC is merely
+      *less bad*. It closes one gap and leaves the one that lets an attacker
+      choose what your file says.
+
+
+      This is why the answer to "which mode" is never "not ECB". It is a specific
+      named AEAD mode, and the reasoning is that confidentiality and integrity are
+      separate properties that a single mode can provide together.
+
+  - id: e4
+    title: Judge four nonce strategies
+    level: L2
+    objectives: [OBJ-A04.2.7]
+    kind: interpretation
+    prompt: >-
+      A service encrypts messages with AES-256-GCM. Four proposals for the
+      96-bit nonce. Rank them and say what fails:
+
+
+      1. A constant from the config file
+
+      2. `openssl rand 12` per message
+
+      3. A counter in memory, starting at zero when the process starts
+
+      4. A counter in memory, starting at zero, with the pod's ordinal index
+         prefixed
+    answer: >-
+      **2 is correct.** A random 96-bit nonce per message. Collisions become a
+      concern around 2^48 messages, which is far beyond any realistic volume for
+      one key.
+
+
+      **4 is nearly correct and fails on restart.** The ordinal prefix solves
+      replica collisions, which is the right instinct — but the counter still
+      resets to zero when the pod restarts, and pod 3 after a restart reuses
+      every nonce pod 3 already used. It needs persistence, and persisting a
+      counter reliably is harder than generating randomness.
+
+
+      **3 fails immediately and twice.** Every replica starts at zero, so all of
+      them use nonce 1 for their first message; and every restart repeats the
+      sequence.
+
+
+      **1 is the worst and is a total break.** Every message shares a keystream.
+      In GCM, nonce reuse additionally leaks the authentication subkey, so an
+      attacker can forge messages as well as read them.
+    explanation: >-
+      The ranking matters less than the failure mode they share: three of the
+      four break under conditions that are *normal operation* — a restart, a
+      scale-out, a redeploy. Nonce uniqueness has to survive those, and a scheme
+      that holds only while a single process runs continuously is a scheme that
+      holds until Tuesday.
+
+
+      The GCM detail on proposal 1 is worth carrying. Nonce reuse in GCM is worse
+      than in CTR: it leaks the value used to authenticate, so the attacker
+      gains forgery on top of decryption. Choosing an authenticated mode does not
+      relax the nonce requirement — it raises the cost of breaking it.
+
+  - id: e5
+    title: Specify the scheme, not the cipher
+    level: L2
+    objectives: [OBJ-A04.2.8]
+    kind: short_answer
+    prompt: >-
+      A colleague's design document says: *"Customer PII will be encrypted with
+      AES-256."*
+
+
+      Write the five questions you would leave as review comments, and say why
+      the cipher choice is not among them.
+    answer: >-
+      1. **Which mode?** AES-256 in ECB leaks structure; in CBC or CTR it is
+         malleable. The answer should be AES-256-GCM or ChaCha20-Poly1305.
+
+      2. **Where does the key live, and who can read it?** Config file,
+         environment, secrets manager or KMS — this decides what the encryption
+         actually protects against, and everything else is downstream of it.
+
+      3. **How does the nonce vary, and does that survive restarts and
+         scale-out?** A constant or a per-process counter is a total break under
+         ordinary operations.
+
+      4. **Is a key identifier stored with each record?** Without one, rotation
+         is a single unpausable migration, which means it will never happen.
+
+      5. **Which threat is this stopping?** If the key is on the same host as the
+         data, this protects against a stolen disk and not against anyone who
+         compromises the service — and the document should say which it means.
+
+
+      **Why not the cipher:** AES-256 is already correct and was never going to
+      be the weak point. It is the easiest question to ask and the only one the
+      sentence answers, which is precisely why it draws attention away from the
+      five that decide the outcome.
+    explanation: >-
+      This mirrors the previous topic exactly. There, "we use SHA-512" named an
+      algorithm and left out the work factor that decided everything; here, "we
+      use AES-256" names an algorithm and leaves out mode, key custody, nonce
+      handling and rotation.
+
+
+      The pattern is worth naming because it recurs through the whole of security
+      engineering: **the primitive is almost never the weakness, and naming it is
+      how a design avoids discussing the parts that are.** A review that only
+      checks the algorithm passes every system in this topic, including the one
+      whose payment amount you rewrote without a key.

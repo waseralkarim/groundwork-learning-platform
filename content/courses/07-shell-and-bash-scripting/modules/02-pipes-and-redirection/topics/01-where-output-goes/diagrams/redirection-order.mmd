@@ -1,0 +1,20 @@
+flowchart TB
+    subgraph A["cmd >file 2>&1 — applied left to right"]
+        A0["start: 1 → terminal, 2 → terminal"] --> A1[">file<br/><i>1 now points at file</i>"]
+        A1 --> A2["2>&1<br/><i>2 = a copy of where 1 points NOW</i>"]
+        A2 --> A3["result: 1 → file, 2 → file<br/><b>both in the file</b>"]
+    end
+
+    subgraph B["cmd 2>&1 >file — the same two words, swapped"]
+        B0["start: 1 → terminal, 2 → terminal"] --> B1["2>&1<br/><i>2 = a copy of where 1 points now</i><br/>= the TERMINAL"]
+        B1 --> B2[">file<br/><i>1 now points at file.</i><br/>2 is unaffected — it copied the<br/>target, not the name"]
+        B2 --> B3["result: 1 → file, 2 → terminal<br/><b>errors miss the log</b>"]
+    end
+
+    NOTE["2>&1 copies the current TARGET of 1,<br/>not the word '1'. Nothing links them afterwards."]
+    NOTE -.-> A2
+    NOTE -.-> B1
+
+    style A3 fill:#e8f4ea,stroke:#2f7d4f
+    style B3 fill:#fdecea,stroke:#c0392b
+    style NOTE fill:#fdf6e3,stroke:#b58900

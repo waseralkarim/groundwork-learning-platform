@@ -1,0 +1,465 @@
+id: quiz.service-models-and-responsibility
+topic: topic.service-models-and-responsibility
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.2.1]
+    stem: What distinguishes IaaS from PaaS?
+    options:
+      - id: a
+        text: Where the responsibility boundary sits — PaaS moves the OS, runtime and database software to the provider
+        correct: true
+      - id: b
+        text: PaaS uses containers and IaaS uses virtual machines
+        note: >-
+          Both can use either. The technology is not what defines the model.
+      - id: c
+        text: PaaS is cheaper at every scale
+        note: >-
+          Frequently more expensive per unit of compute. What it saves is
+          people's time.
+      - id: d
+        text: IaaS is self-hosted and PaaS is cloud-hosted
+        note: >-
+          Both are provider-hosted. The difference is how far up the stack the
+          provider goes.
+    explanation: >-
+      The models are one stack with a line drawn in different places. Counting
+      the layers for the same application makes it concrete: colocation 14 yours,
+      IaaS 11, PaaS 8 plus 3 shared, SaaS 3. Nothing about the technology
+      changes — the same application, the same data, the same traffic — only who
+      is responsible for each layer.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.2.1]
+    stem: >-
+      A team says "we moved to SaaS, so security is handled". What is wrong with
+      that?
+    options:
+      - id: a
+        text: Data, access control and configuration remain theirs — and those are where most breaches happen
+        correct: true
+      - id: b
+        text: Nothing — at SaaS the vendor is responsible for everything
+        note: >-
+          Three layers never transfer at any model, and they are the ones that
+          appear in breach reports.
+      - id: c
+        text: SaaS vendors have worse security than self-hosting
+        note: >-
+          Usually the reverse. The issue is what did not transfer, not the
+          quality of what did.
+      - id: d
+        text: It is true only if they also have a security team
+        note: >-
+          The three remaining responsibilities exist regardless of who is
+          assigned to them.
+    explanation: >-
+      SaaS removes fourteen of seventeen layers and leaves exactly three: data,
+      access control and configuration. A public bucket, an IAM role granting `*`
+      on `*`, and a default credential all live there, and none of them is a
+      patch anyone can ship. The remaining work is smaller, more important, and
+      nobody else can do it.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.2.2]
+    stem: >-
+      An OpenSSL vulnerability affects your container image on managed
+      Kubernetes. Whose patch?
+    options:
+      - id: a
+        text: Yours — the image's userspace is yours at every model
+        correct: true
+      - id: b
+        text: The provider's — they patch the operating system
+        note: >-
+          They patch the *node's* OS. Your image brings its own userspace.
+      - id: c
+        text: Shared — they publish and you adopt
+        note: >-
+          That describes the node image. Nothing but you rebuilds your
+          container image.
+      - id: d
+        text: Nobody's — containers do not run OpenSSL
+        note: >-
+          Container images contain full userspace including libraries like
+          OpenSSL.
+    explanation: >-
+      A container shares the host kernel and brings its own userspace — A05.1's
+      distinction reappearing as a responsibility boundary. So "the provider
+      patches the OS" is true and ambiguous: they patch the node's OS, and
+      everything inside your image is yours at every model up to SaaS. Nothing
+      tells you your base image is vulnerable, which is why base image age is
+      worth alerting on.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.2.2]
+    stem: >-
+      On managed Kubernetes, who is responsible for a Kubernetes API server
+      privilege escalation?
+    options:
+      - id: a
+        text: The provider — the control plane is theirs on a managed service
+        correct: true
+      - id: b
+        text: You — Kubernetes is your platform choice
+        note: >-
+          Choosing it is yours. Running and patching the control plane is what
+          "managed" means.
+      - id: c
+        text: Shared — they patch it and you restart it
+        note: >-
+          The control plane is upgraded by the provider without action from you.
+      - id: d
+        text: It depends on your Kubernetes version
+        note: >-
+          Version affects exposure, not who applies the patch.
+    explanation: >-
+      On a managed service the control plane is entirely the provider's — you do
+      not run an API server. Your mechanism here is awareness only: subscribe to
+      their bulletins so you can answer questions about an incident that was
+      theirs. It is one of the clearest cases in the twelve-advisory exercise,
+      and it contrasts sharply with anything inside your own image.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.3]
+    stem: >-
+      Moving one application from IaaS to PaaS, roughly what happens to the count
+      of layers you own?
+    options:
+      - id: a
+        text: It falls from 11 to 8, and three become shared rather than transferred
+        correct: true
+      - id: b
+        text: It falls to zero — PaaS means the provider runs everything
+        note: >-
+          That is closer to SaaS, and even SaaS leaves three.
+      - id: c
+        text: It stays the same; only the tooling changes
+        note: >-
+          The OS, container runtime and database software all move.
+      - id: d
+        text: It rises, because managed services add configuration work
+        note: >-
+          Configuration work is real and the count of owned layers falls.
+    explanation: >-
+      The count is the useful way to compare models, and the detail that matters
+      is the shared column: three layers do not transfer, they become joint. OS
+      patching, database patching and backups all become "the provider acts and
+      you must respond" — which is a different kind of work from either owning or
+      not owning something.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.3]
+    stem: >-
+      Which service model is the only one with genuinely shared layers?
+    options:
+      - id: a
+        text: PaaS — it is where the two parties actually meet
+        correct: true
+      - id: b
+        text: IaaS, because the provider supplies the OS image
+        note: >-
+          They supply it and you run and patch it. That is yours, not shared.
+      - id: c
+        text: SaaS, because you still configure it
+        note: >-
+          Configuration is entirely yours there, not shared.
+      - id: d
+        text: All of them equally
+        note: >-
+          Colocation, IaaS and SaaS each allocate every layer to one party.
+    explanation: >-
+      Colocation, IaaS and SaaS each draw a clean line. PaaS is the model where
+      the boundary passes through layers rather than between them, and that band
+      is where incidents cluster — because "shared" is routinely read as
+      "theirs" and nothing on your side errors when you skip your half.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.4]
+    stem: >-
+      Which responsibilities remain yours at every service model including SaaS?
+    options:
+      - id: a
+        text: Data, access control and configuration
+        correct: true
+      - id: b
+        text: Application code, data and backups
+        note: >-
+          Application code and backups both transfer at SaaS. Data does not.
+      - id: c
+        text: Only data
+        note: >-
+          Access control and configuration are equally non-transferable, and
+          equally implicated in breaches.
+      - id: d
+        text: Nothing — that is what SaaS means
+        note: >-
+          SaaS removes fourteen of seventeen layers and leaves three.
+    explanation: >-
+      Computed rather than asserted: extract the layers marked yours from all
+      four deployments and intersect them with `comm -12`, and exactly these
+      three survive. They are also where nearly all cloud breaches happen — a
+      public bucket, an over-permissive role, a default credential — none of
+      which is a patch anybody can ship.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.4]
+    stem: >-
+      Why do those three matter more than their number suggests?
+    options:
+      - id: a
+        text: They are where breaches actually occur, and no model transfers them
+        correct: true
+      - id: b
+        text: They are the hardest to automate
+        note: >-
+          All three automate well. The issue is that they remain yours to
+          automate.
+      - id: c
+        text: They are the most expensive layers to run
+        note: >-
+          They cost very little to run and a great deal to get wrong.
+      - id: d
+        text: Regulators only audit those three
+        note: >-
+          Audits cover far more, and this is not why the three matter
+          operationally.
+    explanation: >-
+      Hypervisor escapes and kernel flaws exist and are rare, and the layers they
+      live in are run by people who do nothing else at a scale you cannot match.
+      Public buckets, roles granting `*` on `*` and default credentials are
+      common, and they live in the three layers no provider will ever take from
+      you.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.5]
+    stem: >-
+      A managed database was patched during a three-hour window at 14:00. The
+      maintenance window was left at its default. Whose incident?
+    options:
+      - id: a
+        text: The provider acted as specified; you could have prevented the timing
+        correct: true
+      - id: b
+        text: Entirely the provider's — they chose when to patch
+        note: >-
+          They chose within the window you left open. Setting it is your half of
+          the shared layer.
+      - id: c
+        text: Entirely yours — you should have self-hosted
+        note: >-
+          Managed patching is a feature of the service, not a defect to escape.
+      - id: d
+        text: Nobody's — mandatory patches are unavoidable
+        note: >-
+          The patch was unavoidable; the timing was not.
+    explanation: >-
+      Fault and preventability are different questions, and this is the case
+      where they come apart. Mandatory patching is what a managed service *is*.
+      Your half of the shared layer is choosing when, and a default of "any time"
+      is a decision made by not deciding. Setting a window is a two-minute change
+      that prevents a whole class of incident.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.5]
+    stem: >-
+      A managed Kubernetes control plane was down for 45 minutes and your pods
+      kept serving. What did you actually lose?
+    options:
+      - id: a
+        text: Deploying, scaling and self-healing — you were frozen rather than down
+        correct: true
+      - id: b
+        text: Nothing, since traffic was unaffected
+        note: >-
+          A crashed pod would not have been replaced, and no fix could have been
+          deployed.
+      - id: c
+        text: All traffic to the cluster
+        note: >-
+          The data plane is independent of the control plane; kubelets keep
+          running what they were told to run.
+      - id: d
+        text: Your data, until the control plane returned
+        note: >-
+          Data is unaffected by a control-plane outage.
+    explanation: >-
+      The control plane and the data plane fail independently, which is a
+      deliberate design property. The lesson is to keep it that way: never put a
+      control-plane call on a request path, or a control-plane outage becomes a
+      user-facing one. And have an answer for the worst case — a control-plane
+      outage during an unrelated incident that needs a deploy to fix.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.6]
+    stem: >-
+      What does a two-column shared-responsibility diagram most importantly omit?
+    options:
+      - id: a
+        text: The shared band, where both parties must act
+        correct: true
+      - id: b
+        text: The provider's subcontractors
+        note: >-
+          Worth knowing for compliance and not the operational gap that causes
+          incidents.
+      - id: c
+        text: The pricing of each layer
+        note: >-
+          Not a responsibility question, and available elsewhere.
+      - id: d
+        text: Which regions the model applies to
+        note: >-
+          It generally applies uniformly; region matters for availability
+          instead.
+    explanation: >-
+      Two columns allocate every layer to exactly one party, so layers where the
+      provider publishes and you adopt appear in neither — and they are where
+      incidents cluster, because they are read as theirs. They also fail
+      silently: nothing errors on your side when you skip your half.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.6]
+    stem: >-
+      A vendor's responsibility page covers security thoroughly. What has it
+      still not told you?
+    options:
+      - id: a
+        text: Anything about availability — a separate question with its own document
+        correct: true
+      - id: b
+        text: How to configure their service
+        note: >-
+          Documentation covers that, and it is not what the responsibility model
+          is for.
+      - id: c
+        text: Their compliance certifications
+        note: >-
+          Usually published, and a different concern from either question.
+      - id: d
+        text: Nothing — security responsibility covers availability
+        note: >-
+          A six-hour outage can violate no security property at all.
+    explanation: >-
+      A vendor outage can leave every security property intact — data not
+      exposed, access control holding, configuration correct — and still make the
+      service unusable for six hours. Availability is governed by an SLA, which
+      is a refund rather than a guarantee, and your own availability is the
+      product of every dependency in series.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.7]
+    stem: Why do shared layers fail more often than either party's own layers?
+    options:
+      - id: a
+        text: They have no error state — skipping your half breaks nothing visibly
+        correct: true
+      - id: b
+        text: Providers document them poorly
+        note: >-
+          Documentation is usually adequate. The failure is that nothing forces
+          you to act on it.
+      - id: c
+        text: They require more technical skill
+        note: >-
+          Rolling nodes and setting a window are simple. Remembering is the hard
+          part.
+      - id: d
+        text: They change more frequently than other layers
+        note: >-
+          Change rate is not what distinguishes them.
+    explanation: >-
+      The provider does the doing and you do the noticing, and noticing does not
+      error. Never roll your nodes and the cluster stays healthy on the old
+      image; never restore a backup and every backup still reports success. This
+      is why shared layers need a named owner and a schedule rather than
+      attention — a checklist beats intent when nothing complains.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.8]
+    stem: >-
+      Which cost of moving up the service models is most often left out of the
+      decision?
+    options:
+      - id: a
+        text: Exit cost — it rises at every step and is cheapest to think about before committing
+        correct: true
+      - id: b
+        text: The monthly bill
+        note: >-
+          Almost always the first thing considered.
+      - id: c
+        text: Migration effort
+        note: >-
+          Usually estimated, because it is the immediately visible work.
+      - id: d
+        text: Training the team
+        note: >-
+          Real and usually anticipated, and much smaller than the others.
+    explanation: >-
+      Moving off IaaS is mostly moving VMs. Moving off a managed database is a
+      migration. Moving off SaaS is a project and occasionally impossible. None
+      of that is a reason to avoid moving up — it is a reason to write down what
+      is being accepted, so that two years later somebody can see it was a
+      decision rather than an accident.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.2.8]
+    stem: >-
+      What should a postmortem for a provider-caused incident ask?
+    options:
+      - id: a
+        text: Who could have prevented it, and what would that have taken
+        correct: true
+      - id: b
+        text: Whose fault it was
+        note: >-
+          Answering "the provider" ends the review, and nothing changes before
+          the next one.
+      - id: c
+        text: Whether to switch providers
+        note: >-
+          Occasionally the answer and almost never the useful first question.
+      - id: d
+        text: What the SLA credit will be
+        note: >-
+          Worth claiming, and it does not reduce the cost of a repeat.
+    explanation: >-
+      Fault and preventability are the same party in the provider's layers and
+      different parties in the shared band, which is exactly why shared-layer
+      incidents produce arguments. Asking about preventability keeps the review
+      moving toward the third and most valuable question — what to change so the
+      next one costs less — which is usually a mechanism on your side rather than
+      a change of provider.

@@ -1,0 +1,245 @@
+topic: topic.packages-and-dependencies
+
+questions:
+  - id: i1
+    level: L1
+    question: How would you find out what installed a particular file on a Linux system?
+    model_answer: >-
+      On a Debian system, `dpkg -S /path/to/file`. On RHEL-family, `rpm -qf`. Both
+      read a local database, so they work offline and inside a container whose
+      archive metadata has been deleted.
+
+
+      The reason it is worth practising is that the interesting cases are the ones
+      where it finds nothing, and there are two of them with identical output.
+
+
+      **The first is a symlink.** `dpkg -S /usr/bin/awk` finds nothing because
+      `/usr/bin/awk` points into `/etc/alternatives` — the layer that lets several
+      packages provide the same command. Resolve it first: `dpkg -S "$(readlink -f
+      /usr/bin/awk)"` names `mawk` immediately. Same for `/bin/sh`, which on
+      Debian is `dash`, and that one is not trivia — it is why `#!/bin/sh` scripts
+      written against bash break there.
+
+
+      **The second is a file no package owns**, which is a real finding. It gets
+      no upgrades, no security fixes, no integrity checking, and it appears in no
+      inventory — so a scan of that host reports it clean forever, not because it
+      is safe but because nothing looked.
+
+
+      Which is why I would run the question in bulk when auditing a machine rather
+      than one file at a time: loop over `/usr/local/bin` and `/opt`, resolve each
+      path, and print what `dpkg -S` cannot place. That list is the software
+      nobody is patching, and in my experience it is never empty.
+    signal: >-
+      Naming the command is the baseline. The discriminator is knowing that "no
+      path found" has two meanings and reaching for `readlink -f` before
+      concluding anything. Turning it into a bulk audit shows they have used it
+      for something other than curiosity.
+    follow_ups:
+      - "What would you do with the list of unowned files?"
+      - "How would you answer the same question on a RHEL system?"
+      - "Why does /bin/sh matter?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A script works on your laptop and fails in the container with "fuser: not
+      found". Walk me through it.
+    model_answer: >-
+      The immediate cause is that `fuser` comes from `psmisc`, and `psmisc` is a
+      **`Recommends`** of `procps` rather than a dependency of anything.
+
+
+      `Recommends` is installed by default, so it is present on every machine
+      anyone develops on — which means code written against it works everywhere
+      the author looked. Container images are built with
+      `--no-install-recommends`, because every guide correctly advises it, and
+      the package is silently skipped. Nothing declared it, so nothing missed it.
+
+
+      The flag is right and I would keep it. What is usually missing is the second
+      half of the contract: having stopped inheriting recommendations, you have
+      undertaken to install what you actually need, explicitly — which also makes
+      it visible in the Dockerfile to the next reviewer.
+
+
+      The part I would push on is what the failure looks like when it is *not*
+      loud. If the script calls it as `fuser "$LOCK" >/dev/null 2>&1` inside an
+      `if`, there is no error message at all: the shell returns 127 for a missing
+      command, `if` reads any non-zero status as false, and a guard meaning
+      "another process holds the lock" answers "no" — not because the lock is
+      free, but because the question could not be asked. **The check does not
+      fail, it inverts**, and that is worse than having no check, because an
+      absent check is visible in review.
+
+
+      So my actual answer is two changes: install `psmisc` and name it, and make
+      any script with a safety check assert its tooling exists before trusting the
+      answer. For a lock specifically I would drop `fuser` entirely and use
+      `flock`, which is in `util-linux` and therefore `Essential` — genuinely
+      always present.
+    signal: >-
+      Knowing what `Recommends` is and that `--no-install-recommends` drops it is
+      the core. The discriminator is the exit-127 inversion — recognising that the
+      dangerous version of this bug is the silent one. Reaching for an `Essential`
+      package to avoid the class of problem is a senior move.
+    follow_ups:
+      - "How would you find every other command your scripts assume?"
+      - "Would you drop --no-install-recommends?"
+      - "What makes flock a better answer than fuser here?"
+
+  - id: i3
+    level: L2
+    question: >-
+      Your image installs 16 packages and contains 162. Is that a problem?
+    model_answer: >-
+      Not by itself — the 146 are the dependency closure, computed at install time
+      because those sixteen genuinely require them. `apt-mark showmanual` and
+      `apt-mark showauto` are how the system records the split, and the split is
+      what makes `autoremove` possible at all.
+
+
+      What the ratio actually tells you is the honest size of the decision, and it
+      has two consequences that matter more than the number.
+
+
+      **Image size is a property of the dependency graph, not of discipline.**
+      `gcc` alone pulls in around forty packages — a compiler needs an assembler, a
+      linker, a preprocessor and several arbitrary-precision maths libraries. You
+      cannot tidy that away; you can only ask for less. So the real conversation is
+      about the sixteen, and if the compiler is only needed to build the
+      application, the fix is a multi-stage build.
+
+
+      **Attack surface is the closure, not the request.** A CVE in a transitively
+      installed library is yours, and you have almost certainly never heard of it.
+      That is the version of this argument I would actually make, because it is the
+      one that survives the "disk is cheap" reply.
+
+
+      If a reviewer asked me to delete the 146, I would show them `apt-get -s
+      remove` on any of them: most take something we asked for with them. Their
+      instinct is sound and the proposed action is impossible, and I would rather
+      redirect them to the manual list than dismiss the concern — that list is the
+      only part anybody controls.
+    signal: >-
+      Recognising the closure as requirements rather than waste is the baseline.
+      The discriminator is knowing which lever exists — the manual list — and
+      framing the risk as attack surface rather than megabytes. Handling the
+      reviewer's instinct as sound but misdirected shows they have had the
+      conversation.
+    follow_ups:
+      - "How would you actually make that image smaller?"
+      - "How do you find what a single package pulls in?"
+      - "When would you accept the compiler in the final image?"
+
+  - id: i4
+    level: L2
+    question: >-
+      A security fix was installed on 340 hosts eleven months ago and the fleet is
+      still vulnerable. Where do you look?
+    model_answer: >-
+      At the configuration, because a correct package version and wrong behaviour
+      means the fix was not delivered entirely as code.
+
+
+      The specific mechanism I would expect is **conffile handling**. dpkg records
+      a checksum for every configuration file at install time so an upgrade can
+      tell whether you edited it. There are four outcomes and only one of them
+      prompts: if you changed the file *and* the package changed it, that is a
+      conflict. On an unattended upgrade nobody answers, `--force-confold` keeps
+      your version, the maintainer's is written alongside as `.dpkg-dist`, and the
+      upgrade exits zero.
+
+
+      So if the fix shipped as a hardened default, every host that had ever
+      hand-edited that file declined it — silently, eleven months ago.
+
+
+      Three commands settle it. `ls` the configuration directory, because
+      `.dpkg-dist` is a filename that carries its whole explanation and grep will
+      never show it to you. `dpkg -V <package>`, which reports an md5 mismatch on
+      any conffile you have modified. And the effective configuration — `sshd -T`
+      or the daemon's equivalent — rather than reading the file, because that is
+      what actually answers the question.
+
+
+      The tell that usually confirms it: hosts built recently are fine. A fresh
+      install has no local version to keep, so it takes the package's file
+      unmodified.
+
+
+      The structural fix is to stop relying on package defaults for anything that
+      matters and let configuration management own the file, so divergence is
+      detected rather than negotiated. And I would keep `--force-confold` — an
+      overnight upgrade overwriting local configuration is a worse failure — but
+      alert on `.dpkg-dist` files appearing, because the real defect is that its
+      decisions produced no signal for eleven months.
+    signal: >-
+      Separating "the package is installed" from "the behaviour changed" is the
+      core reframe. Knowing the four conffile outcomes and that only the conflict
+      case prompts is the technical discriminator. The "new hosts are fine" tell
+      and keeping `--force-confold` while alerting on its output are both signs of
+      having run a fleet rather than read about one.
+    follow_ups:
+      - "What do .dpkg-old and .dpkg-new mean?"
+      - "Would you turn off --force-confold?"
+      - "How would you have detected this before the assessment did?"
+
+  - id: i5
+    level: L2
+    question: >-
+      Your integrity check reports 4,600 findings on a freshly built image. What
+      do you do?
+    model_answer: >-
+      Group them before reading any of them. On a slim Debian image, `dpkg -V`
+      returns thousands of lines and almost all carry a single status — `missing`,
+      under `/usr/share/doc`, `man`, `locale` and `lintian`. Those are files the
+      slim variant deliberately excludes through a dpkg configuration fragment, so
+      the package database and the filesystem **disagree by design**. The tool is
+      reporting a decision it was never told about.
+
+
+      What is left after that is the actual result. In the case I worked through
+      it was one line — a checksum mismatch on `/etc/bash.bashrc`, caused by the
+      image's own Dockerfile appending a shell prompt to a file that happens to be
+      a `bash` conffile. Not a compromise, and worth noting that I could only say
+      so because I could read the file and recognise the change. Without that
+      context it is an unexplained modification to a shell startup file, which is a
+      real persistence technique and exactly what an auditor should be alarmed by.
+
+
+      The response is a narrow filter: drop *missing* files under *documentation*
+      paths only. Any checksum mismatch still reports, and a missing file anywhere
+      else still reports, because those indicate real damage.
+
+
+      If someone objects that filtering hides findings, I think the objection is
+      reasonable and the conclusion is backwards. Unfiltered, this control produces
+      thousands of criticals on a **healthy** machine — every scan, every host,
+      forever. What follows is not a guess: either somebody writes a suppression
+      broad enough to silence the whole check, or people learn it is noise. Either
+      way the control is gone and the paperwork says it is running.
+
+
+      What makes the filter defensible is monitoring it: **alert if the suppressed
+      count changes materially**, because that means the base image changed. That
+      turns a quiet `grep` into a documented decision a reviewer can audit.
+
+
+      It is the same argument as a scanner reporting criticals against backported
+      packages. The cost of an unactionable finding is not the time to triage it —
+      it is the attention it spends, and attention is scarcest when something is
+      actually wrong.
+    signal: >-
+      Grouping before reading is the habit worth hiring for. The discriminator is
+      arguing *for* filtering while taking the objection seriously, and
+      specifically the idea of alerting on the filter's own output. Noticing that
+      the one true positive was only benign because they had context is a
+      genuinely careful answer.
+    follow_ups:
+      - "How would you decide which exclusions are safe to filter?"
+      - "What would make you treat that bash.bashrc finding as an incident?"
+      - "Where else have you seen a control disabled by its own noise?"

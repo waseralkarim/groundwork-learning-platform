@@ -1,0 +1,8 @@
+graph LR
+    A["Status code"] --> B["<b>1xx</b> informational<br/><i>keep waiting</i>"]
+    A --> C["<b>2xx</b> success<br/><i>it worked</i>"]
+    A --> D["<b>3xx</b> redirection<br/><i>look elsewhere</i>"]
+    A --> E["<b>4xx</b> client error<br/><i>you sent something wrong —<br/>retrying unchanged will not help</i>"]
+    A --> F["<b>5xx</b> server error<br/><i>the server failed —<br/>retrying may help</i>"]
+    E --> G["<b>The 4xx/5xx split is the one<br/>that matters operationally:</b><br/>it decides whether a retry,<br/>an alert, or a code change<br/>is the right response"]
+    F --> G

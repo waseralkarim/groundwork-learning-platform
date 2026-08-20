@@ -1,0 +1,11 @@
+graph LR
+    subgraph T["TCP — a connection exists"]
+        T1["LISTEN<br/><i>waiting</i>"] --> T2["ESTABLISHED<br/><i>both ends agreed</i>"]
+        T2 --> T3["TIME-WAIT / CLOSE-WAIT<br/><i>tearing down</i>"]
+    end
+    subgraph U["UDP — nothing exists"]
+        U1["<b>UNCONN</b><br/><i>a socket bound to a port.<br/>That is the whole state</i>"]
+        U1 -.->|"connect() — a purely local act.<br/>No packet is sent"| U2["ESTAB<br/><i>the socket now only accepts<br/>from one peer</i>"]
+    end
+    T --> X["<i>ss shows LISTEN for TCP and<br/>UNCONN for UDP, and the difference<br/>is not cosmetic</i>"]
+    U --> X

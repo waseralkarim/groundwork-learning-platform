@@ -1,0 +1,275 @@
+id: lab.running-and-unreachable
+topic: topic.ports-and-sockets
+title: "Challenge: three services, all running, none of them reachable"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A03.2.8]
+
+intro: >-
+  Three services are supposed to be reachable on this machine's external address
+  at ports 9301, 9302 and 9303. None of them is. Every process is running.
+
+
+  You will start them yourself — the script is written for you and you should
+  read it afterwards, not before — then work out, using only `ss` and `nc`, why
+  each one fails. The three reasons are different, and two of the three failures
+  produce an identical message.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before starting anything, write to /tmp/hypotheses at least three distinct
+      reasons a running service can be unreachable on a port.
+    hint: >-
+      One is about the address it bound. One is about the port it bound. One is
+      about whether it is listening at all.
+    walkthrough: |
+      printf 'it bound 127.0.0.1 instead of 0.0.0.0\nit is listening on a different port from the one documented\nit is running but never called listen, so nothing is bound\nsomething else took the port first\n' > /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You recorded hypotheses before looking
+      - type: command_output
+        command: "wc -l < /tmp/hypotheses"
+        pattern: "[3-9]"
+        describe: At least three hypotheses
+
+  - id: s2
+    instruction: >-
+      Start the three services. Run these three commands exactly, then confirm
+      all three processes are running.
+
+
+      ```
+      nohup nc -l -k 127.0.0.1 9301 >/dev/null 2>&1 &
+      nohup nc -l -k 0.0.0.0    9312 >/dev/null 2>&1 &
+      nohup sleep 600                >/dev/null 2>&1 &
+      ```
+
+
+      Save the process list to /tmp/answer-processes.
+    walkthrough: |
+      nohup nc -l -k 127.0.0.1 9301 >/dev/null 2>&1 &
+      nohup nc -l -k 0.0.0.0    9312 >/dev/null 2>&1 &
+      nohup sleep 600                >/dev/null 2>&1 &
+      sleep 1
+      ps -eo pid,comm,args --no-headers | grep -E 'nc |sleep' | grep -v grep > /tmp/answer-processes
+      cat /tmp/answer-processes
+    verify:
+      - type: command_exit
+        command: "test $(grep -c 'nc ' /tmp/answer-processes) -ge 2"
+        exit_code: 0
+        describe: Two listeners are running
+      - type: file_matches
+        path: /tmp/answer-processes
+        pattern: 'sleep 600'
+        describe: And a third process that is running and listening for nothing
+
+  - id: s3
+    instruction: >-
+      Get this machine's external address, then probe all three target ports on
+      it. Save the three results with their exit statuses to /tmp/answer-probes.
+    hint: >-
+      `nc -z -v -w 2 <addr> <port>` for 9301, 9302 and 9303, capturing stderr.
+    walkthrough: |
+      MY=$(ip -o -4 addr show eth0 | awk '{print $4}' | cut -d/ -f1)
+      echo "addr=$MY" > /tmp/answer-probes
+      for p in 9301 9302 9303; do
+        echo "== $p"
+        nc -z -v -w 2 "$MY" "$p" 2>&1
+        echo "rc=$?"
+      done >> /tmp/answer-probes
+      cat /tmp/answer-probes
+    verify:
+      - type: command_exit
+        command: "test $(grep -c '^rc=1$' /tmp/answer-probes) -eq 3"
+        exit_code: 0
+        describe: All three fail, exactly as reported
+
+  - id: s4
+    instruction: >-
+      Now look at what is actually bound. Save every listening socket in the
+      9300-range to /tmp/answer-actual.
+
+
+      Compare it with the three ports you were told to expect.
+    walkthrough: |
+      ss -tlnp | grep -E ':(93[0-9][0-9])' > /tmp/answer-actual
+      cat /tmp/answer-actual
+    verify:
+      - type: file_matches
+        path: /tmp/answer-actual
+        pattern: '127\.0\.0\.1:9301'
+        describe: One is bound to loopback only
+      - type: file_matches
+        path: /tmp/answer-actual
+        pattern: '0\.0\.0\.0:9312'
+        describe: One is bound correctly, on the wrong port
+      - type: command_exit
+        command: "grep -q ':9303' /tmp/answer-actual"
+        exit_code: 1
+        describe: And nothing at all is bound for the third
+
+  - id: s5
+    instruction: >-
+      Prove the first service is genuinely working, despite failing your probe.
+      Reach it the way that does succeed, and save the result to
+      /tmp/answer-9301.
+    hint: "Its socket is bound to 127.0.0.1. Connect via that."
+    walkthrough: |
+      nc -z -v -w 2 127.0.0.1 9301 > /tmp/answer-9301 2>&1
+      echo "rc=$?" >> /tmp/answer-9301
+      cat /tmp/answer-9301
+    verify:
+      - type: file_matches
+        path: /tmp/answer-9301
+        pattern: '^rc=0$'
+        describe: It works perfectly — via the one address it is bound to
+
+  - id: s6
+    instruction: >-
+      The second service is bound to every address and is still unreachable on
+      9302. Find it, and save the evidence plus the discrepancy to
+      /tmp/answer-9302.
+    walkthrough: |
+      {
+        grep ':9312' /tmp/answer-actual
+        echo "expected=9302 actual=9312"
+        MY=$(ip -o -4 addr show eth0 | awk '{print $4}' | cut -d/ -f1)
+        nc -z -v -w 2 "$MY" 9312 2>&1; echo "rc=$?"
+      } > /tmp/answer-9302
+      cat /tmp/answer-9302
+    verify:
+      - type: file_matches
+        path: /tmp/answer-9302
+        pattern: 'expected=9302 actual=9312'
+        describe: Two digits transposed
+      - type: file_matches
+        path: /tmp/answer-9302
+        pattern: '^rc=0$'
+        describe: And it answers immediately on the port it really bound
+
+  - id: s7
+    instruction: >-
+      The third process is running and nothing is bound for it at all. Say what
+      that means, in /tmp/answer-9303.
+    hint: >-
+      Being in the process table and having a listening socket are different
+      things. Which one does a health check that greps `ps` actually test?
+    walkthrough: |
+      ps -eo pid,args --no-headers | grep 'sleep 600' | grep -v grep
+      ss -tln | grep ':9303' || echo "no socket bound for 9303"
+      echo "the process is running but it never called listen, so there is no socket at all; a health check that only looks for the process in ps would report it healthy, and every connection to it is refused because the kernel has nothing to deliver to" > /tmp/answer-9303
+    verify:
+      - type: file_matches
+        path: /tmp/answer-9303
+        pattern: "never|no socket|not listening"
+        describe: You distinguished running from listening
+      - type: file_matches
+        path: /tmp/answer-9303
+        pattern: "ps|health check|process"
+        describe: And named the check that would be fooled by it
+
+  - id: s8
+    instruction: >-
+      Write your three diagnoses and fixes to /tmp/answer-diagnosis — one line
+      each — plus a final line naming the one piece of evidence that would have
+      distinguished all three in a single command.
+    walkthrough: |
+      {
+        echo "9301: bound to 127.0.0.1 only, so it is refused on any other address; bind 0.0.0.0 or the specific address it should serve"
+        echo "9302: the service is bound to 0.0.0.0 but on port 9312, two digits transposed; fix the port in its configuration"
+        echo "9303: the process is running but never listened, so no socket exists; the service is not actually serving and ps proves nothing"
+        echo "ss -tlnp would have shown all three at once: one wrong address, one wrong port, and one absent entirely"
+      } > /tmp/answer-diagnosis
+      cat /tmp/answer-diagnosis
+    verify:
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: '9301:.*(127.0.0.1|loopback)'
+        describe: The first is a bind-address fault
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: '9302:.*93[0-9]2'
+        describe: The second is the wrong port
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: '9303:.*(never|no socket|not listen)'
+        describe: The third is not listening at all
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: 'ss -tlnp'
+        describe: And one command shows all three
+
+solution: |
+  **Three services, three faults, one command that finds them all.**
+
+  | Port expected | What was actually bound | Fault |
+  |---|---|---|
+  | 9301 | `127.0.0.1:9301` | Bound to loopback only |
+  | 9302 | `0.0.0.0:9312` | Wrong port — two digits transposed |
+  | 9303 | nothing | Running, never listened |
+
+  ```bash
+  ss -tlnp | grep -E ':93[0-9][0-9]'
+  ```
+
+  One command, three answers: one row with the wrong address, one row with the
+  wrong port, and a missing row.
+
+  **All three probes failed identically.** `nc -z` returned 1 for every one, and
+  the messages were the same. That is the point of the exercise: the client-side
+  symptom carries almost no information here, and everything useful is on the
+  server.
+
+  **9301 — the classic.** The socket is bound to `127.0.0.1`, so a packet for
+  the external address matches no socket and the kernel replies with a reset.
+  The service is entirely healthy — you proved it by connecting via loopback,
+  which succeeded instantly — and every local test would pass.
+
+  The refusal being *immediate* is the tell. A firewall dropping packets gives
+  silence and a timeout; a reset means the machine received the packet and
+  answered, which eliminates routing, firewalls and host availability in one
+  observation.
+
+  **9302 — bound correctly, on the wrong port.** `0.0.0.0` is right, and 9312 is
+  not 9302. Transposed digits survive review remarkably well because the line
+  looks correct at a glance, and the service reports itself healthy in its own
+  logs because from its point of view nothing is wrong.
+
+  This is why reading `ss` output beats reading configuration: `ss` reports what
+  the kernel has, and configuration reports what someone intended.
+
+  **9303 — running, and not listening.** The process is in `ps` and there is no
+  socket. Nothing was ever bound, so every connection is refused by a machine
+  with a perfectly healthy process on it.
+
+  This is the case that defeats a whole class of monitoring. A health check that
+  greps `ps`, or a container liveness check that tests whether PID 1 is alive,
+  reports this service as healthy forever. Only something that connects to the
+  port can tell the difference — which is the argument for TCP or HTTP checks
+  over process checks, and for HTTP over TCP.
+
+  **The general procedure, in the order that pays:**
+
+  ```bash
+  ss -tlnp | grep :<port>          # 1. bound at all? which address? which process?
+  nc -z -v -w 2 <addr> <port>      # 2. from the machine that is actually failing
+  ss -tan | grep :<port>           # 3. what state are connections in?
+  ```
+
+  Step 1 answers it most of the time, and it answers three different questions at
+  once — is anything bound, on which address, and owned by what. Step 2 has to be
+  run from the failing client and not from the server, because running it locally
+  is precisely how the 9301 fault survives an entire investigation.
+
+  **And the distinction worth carrying out of this topic:** *refused* means the
+  packet arrived and the machine answered — the network worked, and the fault is
+  a binding or a missing process. *Timeout* means nothing came back, and could be
+  a firewall, a route, or a dead host. Three of this lab's failures were
+  refusals, and every one of them was a server-side configuration mistake.

@@ -1,0 +1,241 @@
+version: "3"
+
+# Groundwork task runner (https://taskfile.dev).
+# Cross-platform on purpose — `make` on Windows is a trap.
+
+vars:
+  COMPOSE: docker compose
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  bootstrap:
+    desc: Create .env with freshly generated secrets (safe to re-run — never overwrites)
+    status:
+      - test -f .env
+    cmds:
+      - cp .env.example .env
+      - >-
+        python -c "import re,secrets,pathlib;
+        p=pathlib.Path('.env'); t=p.read_text();
+        t=re.sub(r'^SECRET_KEY=.*$', 'SECRET_KEY='+secrets.token_urlsafe(48), t, flags=re.M);
+        t=re.sub(r'^POSTGRES_PASSWORD=.*$', 'POSTGRES_PASSWORD='+secrets.token_urlsafe(24), t, flags=re.M);
+        p.write_text(t)"
+      - echo ".env created with generated secrets"
+
+  up:
+    desc: Start the stack
+    deps: [bootstrap]
+    cmds:
+      - "{{.COMPOSE}} up --build -d"
+      - task: wait
+      - echo "Groundwork is up on http://localhost:8080"
+
+  up:fg:
+    desc: Start the stack in the foreground
+    deps: [bootstrap]
+    cmds:
+      - "{{.COMPOSE}} up --build"
+
+  down:
+    desc: Stop the stack (volumes preserved)
+    cmds:
+      - "{{.COMPOSE}} down --remove-orphans"
+
+  nuke:
+    desc: Stop the stack and delete all data volumes
+    prompt: This deletes the database. Continue?
+    cmds:
+      - "{{.COMPOSE}} down --remove-orphans --volumes"
+
+  wait:
+    desc: Block until every service reports healthy
+    cmds:
+      - "{{.COMPOSE}} up --wait --wait-timeout 180 -d"
+
+  ps:
+    desc: Show service status
+    cmds:
+      - "{{.COMPOSE}} ps"
+
+  logs:
+    desc: 'Tail logs (task logs -- api)'
+    cmds:
+      - "{{.COMPOSE}} logs -f --tail=100 {{.CLI_ARGS}}"
+
+  shell:api:
+    desc: Shell into the api container
+    cmds:
+      - "{{.COMPOSE}} exec api /bin/bash"
+
+  db:backup:
+    desc: Dump the database to ./backups (accounts and progress — the part git cannot rebuild)
+    cmds:
+      - bash scripts/backup.sh
+
+  db:verify-restore:
+    desc: Restore the newest backup into a scratch database and prove the data survived
+    cmds:
+      - bash scripts/verify-restore.sh {{.CLI_ARGS}}
+
+  db:restore:
+    desc: "Restore a backup over the live database. Destructive: takes a safety dump first."
+    cmds:
+      - bash scripts/restore.sh {{.CLI_ARGS}}
+
+  shell:db:
+    desc: psql into the database
+    cmds:
+      - "{{.COMPOSE}} exec db psql -U ${POSTGRES_USER:-groundwork} -d ${POSTGRES_DB:-groundwork}"
+
+  migrate:
+    desc: Apply database migrations
+    cmds:
+      - "{{.COMPOSE}} run --rm migrate"
+
+  migrate:new:
+    desc: 'Autogenerate a migration (task migrate:new -- "add users")'
+    # Runs without compose.override.yaml and with an explicitly writable mount:
+    # the dev override mounts alembic/ read-only, which autogenerate cannot use.
+    # Always read the generated file before committing it.
+    cmds:
+      - '{{.COMPOSE}} -f compose.yaml run --rm -v "$PWD/services/api/alembic:/srv/alembic" migrate alembic revision --autogenerate -m "{{.CLI_ARGS}}"'
+
+  migrate:down:
+    desc: Roll back one migration
+    cmds:
+      - "{{.COMPOSE}} run --rm migrate alembic downgrade -1"
+
+  content:lint:
+    desc: Validate and lint all curriculum content (no database needed)
+    cmds:
+      - "{{.COMPOSE}} run --rm --no-deps api python -m app.content.cli lint"
+
+  content:ingest:
+    desc: Lint content, then load it into the database
+    cmds:
+      - "{{.COMPOSE}} run --rm api python -m app.content.cli ingest"
+
+  content:schemas:
+    desc: Regenerate JSON Schema for editor autocomplete
+    cmds:
+      - "{{.COMPOSE}} run --rm --no-deps api python -m app.content.cli schemas"
+
+  content:new:
+    desc: 'Scaffold a topic (task content:new -- --course 01-x --module 01-y --topic 01-z)'
+    cmds:
+      - "{{.COMPOSE}} run --rm --no-deps api python -m app.content.cli new {{.CLI_ARGS}}"
+
+  test:
+    desc: Run all tests
+    cmds:
+      - task: content:lint
+      - task: test:api
+      - task: test:integration
+      - task: test:broker
+      - task: test:web
+
+  test:api:
+    desc: Run API tests (unit only — no database)
+    cmds:
+      - "{{.COMPOSE}} run --rm --no-deps -e GROUNDWORK_ENV=test api pytest -m 'not integration' --ignore=tests/test_ingest_integration.py"
+
+  test:integration:
+    desc: Run integration tests against the real database
+    cmds:
+      - "{{.COMPOSE}} run --rm -e GROUNDWORK_ENV=test api pytest tests/test_ingest_integration.py"
+
+  test:broker:
+    desc: Run lab-broker tests (fake provisioner — no container runtime needed)
+    cmds:
+      - "{{.COMPOSE}} --profile labs run --rm --no-deps -e PROVISIONER=fake lab-broker pytest"
+
+  labs:up:
+    desc: Start the stack with the lab plane enabled
+    deps: [bootstrap]
+    cmds:
+      - "{{.COMPOSE}} --profile labs up --build --wait --wait-timeout 300 -d"
+      - echo "Labs enabled. The broker holds a docker socket — see docs/architecture/06."
+
+  verify:cold-start:
+    desc: Prove the project still starts from nothing, in an isolated Compose project
+    cmds:
+      - bash scripts/verify-cold-start.sh
+
+  obs:up:
+    desc: Start the stack with self-instrumentation and Grafana
+    deps: [bootstrap]
+    cmds:
+      # Setting the endpoint here rather than in .env keeps the default stack
+      # inert: telemetry exists only while this profile is running.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 {{.COMPOSE}} --profile observability up --build --wait --wait-timeout 300 -d
+      - echo "Grafana on http://localhost:3000 — four dashboards, provisioned from git."
+
+  obs:down:
+    desc: Stop the observability profile, leaving the platform running
+    cmds:
+      - "{{.COMPOSE}} --profile observability stop grafana prometheus tempo loki otel-collector"
+
+  obs:verify:
+    desc: Assert signals actually reach their backends, not just that containers are up
+    cmds:
+      - bash scripts/verify-observability.sh
+
+  labs:build:
+    desc: Build the lab base images
+    cmds:
+      - docker build -t groundwork/lab-foundations:1 labs/images/foundations
+
+  labs:terminal:
+    desc: Prove the lab terminal carries bytes in both directions
+    cmds:
+      - python scripts/verify-terminal.py {{.CLI_ARGS}}
+
+  labs:walk:
+    desc: Walk every lab as a learner would and assert each step verifies
+    cmds:
+      - python scripts/walk-labs.py {{.CLI_ARGS}}
+
+  labs:verify:
+    desc: Check that the lab runtime is reachable and can provision
+    cmds:
+      - bash scripts/verify-labs.sh
+
+  verify:a11y:
+    desc: Structural accessibility, mobile and compression checks against the served pages
+    cmds:
+      - python scripts/verify-accessibility.py {{.CLI_ARGS}}
+
+  test:web:
+    desc: Typecheck the web service
+    cmds:
+      - "{{.COMPOSE}} run --rm --no-deps web pnpm typecheck"
+
+  lint:
+    desc: Lint everything
+    cmds:
+      - "{{.COMPOSE}} run --rm --no-deps api ruff check ."
+      - "{{.COMPOSE}} run --rm --no-deps api ruff format --check ."
+      - "{{.COMPOSE}} run --rm --no-deps web pnpm lint"
+
+  fmt:
+    desc: Format everything
+    cmds:
+      - "{{.COMPOSE}} run --rm --no-deps api ruff format ."
+      - "{{.COMPOSE}} run --rm --no-deps api ruff check --fix ."
+      - "{{.COMPOSE}} run --rm --no-deps web pnpm biome check --write src"
+
+  check:compose:
+    desc: Validate the Compose files and assert the security invariants
+    cmds:
+      - "{{.COMPOSE}} config --quiet"
+      - bash scripts/assert-no-privileged.sh
+
+  smoke:
+    desc: Verify the running stack end to end
+    cmds:
+      - bash scripts/smoke.sh

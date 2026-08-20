@@ -1,0 +1,248 @@
+topic: topic.where-output-goes
+
+exercises:
+  - id: e1
+    title: Say where each stream lands
+    level: L1
+    objectives: [OBJ-B08.2.1, OBJ-B08.2.3]
+    kind: interpretation
+    prompt: >-
+      For each, say where stdout goes and where stderr goes:
+
+
+      1. `cmd > out.log`
+
+      2. `cmd > out.log 2>&1`
+
+      3. `cmd 2>&1 > out.log`
+
+      4. `cmd 2> out.log`
+
+      5. `cmd &> out.log`
+
+      6. `cmd > /dev/null 2>&1`
+    answer: >-
+      1. stdout → `out.log`; stderr → **terminal**.
+
+      2. stdout → `out.log`; stderr → `out.log`.
+
+      3. stdout → `out.log`; stderr → **terminal**. Same as 1.
+
+      4. stdout → **terminal**; stderr → `out.log`.
+
+      5. Both → `out.log`. Bash shorthand for 2.
+
+      6. Both discarded.
+
+
+      Items 1 and 3 have the same effect, which is exactly what makes 3
+      dangerous — it looks like it captures everything.
+    explanation: >-
+      The pair to hold onto is 2 and 3. `2>&1` makes descriptor 2 a copy of
+      **wherever descriptor 1 points at that moment** — it duplicates the target,
+      not the name, and afterwards the two are independent.
+
+
+      So in 3, descriptor 2 copies the terminal, and the later `> out.log` moves
+      descriptor 1 and leaves 2 behind. Writing `2>&1` **last** is the habit;
+      `&>` is shorthand for the correct order and is bash-only.
+
+  - id: e2
+    title: Fix a cron line
+    level: L2
+    objectives: [OBJ-B08.2.3, OBJ-B08.2.8]
+    kind: short_answer
+    prompt: >-
+      A job is failing nightly and `/var/log/reindex.log` looks completely
+      normal:
+
+
+      ```text
+      0 3 * * * /opt/jobs/reindex.sh 2>&1 >> /var/log/reindex.log
+      ```
+
+
+      Explain and fix it.
+    answer: >-
+      *The errors are not in the log because `2>&1` was applied first.* At that
+      point descriptor 1 still pointed at cron's stdout, so descriptor 2 copied
+      that. The later `>>` moved descriptor 1 to the file and left descriptor 2
+      pointing at cron — which mails the output or discards it depending on
+      `MAILTO`.
+
+
+      **A clean log for a failing job is the signature of this bug.**
+
+
+      The minimal fix is to move the duplication to the end:
+
+
+      ```text
+      0 3 * * * /opt/jobs/reindex.sh >> /var/log/reindex.log 2>&1
+      ```
+
+
+      What I would actually write:
+
+
+      ```text
+      MAILTO=platform-alerts@example.com
+      0 3 * * * /opt/jobs/reindex.sh >> /var/log/reindex.out 2>> /var/log/reindex.err
+      ```
+
+
+      Separate files, so "did it produce results" and "did it complain" stay
+      separately answerable. Plus `date -Is` timestamps inside the script, and
+      rotation configured.
+    explanation: >-
+      The instructive part is the symptom. A **clean** log during a failure is
+      more suspicious than a messy one, and it points at redirection rather than
+      at the job.
+
+
+      It also shows why `MAILTO` deserves a line: with the original ordering, the
+      errors were going somewhere — cron's mail — and whether anybody saw them
+      depended on a setting nobody had reviewed. Fixing the redirection without
+      fixing that just moves the silence.
+
+  - id: e3
+    title: Do an in-place edit safely
+    level: L2
+    objectives: [OBJ-B08.2.4]
+    kind: short_answer
+    prompt: >-
+      You need to strip comment lines from `/etc/app/app.conf`. Give a command
+      that works, one that destroys the file, and say why the second one is so
+      easy to write.
+    answer: >-
+      **Destroys it:**
+
+
+      ```bash
+      grep -v '^#' app.conf > app.conf
+      ```
+
+
+      **Works:**
+
+
+      ```bash
+      grep -v '^#' app.conf > app.conf.tmp && mv app.conf.tmp app.conf
+      ```
+
+
+      The `&&` is load-bearing: without it, a failed `grep` still renames a
+      truncated temp file over the config.
+
+
+      **Why the broken one is easy to write:** it reads exactly like the
+      sentence "filter this file into this file", and every other tool you use
+      behaves that way. The shell does not — it sets up redirections **before**
+      starting the program, so the file is empty before `grep` opens it.
+
+
+      GNU `grep` happens to warn here; `sort`, `awk` and most others do not, and
+      the file is destroyed in every case.
+    explanation: >-
+      The second half of the answer matters more than the command. This is not a
+      trap people fall into through carelessness — it is a genuinely reasonable
+      reading of the line, and the shell's behaviour is the surprising part.
+
+
+      Which is why "some tools warn" is not a defence worth relying on. The
+      warning arrives after the truncation and cannot undo it, so the only real
+      protection is never pointing `>` at a file the command is reading.
+
+  - id: e4
+    title: Report which pipeline stage failed
+    level: L2
+    objectives: [OBJ-B08.2.5]
+    kind: short_answer
+    prompt: >-
+      A backup runs `pg_dump "$DB" | gzip > backup.sql.gz` and has never
+      reported a failure. Show how to detect and report a failed `pg_dump`.
+    answer: >-
+      ```bash
+      pg_dump "$DB" | gzip > backup.sql.gz
+      st=("${PIPESTATUS[@]}")
+
+      if [ "${st[0]}" -ne 0 ]; then
+        echo "pg_dump failed with ${st[0]}" >&2
+        exit 1
+      fi
+      [ -s backup.sql.gz ] || { echo "backup is empty" >&2; exit 1; }
+      ```
+
+
+      A pipeline's status is its **last** command's, so a failed `pg_dump` is
+      hidden behind `gzip` successfully compressing nothing.
+
+
+      `set -o pipefail` would also catch it, and `PIPESTATUS` is better here
+      because it says **which** stage failed — the difference between an alert
+      somebody can act on and one that says "something went wrong".
+
+
+      Copy `PIPESTATUS` immediately: it is overwritten by the next command,
+      including an `echo`.
+
+
+      And the size check earns its place independently. **The exit status is the
+      job's opinion of itself; the file's size is evidence.**
+    explanation: >-
+      This is B06.4's eight-months-of-empty-backups incident reduced to its
+      pipeline half. Two independent things had to be true for that to go
+      unnoticed for eight months, and this is one of them.
+
+
+      The size assertion is the part people leave out, and it is the one that
+      catches failures nobody predicted — a dump that succeeded against an empty
+      database, a disk that filled mid-write, a credential that authenticated but
+      selected nothing.
+
+  - id: e5
+    title: Choose an input form
+    level: L2
+    objectives: [OBJ-B08.2.7]
+    kind: interpretation
+    prompt: >-
+      Which of `<<EOT`, `<<'EOT'`, `<<<` or `<(cmd)` fits each, and why:
+
+
+      1. Feeding a generated config, with `$HOSTNAME` substituted, into a file
+
+      2. Feeding an awk program into a command
+
+      3. Splitting one line of text into fields with `read`
+
+      4. Diffing two sorted files without creating temporary files
+    answer: >-
+      1. **`<<EOT`** — unquoted, so `$HOSTNAME` expands. That is the case the
+         expanding form exists for.
+
+
+      2. **`<<'EOT'`** — quoted, so nothing expands. An awk program is full of
+         `$1`, `$2`, and an unquoted here-doc would replace them with the shell's
+         positional parameters, usually with empty strings.
+
+
+      3. **`<<<`** — a here-string. `IFS=: read -r a b c <<< "$line"`. Bash only.
+
+
+      4. **`<(cmd)`** — process substitution:
+         `diff <(sort a.txt) <(sort b.txt)`.
+    explanation: >-
+      Item 2 is the one that bites, and it fails **silently**: `$1` in an awk
+      program becomes the shell's `$1`, which is usually empty, so the program
+      runs and produces wrong output rather than an error.
+
+
+      That is the argument for quoting the delimiter **by default** and unquoting
+      it deliberately — the same shape as the quoting rule in B08.1, and for the
+      same reason: the failure mode of the expanding form is silent and the
+      failure mode of the literal form is obvious.
+
+
+      Item 4 is worth knowing because it is the thing nothing else does well.
+      `<(cmd)` gives the command a path like `/dev/fd/63`, so it only fails for a
+      tool that needs to seek within its input or open it twice.

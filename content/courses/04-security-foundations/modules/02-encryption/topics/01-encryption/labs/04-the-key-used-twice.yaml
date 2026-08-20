@@ -1,0 +1,254 @@
+id: lab.the-key-used-twice
+topic: topic.encryption
+title: "Challenge: four intercepted messages, one crib, no key"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-A04.2.7, OBJ-A04.2.8]
+
+intro: >-
+  /tmp/intercept holds four messages captured from an internal ordering service.
+  All four were encrypted with AES-256-CTR under a 256-bit key you do not have
+  and will not get.
+
+
+  You also have the cleartext of message 1, because it was published on a public
+  order board. That is your only advantage.
+
+
+  Recover the other three. AES-256 is not broken and you are not going to break
+  it — the implementation made one mistake, and it is enough.
+
+setup:
+  - /opt/lab/seed-encryption.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/intercept/README.txt and inspect the four captures. Before
+      attempting anything, record in /tmp/hypotheses what you can already tell
+      from their sizes and what mistake would make recovery possible.
+    hint: >-
+      Compare the ciphertext lengths against the known plaintext's length. A
+      stream mode gives that away, and it tells you what a reused keystream would
+      let you compute.
+    walkthrough: |
+      cd /tmp/intercept
+      cat README.txt
+      ls -l capture-*.enc known-plaintext-1.txt
+      {
+        echo "all four ciphertexts are 40-41 bytes, the same length as the known plaintext, so this is a stream mode with no padding"
+        echo "if the same key and nonce were used for more than one message, the keystream repeats"
+        echo "with a repeated keystream, c1 xor c2 = p1 xor p2 and the key cancels out entirely"
+        echo "since p1 is known, p2 = c1 xor c2 xor p1"
+      } > /tmp/hypotheses
+      cat /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You recorded a hypothesis before attacking
+      - type: file_matches
+        path: /tmp/hypotheses
+        pattern: "(?i)xor"
+        describe: And identified XOR of the ciphertexts as the way in
+
+  - id: s2
+    instruction: >-
+      Test the hypothesis without any key. XOR capture-1 with capture-2 and save
+      the result to /tmp/answer-xor. If the nonce was reused, the output will not
+      look random.
+    hint: >-
+      `/tmp/xorfiles` is provided because mawk has no bitwise functions. It takes
+      two files and prints hex. Structured messages that share a format will XOR
+      to long runs of zero bytes.
+    walkthrough: |
+      cd /tmp/intercept
+      /tmp/xorfiles capture-1.enc capture-2.enc > /tmp/answer-xor
+      cat /tmp/answer-xor
+      echo "--- as printable characters:"
+      /tmp/unhex < /tmp/answer-xor
+    verify:
+      - type: file_matches
+        path: /tmp/answer-xor
+        pattern: "^0000000000"
+        describe: The XOR begins with zero bytes — the two plaintexts share a prefix
+      - type: command_exit
+        command: "test $(grep -o '00' /tmp/answer-xor | wc -l) -ge 20"
+        exit_code: 0
+        describe: And most of the result is zeroes, which random data would never be
+
+  - id: s3
+    instruction: >-
+      Recover message 2 in full using the known plaintext, and save it to
+      /tmp/answer-message-2.
+    walkthrough: |
+      cd /tmp/intercept
+      /tmp/xorfiles capture-1.enc capture-2.enc | /tmp/unhexbin > d12.bin
+      /tmp/xorfiles d12.bin known-plaintext-1.txt | /tmp/unhex > /tmp/answer-message-2
+      cat /tmp/answer-message-2
+    verify:
+      - type: file_matches
+        path: /tmp/answer-message-2
+        pattern: "ORDER 1002 SHIP 18 UNITS TO DEPOT SOUTH"
+        describe: You recovered the second message without the key
+
+  - id: s4
+    instruction: >-
+      Recover the remaining two messages and save all three recovered plaintexts
+      to /tmp/answer-all.
+    walkthrough: |
+      cd /tmp/intercept
+      : > /tmp/answer-all
+      for n in 2 3 4; do
+        /tmp/xorfiles capture-1.enc "capture-${n}.enc" | /tmp/unhexbin > "d1${n}.bin"
+        printf 'message %s: ' "$n" >> /tmp/answer-all
+        /tmp/xorfiles "d1${n}.bin" known-plaintext-1.txt | /tmp/unhex >> /tmp/answer-all
+      done
+      cat /tmp/answer-all
+    verify:
+      - type: file_matches
+        path: /tmp/answer-all
+        pattern: "message 3: ORDER 1003 SHIP 96 UNITS TO DEPOT NORTH"
+        describe: You recovered the third message
+      - type: file_matches
+        path: /tmp/answer-all
+        pattern: "message 4: ORDER 1004 SHIP 12 UNITS TO DEPOT CENTRAL"
+        describe: And the fourth, which is a different length from the crib
+
+  - id: s5
+    instruction: >-
+      Write the incident report to /tmp/answer-report: what the implementer did
+      wrong, what an attacker gets without any known plaintext at all, why the
+      key size was irrelevant, and the two changes you would require.
+    walkthrough: |
+      {
+        echo "what went wrong: the nonce was reused. all four messages were encrypted with the same key and the same iv, so ctr mode produced the same keystream four times."
+        echo
+        echo "why the key size was irrelevant: aes-256 was never attacked. ctr computes ciphertext = plaintext xor keystream, so xoring two ciphertexts encrypted under the same keystream gives p1 xor p2 - the keystream, and therefore the key, cancels out of the arithmetic. a 4096-bit key would have cancelled just as completely."
+        echo
+        echo "without any known plaintext: the attacker still gets the xor of every pair of messages. these records share a format, so the shared bytes cancel to zero and only the differing positions remain - the order numbers, the quantities and the depot names are all visible as differences. with four messages there are six pairs, and the redundancy of english text and fixed formats is usually enough to solve it from there. a single message the attacker can cause the system to send makes it immediate."
+        echo
+        echo "changes i would require:"
+        echo "1. a unique nonce per message, generated randomly or from a counter that is persisted, never read from configuration. this is the actual defect."
+        echo "2. an authenticated mode - aes-256-gcm or chacha20-poly1305 - so that a tampered message fails to decrypt rather than decrypting to something else. ctr also gave the attacker malleability, which the report should say even though it was not used here."
+        echo
+        echo "the general rule: a nonce is not a configuration value. anything that must never repeat cannot live in a file that is written once and deployed everywhere."
+      } > /tmp/answer-report
+      cat /tmp/answer-report
+    verify:
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "(?i)nonce was reused|reused the nonce|same.*iv"
+        describe: You identified the reused nonce as the defect
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "cancel"
+        describe: And explained why the key size was irrelevant
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "(?i)unique nonce|per message"
+        describe: And required a unique nonce per message
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "(?i)gcm|poly1305|authenticated"
+        describe: And an authenticated mode alongside it
+
+solution: >-
+  **The defect: one nonce, four messages.**
+
+
+  CTR mode turns a block cipher into a stream by encrypting a counter that starts
+  from the nonce, producing a keystream that is XORed with the plaintext:
+
+
+  ```text
+  c1 = p1 XOR ks
+  c2 = p2 XOR ks
+
+  c1 XOR c2 = p1 XOR p2      ← ks appears twice and cancels
+  ```
+
+
+  The key is not in that result. It was never attacked, never weakened, and never
+  needed. A 4096-bit key would have cancelled just as completely — which is the
+  part worth internalising, because the instinct on seeing a break is to reach
+  for a longer key, and here that changes nothing at all.
+
+
+  **The recovery.**
+
+
+  XORing the first two ciphertexts gave a result beginning with a long run of
+  `00` bytes. That is already the proof: two random 40-byte strings do not agree
+  on their first ten bytes. The zeroes are where the two plaintexts are
+  identical — both start `ORDER 100` — and the non-zero positions are exactly
+  where they differ.
+
+
+  With `p1` known, the rest is one more XOR:
+
+
+  ```text
+  (c1 XOR c2) XOR p1 = (p1 XOR p2) XOR p1 = p2
+  ```
+
+
+  Repeat against captures 3 and 4 and all three fall out. Note that message 4 is
+  a different length from the crib and still recovers as far as the crib reaches
+  — a stream mode encrypts each byte position independently, so partial knowledge
+  gives partial recovery rather than nothing.
+
+
+  **What an attacker gets with no crib at all.**
+
+
+  This is the part people underrate. Even without `known-plaintext-1.txt`, every
+  pair of ciphertexts yields the XOR of two plaintexts — six pairs from four
+  messages. Because these records share a rigid format, the shared bytes cancel
+  to zero and what survives is precisely the variable data: order numbers,
+  quantities, depot names.
+
+
+  From there it is a crossword. English text and fixed formats are enormously
+  redundant, and guessing a plausible fragment of one message immediately tests
+  itself against all the others. This technique is older than computing and it
+  is why the failure is called a **two-time pad**: a one-time pad is
+  unconditionally secure used once and trivially broken used twice.
+
+
+  And in practice the crib is usually free. An attacker who can place one order
+  through the service knows one plaintext exactly.
+
+
+  **The two changes.**
+
+
+  **A unique nonce per message.** This is the actual defect, and the shape of the
+  mistake is worth naming: the nonce was treated as configuration. Configuration
+  is written once and deployed identically to every instance — which is the exact
+  opposite of what "number used once" requires. A nonce is per-message state:
+  random, or a counter that is persisted and never rewound.
+
+
+  Note the subtlety that catches careful people. A random 96-bit nonce is fine
+  for practical message volumes; a random 64-bit one starts colliding sooner than
+  intuition suggests, and a counter reset by a restart or duplicated across
+  replicas reproduces this failure exactly. "Unique" has to survive restarts and
+  horizontal scaling.
+
+
+  **An authenticated mode.** AES-256-GCM or ChaCha20-Poly1305. CTR also gave the
+  attacker malleability — the previous lab's ability to make chosen changes — and
+  the report should say so even though it was not used here, because the same
+  capture permits it.
+
+
+  GCM does not remove the nonce requirement; it makes violating it worse, since
+  nonce reuse in GCM also leaks the authentication key. The rule survives the
+  upgrade.
+
+
+  **The sentence for the postmortem:** AES-256 did exactly what it promised. The
+  guarantee was voided by how it was used, and no key length, cipher choice or
+  compliance certificate would have prevented it.

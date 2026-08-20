@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph OK["the lock working"]
+        A1["run A<br/><i>exec 9&gt;job.lock</i>"] --> D1["open file description"]
+        B1["run B<br/><i>exec 9&gt;job.lock</i>"] --> D2["open file description"]
+        D1 --> I1["<b>inode 4271</b><br/>flock held by A"]
+        D2 --> I1
+        I1 --> R1["B is refused<br/><i>flock -n → rc 1</i>"]
+    end
+
+    subgraph BAD["after rm job.lock"]
+        A2["run A<br/><i>still holds its fd</i>"] --> D3["open file description"]
+        D3 --> I2["<b>inode 4271</b><br/>unlinked, flock held by A"]
+        B2["run B<br/><i>exec 9&gt;job.lock</i><br/>creates the path again"] --> D4["open file description"]
+        D4 --> I3["<b>inode 5108</b><br/>a different file<br/>nobody holds it"]
+        I3 --> R2["B <b>acquires</b><br/><i>both runs now proceed</i>"]
+    end
+
+    style I1 fill:#e8f4ea,stroke:#2f7d4f
+    style R1 fill:#e8f4ea,stroke:#2f7d4f
+    style I3 fill:#fdecea,stroke:#c0392b
+    style R2 fill:#fdecea,stroke:#c0392b

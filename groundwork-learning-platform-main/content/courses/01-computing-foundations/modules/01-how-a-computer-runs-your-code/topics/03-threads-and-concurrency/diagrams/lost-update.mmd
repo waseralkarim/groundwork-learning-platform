@@ -1,0 +1,11 @@
+sequenceDiagram
+    participant A as Thread A
+    participant M as counter = 41
+    participant B as Thread B
+    A->>M: read 41
+    B->>M: read 41
+    A->>A: add 1 → 42
+    B->>B: add 1 → 42
+    A->>M: write 42
+    B->>M: write 42
+    Note over M: counter = 42, not 43.<br/>One increment vanished.

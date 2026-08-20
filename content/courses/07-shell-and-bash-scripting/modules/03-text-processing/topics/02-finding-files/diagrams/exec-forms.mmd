@@ -1,0 +1,22 @@
+flowchart TB
+    F["find . -name '*.log' ...<br/><i>12 matching files</i>"] --> C{"which action?"}
+
+    C -- "-exec cmd {} \\;" --> S1["12 processes<br/>one per file"]
+    S1 --> S2["find IGNORES the<br/>command's exit status"]
+    S2 --> S3["<b>find rc = 0</b><br/>even when every cmd failed"]
+
+    C -- "-exec cmd {} +" --> B1["1 process<br/>paths batched onto<br/>one command line"]
+    B1 --> B2["a failing command<br/>reaches find"]
+    B2 --> B3["<b>find rc = 1</b>"]
+
+    C -- "-print0 | xargs -0 cmd" --> X1["batched, like +<br/>but a PIPELINE"]
+    X1 --> X2["find's status is lost<br/>unless pipefail is set"]
+    X2 --> X3["and xargs runs cmd<br/>even on EMPTY input<br/><i>unless -r</i>"]
+
+    C -- "-print0 | xargs -0 -I{} cmd {}" --> I1["-I implies one item<br/>per command"]
+    I1 --> I2["12 processes again —<br/>batching silently lost"]
+
+    style S3 fill:#fdecea,stroke:#c0392b
+    style I2 fill:#fdecea,stroke:#c0392b
+    style X3 fill:#fdf6e3,stroke:#b58900
+    style B3 fill:#e8f4ea,stroke:#2f7d4f

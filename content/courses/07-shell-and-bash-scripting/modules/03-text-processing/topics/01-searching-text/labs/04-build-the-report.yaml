@@ -1,0 +1,359 @@
+id: lab.build-the-report
+topic: topic.searching-text
+title: "Challenge: build a report, and defend every tool choice"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.3.7, OBJ-B08.3.8]
+
+intro: >-
+  Produce a summary of `/tmp/text/access.log`: request counts by method, the
+  slowest requests, the error rate, and which client addresses are responsible.
+
+
+  Every step has an obvious wrong tool and a right one. Build it, then replace
+  the four-stage pipeline with something shorter, and be able to say what each
+  choice costs.
+
+setup:
+  - /opt/lab/seed-text.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Count requests by method and by status. Save the counts and the commands
+      you used to /tmp/answer-counts.
+    hint: >-
+      Grouping by a field is what awk arrays are for. The counting idiom
+      `sort | uniq -c | sort -rn` is the alternative.
+    walkthrough: |
+      cd /tmp/text
+      {
+        echo "by method, with the classic pipeline:"
+        awk '{print $3}' access.log | sort | uniq -c | sort -rn | sed 's/^/  /'
+        echo
+        echo "by method, with one awk program:"
+        awk '{n[$3]++} END {for (k in n) printf "  %d %s\n", n[k], k}' access.log | sort -rn
+        echo
+        echo "by status:"
+        awk '{n[$5]++} END {for (k in n) printf "  %d %s\n", n[k], k}' access.log | sort -rn
+        echo
+        echo "both give the same answer. the pipeline runs four processes and the awk runs one, and the awk version does not depend on sort's collation or on uniq only collapsing ADJACENT duplicates."
+      } > /tmp/answer-counts
+      cat /tmp/answer-counts
+    verify:
+      - type: file_matches
+        path: /tmp/answer-counts
+        pattern: "GET"
+        describe: You counted by method
+      - type: file_matches
+        path: /tmp/answer-counts
+        pattern: "200"
+        describe: And by status
+      - type: file_matches
+        path: /tmp/answer-counts
+        pattern: "(?i)four processes|one awk"
+        describe: And compared the two approaches
+
+  - id: s2
+    instruction: >-
+      Compute the error rate as a percentage, and list the slowest three
+      requests. Save to /tmp/answer-rates.
+    hint: >-
+      An error is a status of 500 or more. The duration has a unit suffix that
+      needs removing before it can be compared numerically.
+    walkthrough: |
+      cd /tmp/text
+      {
+        echo "error rate:"
+        awk '{ total++ } $5 >= 500 { errors++ }
+             END { printf "  %d of %d requests failed (%.1f%%)\n", errors+0, total, (errors+0)*100/total }' access.log
+        echo
+        echo "slowest three:"
+        awk '{ d = $NF; sub(/ms$/, "", d); printf "%d %s %s\n", d, $3, $4 }' access.log \
+          | sort -rn | head -3 | awk '{printf "  %6sms  %-5s %s\n", $1, $2, $3}'
+        echo
+        echo "two things worth noting."
+        echo
+        echo "errors+0 rather than errors: an awk variable that was never assigned prints as EMPTY, not zero. an empty count in a report reads as a missing value rather than a good result, and +0 forces it to a number."
+        echo
+        echo "sub(/ms\$/, \"\", d) strips the unit before comparing. without it the comparison is against a string, and '900ms' sorts after '1204ms' because it starts with a 9."
+      } > /tmp/answer-rates
+      cat /tmp/answer-rates
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rates
+        pattern: "requests failed"
+        describe: You computed an error rate
+      - type: file_matches
+        path: /tmp/answer-rates
+        pattern: "3021ms"
+        describe: And found the slowest request
+      - type: file_matches
+        path: /tmp/answer-rates
+        pattern: "(?i)prints as EMPTY"
+        describe: And explained why +0 is needed
+      - type: file_matches
+        path: /tmp/answer-rates
+        pattern: "(?i)sorts after"
+        describe: And why the unit must be stripped before comparing
+
+  - id: s3
+    instruction: >-
+      Find which client addresses caused the errors, and produce the whole report
+      as one script. Save it to /tmp/answer-report and run it.
+    walkthrough: |
+      cat > /tmp/answer-report <<'REP'
+      #!/bin/bash
+      set -euo pipefail
+
+      LOG=${1:?LOG required}
+      [ -r "$LOG" ] || { echo "cannot read: $LOG" >&2; exit 2; }
+
+      echo "=== report for $LOG ==="
+
+      awk '
+        { total++; method[$3]++; status[$5]++ }
+        $5 >= 500 { errors++; culprit[$2]++ }
+        { d = $NF; sub(/ms$/, "", d); if (d+0 > slowest) { slowest = d+0; slowpath = $4 } }
+        END {
+          printf "requests:   %d\n", total
+          printf "errors:     %d (%.1f%%)\n", errors+0, (errors+0)*100/total
+          printf "slowest:    %dms on %s\n", slowest, slowpath
+          print  "by method:"
+          for (k in method) printf "  %-6s %d\n", k, method[k]
+          print  "error sources:"
+          for (k in culprit) printf "  %-14s %d\n", k, culprit[k]
+        }' "$LOG"
+      REP
+      chmod +x /tmp/answer-report
+      bash /tmp/answer-report /tmp/text/access.log | tee /tmp/report.out
+      {
+        echo
+        echo "# one pass over the file, one process, and every number comes from a"
+        echo "# FIELD rather than from text matching."
+      } >> /tmp/answer-report
+      echo "---"
+      cat /tmp/report.out
+    verify:
+      - type: file_matches
+        path: /tmp/report.out
+        pattern: "requests: +8"
+        describe: The report counted every request
+      - type: file_matches
+        path: /tmp/report.out
+        pattern: "errors: +2"
+        describe: And the errors
+      - type: file_matches
+        path: /tmp/report.out
+        pattern: "10.2.0.9"
+        describe: And identified the address responsible for them
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "cannot read"
+        describe: And your script distinguishes an unreadable log
+
+  - id: s4
+    instruction: >-
+      Break the report deliberately: add a column to the log and re-run it. Fix
+      whatever broke, and say which parts survived. Save to /tmp/answer-fragile.
+    walkthrough: |
+      cd /tmp/text
+      {
+        awk '{print "req-" NR, $0}' access.log > access3.log
+        echo "added a request-id column at the front. re-running the report:"
+        bash /tmp/answer-report /tmp/text/access3.log 2>&1 | sed 's/^/  /'
+        echo
+        echo "what broke and what did not:"
+        echo "  \$2 (client address) -> now the timestamp. BROKEN."
+        echo "  \$3 (method)         -> now the address. BROKEN."
+        echo "  \$5 (status)         -> now the path. BROKEN, and silently:"
+        echo "                         a path is not >= 500 numerically, so the"
+        echo "                         error count became 0 and the report says"
+        echo "                         the system is healthy."
+        echo "  \$NF (duration)      -> still the duration. SURVIVED."
+        echo
+        echo "so the single field counted from the RIGHT is the only one that still works, and the failure of the others is silent - the report is well-formed, plausible, and wrong."
+        echo
+        echo "the fix is not to renumber the fields. it is to stop relying on position:"
+        echo "  - ask the source for structured output, or for named fields"
+        echo "  - or match the SHAPE of the field rather than its index, e.g."
+        echo "    a status is /^[0-9]{3}\$/ and a duration is /ms\$/"
+        echo
+        echo "demonstrating the shape-based version, which works on BOTH files:"
+        for f in access.log access3.log; do
+          printf '  %-14s errors: %s\n' "$f" \
+            "$(awk '{for (i=1;i<=NF;i++) if ($i ~ /^[0-9][0-9][0-9]$/ && $i+0 >= 500) n++} END {print n+0}' $f)"
+        done
+      } > /tmp/answer-fragile
+      cat /tmp/answer-fragile
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fragile
+        pattern: "(?i)SURVIVED"
+        describe: You identified which field reference survived
+      - type: file_matches
+        path: /tmp/answer-fragile
+        pattern: "(?i)plausible, and wrong"
+        describe: And that the broken report still looks correct
+      - type: file_matches
+        path: /tmp/answer-fragile
+        pattern: "access.log +errors: 2"
+        describe: And your shape-based version works on the original
+      - type: file_matches
+        path: /tmp/answer-fragile
+        pattern: "access3.log +errors: 2"
+        describe: And on the file with an extra column
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-defence a defence of each tool choice, and say when
+      you would stop using the shell for this entirely.
+    walkthrough: |
+      {
+        echo "tool by tool:"
+        echo
+        echo "  grep   asks 'does this line match'. its EXIT STATUS is the answer,"
+        echo "         which is why -q exists. i used it for presence checks and"
+        echo "         nothing else, because it matches text anywhere in a line and"
+        echo "         cannot compare a field."
+        echo
+        echo "  awk    for anything involving a FIELD, a comparison or a total. it"
+        echo "         splits on runs of whitespace, which is what real command"
+        echo "         output uses, and it can do arithmetic. one awk program"
+        echo "         replaced a four-stage pipeline here."
+        echo
+        echo "  sed    for changing text in a stream. i used sub() inside awk"
+        echo "         instead, because i was already parsing fields and a separate"
+        echo "         sed stage would have been a fourth process for one substitution."
+        echo
+        echo "  cut    not used. the log is whitespace-aligned, not delimited, so"
+        echo "         cut -d' ' returns empty fields. it would have been correct"
+        echo "         for services.csv."
+        echo
+        echo "  sort|uniq -c  the classic counting idiom, and awk arrays do it in one"
+        echo "         pass. i showed both; the awk version does not depend on"
+        echo "         collation or on uniq only collapsing ADJACENT duplicates."
+        echo
+        echo "when i would stop using the shell for this:"
+        echo "  - the input is STRUCTURED (json, yaml, xml). regex cannot match"
+        echo "    nested structures and will happily succeed against malformed"
+        echo "    input. use jq, or a language with a parser."
+        echo "  - i need state across lines beyond a counter."
+        echo "  - the awk program passes about ten lines."
+        echo "  - correctness matters more than convenience - a silent empty result"
+        echo "    is an outcome somebody must notice."
+        echo
+        echo "and the thing i would do before any of it: ask the SOURCE for"
+        echo "structured output. every problem in this lab exists because the log"
+        echo "is human-readable text with positional fields. one --format flag"
+        echo "upstream removes the entire class."
+      } > /tmp/answer-defence
+      cat /tmp/answer-defence
+    verify:
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)EXIT STATUS is the answer"
+        describe: You defended grep's role
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)not used"
+        describe: And explained why cut was rejected
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)nested structures"
+        describe: And when to leave the shell entirely
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)ask the SOURCE"
+        describe: And what you would do before any of it
+
+solution: >-
+  **Counting by field.**
+
+
+  The classic pipeline and the one-process version give the same answer:
+
+
+  ```bash
+  awk '{print $3}' access.log | sort | uniq -c | sort -rn
+  awk '{n[$3]++} END {for (k in n) printf "%d %s\n", n[k], k}' access.log | sort -rn
+  ```
+
+
+  The awk version runs one process instead of four, and does not depend on
+  `sort`'s collation or on `uniq` only collapsing **adjacent** duplicates.
+
+
+  **Two details in the arithmetic.**
+
+
+  `errors+0` rather than `errors`: an awk variable never assigned prints as
+  **empty**, not zero, and an empty count in a report reads as a missing value
+  rather than a good result.
+
+
+  `sub(/ms$/, "", d)` before comparing: without stripping the unit the comparison
+  is against a string, and `900ms` sorts after `1204ms` because it starts with a
+  9.
+
+
+  **The whole report is one awk program** — one pass, one process, every number
+  from a field rather than from text matching — with an explicit `[ -r "$LOG" ]`
+  check exiting 2 so an unreadable log is distinguished from a clean one.
+
+
+  **Then break it.**
+
+
+  Adding a request-id column at the front:
+
+
+  | Reference | Result |
+  |---|---|
+  | `$2` client address | now the timestamp — **broken** |
+  | `$3` method | now the address — **broken** |
+  | `$5` status | now the path — **broken, silently** |
+  | `$NF` duration | still the duration — **survived** |
+
+
+  The `$5` failure is the dangerous one: a path is not numerically `>= 500`, so
+  the error count becomes **0** and the report says the system is healthy. It is
+  well-formed, plausible, and wrong.
+
+
+  **The fix is not to renumber the fields**, because the next column will move
+  them again. Either ask the source for named or structured output, or match the
+  **shape** of a field rather than its index:
+
+
+  ```bash
+  awk '{for (i=1;i<=NF;i++) if ($i ~ /^[0-9][0-9][0-9]$/ && $i+0 >= 500) n++} END {print n+0}'
+  ```
+
+
+  That reports 2 errors on both files.
+
+
+  **And the tool choices.**
+
+
+  **grep** asks "does this line match", and its *exit status* is the answer — so
+  `-q` for presence checks and nothing else, since it cannot compare a field.
+  **awk** for anything involving a field, a comparison or a total. **sed** for
+  changing text in a stream — used here as `sub()` inside awk, because a separate
+  stage would have been a fourth process for one substitution. **`cut`** rejected:
+  the log is whitespace-aligned, not delimited, so `cut -d' '` returns empty
+  fields. It would have been correct for the CSV.
+
+
+  **When to stop using the shell:** structured input, where regex cannot match
+  nested structures and will succeed against malformed data; state across lines
+  beyond a counter; an awk program past about ten lines; or correctness mattering
+  more than convenience.
+
+
+  And before any of it — **ask the source for structured output.** Every problem
+  in this lab exists because the log is human-readable text with positional
+  fields, and one `--format` flag upstream removes the entire class.

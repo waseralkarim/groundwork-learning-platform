@@ -1,0 +1,158 @@
+id: project.size-a-container
+slug: size-a-container
+title: Size a container from evidence, not guesswork
+level: L3
+requires_topics:
+  - topic.the-machine
+  - topic.processes
+  - topic.user-space-and-the-kernel
+  - topic.virtual-memory
+estimated_hours: 4
+
+summary: >-
+  Take a real service, measure what it actually needs, and set its memory and
+  CPU limits from those measurements — then prove your numbers by breaking it
+  deliberately.
+
+brief: |
+  Every team has containers whose limits were set by someone typing a round
+  number. Sometimes it is 512Mi because that seemed reasonable; sometimes it is
+  4Gi because 512Mi got the pod killed once. Almost nobody measures.
+
+  You are going to do it properly, once, on a service small enough to
+  understand completely.
+
+  ## The service
+
+  Pick something real that you can run locally and put under load. Any of these
+  work, and the first is the easiest to reason about:
+
+  - A Postgres container with a small dataset and a load generator (`pgbench`)
+  - A Redis or Valkey container with a few hundred thousand keys
+  - An application of your own with an HTTP endpoint you can hammer
+  - The Groundwork API itself, with `scripts/smoke.sh` in a loop
+
+  What matters is that you can put it under sustained, repeatable load and read
+  its cgroup files while it runs.
+
+  ## What you are producing
+
+  A short written report, with the commands and raw numbers that support it,
+  concluding in a `resources` block you would defend in review.
+
+  The report has to answer four questions:
+
+  **1. What does it use at rest, and what does it use under load?** Both `anon`
+  and `file`, from `memory.stat`, not from `docker stats` alone. Say what
+  changes between the two states and why.
+
+  **2. Where is the memory going?** Distinguish the application's own heap from
+  page cache from anything on a tmpfs. If a number surprised you, chase it until
+  it does not.
+
+  **3. What happens at the edge?** Set a limit deliberately below what you
+  measured and observe the failure. Record the exit code, the cgroup's
+  `memory.events`, and how long the service survived. A limit you have never
+  seen exceeded is a guess with a decimal point.
+
+  **4. What limits do you propose, and what is the headroom for?** A number with
+  a justification — "peak measured anon was X, cache is bounded by Y, headroom
+  for Z" — not a number with a shrug.
+
+  ## Why this is worth four hours
+
+  The skill being built is not "run these commands". It is the habit of
+  answering a resource question with a measurement, and being able to show the
+  measurement to someone who disagrees. That habit is most of what separates
+  capacity planning from superstition, and it transfers directly: the same four
+  questions size a Kubernetes request, a JVM heap, and a database's shared
+  buffers.
+
+constraints:
+  - "Measure with cgroup files — memory.current, memory.stat, memory.events — not only with `docker stats`, and say why the two disagree when they do."
+  - "Put the service under sustained load for at least five minutes. Peak-of-a-spike is not a capacity measurement."
+  - "You must deliberately trigger an OOM kill and record the evidence. A limit you have never seen enforced is untested."
+  - "Justify every number in your final block. 'It felt about right' is a finding about your process, not a limit."
+  - "Do not raise a limit to make a symptom disappear without first saying which of anon and file was at the cap."
+
+deliverables:
+  - "A written report (Markdown is fine) answering the four questions, with raw command output included rather than summarised away."
+  - "A `resources` block — Compose or Kubernetes — that you would defend in code review, with a comment justifying each number."
+  - "Evidence of the deliberate OOM kill: the exit code, memory.events, and what the service did on the way down."
+  - "One paragraph on what you would monitor in production, and what you would alert on."
+
+rubric:
+  - id: r1
+    criterion: The measurements distinguish anonymous memory from page cache
+    excellent: >-
+      Reports anon, file and shmem separately at rest and under load, notes
+      which are reclaimable, and uses the distinction to explain the service's
+      behaviour rather than just reporting three numbers.
+    adequate: >-
+      Reports anon and file separately and knows which one can be reclaimed,
+      but does not connect it to what the service was doing.
+    inadequate: >-
+      Reports a single memory figure, or uses `docker stats` alone without ever
+      reading memory.stat.
+    evidence: The memory.stat output at rest and under load, in your report
+    weight: 3
+
+  - id: r2
+    criterion: The load is sustained and repeatable
+    excellent: >-
+      States the load generator, its parameters and duration, and shows the
+      service reaching a steady state — plus at least one repeat run confirming
+      the numbers hold.
+    adequate: >-
+      Applies load for several minutes and records the peak, without confirming
+      repeatability.
+    inadequate: >-
+      Measures a brief spike, or reports numbers with no description of what the
+      service was doing at the time.
+    evidence: The exact command used to generate load, and its duration
+    weight: 2
+
+  - id: r3
+    criterion: The OOM kill was triggered and the evidence captured
+    excellent: >-
+      Sets a limit below the measured requirement, records exit code 137, the
+      oom_kill counter, and what the service logged — noting that the absence of
+      a final log line is itself the evidence.
+    adequate: >-
+      Triggers the kill and records the exit code, without the cgroup counters.
+    inadequate: >-
+      Did not trigger a kill, or asserts what would happen without testing it.
+    evidence: The exit code and memory.events output from your deliberate kill
+    weight: 3
+
+  - id: r4
+    criterion: Every proposed number has a justification
+    excellent: >-
+      Each limit traces to a measurement, headroom is stated as a quantity with
+      a reason, and the report says what would make the number wrong later.
+    adequate: >-
+      Limits are derived from measurements but headroom is unexplained.
+    inadequate: >-
+      Round numbers with no derivation, or numbers copied from another service.
+    evidence: The comments in your final resources block
+    weight: 3
+
+  - id: r5
+    criterion: The monitoring proposal would catch this failure
+    excellent: >-
+      Proposes alerting on the OOM kill counter and on the anon/file split
+      rather than on usage percentage, and explains why the percentage alone
+      would have been a false alarm or a missed one.
+    adequate: >-
+      Proposes memory alerts that include the limit, but does not distinguish
+      reclaimable from non-reclaimable memory.
+    inadequate: >-
+      Proposes alerting on memory usage percentage or on free memory.
+    evidence: The monitoring paragraph of your report
+    weight: 2
+
+going_further:
+  - "Repeat the exercise for CPU. `cpu.stat`'s `throttled_usec` is the equivalent of the OOM kill: proof that the limit is binding."
+  - "Run the same service with swap enabled and observe how the failure changes from a kill into a slowdown."
+  - "Set the limit correctly, then double the load and see whether your headroom was the right size."
+  - "If your service is a JVM or Go program, check whether it sizes itself from the host or the cgroup — and fix it if not."

@@ -1,0 +1,33 @@
+# Normalise line endings.
+#
+# Everything in this repo is consumed by Linux containers. A shell script or a
+# Dockerfile checked out with CRLF fails inside the container with errors that
+# point nowhere useful ("bad interpreter: /usr/bin/env bash^M"), so the fix
+# belongs here rather than in each developer's git config.
+
+* text=auto eol=lf
+
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+Caddyfile       text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.py            text eol=lf
+*.ts            text eol=lf
+*.tsx           text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.mako          text eol=lf
+.env.example    text eol=lf
+
+# Generated — collapsed in the GitHub UI and excluded from language stats, but
+# NOT marked -diff: a lockfile diff is exactly what you read when reviewing a
+# dependency change, and that is a supply-chain control we teach.
+pnpm-lock.yaml  linguist-generated=true
+
+# Binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

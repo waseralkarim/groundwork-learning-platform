@@ -1,0 +1,161 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "description": "Evidence handed to the learner. This is all they get up front.",
+      "properties": {
+        "type": {
+          "enum": [
+            "command_output",
+            "log",
+            "metric",
+            "config",
+            "diagram"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "minLength": 3,
+          "title": "Label",
+          "type": "string"
+        },
+        "content": {
+          "minLength": 3,
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "label",
+        "content"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "Level": {
+      "description": "The difficulty ladder. See docs/architecture/01-vision-and-principles.md.",
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5"
+      ],
+      "title": "Level",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "topic": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Topic",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 160,
+      "minLength": 5,
+      "title": "Title",
+      "type": "string"
+    },
+    "level": {
+      "$ref": "#/$defs/Level"
+    },
+    "objectives": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Objectives",
+      "type": "array"
+    },
+    "reveal_policy": {
+      "default": "progressive",
+      "enum": [
+        "progressive",
+        "immediate"
+      ],
+      "title": "Reveal Policy",
+      "type": "string"
+    },
+    "situation": {
+      "minLength": 30,
+      "title": "Situation",
+      "type": "string"
+    },
+    "symptoms": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Symptoms",
+      "type": "array"
+    },
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/Artifact"
+      },
+      "minItems": 1,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "diagnostic_questions": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Diagnostic Questions",
+      "type": "array"
+    },
+    "hints": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Hints",
+      "type": "array"
+    },
+    "root_cause": {
+      "minLength": 30,
+      "title": "Root Cause",
+      "type": "string"
+    },
+    "method": {
+      "minLength": 50,
+      "title": "Method",
+      "type": "string"
+    },
+    "resolution": {
+      "minLength": 20,
+      "title": "Resolution",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "topic",
+    "title",
+    "level",
+    "objectives",
+    "situation",
+    "symptoms",
+    "artifacts",
+    "diagnostic_questions",
+    "root_cause",
+    "method",
+    "resolution"
+  ],
+  "title": "TroubleshootingScenario",
+  "type": "object"
+}

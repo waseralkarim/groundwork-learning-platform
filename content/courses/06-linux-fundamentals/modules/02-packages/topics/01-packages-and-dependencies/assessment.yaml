@@ -1,0 +1,178 @@
+id: assessment.packages-and-dependencies
+topic: topic.packages-and-dependencies
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a guard that stopped guarding
+    kind: explain
+    objectives: [OBJ-B06.2.8, OBJ-B06.2.3]
+    prompt: >-
+      A deploy script refuses to run if another deploy holds a lock. Since the
+      service moved from VMs to containers, the guard has passed every time,
+      including when a deploy was genuinely in progress. The check is:
+
+
+      ```sh
+      if fuser "$LOCK" >/dev/null 2>&1; then exit 1; fi
+      ```
+
+
+      In about 200 words: explain what happened, why nothing errored, and what
+      you would change.
+    rubric:
+      - "Identifies that fuser is absent and comes from psmisc"
+      - "Explains psmisc as a Recommends of procps, dropped by --no-install-recommends"
+      - "States that a missing command returns 127 and `if` reads that as false"
+      - "Frames it as the check inverting rather than failing"
+      - "Proposes asserting the tooling exists, or using an Essential-package alternative"
+    model_answer: >-
+      The command the guard depends on is not installed, so the guard cannot fail
+      — it can only pass.
+
+
+      `fuser` comes from **`psmisc`**, which is a **`Recommends` of `procps`**
+      rather than a dependency of anything. `Recommends` installs by default, so
+      it was present on the VM fleet by inheritance and nobody knew the script
+      relied on it. The container image was built with
+      `--no-install-recommends`, which is correct practice, and `psmisc` was
+      silently skipped.
+
+
+      A shell returns **127** for a command it cannot find, and `if` treats any
+      non-zero status as false. So the branch meaning "another deploy holds the
+      lock" evaluates to "no" — not because the lock is free, but because the
+      question could not be asked. **The check did not fail; it inverted**, which
+      is worse than having no check, because an absent check is visible in review
+      and this is not.
+
+
+      Nothing errored because `2>/dev/null` discarded the only evidence. `fuser:
+      not found` was written on every deploy and thrown away every time.
+
+
+      What I would change: keep the flag and install `psmisc` explicitly, so it is
+      declared rather than inherited. Then make the script assert its tooling
+      exists before trusting the answer — or better, use `flock` from
+      `util-linux`, which is `Essential` and therefore cannot be absent.
+    common_failures:
+      - "Blaming a race condition or the lock file's filesystem"
+      - "Recommending that --no-install-recommends be dropped rather than completed"
+      - "Treating it as a missing package rather than as a check that returns 'safe' when it cannot run"
+      - "Missing that 2>/dev/null is what made it silent"
+
+  - id: B
+    title: Reason about how software reaches a fleet
+    kind: reason
+    objectives: [OBJ-B06.2.8, OBJ-B06.2.4]
+    prompt: >-
+      You have inherited 400 hosts with no documentation. You are asked for "a
+      list of everything we run and whether it is patched", by Friday.
+
+
+      In about 250 words: say what you can produce, what you cannot, and what you
+      would change.
+    rubric:
+      - "Produces the packaged inventory from the local database, and notes it is complete for what dpkg installed"
+      - "Identifies that files outside the package system appear nowhere and must be discovered separately"
+      - "Gives a concrete method for finding unowned software"
+      - "Explains why version comparison alone misstates patch status for distribution packages"
+      - "Proposes recording the outside-the-archive list with named owners"
+    model_answer: >-
+      **What I can produce immediately** is the packaged inventory. `dpkg-query -W
+      -f='${Package}\t${Version}\t${Architecture}\n'` on every host is an SBOM in
+      one command, offline, in milliseconds. It is complete and accurate about
+      everything the distribution installed.
+
+
+      **What I cannot produce from the machines** is the rest, and the rest is
+      what the question is really about. Anything installed by a vendor script, a
+      language package manager or a `COPY` in a Dockerfile is invisible to that
+      database — no version, no upgrade path, no integrity checking, and no line
+      in any report. A scan comes back clean about a `curl | sh` agent forever,
+      not because it is safe but because nothing looked.
+
+
+      **How I would find it:** loop over `/usr/local/bin`, `/opt` and the service
+      unit files, resolve each path, and print what `dpkg -S` cannot place. Then
+      `pip list` and `npm ls -g` separately, since each language ecosystem is its
+      own inventory.
+
+
+      **On "whether it is patched":** for distribution packages I would check the
+      distribution's security tracker rather than comparing upstream version
+      numbers, because backporting means the number does not move when the fix
+      lands. For everything outside the archive there is no backporting and no
+      signal at all, so those must be checked against the vendor individually.
+
+
+      **What I would change:** produce the outside-the-archive register — what,
+      how it arrived, a **named** owner, how it gets patched, and how we would
+      learn a fix exists. The packaged half regenerates itself from any host. That
+      half exists nowhere but in the heads of people who may have left.
+    common_failures:
+      - "Delivering the dpkg inventory as if it were complete"
+      - "Not distinguishing packaged from unpackaged software at all"
+      - "Comparing upstream versions to CVE 'fixed in' numbers for distribution packages"
+      - "Assigning ownership to a team alias rather than a person, or omitting ownership"
+
+  - id: C
+    title: Diagnose an integrity report
+    kind: diagnose
+    objectives: [OBJ-B06.2.6, OBJ-B06.2.7]
+    prompt: >-
+      A compliance pipeline runs `dpkg -V` on every container image. It reports
+      4,634 findings per image. The security team wants all of them ticketed. A
+      platform engineer wants the check removed.
+
+
+      In about 250 words: say who is right, what the findings are, and what you
+      would build instead.
+    rubric:
+      - "Identifies the bulk as deliberate exclusions by the slim base image, and proves it rather than asserting"
+      - "Recognises that a real finding can be hidden inside the noise"
+      - "Rejects both positions and proposes a narrow filter"
+      - "Proposes alerting on the filter's own output, not only on the residue"
+      - "States the cost of unactionable findings as spent attention rather than triage time"
+    model_answer: >-
+      **Neither is right, and the disagreement is about the tooling rather than
+      the machines.**
+
+
+      Grouping the output before reading it settles most of it: essentially all of
+      the findings carry one status — `missing` — under `/usr/share/doc`, `man`,
+      `locale` and `lintian`. The slim base image excludes those paths through a
+      dpkg configuration fragment, so the package database and the filesystem
+      **disagree by design**. I would prove that by showing the exclusion config
+      and matching it against where the findings land, not by asserting it.
+
+
+      What remains is the actual result, and it is usually one or two lines. In
+      the case I worked, exactly one: a checksum mismatch on a conffile, caused by
+      the image's own build appending to it. Benign — but only identifiable as
+      benign by someone who could read the file. Without that context it is an
+      unexplained modification to a shell startup file, which is a real persistence
+      technique.
+
+
+      **So ticketing all 4,634 is not thoroughness, it is disabling the control.**
+      A check producing thousands of criticals on a healthy machine gets suppressed
+      wholesale or ignored, and the paperwork keeps saying it runs. Removing it
+      loses a genuinely useful signal.
+
+
+      **What I would build:** filter *missing* files under *documentation* paths
+      only — narrow, so any checksum mismatch and any missing file elsewhere still
+      reports. Alert on the residue. And **alert if the suppressed count moves**,
+      because that means the base image changed. Record why each exclusion exists,
+      so the next person audits the filter rather than inheriting it.
+
+
+      The cost of an unactionable finding is never the time to triage it. It is the
+      attention it spends — and attention is scarcest exactly when something is
+      genuinely wrong.
+    common_failures:
+      - "Siding with one of the two positions instead of rejecting both"
+      - "Asserting the findings are noise without demonstrating why"
+      - "Filtering broadly enough to hide checksum mismatches as well as missing files"
+      - "Filtering without monitoring the filter, leaving an unauditable suppression"

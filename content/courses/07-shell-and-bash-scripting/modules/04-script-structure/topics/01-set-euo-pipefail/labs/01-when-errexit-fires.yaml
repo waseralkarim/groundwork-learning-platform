@@ -1,0 +1,319 @@
+id: lab.when-errexit-fires
+topic: topic.set-euo-pipefail
+title: Generate the exemption table yourself
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.5.1, OBJ-B08.5.2, OBJ-B08.5.3, OBJ-B08.5.6]
+
+intro: >-
+  `set -e` does not fire in nine common contexts, and two of them are the same
+  function called two different ways.
+
+
+  You will predict thirteen cases, generate the table, and explain the two rows
+  that contradict each other. Then you will find out what `set -u` actually
+  exits with.
+
+setup:
+  - /opt/lab/seed-strict.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/strict/cases.txt and commit a prediction for all thirteen to
+      /tmp/prediction before running anything.
+    hint: >-
+      For each, ask whether the shell is already testing that command's status.
+      If it is, errexit has nothing to do.
+    walkthrough: |
+      cat /tmp/strict/cases.txt
+      cat > /tmp/prediction <<'P'
+      1 fires   2 exempt  3 exempt  4 exempt  5 exempt
+      6 fires   7 exempt  8 exempt  9 exempt
+      10 fires  11 fires  12 exempt 13 exempt
+      P
+      echo "committed. least sure about 11 and 12."
+      cat /tmp/prediction
+    verify:
+      - type: file_exists
+        path: /tmp/prediction
+        describe: You committed a prediction before measuring
+      - type: file_matches
+        path: /tmp/prediction
+        pattern: "1 fires"
+        describe: With an answer for the first case
+
+  - id: s2
+    instruction: >-
+      Use /tmp/strict/probe to generate the real table for all thirteen. Save to
+      /tmp/answer-table.
+    hint: >-
+      `probe 'set -e' 'the code'` reports the exit status. rc=1 means it fired;
+      rc=0 means it carried on.
+    walkthrough: |
+      cd /tmp/strict
+      {
+        printf '  %-3s %-40s %s\n' NO CASE RESULT
+        i=0
+        while IFS= read -r code; do
+          i=$((i + 1))
+          rc=$(bash -c "set -e; $code" >/dev/null 2>&1; echo $?)
+          [ "$rc" -eq 0 ] && r="exempt" || r="FIRES  (rc=$rc)"
+          printf '  %-3s %-40s %s\n' "$i" "$code" "$r"
+        done <<'CASES'
+      false
+      false || true
+      ! false
+      if false; then :; fi
+      while false; do :; done
+      f(){ false; }; f
+      f(){ false; }; if f; then :; fi
+      ( false ) || true
+      false | true
+      x=$(false)
+      f(){ local x=$(false); }; f
+      count=0; ((count++))
+      count=0; ((count+=1))
+      CASES
+      } > /tmp/answer-table
+      cat /tmp/answer-table
+    verify:
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "6   f\\(\\)\\{ false; \\}; f +FIRES"
+        describe: A function called plainly stops the script
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "7   f\\(\\)\\{ false; \\}; if f; then :; fi +exempt"
+        describe: While the same function in an if condition does not
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "10  x=\\$\\(false\\) +FIRES"
+        describe: A plain assignment propagates the failure
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "11  f\\(\\)\\{ local x=\\$\\(false\\); \\}; f +exempt"
+        describe: And local discards it
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "12  count=0; \\(\\(count\\+\\+\\)\\) +FIRES"
+        describe: And an increment from zero kills the script
+
+  - id: s3
+    instruction: >-
+      Explain rows 6 and 7 — the same function, two results — and state the rule
+      underneath all the exemptions. Save to /tmp/answer-rule.
+    walkthrough: |
+      {
+        echo "rows 6 and 7 are the same function, called two ways:"
+        echo "  f(){ false; }; f                  -> FIRES"
+        echo "  f(){ false; }; if f; then :; fi   -> exempt"
+        echo
+        echo "and it is not just the call that is exempt - the whole BODY runs with errexit suppressed. proving it:"
+        bash -c 'set -e; f(){ false; echo "    still here after the false"; }; if f; then :; fi; echo "    and past the if"'
+        echo
+        echo "both echoes ran. so a helper's error handling depends on HOW IT IS CALLED, and nothing at the call site says so. a function that stops the script when called plainly will silently continue past failures when tested in an if."
+        echo
+        echo "the rule underneath every exemption: ERREXIT IS SUPPRESSED WHEREVER THE SHELL IS ALREADY EXAMINING THE STATUS."
+        echo
+        echo "which covers:"
+        echo "  - the condition of an if, while or until"
+        echo "  - either operand of && or ||"
+        echo "  - anything after !"
+        echo "  - every stage of a pipeline except the last"
+        echo "  - and everything CALLED from those positions"
+        echo
+        echo "none of it is a bug. without those exemptions 'if grep -q x file' could not be written at all - the grep returning 1 would end the script. the problem is that the rule is invisible at the point where it matters."
+      } > /tmp/answer-rule
+      cat /tmp/answer-rule
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "still here after the false"
+        describe: You showed the body runs with errexit suppressed
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)ALREADY EXAMINING THE STATUS"
+        describe: And stated the underlying rule
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)how it is called"
+        describe: And what that means for a helper
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)could not be written"
+        describe: And why the exemptions have to exist
+
+  - id: s4
+    instruction: >-
+      Find out what `set -u` does, what it exits with, and which forms it
+      deliberately permits. Save to /tmp/answer-nounset.
+    walkthrough: |
+      {
+        echo "expanding a variable that was never set:"
+        bash -c 'set -u; echo "$UNSET"' 2>&1 | sed 's/^/    /'
+        echo "    exit status: $(bash -c 'set -u; echo "$UNSET"' >/dev/null 2>&1; echo $?)"
+        echo
+        echo "127 - which conventionally means COMMAND NOT FOUND. so in a CI log an unset variable reads like a missing binary, and people go looking for the wrong thing."
+        echo
+        echo "what -u deliberately permits:"
+        for c in 'echo "${UNSET:-default}"' 'echo "${UNSET-}"' 'f(){ echo "$@"; }; f' 'a=(); echo "${a[@]}"'; do
+          printf '  %-34s rc=%s\n' "$c" "$(bash -c "set -u; $c" >/dev/null 2>&1; echo $?)"
+        done
+        echo
+        echo "and the deliberate failure, with my own message:"
+        bash -c 'set -u; : "${NEEDED:?NEEDED must be set}"' 2>&1 | sed 's/^/    /'
+        echo
+        echo "\${VAR:?message} at the TOP of a script beats -u catching it later, because the message names the variable and the fix rather than reporting an unbound variable forty lines in."
+        echo
+        echo "note also that \"\$@\" with no arguments and an empty array are fine in modern bash. they were errors before 4.4, which is where the defensive \"\${a[@]:-}\" idiom comes from - worth dropping if you do not support those systems."
+      } > /tmp/answer-nounset
+      cat /tmp/answer-nounset
+    verify:
+      - type: file_matches
+        path: /tmp/answer-nounset
+        pattern: "(?i)unbound variable"
+        describe: You triggered the nounset failure
+      - type: file_matches
+        path: /tmp/answer-nounset
+        pattern: "exit status: 127"
+        describe: And found it exits 127
+      - type: file_matches
+        path: /tmp/answer-nounset
+        pattern: "UNSET:-default.* rc=0"
+        describe: And that defaults are permitted
+      - type: file_matches
+        path: /tmp/answer-nounset
+        pattern: "(?i)NEEDED must be set"
+        describe: And used the deliberate-failure form
+
+  - id: s5
+    instruction: >-
+      Score your prediction and write to /tmp/answer-score what you got wrong and
+      what you would now check in a review.
+    walkthrough: |
+      {
+        echo "predicted vs measured:"
+        echo "  11. f(){ local x=\$(false); }; f   predicted FIRES, actually EXEMPT"
+        echo "  12. count=0; ((count++))          predicted exempt, actually FIRES"
+        echo
+        echo "both wrong, and in opposite directions - which is the useful part. i assumed errexit was more consistent than it is."
+        echo
+        echo "11: local is a COMMAND in its own right, and its exit status is its own success. the command substitution's failure is discarded before errexit could see it. adding the word 'local' to a working line silently removes its error checking."
+        echo
+        echo "12: ((...)) returns non-zero when the expression's VALUE is zero. count++ is a post-increment, so its value is the OLD count - zero on the first iteration. a counter in a loop kills the script the first time it runs."
+        echo
+        echo "what i would now check in review:"
+        echo "  - any 'local x=\$(...)' or 'declare/export/readonly x=\$(...)'."
+        echo "    shellcheck flags it as SC2155 and it is the highest-value check"
+        echo "    it performs on most codebases. the fix is two lines:"
+        echo "        local x"
+        echo "        x=\$(cmd)"
+        echo "  - any ((count++)). use count=\$((count+1))."
+        echo "  - any helper function that is only ever called in an if condition,"
+        echo "    because its internal error handling has never actually run."
+        echo
+        echo "and the framing i would use: set -euo pipefail is a FLOOR. it converts a class of silent failure into a loud one, and it cannot see a status that was masked before it got there."
+      } > /tmp/answer-score
+      cat /tmp/answer-score
+    verify:
+      - type: file_matches
+        path: /tmp/answer-score
+        pattern: "(?i)predicted FIRES, actually EXEMPT"
+        describe: You scored the local case honestly
+      - type: file_matches
+        path: /tmp/answer-score
+        pattern: "(?i)command in its own right"
+        describe: And explained why local masks the status
+      - type: file_matches
+        path: /tmp/answer-score
+        pattern: "(?i)post-increment"
+        describe: And why the increment fires
+      - type: file_matches
+        path: /tmp/answer-score
+        pattern: "SC2155"
+        describe: And named the check that finds it
+      - type: file_matches
+        path: /tmp/answer-score
+        pattern: "(?i)FLOOR"
+        describe: And framed what the preamble is worth
+
+solution: >-
+  **The table.**
+
+
+  | | Case | Result |
+  |---|---|---|
+  | 1 | `false` | **fires** |
+  | 2 | `false \|\| true` | exempt |
+  | 3 | `! false` | exempt |
+  | 4 | `if false; then :; fi` | exempt |
+  | 5 | `while false; do :; done` | exempt |
+  | 6 | `f(){ false; }; f` | **fires** |
+  | 7 | `f(){ false; }; if f; then :; fi` | exempt |
+  | 8 | `( false ) \|\| true` | exempt |
+  | 9 | `false \| true` | exempt |
+  | 10 | `x=$(false)` | **fires** |
+  | 11 | `f(){ local x=$(false); }; f` | **exempt** |
+  | 12 | `count=0; ((count++))` | **fires** |
+  | 13 | `count=0; ((count+=1))` | exempt |
+
+
+  **Rows 6 and 7 are the same function.** Called plainly it stops the script;
+  called as an `if` condition it does not — and the suppression extends through
+  the whole body:
+
+
+  ```console
+  $ bash -c 'set -e; f(){ false; echo "still here"; }; if f; then :; fi; echo done'
+  still here
+  done
+  ```
+
+
+  So **a helper's error handling depends on how it is called**, and nothing at the
+  call site says so.
+
+
+  **The rule underneath every exemption:** errexit is suppressed wherever the
+  shell is already examining the status — `if`/`while`/`until` conditions, `&&`
+  and `||` operands, anything after `!`, non-final pipeline stages, and everything
+  called from those positions. None of it is a bug: without it, `if grep -q x
+  file` could not be written.
+
+
+  **Rows 10 and 11 are the surprise.** A plain assignment takes the command
+  substitution's status. `local` is **a command in its own right**, and its status
+  is its own success — so the failure is discarded before errexit could act.
+  Adding `local` to a working line silently removes its error checking.
+  `shellcheck` calls it **SC2155**, and the fix is two lines:
+
+
+  ```bash
+  local x
+  x=$(cmd)
+  ```
+
+
+  **Rows 12 and 13 are the other one.** `((...))` returns non-zero when the
+  expression's *value* is zero, and `count++` is a post-increment whose value is
+  the **old** count. So a counter kills the script on its first iteration, while
+  `((count+=1))` — evaluating to 1 — survives. Use `count=$((count+1))`.
+
+
+  **And `set -u`:**
+
+
+  ```console
+  $ bash -c 'set -u; echo "$UNSET"'; echo $?
+  bash: UNSET: unbound variable
+  127
+  ```
+
+
+  **127** — conventionally "command not found", so in a CI log it reads like a
+  missing binary. It permits `${VAR:-default}`, `${VAR-}`, `"$@"` with no
+  arguments and empty arrays. `${VAR:?message}` at the top of a script beats `-u`
+  catching it later, because the message names the variable and the fix.

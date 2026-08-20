@@ -1,0 +1,304 @@
+id: lab.xargs-forms
+topic: topic.finding-files
+title: What xargs does with hostile names and with nothing at all
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.4.6]
+
+intro: >-
+  `/tmp/find/hostile` contains six filenames that are all legal: a space, an
+  apostrophe, a newline, a leading hyphen, a long option.
+
+
+  You will push them through xargs four ways, find the two that mangle them, and
+  then deal with the case xargs handles worst — receiving nothing.
+
+setup:
+  - /opt/lab/seed-find.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      List the hostile filenames with escaping turned on, then count them two
+      ways. Save to /tmp/answer-names.
+    hint: >-
+      `ls -b` escapes non-printing characters. Compare a glob-based count with a
+      line-based one.
+    walkthrough: |
+      cd /tmp/find/hostile
+      {
+        echo "the filenames, escaped:"
+        ls -b | sed 's/^/  /'
+        echo
+        echo "counting them two ways:"
+        echo "  find -type f | wc -l        : $(find . -type f | wc -l)"
+        echo "  find -printf x | wc -c      : $(find . -type f -printf 'x' | wc -c)"
+        echo
+        echo "the counts disagree because one filename contains a NEWLINE, so a line-based count sees it as two. every line-based or space-based approach is a guess about what filenames will not contain, and this directory contains a counterexample to each."
+      } > /tmp/answer-names
+      cat /tmp/answer-names
+    verify:
+      - type: file_matches
+        path: /tmp/answer-names
+        pattern: "two.nlines.log"
+        describe: You found the filename containing a newline
+      - type: file_matches
+        path: /tmp/answer-names
+        pattern: "\\-\\-force"
+        describe: And the one that looks like a long option
+      - type: file_matches
+        path: /tmp/answer-names
+        pattern: "(?i)counts disagree"
+        describe: And showed the two counts disagreeing
+
+  - id: s2
+    instruction: >-
+      Send the filenames through xargs with and without NUL separation, and
+      record what each does. Save to /tmp/answer-separators.
+    hint: >-
+      Have xargs run a command that prints each argument it received on its own
+      bracketed line.
+    walkthrough: |
+      cd /tmp/find/hostile
+      {
+        echo "without -print0 / -0:"
+        find . -type f -printf '%f\n' | xargs -n1 printf '  -> [%s]\n' 2>&1 | head -10
+        echo
+        echo "with -print0 and -0:"
+        find . -type f -printf '%f\0' | xargs -0 -n1 printf '  -> [%s]\n' | head -10
+        echo
+        echo "the naive form split 'a file.log' into two arguments, and errored on the apostrophe - xargs treats quotes as special unless it is given -0. its own error message says so."
+        echo
+        echo "NUL is the only byte a filename cannot contain, which is what makes -print0 and -0 the only encoding that is safe for arbitrary names rather than merely usually safe."
+      } > /tmp/answer-separators
+      cat /tmp/answer-separators
+    verify:
+      - type: file_matches
+        path: /tmp/answer-separators
+        pattern: "(?i)unmatched single quote"
+        describe: The naive form errored on the apostrophe
+      - type: file_matches
+        path: /tmp/answer-separators
+        pattern: "\\[a file.log\\]"
+        describe: While the NUL form kept the space intact
+      - type: file_matches
+        path: /tmp/answer-separators
+        pattern: "(?i)only byte a filename cannot contain"
+        describe: And you explained why NUL is the safe separator
+
+  - id: s3
+    instruction: >-
+      Find out what xargs does when it receives no input at all, and what -r
+      changes. Save to /tmp/answer-empty.
+    walkthrough: |
+      cd /tmp/find/hostile
+      {
+        echo "searching for something that does not exist, piped into xargs:"
+        printf '  without -r: '; find . -name 'no-such-file' -print0 | xargs -0 echo "RAN WITH NO ARGUMENTS"
+        printf '  with -r:    '; find . -name 'no-such-file' -print0 | xargs -0 -r echo "RAN WITH NO ARGUMENTS"; echo "(nothing printed = correct)"
+        echo
+        echo "without -r, xargs ran the command once with no arguments at all."
+        echo
+        echo "for echo that is harmless. it is not harmless for a command that has a default target, or one that treats 'no arguments' as 'everything' - and several do. the classic shape is a command whose no-argument behaviour is to act on the current directory."
+        echo
+        echo "-r (--no-run-if-empty) is GNU-specific. on a platform without it, guard the pipeline instead:"
+        echo "    [ -s \"\$LIST\" ] && xargs -0 rm -- < \"\$LIST\""
+      } > /tmp/answer-empty
+      cat /tmp/answer-empty
+    verify:
+      - type: file_matches
+        path: /tmp/answer-empty
+        pattern: "without -r: RAN WITH NO ARGUMENTS"
+        describe: xargs ran the command on empty input
+      - type: file_matches
+        path: /tmp/answer-empty
+        pattern: "with -r:    \\(nothing printed = correct\\)"
+        describe: And -r suppressed it
+      - type: file_matches
+        path: /tmp/answer-empty
+        pattern: "(?i)default target|treats 'no arguments' as"
+        describe: And you said why that can matter
+      - type: file_matches
+        path: /tmp/answer-empty
+        pattern: "(?i)GNU-specific"
+        describe: And noted -r is not portable
+
+  - id: s4
+    instruction: >-
+      Handle the filenames that look like options, and show the two fixes. Save
+      to /tmp/answer-options.
+    hint: >-
+      There is a file called `-n` and one called `--force`. Try passing them to a
+      command that has options.
+    walkthrough: |
+      cd /tmp/find/hostile
+      {
+        echo "the directory contains files named -n and --force."
+        echo
+        echo "passing them to a command without protection:"
+        printf '  cat -n           -> '; find . -name '-n' -printf '%f\0' | xargs -0 -r echo | head -1
+        echo
+        echo "the shell and xargs both delivered the name correctly. the problem is what the RECEIVING command does with it - a word beginning with a hyphen is parsed as an option, and nothing in the pipeline can prevent that."
+        echo
+        echo "two fixes, and i want both:"
+        printf '  with -- :   '; find . -name '-n' -printf '%f\0' | xargs -0 -r printf -- '[%s]\n'
+        printf '  with ./ :   '; find . -name '-n' -printf './%f\0' | xargs -0 -r printf '[%s]\n'
+        echo
+        echo "-- ends option parsing for nearly every GNU tool: everything after it is data. and find's own output already helps here, because 'find .' produces paths beginning with ./ - it is only -printf '%f' that strips them."
+        echo
+        echo "which is a good reason to keep the full path: find . -print0 gives ./-n, and a leading ./ means the name cannot be read as an option by anything."
+      } > /tmp/answer-options
+      cat /tmp/answer-options
+    verify:
+      - type: file_matches
+        path: /tmp/answer-options
+        pattern: "(?i)parsed as an option"
+        describe: You identified where the problem actually lies
+      - type: file_matches
+        path: /tmp/answer-options
+        pattern: "\\[-n\\]"
+        describe: And -- delivered the name as data
+      - type: file_matches
+        path: /tmp/answer-options
+        pattern: "\\[./-n\\]"
+        describe: And the ./ prefix did too
+      - type: file_matches
+        path: /tmp/answer-options
+        pattern: "(?i)keep the full path"
+        describe: And you noted find's default output already helps
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-safe-form the xargs invocation you would use by
+      default, with every flag justified.
+    walkthrough: |
+      {
+        echo "the default form:"
+        echo
+        echo "    find DIR ... -print0 | xargs -0 -r CMD --"
+        echo
+        echo "every part earns its place:"
+        echo "  -print0 / -0   NUL separation. the only byte a filename cannot"
+        echo "                 contain, so the only encoding that is safe rather"
+        echo "                 than usually safe. without it xargs splits on"
+        echo "                 whitespace AND interprets quotes."
+        echo "  -r             do not run the command at all on empty input."
+        echo "                 GNU-specific; guard with [ -s \"\$LIST\" ] elsewhere."
+        echo "  --             end option parsing, so a filename beginning with a"
+        echo "                 hyphen is data. quoting does not prevent this -"
+        echo "                 it is the receiving command's parsing, not the shell's."
+        echo
+        echo "what i would NOT add without a reason:"
+        echo "  -I{}           silently sets one item per invocation, giving up"
+        echo "                 batching. use it only when the command needs the"
+        echo "                 argument somewhere other than the end."
+        echo "  -P N           parallelism interleaves output from several"
+        echo "                 processes, so partial lines can mix. fine for"
+        echo "                 silent commands, bad for anything that prints."
+        echo
+        echo "and the thing xargs cannot give me: find's exit status. a pipeline reports the LAST command's, so a permission error during the walk disappears. set -o pipefail, or prefer -exec cmd + which has no pipeline at all."
+      } > /tmp/answer-safe-form
+      cat /tmp/answer-safe-form
+    verify:
+      - type: file_matches
+        path: /tmp/answer-safe-form
+        pattern: "xargs -0 -r CMD --"
+        describe: You gave a complete default form
+      - type: file_matches
+        path: /tmp/answer-safe-form
+        pattern: "(?i)GNU-specific"
+        describe: And flagged the portability caveat
+      - type: file_matches
+        path: /tmp/answer-safe-form
+        pattern: "(?i)giving up|gives up batching|silently sets one item"
+        describe: And what -I costs
+      - type: file_matches
+        path: /tmp/answer-safe-form
+        pattern: "(?i)pipefail"
+        describe: And what a pipeline does to find's status
+
+solution: >-
+  **Six legal filenames, and two counts that disagree.**
+
+
+  ```console
+  $ ls -b
+  --force  -n  a\ file.log  it's.log  plain.log  two\nlines.log
+  ```
+
+
+  A line-based count sees seven files where a glob-based count sees six, because
+  one name contains a **newline**. Every line-based or space-based approach is a
+  guess about what filenames will not contain, and this directory contains a
+  counterexample to each.
+
+
+  **Without NUL separation, xargs mangles and errors.**
+
+
+  ```console
+  $ find . -printf '%f\n' | xargs -n1 printf '[%s]\n'
+  -> [a]
+  xargs: unmatched single quote; by default quotes are special to xargs
+         unless you use the -0 option
+  -> [file.log]
+  ```
+
+
+  It split `a file.log` into two arguments and **interpreted the apostrophe as a
+  quote** — xargs treats quotes as special, which is more than word splitting
+  does. Its own error message names the fix.
+
+
+  With `-print0` and `-0` all six arrive intact.
+
+
+  **And on empty input, xargs runs the command anyway.**
+
+
+  ```console
+  $ find . -name 'no-such-file' -print0 | xargs -0 echo "RAN WITH NO ARGUMENTS"
+  RAN WITH NO ARGUMENTS
+  ```
+
+
+  Harmless for `echo`. Not harmless for a command with a default target, or one
+  that treats "no arguments" as "everything". `-r` suppresses it and is
+  GNU-specific — elsewhere, guard with `[ -s "$LIST" ]`.
+
+
+  **A filename beginning with a hyphen is the receiving command's problem.**
+
+
+  Neither the shell nor xargs mangles `-n`; it arrives correctly and the
+  *command* parses it as an option. Quoting cannot prevent that. Two fixes:
+  `--` to end option parsing, and a `./` prefix so the name cannot start with a
+  hyphen at all.
+
+
+  Worth noting that `find .` already produces `./-n` — it is only `-printf '%f'`
+  that strips the prefix, which is a good reason to keep full paths.
+
+
+  **The default form:**
+
+
+  ```bash
+  find DIR ... -print0 | xargs -0 -r CMD --
+  ```
+
+
+  `-print0`/`-0` because NUL is the only safe separator. `-r` so nothing runs on
+  empty input. `--` so a hyphenated filename is data.
+
+
+  Do not add `-I{}` without a reason — it silently sets one item per invocation
+  and gives up batching. Do not add `-P` for anything that prints, since parallel
+  processes interleave partial lines.
+
+
+  And what xargs cannot give you is **find's exit status**: a pipeline reports the
+  last command's, so a permission error during the walk disappears. Set
+  `pipefail`, or prefer `-exec cmd +`, which has no pipeline at all.

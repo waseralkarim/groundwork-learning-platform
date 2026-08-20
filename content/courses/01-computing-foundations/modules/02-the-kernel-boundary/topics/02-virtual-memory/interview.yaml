@@ -1,0 +1,142 @@
+topic: topic.virtual-memory
+
+questions:
+  - id: i1
+    level: L2
+    question: What is the difference between VSZ and RSS, and which would you alert on?
+    model_answer: >-
+      VSZ is everything the process has mapped — touched or not, file-backed or
+      anonymous. RSS is the physical memory it currently holds. They diverge
+      because allocation is lazy: a mapping costs nothing until a page is
+      touched, at which point a page fault makes it real.
+
+
+      I would not alert on VSZ at all; it tracks how an allocator likes to
+      reserve address space, not how much memory is in use. RSS is closer, but
+      inside a container the number that matters is the cgroup's
+      `memory.current` against `memory.max`, because that is what the kernel
+      compares when deciding whether to kill.
+    signal: >-
+      Anyone can recite the definitions. The signal is knowing that neither
+      per-process number knows about the cgroup limit, and that RSS
+      double-counts shared pages — which is what makes a candidate useful during
+      a memory incident rather than during a quiz.
+    follow_ups:
+      - "What is PSS and when would you reach for it?"
+      - "Why can a process show 2 GB VSZ and 80 MB RSS?"
+      - "Where does page cache appear in these numbers?"
+
+  - id: i2
+    level: L3
+    question: >-
+      A container with a 1 GB limit is OOM-killed while the application reports
+      600 MB of heap. Walk me through it.
+    model_answer: >-
+      The limit counts more than the application's heap: anonymous memory, page
+      cache for files the container read, and some kernel memory. The
+      application's own metric only sees the first.
+
+
+      What almost certainly happened is that page cache filled the gap. As the
+      heap grew, the kernel reclaimed cache silently to make room — no log, no
+      event visible to the application. Once cache was exhausted, the remaining
+      charge was anonymous memory that cannot be dropped, and with swap off the
+      only move left was SIGKILL.
+
+
+      I would confirm with `memory.stat`: if `file` was large before the kill and
+      `anon` was near the limit at the end, that is the sequence. Exit code 137
+      and the `oom_kill` counter confirm the kill itself.
+    signal: >-
+      The distinction between reclaimable and non-reclaimable memory is the
+      whole answer. A candidate who says "raise the limit" without asking which
+      half was at the cap has not understood the failure — and that is the fix
+      most teams reach for.
+    follow_ups:
+      - "Why is there no log line from the application?"
+      - "When is raising the limit the right fix?"
+      - "How would swap change this, and why do most platforms disable it?"
+
+  - id: i3
+    level: L3
+    question: >-
+      Why might a JVM or Go service be killed immediately after deploying it to
+      a container that worked fine on a VM?
+    model_answer: >-
+      Because `/proc/meminfo` is not namespaced. A runtime that sizes itself
+      from "the machine's memory" reads the host's RAM, not the container's
+      limit, and configures a heap or a worker pool for hardware it does not
+      have.
+
+
+      On a VM those numbers agreed, so nothing was wrong until the workload
+      moved. The fix is in the runtime's configuration — container support for
+      the JVM, `GOMEMLIMIT` for Go, an explicit maximum for anything computing
+      from "RAM divided by four" — not in the container limit.
+
+
+      The check is one command: compare `free -m` with
+      `/sys/fs/cgroup/memory.max` inside the container. If they disagree by
+      orders of magnitude, anything trusting the first is a hazard.
+    signal: >-
+      This is the most common container memory bug in production. A candidate
+      who has met it names the non-namespaced /proc immediately; one who has
+      only read about limits tends to blame the platform.
+    follow_ups:
+      - "What else inside a container reports host values?"
+      - "How would you catch this before production?"
+      - "Why is the container behaving correctly here?"
+
+  - id: i4
+    level: L3
+    question: >-
+      A service's memory grows all week and a weekly restart is in the runbook.
+      How do you decide whether it is really a leak?
+    model_answer: >-
+      Compare the application's own heap figure with RSS over the same period.
+      In a leak both climb together — the application genuinely believes it
+      holds more. If the application's heap is flat while RSS grows, the gap is
+      memory the allocator has freed but not returned to the kernel, which is
+      normal and usually harmless.
+
+
+      A plateau is strong evidence too: retained arenas stop at the high-water
+      mark of demand, whereas a leak has no reason to stop. I would also check
+      `memory.stat` first to make sure the growth is `anon` and not page cache,
+      which rules out the most common false alarm in one command.
+
+
+      If it does look like a leak, two heap profiles and a diff name the
+      allocation site.
+    signal: >-
+      The good answer treats "no action" as a possible outcome and knows how to
+      earn it. Weekly restarts persist for years because nobody separates
+      allocator behaviour from an application defect, and both look identical on
+      an RSS graph.
+    follow_ups:
+      - "What does heap_idle tell you?"
+      - "How would you reduce retained memory if it did matter?"
+      - "What alert would have made the weekly restart unnecessary?"
+
+  - id: i5
+    level: L2
+    question: Why does malloc almost never return NULL on Linux?
+    model_answer: >-
+      Overcommit. The kernel grants more memory than it has, because most
+      programs ask for far more than they touch, and refusing until every promise
+      was backed would waste most of the RAM on the machine.
+
+
+      The consequence is that failure cannot be reported at allocation time. It
+      arrives later, when a page is touched and there is nothing to give — and
+      the kernel cannot return an error to a memory access, so it kills a process
+      instead. That is the OOM killer, and it is why careful NULL checking is not
+      the safety net people assume.
+    signal: >-
+      Connecting overcommit to the existence of the OOM killer is the point. It
+      also predicts the shape of the failure: SIGKILL during an ordinary write,
+      not a handled error at the allocation.
+    follow_ups:
+      - "How would you change this behaviour, and what would it cost?"
+      - "Where does the kill actually land — the process that asked, or another?"
+      - "What does this mean for code that tries to degrade gracefully under memory pressure?"

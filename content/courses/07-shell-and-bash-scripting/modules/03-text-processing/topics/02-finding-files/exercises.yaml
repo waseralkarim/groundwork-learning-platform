@@ -1,0 +1,265 @@
+topic: topic.finding-files
+
+exercises:
+  - id: e1
+    title: Read four expressions
+    level: L1
+    objectives: [OBJ-B08.4.1]
+    kind: interpretation
+    prompt: >-
+      Say what each selects, and flag any that do not do what they appear to:
+
+
+      1. `find /var/log -name '*.log' -type f -mtime +7`
+
+      2. `find . -name '*.log' -o -name '*.txt' -delete`
+
+      3. `find . -name *.log`
+
+      4. `find . -maxdepth 1 -name '*.log'`
+    answer: >-
+      1. Regular files under `/var/log` matching `*.log`, modified more than
+         seven whole days ago. The three predicates are ANDed implicitly. Correct
+         — though `+7` means eight days, which may not be what was meant.
+
+
+      2. **Not what it appears.** `-o` binds more loosely than the implicit AND,
+         so this parses as `(-name '*.log')` OR `(-name '*.txt' AND -delete)`.
+         The `.log` files are matched and nothing happens to them; only the
+         `.txt` files are deleted. Needs `\( … \)`.
+
+
+      3. **Not what it appears.** The pattern is unquoted, so the shell expands
+         it against the current directory before find runs. With no match it
+         works by accident; with one match find searches for that exact filename;
+         with several it errors.
+
+
+      4. Files matching `*.log` directly in `.`, not in subdirectories. Correct,
+         and `-maxdepth` belongs before the other predicates for readability.
+    explanation: >-
+      Items 2 and 3 both fail **silently in the wrong direction** — one deletes
+      less than intended, the other searches for the wrong thing — and neither
+      produces an error in the common case.
+
+
+      Item 3 is the more insidious, because it works when tested in an empty
+      directory and breaks when the script is run from somewhere else. That is
+      the same shape as most bugs in this topic: correct behaviour that depended
+      on a property of the environment nobody wrote down.
+
+  - id: e2
+    title: Write a retention predicate
+    level: L2
+    objectives: [OBJ-B08.4.3]
+    kind: short_answer
+    prompt: >-
+      A policy reads: *"Archived exports are deleted once they have existed for
+      30 full days."* Write the predicate, and say what the obvious version
+      would do instead.
+    answer: >-
+      ```bash
+      find /srv/archive -type f -name '*.csv' ! -newermt '-30 days' -delete
+      ```
+
+
+      **The obvious version, `-mtime +30`, implements 31 days.** `-mtime`
+      truncates to whole 24-hour periods and `+30` means *strictly more than*
+      thirty of them, so a file that has existed for exactly thirty days survives
+      another full day.
+
+
+      `-mtime +29` would be numerically right and reads as "twenty-nine" to
+      anybody checking it against the policy — which is why `! -newermt` is
+      better: it takes a real timestamp, has no rounding, and a reviewer can
+      match it to the policy without knowing find's truncation rule.
+
+
+      I would also pin the type with `-type f`, so a directory named
+      `something.csv` is never a candidate.
+    explanation: >-
+      The reviewability argument is the substantive one. Both `-mtime +29` and
+      `! -newermt '-30 days'` select the right files; only one of them can be
+      checked against the policy document by somebody who does not know this
+      topic.
+
+
+      That matters because retention windows appear in contracts and compliance
+      documents, and the person auditing the predicate is usually not the person
+      who wrote it. A predicate that requires a footnote is a predicate that will
+      eventually be "corrected" to the wrong thing.
+
+  - id: e3
+    title: Exclude a large directory
+    level: L2
+    objectives: [OBJ-B08.4.4]
+    kind: short_answer
+    prompt: >-
+      Search a source tree for `*.log` files while skipping `node_modules` and
+      `.git`. Give the command and say why the obvious alternative is slower.
+    answer: >-
+      ```bash
+      find . \( -name node_modules -o -name .git \) -prune -o -name '*.log' -print
+      ```
+
+
+      The obvious alternative:
+
+
+      ```bash
+      find . ! -path '*/node_modules/*' ! -path '*/.git/*' -name '*.log'
+      ```
+
+
+      Both produce the same files. The second **walks the entire excluded tree**
+      and discards each path; `-prune` never opens those directories at all.
+      Measured on a small tree it was 4ms against 1ms, and the difference scales
+      with the size of what you excluded — which for `node_modules` or `.git` is
+      usually most of the repository.
+
+
+      Two details in the `-prune` form. The `\( … \)` groups the two names so
+      `-prune` applies to both. And the explicit `-print` is required: supplying
+      an action removes the implicit one, and without it find also prints the
+      pruned directories themselves.
+    explanation: >-
+      This is one of the few places in shell where the idiomatic form is chosen
+      for performance rather than correctness, so it is worth being able to say
+      *why* rather than copying it.
+
+
+      The explicit `-print` catches people repeatedly, and the symptom is
+      confusing: the output contains directory names mixed in with the files,
+      which looks like a pattern problem rather than a missing action.
+
+  - id: e4
+    title: Choose an action form
+    level: L2
+    objectives: [OBJ-B08.4.6, OBJ-B08.4.2]
+    kind: interpretation
+    prompt: >-
+      Which form for each, and why:
+
+
+      1. Compress every log older than a week
+
+      2. Run a command that takes exactly one filename argument
+
+      3. Delete files, where you must know if any deletion failed
+
+      4. Convert 200,000 images, using all cores
+    answer: >-
+      1. **`-exec gzip {} +`.** Batched, and a failure reaches find's status.
+
+
+      2. **`-exec cmd {} \;`**, or `xargs -I{}` if you are already in a pipeline.
+         One invocation per file is the requirement, so the batching form cannot
+         be used — accept the process cost.
+
+
+      3. **`-exec rm {} +`**, or `find -delete`. Not `\;`, which discards the
+         command's exit status entirely, so every `rm` could fail and find would
+         still exit 0.
+
+
+      4. **`-print0 | xargs -0 -r -P "$(nproc)" -n 1 convert`.** `-P` is the
+         reason to leave `-exec` — find has no parallelism. Note `-P` interleaves
+         output from several processes, so partial lines can mix.
+    explanation: >-
+      Item 3 is the one worth being firm about, because `-exec rm {} \;` is the
+      form most commonly copied and it cannot report a failure. A retention job
+      written that way on a read-only filesystem prints its success message and
+      deletes nothing.
+
+
+      Item 4 is the honest case for `xargs` over `-exec`: parallelism, and
+      capping batch size with `-n`. The cost is that a pipeline discards find's
+      own exit status, so `pipefail` becomes necessary — you are trading one
+      safety property for a capability.
+
+  - id: e5
+    title: Make a deletion reviewable
+    level: L2
+    objectives: [OBJ-B08.4.8]
+    kind: short_answer
+    prompt: >-
+      A colleague proposes `find "$DIR" -mtime +30 -delete` in a nightly job
+      running as root, where `$DIR` comes from a config file. What would you ask
+      for before approving it?
+    answer: >-
+      *Four things, and none of them is about the predicate being wrong.*
+
+
+      **An allow-list on `$DIR`.** It comes from a config file and runs as root.
+      `case "$DIR" in /srv/archive/*) ;; *) exit 1 ;; esac` — an allow-list, not a
+      deny-list, because a deny-list is the dangerous paths somebody thought of
+      and the first unusual value is the one that was missed. Note also that an
+      **empty** `$DIR` makes the command operate on the current directory.
+
+
+      **`-type f`.** Without it the predicate matches directories too.
+
+
+      **A dry run and a count ceiling.** Compute the list, print it, refuse if it
+      exceeds a plausible maximum. A job that normally deletes 40 files and
+      suddenly wants 400,000 should stop and ask — that is a failed mount or a
+      clock problem, not a busy week.
+
+
+      **A predicate that matches the policy.** `-mtime +30` is 31 days;
+      `! -newermt '-30 days'` says what the policy says.
+
+
+      And I would ask whether it needs to delete at all — a storage lifecycle
+      rule or a quarantine directory makes the first deletion reversible and does
+      not run as root on a machine.
+    explanation: >-
+      The exercise is about reviewing the **blast radius** rather than the logic.
+      The predicate is nearly right; what makes this dangerous is an unvalidated
+      path, root privileges, an unbounded count and no way to see what it would
+      do.
+
+
+      The empty-variable case deserves naming explicitly. `find "" -delete` and
+      an unquoted `find $DIR -delete` with `DIR` unset both end up operating
+      somewhere unintended, and `set -u` plus `${DIR:?}` costs nothing.
+
+  - id: e6
+    title: Explain a test that passed for the wrong reason
+    level: L2
+    objectives: [OBJ-B08.4.7]
+    kind: short_answer
+    prompt: >-
+      Somebody validates a retention job by running `cp -r /srv/archive /tmp/test`
+      and then running the job against `/tmp/test`. It deletes nothing, and they
+      conclude the job is broken. What actually happened?
+    answer: >-
+      *`cp -r` gave every copy the current modification time*, so nothing in
+      `/tmp/test` is old enough to match an age-based predicate. The job deleted
+      nothing because there was nothing to delete — it may be perfectly correct.
+
+
+      The test destroyed the property it was testing. `cp -a` (or `cp -rp`)
+      preserves timestamps and is the only valid way to stage this.
+
+
+      The same trap applies elsewhere: a tarball extracted without `-p`, a
+      container image build that `COPY`s files, and a **git checkout**, which sets
+      every file's mtime to the moment of checkout. Any of those will make an
+      age-based job appear to do nothing.
+
+
+      What I would actually do is create the fixture with known ages —
+      `touch -d '8 days ago'` — rather than copying real data at all. That makes
+      the boundary cases explicit and lets me put a file on each side of it.
+    explanation: >-
+      The conclusion drawn is the interesting part: they decided the job was
+      broken when the evidence was equally consistent with it working. A test
+      that produces no output is ambiguous, and the ambiguity was resolved by
+      assumption.
+
+
+      Building the fixture with `touch -d` rather than copying is the better
+      habit for a second reason — it lets you place files at 6, 7 and 8 days
+      deliberately, which is exactly where `-mtime` truncation shows up and where
+      a copied production directory is unlikely to have anything.

@@ -1,0 +1,199 @@
+id: lab.what-a-file-really-is
+topic: topic.files-and-filesystems
+title: Take a file apart
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A01.5.1, OBJ-A01.5.2]
+
+intro: >-
+  Fifteen minutes that make "a filename is not a file" concrete rather than
+  clever. You will give one file two names, watch both report the same inode,
+  delete one, and find the data still there.
+
+
+  Then you will do the same with a symbolic link and watch it break instead.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Create /tmp/report.txt with some text in it, then save its full `stat`
+      output to /tmp/answer-stat.
+
+
+      Read the Inode and Links fields before moving on.
+    hint: "`echo 'quarterly numbers' > /tmp/report.txt` then `stat /tmp/report.txt > /tmp/answer-stat`"
+    walkthrough: |
+      echo 'quarterly numbers' > /tmp/report.txt
+      stat /tmp/report.txt > /tmp/answer-stat
+      cat /tmp/answer-stat
+    verify:
+      - type: file_matches
+        path: /tmp/answer-stat
+        pattern: "Inode:"
+        describe: The inode number was captured
+      - type: file_matches
+        path: /tmp/answer-stat
+        pattern: "Links: 1"
+        describe: The file currently has exactly one name
+
+  - id: s2
+    instruction: >-
+      Give the same file a second name with a hard link, then record both
+      inode numbers to /tmp/answer-inodes in the form `report=<n> backup=<n>`.
+    hint: "`ln /tmp/report.txt /tmp/backup.txt`, then `stat -c %i` on each."
+    walkthrough: |
+      ln /tmp/report.txt /tmp/backup.txt
+      echo "report=$(stat -c %i /tmp/report.txt) backup=$(stat -c %i /tmp/backup.txt)" > /tmp/answer-inodes
+      cat /tmp/answer-inodes
+    verify:
+      - type: command_exit
+        command: "test $(stat -c %i /tmp/report.txt) -eq $(stat -c %i /tmp/backup.txt)"
+        exit_code: 0
+        describe: Both names refer to the same inode
+      - type: command_output
+        command: "stat -c %h /tmp/report.txt"
+        equals: "2"
+        describe: The inode now has a link count of two
+
+  - id: s3
+    instruction: >-
+      Now add a symbolic link at /tmp/shortcut pointing at /tmp/report.txt, and
+      record its inode number to /tmp/answer-symlink-inode.
+
+
+      Compare it with the previous step's answer. This is the difference between
+      the two kinds of link.
+    hint: "`ln -s /tmp/report.txt /tmp/shortcut`, then `stat -c %i /tmp/shortcut`."
+    walkthrough: |
+      ln -s /tmp/report.txt /tmp/shortcut
+      stat -c %i /tmp/shortcut > /tmp/answer-symlink-inode
+      cat /tmp/answer-symlink-inode
+    verify:
+      - type: command_exit
+        command: "test $(stat -c %i /tmp/shortcut) -ne $(stat -c %i /tmp/report.txt)"
+        exit_code: 0
+        describe: The symbolic link has an inode of its own
+
+  - id: s4
+    instruction: >-
+      Delete the original name — /tmp/report.txt — and then read
+      /tmp/backup.txt, saving what you get to /tmp/answer-after-rm.
+
+
+      Predict what happens before you run it.
+    hint: "`rm /tmp/report.txt` then `cat /tmp/backup.txt > /tmp/answer-after-rm`."
+    walkthrough: |
+      rm /tmp/report.txt
+      cat /tmp/backup.txt > /tmp/answer-after-rm
+      cat /tmp/answer-after-rm
+    verify:
+      - type: file_matches
+        path: /tmp/answer-after-rm
+        pattern: "quarterly numbers"
+        describe: The data survived — removing a name is not removing a file
+      - type: command_output
+        command: "stat -c %h /tmp/backup.txt"
+        equals: "1"
+        describe: The link count dropped to one
+
+  - id: s5
+    instruction: >-
+      Now try the symbolic link. Read /tmp/shortcut and capture both the output
+      and the error to /tmp/answer-broken-link.
+
+
+      The hard link kept working. This one will not.
+    hint: "`cat /tmp/shortcut > /tmp/answer-broken-link 2>&1` — capture stderr too."
+    walkthrough: |
+      cat /tmp/shortcut > /tmp/answer-broken-link 2>&1
+      ls -l /tmp/shortcut
+      cat /tmp/answer-broken-link
+    verify:
+      - type: file_matches
+        path: /tmp/answer-broken-link
+        pattern: "No such file|not found"
+        describe: The symbolic link now points at nothing
+
+  - id: s6
+    instruction: >-
+      Write one word to /tmp/answer-what-rm-does: what does `rm` actually
+      remove?
+
+
+      Then write to /tmp/answer-when-freed, in at least fifteen words, the two
+      conditions that must both hold before a file's data is freed.
+    hint: >-
+      One of the two conditions has nothing to do with names, and is the reason
+      a deleted log file can keep a disk full.
+    walkthrough: |
+      echo name > /tmp/answer-what-rm-does
+      cat > /tmp/answer-when-freed <<'EOF'
+      The link count must reach zero and no process may still hold the file
+      open. Both conditions must hold, which is why a deleted log a service is
+      still writing to keeps its blocks allocated.
+      EOF
+    verify:
+      - type: file_matches
+        path: /tmp/answer-what-rm-does
+        pattern: '^(name|names|link|directory-entry)$'
+        describe: You identified that rm removes a name, not a file
+      - type: command_output
+        command: "wc -w < /tmp/answer-when-freed"
+        pattern: "([1-9][5-9]|[2-9][0-9]|[0-9]{3,})"
+        describe: At least fifteen words
+      - type: file_matches
+        path: /tmp/answer-when-freed
+        pattern: "open|descriptor|process"
+        describe: You named the open-descriptor condition
+
+solution: |
+  ```bash
+  echo 'quarterly numbers' > /tmp/report.txt
+  stat /tmp/report.txt                      # Links: 1
+
+  ln /tmp/report.txt /tmp/backup.txt
+  stat -c %i /tmp/report.txt                # same number
+  stat -c %i /tmp/backup.txt                # same number
+  stat -c %h /tmp/report.txt                # Links: 2
+
+  ln -s /tmp/report.txt /tmp/shortcut
+  stat -c %i /tmp/shortcut                  # a DIFFERENT inode
+
+  rm /tmp/report.txt
+  cat /tmp/backup.txt                       # still there
+  cat /tmp/shortcut                         # No such file or directory
+  ```
+
+  **What the inode numbers told you.**
+
+  **Two names, one inode.** `report.txt` and `backup.txt` were never a file and
+  a copy — they were two directory entries pointing at the same inode. There is
+  no original. `stat` could not tell you which came first, because the
+  filesystem does not record it.
+
+  **The symlink had its own inode.** It is a separate small file whose contents
+  are the text `/tmp/report.txt`. Following it is a second lookup, which is why
+  it can point at something that does not exist.
+
+  **`rm` removed a name.** The link count went from 2 to 1 and the data stayed,
+  because a name still referred to it. The same command on the last name would
+  have taken the count to zero — and even then, the blocks are only freed if no
+  process still has the file open.
+
+  **The symlink broke and the hard link did not.** That is the practical
+  difference: a hard link is the file, a symlink is a note about where the file
+  used to be.
+
+  **Where this bites.** Log rotation that renames a file does not break the
+  writer's descriptor, so the service keeps writing to the renamed file and the
+  new one stays empty. That is why `logrotate` has `copytruncate`, and why the
+  better fix is a signal that makes the service reopen its log.
+
+  **Where this goes.** In **C14**, an image layer shared by ten containers is the
+  same idea at a larger scale: one copy of the data, referred to from many
+  places, freed only when the last reference is gone.

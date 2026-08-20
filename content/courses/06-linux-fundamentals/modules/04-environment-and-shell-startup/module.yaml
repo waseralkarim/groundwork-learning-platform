@@ -1,0 +1,8 @@
+id: module.environment-and-shell-startup
+slug: environment-and-shell-startup
+title: Environment and Shell Startup
+summary: >-
+  What a process inherits and where it came from — the four shell modes and the
+  files each one reads, why PATH differs between a login shell and a script, and
+  why the environment is a snapshot rather than a place to keep a secret.
+order: 4

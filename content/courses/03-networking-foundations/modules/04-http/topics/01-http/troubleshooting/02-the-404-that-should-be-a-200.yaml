@@ -1,0 +1,209 @@
+id: troubleshooting.the-404-that-should-be-a-200
+topic: topic.http
+title: The new service returns 404 from inside and 200 from outside
+level: L2
+objectives: [OBJ-A03.4.8, OBJ-A03.4.5]
+reveal_policy: progressive
+
+situation: >-
+  A new service, `checkout`, was deployed behind the cluster's ingress this
+  morning. External requests to `https://checkout.example.com/health` return 200
+  and the product team say it is working.
+
+
+  An internal batch job that calls it directly by pod address gets 404 on every
+  request. The job has been retrying for four hours.
+
+
+  The application's logs show the external requests and nothing at all from the
+  batch job. The platform team have confirmed the pods are Ready, the Service
+  has endpoints, and NetworkPolicy allows the traffic.
+
+
+  The batch job's owner has opened a ticket saying the checkout service is
+  "returning 404 for valid paths" and has attached a curl command that
+  reproduces it.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "External requests return 200; internal direct requests return 404"
+  - "The application logs the external requests and never logs the internal ones"
+  - "Pods are Ready and the Service has endpoints"
+  - "NetworkPolicy permits the traffic, and the connection succeeds"
+  - "The 404 arrives immediately — no timeout, no refusal"
+  - "It reproduces every time, from any node"
+
+artifacts:
+  - type: command_output
+    label: The batch job's reproduction
+    content: |
+      $ curl -sv http://10.244.7.19:8080/health
+      *   Trying 10.244.7.19:8080...
+      * Connected to 10.244.7.19 (10.244.7.19) port 8080
+      > GET /health HTTP/1.1
+      > Host: 10.244.7.19:8080
+      > User-Agent: curl/8.14.1
+      > Accept: */*
+      >
+      < HTTP/1.1 404 Not Found
+      < Server: nginx
+      < Content-Type: text/html
+      <
+
+  - type: command_output
+    label: The same pod, with a Host header
+    content: |
+      $ curl -s -o /dev/null -w '%{http_code}\n' \
+          -H 'Host: checkout.example.com' http://10.244.7.19:8080/health
+      200
+
+  - type: command_output
+    label: What is actually running in the pod
+    content: |
+      $ kubectl get pod checkout-7d9f -o jsonpath='{.spec.containers[*].name}'
+      checkout nginx-sidecar
+
+      $ kubectl exec checkout-7d9f -c nginx-sidecar -- ss -tlnp
+      LISTEN 0 511 0.0.0.0:8080  0.0.0.0:*  users:(("nginx",pid=1,fd=6))
+      LISTEN 0 511 127.0.0.1:3000 0.0.0.0:* users:(("node",pid=14,fd=18))
+
+  - type: config
+    label: The sidecar's configuration
+    content: |
+      server {
+        listen 8080;
+        server_name checkout.example.com;      # <- name-based virtual host
+        location / { proxy_pass http://127.0.0.1:3000; }
+      }
+      # no default_server block
+
+  - type: log
+    label: The application's log during a failing request
+    content: |
+      (nothing)
+
+diagnostic_questions:
+  - "Which Host header does each of the two requests carry?"
+  - "What is answering with the 404, and how do you know it is not the application?"
+  - "Why does the application log nothing for the failing requests?"
+  - "What is missing from the nginx configuration that would change the behaviour?"
+  - "Is the batch job wrong, or is the service wrong?"
+
+hints:
+  - "Read the `> Host:` line in the verbose output."
+  - "The 404 has a `Server: nginx` header. The application is a Node process."
+  - "Compare the two curl commands — they differ by one header."
+  - "nginx matches `server_name`. What does it do when nothing matches?"
+
+root_cause: >-
+  The pod runs an nginx sidecar doing name-based virtual hosting, and its only
+  `server` block matches `server_name checkout.example.com`. There is no
+  `default_server`, so nginx falls back to its first — and only — server block
+  for unmatched names in some configurations and returns its built-in 404 in
+  others; here it answers with a 404 that never reaches the application.
+
+
+  The two requests differ by exactly one header. External traffic arrives through
+  the ingress carrying `Host: checkout.example.com`, matches the block, and is
+  proxied to the Node process on `127.0.0.1:3000`. The batch job connects by pod
+  address, so curl sends `Host: 10.244.7.19:8080`, which matches nothing.
+
+
+  `Server: nginx` on the 404 is the direct evidence that the sidecar answered,
+  not the application — the application is Node and would not send that header.
+
+
+  And the empty application log is the confirming evidence rather than a mystery:
+  the request never reached it. A request that produced a 404 *from* the
+  application would have been logged like any other.
+
+
+  Neither team is wrong about what they measured. The service works; the batch
+  job's request is missing a header it did not know it needed.
+
+method: >-
+  **1. Read the `> Host:` line.** `curl -v` prints exactly what it sent, and
+  `Host: 10.244.7.19:8080` is the whole diagnosis. Testing by IP address sends
+  the IP address as the Host, which matches no name-based rule anywhere.
+
+
+  **2. Read the response headers, not just the status.** `Server: nginx` on a
+  404 from a service written in Node says something in front answered. That
+  single header separates "the application returned 404" from "something before
+  it did", and they are entirely different investigations.
+
+
+  **3. Treat the empty log as evidence.** It was reported as a mystery and it is
+  a fact: the application never saw the request. Combined with the previous
+  point, that locates the responder precisely.
+
+
+  **4. Difference the two requests.** One header. Change nothing else and the
+  status goes from 404 to 200, which confirms the mechanism rather than merely
+  suggesting it.
+
+
+  **5. Read the sidecar's configuration for the missing case.** `server_name` is
+  present and `default_server` is absent, so there is no configured behaviour for
+  a name nobody declared. That is the actual gap, and it is in the service's
+  configuration rather than in the caller.
+
+
+  The general habit: **when a request works from one place and not another,
+  diff the requests, not the components.** The two commands differed by a single
+  header, and every component involved was healthy.
+
+resolution: >-
+  **Fix the caller, and fix the service, and they are different fixes.**
+
+
+  For the batch job, immediately:
+
+
+  ```bash
+  curl -H 'Host: checkout.example.com' http://10.244.7.19:8080/health
+  ```
+
+
+  Better, call the Service by name rather than a pod IP —
+  `http://checkout.default.svc.cluster.local:8080/health` — which is stable
+  across rescheduling and still needs the Host header if the sidecar matches on
+  it. Calling pods directly bypasses load balancing and breaks the moment a pod
+  is replaced, which it will be.
+
+
+  For the service, add a default so an unmatched Host is handled deliberately
+  rather than accidentally:
+
+
+  ```nginx
+  server {
+    listen 8080 default_server;
+    server_name _;
+    location /health { proxy_pass http://127.0.0.1:3000; }
+    location /       { return 421; }     # Misdirected Request
+  }
+  ```
+
+
+  Two decisions worth making explicitly. Health endpoints should answer
+  regardless of Host, because probes and internal callers legitimately do not
+  send one — and a readiness probe that fails for this reason takes the service
+  down for a configuration detail. And an unmatched Host on everything else
+  should be an explicit 421 or 404 that says so, rather than whatever the first
+  server block happens to do.
+
+
+  **Then check the probes.** If the readiness probe currently passes, it is
+  either sending a Host header or hitting a path that happens to work — and if
+  the latter, it is one configuration change away from failing for the same
+  reason the batch job did.
+
+
+  **And close the ticket accurately.** The service was not "returning 404 for
+  valid paths"; the request was missing a header the service routes on. Saying
+  that plainly, with the two curl commands side by side, is what stops the same
+  ticket being raised by the next caller — and it is worth adding the required
+  Host to the service's own README, since every internal client will need it.

@@ -1,0 +1,305 @@
+topic: topic.environment-and-shell-startup
+
+questions:
+  - id: i1
+    level: L1
+    question: >-
+      Where would you put an environment variable so that a cron job can see it?
+    model_answer: >-
+      In the crontab itself, or in the systemd unit — not in a dotfile of any
+      kind.
+
+
+      **Cron reads no startup files.** It runs jobs from a bare environment with a
+      minimal PATH, typically `/usr/bin:/bin`, plus `HOME`, `LOGNAME` and `SHELL`.
+      Nothing in `~/.bashrc` or `~/.profile` is consulted, so a variable placed
+      there is invisible to the job no matter how many times it works when you
+      run it yourself.
+
+
+      A crontab accepts assignments in its header and they apply to every job in
+      that file:
+
+
+      ```text
+      PATH=/usr/local/bin:/usr/bin:/bin
+      BACKUP_DEST=/srv/backups
+      MAILTO=platform-alerts@example.com
+
+      0 2 * * * /opt/backup/run-backup.sh
+      ```
+
+
+      For systemd it is `Environment=` or `EnvironmentFile=` in the unit.
+
+
+      The thing I would actually push for is the other half — making the script
+      refuse rather than inherit:
+
+
+      ```bash
+      : "${BACKUP_DEST:?BACKUP_DEST must be set (see the crontab)}"
+      ```
+
+
+      That turns an invisible dependency into a one-line failure naming the
+      problem. Without it an unset variable expands to empty and the path
+      collapses — `"${BACKUP_DEST}/db.sql"` becomes `/db.sql` — so the job writes
+      to the root directory and reports success. I have seen exactly that produce
+      eight months of empty backups.
+
+
+      And a credential does not go in a crontab, because crontabs get read and
+      copied. That goes in a file the script reads.
+    signal: >-
+      Knowing cron reads no dotfiles is the baseline. The discriminator is
+      reaching for `${VAR:?}` unprompted — it shows they have been burned by the
+      empty-expansion failure, which is far more damaging than a missing variable
+      because it succeeds.
+    follow_ups:
+      - "What PATH does cron give you?"
+      - "How would you test the job the way cron will run it?"
+      - "Where would the database password go?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A script works when you run it and fails in CI. Walk me through your first
+      five minutes.
+    model_answer: >-
+      I would turn "it works when I run it" into a list, because as stated it is
+      an anecdote about my shell rather than evidence about the job.
+
+
+      ```bash
+      bash -lic 'env' | sort > /tmp/mine.env
+      bash -c   'env' | sort > /tmp/ci.env
+      diff /tmp/mine.env /tmp/ci.env
+      ```
+
+
+      Everything in that diff is something a startup file did, and one of them is
+      the bug. It is usually five to twenty lines.
+
+
+      The reason it happens is that **the shell CI uses reads nothing** — `bash
+      -c` is neither a login shell nor interactive, so no `/etc/profile`, no
+      `/etc/bash.bashrc`, no `~/.profile`, no `~/.bashrc`. Everything I have
+      accumulated in dotfiles over the years is simply absent.
+
+
+      What I expect to find, in rough order: a PATH entry my `~/.profile` adds
+      that CI does not have; a variable set in `~/.bashrc`; or something that is
+      an alias or a shell function rather than a real command — which is why I
+      use `type -a` rather than `which`, since `which` will not tell me the thing
+      I am running is an alias.
+
+
+      Then the fix is to declare rather than inherit: `${VAR:?}` for every
+      variable, an explicit PATH, and a `command -v` check for each external tool
+      so a missing one fails by name instead of halfway through.
+
+
+      And I would add the reproduction as a test — `env -i PATH=/usr/bin:/bin
+      bash ./job` — because a job that has never run without a human's
+      environment has not been tested.
+    signal: >-
+      The diff is the answer, and reaching for it immediately is the signal. The
+      discriminator is knowing *why* `bash -c` reads nothing rather than just
+      that CI is "different", and mentioning `type -a` for the alias case shows
+      they have hit the version where the command genuinely does not exist.
+    follow_ups:
+      - "Which files does `bash -c` read?"
+      - "How would you stop this recurring across the team's scripts?"
+      - "What if the difference is a shell function?"
+
+  - id: i3
+    level: L2
+    question: >-
+      Explain why `~/.bashrc` starts with a check for whether the shell is
+      interactive.
+    model_answer: >-
+      Because `~/.profile` sources `~/.bashrc` unconditionally, and `~/.profile`
+      runs for **non-interactive** login shells too.
+
+
+      The chain is worth being precise about. Bash reads `~/.bashrc` only for
+      *non-login* interactive shells — a login shell does not read it at all. It
+      appears to on a normal account because the distribution's default
+      `~/.profile` explicitly sources it:
+
+
+      ```sh
+      if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then
+        . "$HOME/.bashrc"
+      fi
+      ```
+
+
+      That is a convention implemented in a file, not a rule bash enforces.
+
+
+      Now consider `ssh host 'cat file'`. That is a **login, non-interactive**
+      shell. It reads `/etc/profile` and `~/.profile`, and therefore runs
+      `~/.bashrc` too. Without the guard, my aliases, my prompt setup and
+      anything that prints a banner all execute — and **the output lands in the
+      middle of the data stream**.
+
+
+      That is what breaks `scp`, `rsync` and `git push` over ssh. The remote end
+      receives a welcome message spliced into the protocol, and the error names
+      neither the shell nor the file, so it is genuinely hard to diagnose if you
+      have not seen it.
+
+
+      ```sh
+      case $- in
+          *i*) ;;
+            *) return;;
+      esac
+      ```
+
+
+      `$-` holds the shell's option flags; `i` means interactive.
+
+
+      The rule I would give someone: **never print anything from a startup file
+      without checking that the shell is interactive.** Debian even says it in the
+      first line of the file it ships — "executed by bash(1) for non-login
+      shells" — which everybody scrolls past.
+    signal: >-
+      Most candidates know the guard exists; far fewer can say what breaks
+      without it. The strong answer names file transfer specifically and explains
+      the mechanism — output interleaved with protocol data. Knowing that a login
+      shell does not read `~/.bashrc` on its own is the deeper half.
+    follow_ups:
+      - "Which shell does `scp` get on the remote end?"
+      - "What happens if someone adds a `~/.bash_profile`?"
+      - "Where should a prompt setting go?"
+
+  - id: i4
+    level: L2
+    question: >-
+      An application reads a secret from an environment variable and unsets it at
+      startup. Is that a sufficient fix?
+    model_answer: >-
+      No, and I would start with what it does achieve, because it is not
+      worthless.
+
+
+      **It closes the child-process exposure.** Anything started after the unset
+      does not inherit the value, and that matters — most applications shell out
+      to something, those children receive the whole environment, and anything one
+      of them logs on error may contain the secret.
+
+
+      **What it does not touch** is everything else, and the reason is specific:
+      `/proc/PID/environ` is a snapshot the kernel wrote at `execve` and nothing
+      updates it. Unsetting changes the live copy that `env` and `getenv` read;
+      the snapshot keeps the value for the life of the process. One command shows
+      it:
+
+
+      ```bash
+      API_TOKEN=x bash -c 'unset API_TOKEN; tr "\0" "\n" < /proc/$$/environ | grep API_TOKEN'
+      ```
+
+
+      So the value stays readable through `/proc`, through `ps eww`, in any core
+      dump — and, widest of all, through `docker inspect` from the host, which
+      needs no access to the container, is stored on disk and survives the
+      container stopping. Anyone in the `docker` group can read every environment
+      variable of every container, which is a grant people make casually.
+
+
+      My real objection is not technical. **A control that is believed to work is
+      worse than no control**, because the finding gets closed and nobody looks
+      again. I have seen a re-test confirm "the variable is gone" using `docker
+      exec env` — a correct test of exactly the thing that changed, and of
+      nothing else.
+
+
+      What I would propose: keep the unset, and move the value to a file with the
+      path in the environment. A file is absent from `ps`, from the snapshot and
+      from `inspect`, is not inherited, and can be replaced underneath a running
+      process — which is what makes rotation something other than a fleet-wide
+      restart. And if that is not possible now, record the residual risk rather
+      than marking it resolved.
+    signal: >-
+      Crediting the partial fix before dismantling it is the mature move.
+      Knowing the snapshot mechanism precisely — and being able to demonstrate it
+      in one line — is the technical discriminator. `docker inspect` as the widest
+      exposure, and the point about closed findings, are what separate a security
+      answer from a checklist answer.
+    follow_ups:
+      - "How would you test that a secret is really absent?"
+      - "Does --env-file help?"
+      - "What does moving to a file cost?"
+
+  - id: i5
+    level: L2
+    question: >-
+      Two people run the same command and get different PATHs. How does that
+      happen?
+    model_answer: >-
+      Usually it is not two people — it is two *shell modes*, and the same person
+      can produce both in one terminal.
+
+
+      On Debian, `/etc/profile` is read only by login shells and it **assigns**
+      PATH rather than appending, branching on `id -u`:
+
+
+      ```sh
+      if [ "$(id -u)" -eq 0 ]; then
+        PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      else
+        PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games"
+      fi
+      ```
+
+
+      Root keeps the `sbin` directories; everyone else gets `games`. So for a
+      non-root user, a **login shell has a shorter PATH than a script**, because
+      the script simply inherits whatever it was given and the login shell
+      overwrote it.
+
+
+      The consequence is backwards from the usual story:
+
+
+      ```console
+      $ bash -c  'command -v capsh'
+      /usr/sbin/capsh
+      $ bash -lc 'command -v capsh'
+      $
+      ```
+
+
+      A tool CI can run and a human cannot. That takes a long time to diagnose
+      precisely because nobody expects it in that direction.
+
+
+      Two more sources. **`env -i`** — with PATH unset entirely, bash uses a
+      compiled-in fallback whose last entry is `.`, the current directory. Being
+      last it cannot shadow a real command, so it is not an override risk; what it
+      does is turn a **missing** command into a silent success against whatever is
+      in the working directory. That is why a blank `PATH=` is worse than a wrong
+      one — a wrong PATH fails loudly. And
+      **schedulers construct their own**: cron gives roughly `/usr/bin:/bin`, and
+      a CI runner prepends toolchain directories to pin a language version.
+
+
+      The check I would run is `command -v` **in the shell that is failing**,
+      rather than in mine — and `type -a`, since it also reveals aliases and
+      functions, which are the other way a command works for one person and not
+      another.
+    signal: >-
+      Recognising it as shell mode rather than user configuration is the reframe.
+      The discriminator is knowing the login shell is the *narrower* one, which
+      inverts most people's mental model. The `.` in the fallback PATH and the
+      `type -a` habit both indicate real experience.
+    follow_ups:
+      - "Why would a distribution give root a different PATH?"
+      - "How do you make a script independent of this?"
+      - "What is the risk of the fallback PATH?"

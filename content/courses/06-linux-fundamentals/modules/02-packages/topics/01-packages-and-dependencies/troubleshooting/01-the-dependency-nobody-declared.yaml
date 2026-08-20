@@ -1,0 +1,265 @@
+id: troubleshooting.the-dependency-nobody-declared
+topic: topic.packages-and-dependencies
+title: The safety check that always passes
+level: L2
+objectives: [OBJ-B06.2.7, OBJ-B06.2.3]
+reveal_policy: progressive
+
+situation: >-
+  Two deploys of the same service ran concurrently on Tuesday and corrupted a
+  migration. The deploy script has a guard against exactly this, and the guard
+  has worked for four years.
+
+
+  The guard checks whether another deploy holds the lock file, and refuses to
+  start if one does. Reviewing the logs from Tuesday, both deploys passed the
+  guard within nine seconds of each other.
+
+
+  The script has not been changed in fourteen months. It works on the old VM
+  fleet. The service was migrated to containers in March.
+
+
+  Somebody has already suggested that the lock file is on a shared filesystem
+  with bad locking semantics, and a second person thinks it is a race between
+  the check and the write.
+
+
+  Work out why the guard passed.
+
+symptoms:
+  - "Two concurrent deploys, both passing a mutual-exclusion guard"
+  - "The guard script is unchanged for fourteen months"
+  - "The same script still works correctly on the VM fleet"
+  - "The service moved to containers in March; nobody connected the two"
+  - "No error appears in any deploy log"
+
+artifacts:
+  - type: config
+    label: The guard, from deploy.sh
+    content: |
+      LOCK=/var/run/deploy.lock
+
+      # refuse to start if another deploy holds the lock
+      if fuser "$LOCK" >/dev/null 2>&1; then
+        echo "another deploy is in progress"
+        exit 1
+      fi
+
+      echo $$ > "$LOCK"
+
+  - type: command_output
+    label: The same command, run by hand on both fleets
+    content: |
+      # on a VM from the old fleet
+      $ fuser /var/run/deploy.lock >/dev/null 2>&1; echo "exit=$?"
+      exit=1
+
+      # inside the container image
+      $ fuser /var/run/deploy.lock >/dev/null 2>&1; echo "exit=$?"
+      exit=127
+
+      $ command -v fuser
+      $
+
+  - type: command_output
+    label: Where fuser comes from, and how it used to arrive
+    content: |
+      $ dpkg -S "$(command -v fuser)"          # on the VM fleet
+      psmisc: /usr/bin/fuser
+
+      $ apt-cache depends procps | grep -i recommends
+        Recommends: psmisc
+
+      $ dpkg-query -W -f='${Status}\n' psmisc  # in the container image
+      unknown ok not-installed
+
+  - type: config
+    label: The container image build, March
+    content: |
+      FROM debian:13-slim
+
+      RUN apt-get update \
+       && apt-get install -y --no-install-recommends \
+            ca-certificates curl procps iproute2 \
+       && rm -rf /var/lib/apt/lists/*
+
+      COPY deploy.sh /usr/local/bin/deploy.sh
+
+  - type: log
+    label: Tuesday, both deploys
+    content: |
+      14:22:07  deploy-8871  starting deploy of orders-api
+      14:22:07  deploy-8871  lock acquired
+      14:22:16  deploy-8872  starting deploy of orders-api
+      14:22:16  deploy-8872  lock acquired
+      14:22:41  deploy-8871  running migrations
+      14:22:44  deploy-8872  running migrations
+
+diagnostic_questions:
+  - "What exit code does a shell return when a command does not exist?"
+  - "What does `if` do with that exit code?"
+  - "Which package provides `fuser`, and how did it get onto the VM fleet?"
+  - "Why did nothing appear in the deploy logs?"
+  - "Why did four years of correct behaviour not detect this?"
+
+hints:
+  - "Run the guard's condition by hand in the container and print `$?`."
+  - "127 is not a normal exit code. What produces it?"
+  - "Check whether `procps` and `psmisc` are the same package."
+  - "Read what `2>/dev/null` is hiding."
+
+root_cause: >-
+  **`fuser` is not installed in the container image, so the guard's condition
+  always evaluates false and the guard always passes.**
+
+
+  `fuser` is provided by `psmisc`. On the VM fleet, `psmisc` arrived because it
+  is a **`Recommends` of `procps`** — installed by default, so it was simply
+  there, and nobody ever noticed it was a dependency of anything.
+
+
+  The container image installs `procps` with `--no-install-recommends`, which is
+  correct practice and is what every container guide advises. `psmisc` was
+  skipped. Nothing declared it, so nothing missed it.
+
+
+  What happens then is precise and worth reading slowly:
+
+
+  ```sh
+  if fuser "$LOCK" >/dev/null 2>&1; then
+  ```
+
+
+  A shell returns **127** for a command that does not exist. `if` treats any
+  non-zero status as false. So the branch means "another deploy holds the lock"
+  and the shell answers "no" — not because the lock is free, but because the
+  question could not be asked.
+
+
+  **The guard did not fail. It inverted.** A check that returns "safe" when it
+  cannot run is worse than no check, because the absence of a check is visible in
+  review and this is not.
+
+
+  And `2>/dev/null` removed the only evidence. `fuser: command not found` was
+  written to stderr on every deploy since March and discarded every time. The
+  redirection was added — reasonably — to suppress noise from `fuser` when the
+  lock file does not exist yet.
+
+
+  Neither of the two working theories was close. The lock file's filesystem is
+  irrelevant, and there is no race: **there is no window between the check and
+  the write, because the check never happened.**
+
+method: >-
+  **1. Run the failing condition by hand and print the exit code.** The guard is
+  four lines. `fuser "$LOCK"; echo $?` in the container returns 127, and 127 is
+  not a value any normal program returns — it is the shell saying it could not
+  find the command.
+
+
+  **2. Compare the two environments rather than reasoning about the script.** The
+  script is identical and behaves differently, so the difference is the machine.
+  `command -v fuser` on both answers it in two seconds.
+
+
+  **3. Ask which package provides the missing command.** `dpkg -S "$(command -v
+  fuser)"` on the working fleet says `psmisc`. That is the fact that turns
+  "something is missing" into "something specific was skipped, and here is why".
+
+
+  **4. Check whether it was ever a declared dependency.** It was not.
+  `apt-cache depends procps` shows `Recommends: psmisc` — installed by default,
+  guaranteeing nothing. On the VM fleet it was present by inheritance. Nobody
+  chose it, so nobody noticed choosing to drop it.
+
+
+  **5. Treat `--no-install-recommends` as the change it is.** The March migration
+  did not remove `psmisc`; it stopped inheriting it. Any command the estate
+  relied on without declaring became a candidate for silent absence on that day.
+
+
+  **6. Read every `2>/dev/null` in the guard as a suspect.** Suppressed stderr is
+  where this class of failure lives. The redirection was added for a good reason
+  and its scope is wider than the reason.
+
+
+  The habit: **a conditional whose command might not exist is not a conditional —
+  it is a default.** Ask what each guard does when its tooling is missing, and
+  make sure the answer is "refuse", not "proceed".
+
+resolution: >-
+  **Immediately:** install the missing package on the image, and declare it.
+
+
+  ```dockerfile
+  RUN apt-get update \
+   && apt-get install -y --no-install-recommends \
+        ca-certificates curl procps iproute2 psmisc \
+   && rm -rf /var/lib/apt/lists/*
+  ```
+
+
+  Keep `--no-install-recommends`. The flag is right; what was missing is the
+  second half of the contract — installing explicitly what you no longer inherit.
+  Naming `psmisc` in the Dockerfile also makes it visible to the next reviewer,
+  which inheritance never did.
+
+
+  **Then make the guard fail closed**, because this is the finding that
+  generalises:
+
+
+  ```sh
+  command -v fuser >/dev/null || {
+    echo "FATAL: fuser not found; cannot verify deploy lock" >&2
+    exit 1
+  }
+
+  if fuser "$LOCK" >/dev/null 2>&1; then
+    echo "another deploy is in progress" >&2
+    exit 1
+  fi
+  ```
+
+
+  Four lines, and they convert a silent inversion into a loud refusal. Any script
+  with a safety check should assert its tooling exists before trusting the check's
+  answer.
+
+
+  **Better still, stop shelling out for mutual exclusion.** `flock` is in
+  `util-linux`, which is `Essential` and therefore cannot be absent:
+
+
+  ```sh
+  exec 9>"$LOCK"
+  flock -n 9 || { echo "another deploy is in progress" >&2; exit 1; }
+  ```
+
+
+  This is both more correct — a real kernel lock rather than an inspection of
+  who has the file open — and immune to the whole class of problem, because
+  `Essential` packages are the one thing that is genuinely always there.
+
+
+  **Audit the rest of the estate for the same shape:**
+
+
+  ```bash
+  # commands used by scripts, that no Essential package provides
+  grep -rhoE '\b(fuser|killall|pstree|xauth|ifconfig|netstat|bc|dig|host)\b' \
+    /usr/local/bin/ | sort -u
+  ```
+
+
+  Every hit is a command somebody assumed. Check each against the image.
+
+
+  **For the postmortem:** the migration to containers was correct, the
+  `--no-install-recommends` flag was correct, and the deploy guard has been
+  disabled since March while reporting success on every run. Nothing failed. A
+  question that could not be asked was answered "no", and the answer was believed
+  for five months.

@@ -1,0 +1,197 @@
+id: lab.count-the-threads
+topic: topic.threads-and-concurrency
+title: Count the threads and prove they share memory
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A01.6.1, OBJ-A01.6.2]
+
+intro: >-
+  A process is a container for resources; a thread is a flow of execution using
+  them. That sentence becomes concrete in about fifteen minutes.
+
+
+  You will start a program with several threads, list them, watch how the CPU is
+  divided between them, and then prove — byte for byte — that they share one
+  address space.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Start with a baseline. Count the threads in your own shell and write the
+      number to /tmp/answer-shell-threads.
+    hint: "`ls /proc/self/task | wc -l` — each directory is one thread."
+    walkthrough: |
+      ls /proc/self/task | wc -l | tr -d ' ' > /tmp/answer-shell-threads
+      cat /tmp/answer-shell-threads
+    verify:
+      - type: file_matches
+        path: /tmp/answer-shell-threads
+        pattern: '^1$'
+        describe: A shell is a single-threaded process
+
+  - id: s2
+    instruction: >-
+      Now start /opt/lab/spin with 4 threads for 30 seconds, in the background,
+      and record how many threads its process has to /tmp/answer-spin-threads.
+
+
+      Expect one more than you asked for, and work out why before reading on.
+    hint: >-
+      `/opt/lab/spin 4 30 >/dev/null 2>&1 &`, then find the pid with
+      `pgrep -x spin` and count `/proc/<pid>/task`.
+    walkthrough: |
+      /opt/lab/spin 4 30 >/dev/null 2>&1 &
+      sleep 2
+      pid=$(pgrep -x spin | head -1)
+      echo "$pid" > /tmp/spin-pid
+      ls /proc/$pid/task | wc -l | tr -d ' ' > /tmp/answer-spin-threads
+      cat /tmp/answer-spin-threads
+    verify:
+      - type: file_matches
+        path: /tmp/answer-spin-threads
+        pattern: '^5$'
+        describe: Four workers plus the main thread
+
+  - id: s3
+    instruction: >-
+      List those threads with their CPU shares, saving the output to
+      /tmp/answer-thread-list.
+
+
+      Add up the percentages. The total is not an accident — compare it with
+      this container's CPU limit.
+    hint: "`ps -L -p $(cat /tmp/spin-pid) -o pid,tid,pcpu,stat,comm`"
+    walkthrough: |
+      ps -L -p "$(cat /tmp/spin-pid)" -o pid,tid,pcpu,stat,comm > /tmp/answer-thread-list
+      cat /tmp/answer-thread-list
+      cat /sys/fs/cgroup/cpu.max
+    verify:
+      - type: file_matches
+        path: /tmp/answer-thread-list
+        pattern: "TID"
+        describe: The thread list was captured
+      - type: command_output
+        command: "wc -l < /tmp/answer-thread-list"
+        pattern: "[5-9]|[0-9]{2,}"
+        describe: Every thread is listed separately
+
+  - id: s4
+    instruction: >-
+      Threads have distinct identities. Save the TIDs of that process to
+      /tmp/answer-tids, one per line.
+
+
+      Note that the first one equals the PID — a process's PID is its first
+      thread's TID.
+    hint: "`ls /proc/$(cat /tmp/spin-pid)/task > /tmp/answer-tids`"
+    walkthrough: |
+      ls /proc/"$(cat /tmp/spin-pid)"/task > /tmp/answer-tids
+      cat /tmp/answer-tids
+    verify:
+      - type: command_output
+        command: "wc -l < /tmp/answer-tids"
+        pattern: "^\\s*5"
+        describe: Five distinct thread identifiers
+      - type: command_exit
+        command: "grep -qx \"$(cat /tmp/spin-pid)\" /tmp/answer-tids"
+        exit_code: 0
+        describe: One of the TIDs is the process's own PID
+
+  - id: s5
+    instruction: >-
+      Now the claim worth proving: those threads share one address space.
+
+
+      Compare the memory maps of two different threads and save the result to
+      /tmp/answer-maps-diff. If they share a map, the comparison finds no
+      differences and the file is empty.
+    hint: >-
+      Pick two TIDs from /tmp/answer-tids and diff
+      `/proc/<pid>/task/<tid>/maps` for each. Capture the diff output, which
+      should be empty.
+    walkthrough: |
+      pid=$(cat /tmp/spin-pid)
+      t1=$(sed -n 1p /tmp/answer-tids); t2=$(sed -n 3p /tmp/answer-tids)
+      diff /proc/$pid/task/$t1/maps /proc/$pid/task/$t2/maps > /tmp/answer-maps-diff 2>&1 || true
+      echo "compared task $t1 with task $t2"
+      wc -l < /tmp/answer-maps-diff
+    verify:
+      - type: file_exists
+        path: /tmp/answer-maps-diff
+        describe: The comparison ran
+      - type: command_output
+        command: "wc -c < /tmp/answer-maps-diff | tr -d ' '"
+        equals: "0"
+        describe: The two threads have identical address spaces — they share one
+
+  - id: s6
+    instruction: >-
+      Write to /tmp/answer-shared, in at least twenty words: name two things
+      threads of one process share and two things each keeps private, and say
+      what happens to the other threads if one of them segfaults.
+    walkthrough: |
+      pkill -x spin || true
+      cat > /tmp/answer-shared <<'EOF'
+      Threads share the address space and the open file descriptors, so every
+      global and heap allocation is visible to all of them. Each thread keeps its
+      own stack and its own registers, including the instruction pointer. If one
+      thread segfaults the whole process dies, because they share one address
+      space and the kernel kills the process rather than a thread.
+      EOF
+    verify:
+      - type: command_output
+        command: "wc -w < /tmp/answer-shared"
+        pattern: "([2-9][0-9]|[0-9]{3,})"
+        describe: At least twenty words
+      - type: file_matches
+        path: /tmp/answer-shared
+        pattern: "stack"
+        describe: You identified the stack as private
+
+solution: |
+  ```bash
+  ls /proc/self/task | wc -l              # 1 — a shell is single-threaded
+
+  /opt/lab/spin 4 30 &
+  pid=$(pgrep -x spin | head -1)
+  ls /proc/$pid/task | wc -l              # 5 — four workers plus main
+
+  ps -L -p $pid -o pid,tid,pcpu,stat,comm
+  cat /sys/fs/cgroup/cpu.max              # 50000 100000 — half a CPU
+
+  t1=$(ls /proc/$pid/task | head -1)
+  t2=$(ls /proc/$pid/task | tail -1)
+  diff /proc/$pid/task/$t1/maps /proc/$pid/task/$t2/maps   # no output
+  ```
+
+  **What the numbers showed.**
+
+  **Five threads for four workers.** The main thread created the others and then
+  waited for them. It is a thread like any other, and its TID is the process's
+  PID — because a "process" is, to the scheduler, its first thread plus everything
+  it shares.
+
+  **The CPU shares added up to the limit, not to 400%.** Four busy threads each
+  got roughly an eighth of a CPU because this container may use half of one
+  between them. They are not individually slow; they are collectively capped, and
+  that is the whole subject of the next lab.
+
+  **The maps were byte-for-byte identical.** Not similar — identical, because
+  there is only one address space and each `task` directory is a view onto it.
+  That is what `CLONE_VM` means, and it is the entire difference between a thread
+  and a child process.
+
+  **What follows from sharing.** Passing data between threads costs nothing: they
+  are already looking at the same memory. Corrupting each other's data costs
+  nothing either, which is the lab after next. And a segfault in any thread kills
+  the process, because the fault is against the address space they all share.
+
+  **Where this goes.** A runtime that starts one thread per CPU reads the *host's*
+  CPU count inside a container — the same class of bug as the JVM heap in
+  **Virtual Memory**. In **E29** these threads are competing for a Kubernetes CPU
+  limit expressed in millicores, and the arithmetic is the one you just watched.

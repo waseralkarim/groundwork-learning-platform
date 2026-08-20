@@ -1,0 +1,154 @@
+id: topic.the-filesystem-hierarchy
+slug: the-filesystem-hierarchy
+title: "The Hierarchy: Who Owns Which Directory"
+summary: >-
+  The directory layout is not a filing convention, it is an ownership contract —
+  and the package database proves it, because three directories on every Debian
+  system are owned by nothing at all. This topic reads that contract, then makes
+  a root filesystem read-only to find out which directories a running program
+  genuinely needs.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 115
+status: published
+
+prerequisites:
+  - topic: topic.packages-and-dependencies
+    hardness: required
+  - topic: topic.files-and-filesystems
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B06.3.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify what each top-level directory holds, and which are vestigial on a
+      containerised system.
+    assessed_by: [quiz.q1, quiz.q2, lab.who-owns-which-directory, exercise.e1]
+
+  - id: OBJ-B06.3.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe the usr-merge and what /bin, /lib and /sbin actually are now.
+    assessed_by: [quiz.q3, quiz.q4, lab.who-owns-which-directory]
+
+  - id: OBJ-B06.3.3
+    level: L2
+    verb: explain
+    statement: >-
+      Explain which directories the package system declines to own, and what
+      that reserves them for.
+    assessed_by: [quiz.q5, quiz.q6, lab.who-owns-which-directory, exercise.e2]
+
+  - id: OBJ-B06.3.4
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish configuration, state, cache and ephemeral data by where each
+      belongs and what is lost if it disappears.
+    assessed_by: [quiz.q7, quiz.q8, quiz.q9, lab.config-state-and-cache, exercise.e3]
+
+  - id: OBJ-B06.3.5
+    level: L2
+    verb: predict
+    statement: >-
+      Predict what a read-only root filesystem breaks, and which paths must stay
+      writable for a program to run.
+    assessed_by: [quiz.q10, quiz.q11, lab.the-read-only-root, exercise.e4]
+
+  - id: OBJ-B06.3.6
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret mount options as a gate independent of permission bits, and say
+      which one denied a given write.
+    assessed_by: [quiz.q12, quiz.q13, lab.the-read-only-root, assessment.B]
+
+  - id: OBJ-B06.3.7
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a failure caused by writing to the wrong directory, or by a mount
+      hiding what was underneath it.
+    assessed_by: [quiz.q14, lab.make-it-stateless, troubleshooting.the-mount-that-hid-the-files, troubleshooting.the-read-only-rollout]
+
+  - id: OBJ-B06.3.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a persistence layout for a containerised service, naming what is
+      backed up, what is rebuilt and what is thrown away.
+    assessed_by: [quiz.q15, lab.make-it-stateless, exercise.e5, assessment.A, assessment.C]
+
+terminology:
+  - term: filesystem hierarchy
+    definition: >-
+      The agreed meaning of each directory — what belongs there, who may write
+      it, and whether it survives. A contract between the distribution, the
+      packages and you, rather than a filing preference.
+  - term: usr-merge
+    definition: >-
+      The consolidation of /bin, /sbin and /lib into /usr, leaving symlinks
+      behind. It makes /usr the whole of the installed system, which is what
+      allows it to be shared or mounted read-only.
+  - term: /usr
+    definition: >-
+      Everything installed by packages, and nothing that changes at runtime. On
+      a container image it is nearly all of the bytes.
+  - term: /usr/local
+    definition: >-
+      Reserved for software installed by the administrator. Owned by no package,
+      and Debian policy forbids any package from writing there.
+  - term: /opt
+    definition: >-
+      Self-contained third-party software, each in its own subdirectory. Also
+      owned by no package.
+  - term: /etc
+    definition: >-
+      Configuration for this machine. Never binaries, never state — and about
+      two thirds of it is package-supplied conffiles.
+  - term: /var
+    definition: >-
+      Data that changes as the system runs. Its subdirectories are the real
+      distinction: lib is state, cache is rebuildable, log is history, spool is
+      in-flight work.
+  - term: /var/lib
+    definition: >-
+      State a program cannot rebuild — the thing to back up. On this image it is
+      almost entirely the package database.
+  - term: /var/cache
+    definition: >-
+      Data that can be regenerated. Safe to delete at any moment, which is
+      exactly why it must not be mixed with /var/lib.
+  - term: /run
+    definition: >-
+      Runtime data valid only for this boot — pid files, sockets. A tmpfs, so it
+      is empty at every start by design.
+  - term: /tmp
+    definition: >-
+      Scratch space, world-writable with the sticky bit, guaranteed to nobody
+      beyond the current session.
+  - term: mount option
+    definition: >-
+      A property of the mount rather than of the file — ro, noexec, nosuid,
+      nodev. It is checked independently of the permission bits and can deny a
+      write that the mode allows.
+  - term: mount shadowing
+    definition: >-
+      Mounting over a directory hides whatever was underneath. The files are
+      intact and unreachable, which makes it look like data loss.
+  - term: read-only root
+    definition: >-
+      Running with the root filesystem mounted ro, so only explicitly declared
+      paths are writable. It turns "where does this write?" from a guess into a
+      list.
+
+foreshadows:
+  - "C14's volumes and bind mounts are this hierarchy decided per-directory."
+  - "C15's read-only root filesystems and tmpfs mounts are this topic applied as a security control."
+  - "D22's configuration management owns /etc, which is why this topic separates it from /var."
+  - "F31's backup strategy is the /var/lib versus /var/cache distinction, at fleet scale."
+
+tags: [linux, filesystem, fhs, containers, read-only, fundamentals]

@@ -1,0 +1,475 @@
+id: quiz.how-a-line-becomes-a-command
+topic: topic.how-a-line-becomes-a-command
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.1.1]
+    stem: Which expansion stage decides how many arguments a command receives?
+    options:
+      - id: a
+        text: Word splitting, which runs after parameter expansion
+        correct: true
+      - id: b
+        text: Parameter expansion, since it produces the value
+        note: >-
+          It produces text. Whether that text becomes one word or several is
+          decided by the next stage.
+      - id: c
+        text: Globbing, since it can produce many filenames
+        note: >-
+          It can add words, but it never splits an existing one — glob results
+          are not re-split.
+      - id: d
+        text: Quote removal, since that is where quotes stop mattering
+        note: >-
+          By then the decision has been made. Quote removal only deletes the
+          quote characters.
+    explanation: >-
+      Word splitting operates on the *results* of parameter expansion, command
+      substitution and arithmetic expansion. That is why the contents of a
+      variable change the argument count — `f='a file.log'` unquoted becomes two
+      arguments, and quoted becomes one, with nothing about the variable itself
+      having changed.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.1.1]
+    stem: "Why does `n=3; echo {1..$n}` print the literal text `{1..3}`?"
+    options:
+      - id: a
+        text: Brace expansion runs before parameter expansion, so `$n` had not been substituted yet
+        correct: true
+      - id: b
+        text: Brace ranges require literal integers and reject any variable
+        note: >-
+          It is not a validation rule — it is timing. By the time `$n` is a
+          number, the brace stage has finished.
+      - id: c
+        text: The braces need quoting to work with variables
+        note: >-
+          Quoting would suppress the brace expansion entirely.
+      - id: d
+        text: "`{1..3}` is not valid brace syntax without a step"
+        note: >-
+          It is valid — `echo {1..3}` on its own prints `1 2 3`.
+    explanation: >-
+      This is the cleanest available proof that the order is a real sequence
+      rather than a description. Brace expansion is stage 1 and parameter
+      expansion is stage 3; the brace stage saw `{1..$n}`, which is not a valid
+      range, and left it alone. If the stages ran in any other order the output
+      would be `1 2 3`. Use `seq` or a C-style `for` when you need a variable
+      range.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.1.2]
+    stem: What do double quotes suppress?
+    options:
+      - id: a
+        text: Word splitting and globbing, while still allowing parameter and command substitution
+        correct: true
+      - id: b
+        text: All expansions
+        note: >-
+          That is single quotes. Inside double quotes `$var` and `$(cmd)` still
+          expand, which is usually the point.
+      - id: c
+        text: Globbing only
+        note: >-
+          Word splitting is the more important of the two they suppress.
+      - id: d
+        text: Nothing — they are only for readability
+        note: >-
+          They are the primary control on stages 6 and 7.
+    explanation: >-
+      That combination is why double quotes are almost always the right answer:
+      you keep the expansions you asked for and lose the two that were done *to*
+      you. The quotes themselves never reach the command — they are removed at
+      stage 8, having finished instructing stages 6 and 7.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.1.2]
+    stem: "How do you include a single quote inside a single-quoted string?"
+    options:
+      - id: a
+        text: You cannot — you must end the quoting, add it, and start again
+        correct: true
+      - id: b
+        text: Escape it with a backslash
+        note: >-
+          Single quotes admit no escapes at all. The backslash would be literal
+          and the quote would still end the string.
+      - id: c
+        text: Double it, as in SQL
+        note: >-
+          That is SQL's rule, not the shell's.
+      - id: d
+        text: Use `\\'` for a literal quote
+        note: >-
+          No escape sequence works inside single quotes.
+    explanation: >-
+      Single quotes suppress *everything*, including escaping, which is what
+      makes them completely predictable and slightly awkward. The idiom is
+      `'it'\''s'` — close the string, an escaped quote outside it, reopen. Worth
+      recognising, because it appears constantly in generated shell and looks
+      like a typo.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.3]
+    stem: >-
+      With `e=''`, how many arguments does `cmd $e` pass?
+    options:
+      - id: a
+        text: Zero — an empty expansion produces no words at all
+        correct: true
+      - id: b
+        text: One, an empty string
+        note: >-
+          That is `cmd "$e"`. Unquoted, word splitting finds no words and the
+          argument disappears.
+      - id: c
+        text: One, the literal text `$e`
+        note: >-
+          The variable does expand; it just expands to nothing.
+      - id: d
+        text: It is an error to expand an empty variable
+        note: >-
+          Perfectly legal, and silent — which is what makes it dangerous.
+    explanation: >-
+      This is the mechanism behind the classic test failure. With `x` empty,
+      `[ $x = y ]` becomes `[ = y ]` — two operands where three were expected —
+      and dash reports `[: =: unexpected operator`. Quoting preserves the empty
+      argument, so `[ "$x" = y ]` works. It is also why `${VAR:?}` is worth using:
+      an empty variable and an unset one fail in different, equally confusing
+      ways.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.3]
+    stem: >-
+      With `g='*.log'` in a directory containing six `.log` files, how many
+      arguments does `cmd $g` pass?
+    options:
+      - id: a
+        text: Six — the variable's contents were globbed
+        correct: true
+      - id: b
+        text: One — the literal string `*.log`
+        note: >-
+          That is `cmd "$g"`. Unquoted, the word goes on to stage 7.
+      - id: c
+        text: One — globbing only applies to patterns you typed directly
+        note: >-
+          Globbing does not care where the pattern came from. A variable holding
+          a pattern is a pattern.
+      - id: d
+        text: Zero — variables are not glob-expanded
+        note: >-
+          They are, after word splitting, unless quoted.
+    explanation: >-
+      A variable holding a pattern **is** a pattern. Stage 3 substituted the
+      text, stage 6 made it one word, and stage 7 globbed it. This is why an
+      unquoted expansion's result depends not only on the data but on the current
+      working directory — the same script run from a different directory produces
+      a different argument list.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.3]
+    stem: >-
+      A loop reads `for f in /var/log/app/*.log`. The directory is empty. What
+      happens?
+    options:
+      - id: a
+        text: >-
+          The body runs once, with `f` set to the literal string
+          `/var/log/app/*.log`
+        correct: true
+      - id: b
+        text: The body does not run
+        note: >-
+          That is the behaviour with `shopt -s nullglob`, which is off by
+          default.
+      - id: c
+        text: The shell reports an error and the script exits
+        note: >-
+          That is `shopt -s failglob`, also off by default.
+      - id: d
+        text: The body runs once with `f` empty
+        note: >-
+          The pattern is left as literal text, not replaced with nothing.
+    explanation: >-
+      By default bash leaves a non-matching pattern as literal text, so the loop
+      executes once with a filename that does not exist. Whatever the body does —
+      `stat`, `rm`, `tar` — fails with a confusing message about a file whose name
+      contains an asterisk. `shopt -s nullglob` is usually what you want in a
+      script; the alternative is guarding the body with `[ -e "$f" ] || continue`.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.4]
+    stem: >-
+      Why is `for f in *.log` safe with a file named `a file.log`, while
+      `for f in $files` is not?
+    options:
+      - id: a
+        text: Glob results are produced after word splitting and are never re-split
+        correct: true
+      - id: b
+        text: Globs quote their results automatically
+        note: >-
+          Nothing is quoted. The results are simply never submitted to word
+          splitting, because that stage has already run.
+      - id: c
+        text: "`for` treats glob patterns specially"
+        note: >-
+          `for` does nothing special. The difference is entirely in the
+          expansion order.
+      - id: d
+        text: It is not safe either — both split on spaces
+        note: >-
+          The glob form is safe, and measurably so: `a file.log` arrives as one
+          word.
+    explanation: >-
+      Word splitting is stage 6 and globbing is stage 7, so by the time filenames
+      exist the splitting stage has finished. This asymmetry is not a rule anyone
+      decided — it falls out of the order, and it is the reason to prefer a glob
+      over building a list of filenames in a variable or parsing `ls`.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.4]
+    stem: >-
+      Why is `ls *.log | wc -l` an unreliable count of files?
+    options:
+      - id: a
+        text: A filename may contain a newline, so one file can produce two lines
+        correct: true
+      - id: b
+        text: "`ls` sorts its output, which can duplicate entries"
+        note: >-
+          Sorting does not duplicate anything.
+      - id: c
+        text: "`wc -l` miscounts when the output has no trailing newline"
+        note: >-
+          `ls` terminates its last line, and that is not the failure here.
+      - id: d
+        text: It is reliable — this is a stylistic objection
+        note: >-
+          It is a correctness objection, and this topic's lab directory
+          demonstrates it.
+    explanation: >-
+      A filename may contain any byte except NUL and `/` — including newlines.
+      In the lab directory, `argc *.log` reports 6 while `ls *.log | wc -l`
+      reports 7. Every line-based or space-based approach is a guess about what
+      filenames will not contain. What is reliable is a glob, whose results are
+      never re-split, or `find -print0 | xargs -0`, since NUL is the one byte a
+      filename cannot hold.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.5]
+    stem: >-
+      A wrapper script ends with `exec tool $@`. What is wrong with it?
+    options:
+      - id: a
+        text: >-
+          Unquoted `$@` word-splits every argument, so any containing a space
+          arrives as several
+        correct: true
+      - id: b
+        text: "`$@` should be `$*`"
+        note: >-
+          `"$*"` is worse — it joins every argument into one word.
+      - id: c
+        text: "`exec` prevents arguments being passed at all"
+        note: >-
+          `exec` replaces the process and passes arguments normally.
+      - id: d
+        text: Nothing — `$@` already preserves arguments
+        note: >-
+          Only `"$@"`, with the quotes, does that.
+    explanation: >-
+      `"$@"` is the only form that forwards arguments unchanged. Unquoted `$@`
+      splits each one; `"$*"` joins them all into a single word using the first
+      character of `IFS`. In a chain of wrappers the damage compounds — each
+      unquoted hop re-splits and re-globs what the previous one produced, and the
+      globbing makes the result depend on the caller's working directory.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.5]
+    stem: >-
+      With no arguments at all, what does `"$@"` expand to?
+    options:
+      - id: a
+        text: Nothing — zero words, which is why it is safe at the end of a wrapper
+        correct: true
+      - id: b
+        text: One empty string
+        note: >-
+          That is `"$*"`, and it means the command receives an argument it was
+          never given.
+      - id: c
+        text: The literal text `$@`
+        note: >-
+          It expands normally; there is simply nothing to expand to.
+      - id: d
+        text: An error, since there is nothing to expand
+        note: >-
+          Perfectly legal and extremely useful.
+    explanation: >-
+      This is a genuinely special rule. Everywhere else a quoted expansion
+      produces exactly one word — `"$e"` with `e` empty gives one empty argument.
+      `"$@"` is the exception, and it exists precisely so that forwarding works
+      when there is nothing to forward. It is why `cmd "$@"` is safe as a
+      wrapper's last line and `cmd "$*"` is not.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.6]
+    stem: >-
+      A correctly quoted `rm "$f"` still misbehaves when `f` is `-rf`. Why?
+    options:
+      - id: a
+        text: >-
+          Quoting controls word splitting; it says nothing about how the command
+          interprets the word
+        correct: true
+      - id: b
+        text: The quotes are stripped, so the value becomes an option again
+        note: >-
+          Quotes are always removed. The value arrives as one argument either
+          way — the issue is what `rm` does with it.
+      - id: c
+        text: "`rm` re-splits its arguments internally"
+        note: >-
+          No command re-splits. It is parsing the argument as an option.
+      - id: d
+        text: Only unquoted expansions can produce leading hyphens
+        note: >-
+          The value contains a hyphen regardless of quoting.
+    explanation: >-
+      Two separate problems get conflated. Quoting fixes the shell's treatment of
+      the value; option parsing is the *command's* treatment of it. The fixes are
+      `rm -- "$f"`, which ends option parsing for nearly every GNU tool, or
+      `rm "./$f"`, which makes the name not start with a hyphen and works even
+      with tools that do not support `--`. Leading hyphens arrive routinely from
+      generated identifiers, ticket numbers and branch names.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.6]
+    stem: >-
+      You need to know exactly what arguments a command received. What is the
+      fastest way?
+    options:
+      - id: a
+        text: "`set -x`, or `printf '[%s]\\n' \"$@\"`"
+        correct: true
+      - id: b
+        text: "`echo $@` and read the output"
+        note: >-
+          `echo` joins everything with spaces, which destroys the very
+          information you are looking for.
+      - id: c
+        text: Read the script carefully and reason about the expansions
+        note: >-
+          Slower and less reliable than running it. Every argument about
+          quoting is settled by measurement.
+      - id: d
+        text: "`declare -p` on the variable"
+        note: >-
+          Useful for whether a variable is exported; it does not show an
+          argument list.
+    explanation: >-
+      `set -x` prints each command after expansion and quotes any word that needs
+      it, so quotes in the trace mean one argument. `printf '[%s]\n' "$@"` works
+      because `printf` repeats its format when given more arguments than
+      specifiers, giving one bracketed line per argument. Both take one line, and
+      the habit worth building is: **when unsure, do not reason — run it.**
+
+  - id: q14
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B08.1.7]
+    stem: >-
+      Which of these fail under `/bin/sh` on Debian?
+    options:
+      - id: a
+        text: "`[[ 1 = 1 ]]`"
+        correct: true
+      - id: b
+        text: "`a=(1 2)`"
+        correct: true
+      - id: c
+        text: "`read x <<< hi`"
+        correct: true
+      - id: d
+        text: "`local x=1` inside a function"
+        note: >-
+          Commonly listed as a bashism and works fine in dash. It is not POSIX,
+          but every shell you will meet supports it.
+      - id: e
+        text: "`x=$(cmd)` and `${var%suffix}`"
+        note: >-
+          Both are POSIX and work everywhere.
+    explanation: >-
+      `/bin/sh` on Debian is **dash**. The failure mode is specific and wastes
+      time: a script unchanged for years produces a **syntax error on a line
+      nobody touched**, because a container migration changed the base image and
+      the entrypoint now calls `sh`. `dash -n script.sh` answers "is this really
+      POSIX" in one command, and the shebang is not enforced by anything —
+      somebody can always run `sh script.sh`.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.1.8]
+    stem: >-
+      What is the best rule to give a team about quoting?
+    options:
+      - id: a
+        text: >-
+          Quote every expansion unless splitting or globbing is deliberate, and
+          comment it when it is
+        correct: true
+      - id: b
+        text: Quote everything, with no exceptions
+        note: >-
+          Nearly right, and it gives a reviewer no way to read an unquoted
+          expansion — a deliberate split and an oversight look identical.
+      - id: c
+        text: Quote only variables that might contain spaces
+        note: >-
+          That requires knowing what every value will ever contain, which is the
+          assumption that fails.
+      - id: d
+        text: Set `IFS=$'\\n\\t'` and quoting becomes unnecessary
+        note: >-
+          It removes one failure mode, leaves globbing intact, and breaks
+          deliberate flag lists. Useful sometimes; not a substitute.
+    explanation: >-
+      The second half is what "quote everything" leaves out. Without a comment
+      convention, a reviewer cannot tell intent from oversight, and the question
+      "why is this not quoted?" has no answer that scales. The cost is two
+      characters and some visual noise, against a class of bug that is silent,
+      data-dependent and often destructive — and **there is no case where correct
+      quoting breaks a working script**.

@@ -1,0 +1,9 @@
+graph TD
+    Q["cpu.max = 50000 100000<br/>50ms of CPU per 100ms period"] --> P{"Period starts"}
+    P --> R["Threads run"]
+    R --> C{"Quota spent?"}
+    C -->|"no"| R
+    C -->|"yes"| T["THROTTLED · every thread stopped<br/>until the next period begins"]
+    T -->|"next 100ms period"| P
+    T --> S["nr_throttled and throttled_usec<br/>in cpu.stat both climb"]
+    W["More worker threads"] -.->|"spend the same quota faster,<br/>so throttling starts earlier"| C

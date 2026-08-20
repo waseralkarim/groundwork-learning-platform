@@ -1,0 +1,325 @@
+topic: topic.arguments-and-options
+
+exercises:
+  - id: e1
+    title: Six expansions
+    level: L1
+    objectives: [OBJ-B08.7.1]
+    kind: interpretation
+    prompt: >-
+      Given `set -- a "b c" d`, say what each produces and when you would use it.
+
+
+      1. `"$@"`
+
+      2. `"$*"`
+
+      3. `$@`
+
+      4. `"$#"`
+
+      5. `"${@:2}"`
+
+      6. `"${@:-1}"`
+    answer: >-
+      1. **`[a] [b c] [d]`** — one word per argument, splitting nothing. The only
+         faithful form, and the only correct way to forward arguments:
+         `exec real-tool --config /etc/x.conf "$@"`.
+
+
+      2. **`[a b c d]`** — a single word, joined by the **first character of
+         `IFS`** (a space by default). Right for exactly one job, building a
+         message: `die() { echo "$0: $*" >&2; exit 1; }`. With `IFS=:` it
+         produces `a:b c:d`, which is occasionally useful for building a
+         `PATH`-style list.
+
+
+      3. **`[a] [b] [c] [d]`** — four words. The shell word-splits the result, so
+         `b c` becomes two arguments. Never what you want; identical to unquoted
+         `$*`.
+
+
+      4. **`3`** — the count, which does not include `$0`.
+
+
+      5. **`[b c] [d]`** — a slice from the second argument on. Useful after
+         reading `$1` as a subcommand: `cmd=$1; shift; dispatch "$cmd" "$@"` is
+         usually clearer.
+
+
+      6. **`[a] [b c] [d]`** — and this is the trap. `${@:-1}` is the
+         *use-a-default* form: "the arguments, or `1` if unset". It is **not** a
+         slice. The last argument is `"${@: -1}"`, with a space, or `"${!#}"`.
+    explanation: >-
+      Items 5 and 6 differ by one space and mean entirely different things. That
+      is worth knowing because the bug is invisible when the list is non-empty —
+      `${@:-1}` and `${@: -1}` both produce plausible output, and only one of them
+      is a slice.
+
+  - id: e2
+    title: Predict a parser loop
+    level: L2
+    objectives: [OBJ-B08.7.2]
+    kind: interpretation
+    prompt: >-
+      This runs under `set -euo pipefail`. Say what happens for each invocation.
+
+
+      ```bash
+      while [ $# -gt 0 ]; do
+        case $1 in
+          --out) out=$2; shift 2 ;;
+          *)     break ;;
+        esac
+      done
+      echo "out=${out:-none} rest=$*"
+      ```
+
+
+      1. `--out file.txt /srv`
+
+      2. `--out`
+
+      3. `/srv --out file.txt`
+
+      4. `--out --verbose /srv`
+    answer: >-
+      1. **`out=file.txt rest=/srv`.** The normal path, and the only one that
+         works.
+
+
+      2. **The script dies at `$2` with `$2: unbound variable`, exit 127.** Under
+         `set -u`, reading a positional that does not exist is an error. Without
+         `set -u` it would be worse: `out` becomes empty, `shift 2` **fails**
+         (all-or-nothing, only one argument present) and returns 1 — which under
+         `set -e` ends the script *silently*, and without `set -e` loops forever,
+         because nothing was consumed and `$1` is still `--out`.
+
+
+      3. **`out=none rest=/srv --out file.txt`.** The `*)` branch breaks on the
+         first operand, so the `--out` after it is never parsed. No error — the
+         flag is silently ignored, which is the same shape as `getopts` stopping
+         at the first non-option.
+
+
+      4. **`out=--verbose rest=/srv`.** `--out` takes the next word whatever it
+         is, so a flag becomes a filename. Nothing detects it.
+
+
+      Three of the four are wrong, and only one is loud. The fixes are a count
+      check (`[ $# -ge 2 ] || die`), a `-*)` catch-all before `*)`, and — if the
+      value must not look like a flag — rejecting a value beginning with `-`.
+    explanation: >-
+      Case 2 is the interesting one because the *safest* configuration produces
+      the clearest failure. Without `set -u` this parser hangs; with it, it exits
+      127 pointing at the exact line. That is what strict mode buys — not
+      correctness, but a loud failure instead of a quiet one.
+
+  - id: e3
+    title: Find what stops the flags working
+    level: L2
+    objectives: [OBJ-B08.7.3, OBJ-B08.7.4]
+    kind: interpretation
+    prompt: >-
+      A script processes several environments. `--verbose` works for the first
+      and not the rest. Find the defect and give the one-line fix.
+
+
+      ```bash
+      process_env() {
+        local OPT verbose=0 retries=1
+        while getopts ":vr:" OPT; do
+          case $OPT in
+            v) verbose=1 ;;
+            r) retries=$OPTARG ;;
+          esac
+        done
+        shift $((OPTIND - 1))
+        echo "env=$1 verbose=$verbose retries=$retries"
+      }
+
+      for env in dev staging prod; do
+        process_env -v -r 3 "$env"
+      done
+      ```
+    answer: >-
+      **`OPTIND` is global and is not reset between calls.** The fix is one line:
+
+
+      ```bash
+      local OPT OPTIND=1 verbose=0 retries=1
+      ```
+
+
+      After the first call `OPTIND` is 4. The second call asks `getopts` for
+      argument 4 of a three-argument list, gets nothing, returns non-zero
+      immediately, and the loop body never runs — so `verbose` and `retries` keep
+      their defaults.
+
+
+      **What makes it survive review** is that the output still looks right.
+      `shift $((OPTIND - 1))` is `shift 3` again, so `$1` still lands on the
+      environment name. Three lines, in order, correctly named; only two fields
+      differ.
+
+
+      `local` matters as much as `=1`. A bare `OPTIND=1` fixes this call and
+      rewinds any caller that was itself parsing, which turns a silent wrong value
+      into an infinite loop.
+
+
+      And note the defect **did not exist when this was written**, if the function
+      was originally called once. It appeared when somebody wrapped it in a loop —
+      a change that looks entirely safe and is nowhere near the parser.
+    explanation: >-
+      This is the argument for `local OPT OPTIND=1` as an unconditional habit
+      rather than a fix applied when needed: the cost is one word, and the
+      condition that makes it necessary is introduced by an unrelated edit
+      somewhere else in the file.
+
+  - id: e4
+    title: Choose a parser for four scripts
+    level: L2
+    objectives: [OBJ-B08.7.6]
+    kind: short_answer
+    prompt: >-
+      For each, say which parser you would use and why.
+
+
+      1. A cron job that takes one directory and an optional `-v`.
+
+      2. A deployment script operators type by hand during incidents, with
+         `--dry-run`, `--target`, `--force`.
+
+      3. A script distributed to developer laptops — Linux and macOS.
+
+      4. A tool with subcommands: `ctl backup create`, `ctl backup list`.
+    answer: >-
+      **1. `getopts`.** No human types this; the caller is a crontab line nobody
+      re-reads. Eight lines, no dependency, portable. Long options would be
+      decoration.
+
+
+      **2. `getopt(1)`.** Long options are a real usability difference under
+      stress: `--dry-run` is self-documenting in a runbook and `-n` is not, and
+      permutation means `deploy.sh prod --dry-run` works the way GNU tools have
+      trained everyone to expect. This is precisely the script where a
+      mis-remembered flag is expensive, so the parser should be the forgiving one.
+      Pay the dependency and the `eval`.
+
+
+      **3. Hand-rolled**, or `getopts` if short options suffice. macOS ships the
+      **BSD** `getopt`, which has no long options and mangles whitespace — so the
+      `getopt(1)` idiom breaks in a way that produces wrong arguments rather than
+      an error. If long options are required, write the `while`/`case` loop; it is
+      about twelve lines and behaves identically everywhere.
+
+
+      **4. Hand-rolled, and probably not shell at all.** Subcommands are
+      `cmd=$1; shift` followed by a `case` dispatching to per-subcommand parsers —
+      structurally straightforward, but the moment each subcommand has its own
+      flags, its own help, and shared global options, you are maintaining a parser
+      tree by hand. That is the point to reach for Python's `argparse`
+      sub-parsers, which give the dispatch, the per-command help, and generated
+      usage text that cannot drift out of date.
+    explanation: >-
+      The question that decides it is **who types the command** — a file, or a
+      person under pressure — and after that, **where it runs**. Note that case 3
+      is the only one where the answer turns on portability, and it is the reason
+      the old advice "never use `getopt`" persists: it was true, and on macOS it
+      still is.
+
+  - id: e5
+    title: Review a CLI before it ships
+    level: L2
+    objectives: [OBJ-B08.7.8]
+    kind: interpretation
+    prompt: >-
+      Review this, which a colleague wants to put in the ops repository.
+
+
+      ```bash
+      #!/bin/bash
+      set -euo pipefail
+
+      # usage: reset-env.sh [--env NAME] [--wipe] [--yes]
+      while getopts ":e:wy" OPT; do
+        case $OPT in
+          e) env=$OPTARG ;;
+          w) wipe=1 ;;
+          y) yes=1 ;;
+        esac
+      done
+      shift $((OPTIND - 1))
+
+      echo "resetting ${env:-staging}"
+      if [ "${wipe:-0}" = 1 ]; then
+        rm -rf "/srv/${env:-staging}"/*
+      fi
+      ```
+    answer: >-
+      **I would block this.** Seven findings, roughly in order of how much they
+      cost.
+
+
+      **1. The comment documents long options the parser cannot read**, and all
+      three do something wrong. Measured:
+
+
+      | Typed | Result |
+      |---|---|
+      | `--wipe` | **`wipe=1`** — the destructive flag is enabled |
+      | `--env staging` | `env=nv`, and `staging` is left as an operand |
+      | `--yes` | `yes=1` **and** `env=s` |
+
+
+      `getopts` splits each into letters. In `--wipe` the `w` matches and turns on
+      the wipe. In `--env` the `e` takes the rest of the word — `nv` — as its
+      value, so the environment name is silently garbage and the real one becomes
+      an unread operand. In `--yes`, `y` matches and then `e` swallows the `s`.
+
+
+      So the documentation is an instruction to destroy data, and it is the only
+      documentation the script has.
+
+
+      **2. Destruction is opt-in to the wrong thing.** `--wipe` off by default is
+      right, but a mis-parsed flag turns it on. Invert it: require an explicit
+      `--apply`, or make wiping a subcommand.
+
+
+      **3. `rm -rf "/srv/${env:-staging}"/*` with an unvalidated `env`.** `-e ..`
+      gives `/srv/../*`. Nothing checks that `env` is one of the known
+      environments, and `set -u` cannot help because of the `:-staging` default.
+
+
+      **4. `-y` is parsed and never used.** There is no confirmation prompt, so
+      the flag that exists to bypass a safety check is documenting a safety check
+      that was never written.
+
+
+      **5. No error branches.** No `:` or `\?` cases, so an unknown option or a
+      missing value is ignored — `-e` with no value silently leaves `env` unset
+      and the script wipes `staging`.
+
+
+      **6. No `--`, no usage, no validation, no exit 64.** Nothing tells a caller
+      it was called wrong, and there is no way to name an environment beginning
+      with a dash.
+
+
+      **7. The default is a real environment.** `${env:-staging}` means *forgetting
+      the argument entirely* still targets something real. A missing required
+      value should refuse, not choose.
+
+
+      **What I would ask for:** `getopt(1)` so the documented long options exist;
+      an enum check on `env`; deletion behind `--apply` with a dry run as the
+      default; `[ -n "$env" ]` rather than a default; usage on stderr with exit
+      64; and the seven-invocation parser test in CI.
+    explanation: >-
+      Findings 1 and 3 compound in the worst way: the documentation tells an
+      operator to type something that enables destruction, and the path being
+      destroyed is built from an unvalidated value in the same mis-parse. Either
+      alone is a bug; together they are an incident with a runbook pointing at it.
+

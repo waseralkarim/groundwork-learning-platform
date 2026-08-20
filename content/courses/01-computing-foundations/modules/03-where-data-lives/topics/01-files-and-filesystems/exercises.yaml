@@ -1,0 +1,154 @@
+topic: topic.files-and-filesystems
+
+exercises:
+  - id: e1
+    title: Predict four link operations
+    level: L2
+    objectives: [OBJ-A01.5.2]
+    kind: interpretation
+    prompt: >-
+      Starting from a file `data.bin` with one name, say what each leaves behind:
+
+
+      **A** — `ln data.bin copy.bin` then `rm data.bin`
+
+
+      **B** — `ln -s data.bin copy.bin` then `rm data.bin`
+
+
+      **C** — `ln -s data.bin copy.bin` then `mv data.bin renamed.bin`
+
+
+      **D** — `ln data.bin copy.bin` then `truncate -s 0 copy.bin`
+    answer: >-
+      A — the data survives under copy.bin, link count 1. B — copy.bin dangles;
+      the data is gone. C — copy.bin dangles even though the data exists, because
+      it holds the old path as text. D — both names show an empty file: they
+      share one inode.
+    explanation: >-
+      **A and D** are the same fact from two directions: a hard link is not a
+      copy, so the data survives losing one name, and a change made through one
+      name is visible through the other.
+
+
+      **C** is the one that catches people. Nothing was deleted — the file still
+      exists under a new name — and the symlink is still broken, because it
+      stores a path as text rather than a reference to the inode.
+
+
+      That distinction decides which to use. A symlink survives its target being
+      replaced, which is why deployments point one at the current release. A hard
+      link survives its target being renamed. They are not interchangeable.
+
+  - id: e2
+    title: Diagnose four full filesystems
+    level: L3
+    objectives: [OBJ-A01.5.6]
+    kind: interpretation
+    prompt: >-
+      For each, say what is wrong and what you would run next:
+
+
+      **A** — `df -h` 100%, `df -i` 12%, `du -x -sh` accounts for nearly all of it
+
+
+      **B** — `df -h` 100%, `df -i` 12%, `du -x -sh` accounts for 3% of it
+
+
+      **C** — `df -h` 41%, `df -i` 100%
+
+
+      **D** — `df -h` 96%, `df -i` 40%, and it has climbed 5% a day for a week
+    answer: >-
+      A — genuinely full of files; find the largest and decide what goes. B —
+      deleted-but-open files; find the holder with `lsof +L1` or in /proc/*/fd.
+      C — out of inodes; find the directory holding millions of small files. D —
+      not full yet, but will be on Thursday; the trend is the finding.
+    explanation: >-
+      **B** is the one worth practising, because the instinct — delete more —
+      changes nothing and burns the outage.
+
+
+      **C** is the one most people have never seen. `df -h` looks healthy and
+      every write fails. On ext4 the inode count is fixed at format time, so the
+      fix is to delete files or reformat, never to add capacity.
+
+
+      **D** should never have become an incident. Alerting on the level catches
+      it at 90% with hours to spare; alerting on the growth rate catches it a
+      week out, which is the difference between a ticket and a page.
+
+  - id: e3
+    title: Explain a lost transaction
+    level: L3
+    objectives: [OBJ-A01.5.7]
+    kind: short_answer
+    prompt: >-
+      A service writes a record, gets a successful return from `write()`, and
+      reports success to its caller. The machine loses power two seconds later.
+      After reboot the record is gone.
+
+
+      Explain what happened, and what the service should have done differently
+      if the record genuinely could not be lost.
+    answer: >-
+      The write reached the page cache and returned; the kernel had not yet
+      flushed it to the device. Durability requires fsync — and for a newly
+      created file, fsync of the directory as well — before reporting success to
+      the caller.
+    explanation: >-
+      Nothing malfunctioned. `write()` returning success means the kernel has the
+      bytes, which is a different claim from the device having them.
+
+
+      Where durability matters the pattern is write, fsync, *then* acknowledge —
+      and for a new file, fsync the directory too, or the data can survive in an
+      inode that nothing names. The standard safe-replace idiom is write to a
+      temporary file, fsync it, then rename over the target, because rename
+      within a filesystem is atomic.
+
+
+      The trade-off is real and worth stating: every fsync is a round trip to the
+      device, so a service that fsyncs per record has bounded its throughput to
+      the device's sync rate. Choosing not to is legitimate for data that can be
+      regenerated — as long as it is a decision rather than an assumption.
+
+  - id: e4
+    title: Attribute four failed writes in a container
+    level: L3
+    objectives: [OBJ-A01.5.8]
+    kind: short_answer
+    prompt: >-
+      Give the likely errno and the fix for each, in a container with a
+      read-only root filesystem, a tmpfs at /tmp and a volume at /data:
+
+
+      **A** — writing to /var/lib/app
+
+
+      **B** — writing a 4 GB file to /tmp in a container limited to 1 GB of memory
+
+
+      **C** — writing to /data as a user with no permission on the directory
+
+
+      **D** — writing to /data when the host filesystem is full
+    answer: >-
+      A — EROFS; mount a volume or tmpfs there. B — ENOSPC from the tmpfs size
+      limit, or an OOM kill first, because a tmpfs is memory; write to the volume
+      instead. C — EACCES; fix ownership or the container's user. D — ENOSPC from
+      the host filesystem; free space on the host.
+    explanation: >-
+      Four failures at the same layer with four different causes, and the errno
+      separates them in one command.
+
+
+      **B** is the interesting one. `/tmp` looks like disk and is memory, so a
+      large write there either hits the tmpfs size limit or gets the container
+      OOM-killed — a failure that appears to be about storage and is actually
+      about the memory limit.
+
+
+      The habit is the one from the kernel boundary topic: get the errno before
+      forming a theory. EROFS, EACCES and ENOSPC read alike in an application log
+      and have nothing in common.

@@ -1,0 +1,23 @@
+flowchart TB
+    subgraph ECBM["ECB — each block encrypted independently"]
+        direction LR
+        PB1["RECORD____"] --> EB1["5301d125…"]
+        PB2["RECORD____"] --> EB2["5301d125…"]
+        PB3["SALARY:900"] --> EB3["a1515645…"]
+        EB1 -.->|"identical in,<br/>identical out"| EB2
+    end
+
+    subgraph CBCM["CBC — each block XORed with the previous ciphertext"]
+        direction LR
+        PC1["RECORD____"] --> EC1["6d7b0119…"]
+        PC2["RECORD____"] --> EC2["9f6dc11e…"]
+        PC3["SALARY:900"] --> EC3["1d7c3b1b…"]
+        EC1 -->|"feeds"| EC2
+        EC2 -->|"feeds"| EC3
+    end
+
+    ECBM --> R1["Structure survives encryption.<br/>You can see where the<br/>repeated records are."]
+    CBCM --> R2["Structure hidden — but a<br/>tampered block still decrypts,<br/>so there is no integrity."]
+
+    R1 --> R3["Neither is the answer.<br/>Use an AEAD mode:<br/>AES-GCM or ChaCha20-Poly1305,<br/>where tampering fails to decrypt."]
+    R2 --> R3

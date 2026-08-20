@@ -1,0 +1,391 @@
+id: lab.the-wrapper-that-ate-itself
+topic: topic.functions-and-scope
+title: Write a wrapper that calls itself until the shell dies
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.6.1]
+
+intro: >-
+  A function outranks a builtin, and a builtin outranks the real program. That is
+  what makes `ls() { ls --color=auto "$@"; }` — a line that appears in thousands
+  of dotfiles — call itself forever.
+
+
+  You will establish the lookup order, bound the recursion before triggering it,
+  and find out what `unset` actually removes.
+
+setup:
+  - /opt/lab/seed-functions.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Establish the lookup order by shadowing an external command and a builtin,
+      then bypassing both. Save to /tmp/answer-order.
+    hint: >-
+      `type -t` reports which kind of thing a name currently is.
+    walkthrough: |
+      {
+        echo "shadowing an external command:"
+        bash -c 'ls() { echo "    ls  -> the FUNCTION ran"; }; ls /etc; echo "    type -t ls = $(type -t ls)"'
+        echo
+        echo "shadowing a BUILTIN:"
+        bash -c 'echo() { printf "    echo -> the FUNCTION ran\n"; }; echo hi; echo "    type -t echo would say function"'
+        echo
+        echo "so a function outranks both. the two bypasses:"
+        bash -c 'ls() { echo "the function"; }; printf "    command ls  -> %s (the real one)\n" "$(command ls /etc | head -1)"'
+        bash -c 'echo() { printf "the function\n"; }; builtin echo "    builtin echo -> bypassed it"'
+        echo
+        echo "THE ORDER IS: alias, then function, then builtin, then PATH."
+        echo
+        echo "  command NAME   skips functions - runs the builtin or the PATH executable"
+        echo "  builtin NAME   skips functions - runs the shell's own"
+        echo "  \\NAME          skips ALIASES only, and does nothing to a function"
+        echo
+        echo "aliases are last in practice because they are not expanded in scripts or"
+        echo "inside functions at all - which is most of why functions replaced them."
+      } > /tmp/answer-order
+      cat /tmp/answer-order
+    verify:
+      - type: file_matches
+        path: /tmp/answer-order
+        pattern: "ls  -> the FUNCTION ran"
+        describe: A function shadows an external command
+      - type: file_matches
+        path: /tmp/answer-order
+        pattern: "echo -> the FUNCTION ran"
+        describe: And a builtin
+      - type: file_matches
+        path: /tmp/answer-order
+        pattern: "command ls  -> .* \\(the real one\\)"
+        describe: command bypasses it
+      - type: file_matches
+        path: /tmp/answer-order
+        pattern: "builtin echo -> bypassed it"
+        describe: And so does builtin
+      - type: file_matches
+        path: /tmp/answer-order
+        pattern: "(?i)alias, then function, then builtin, then PATH"
+        describe: And you stated the order
+
+  - id: s2
+    instruction: >-
+      Bound the recursion FIRST, then write the wrapper that calls itself and
+      trigger it. Save to /tmp/answer-recursion.
+    hint: >-
+      `FUNCNEST` limits nesting depth. Check what it is before you rely on it.
+    walkthrough: |
+      {
+        echo "before triggering anything, check the safety net:"
+        echo "    default FUNCNEST = [${FUNCNEST:-<unset>}]"
+        echo
+        echo "UNSET MEANS NO LIMIT. bash will recurse until it exhausts memory, and in"
+        echo "a container with a memory cap that means the OOM killer, not an error"
+        echo "message. so set it before doing this, not after."
+        echo
+        echo "with FUNCNEST=10:"
+        bash -c 'FUNCNEST=10; ls() { ls -l "$@"; }; ls /' 2>&1 | tail -1 | sed 's/^/    /'
+        echo
+        echo "the wrapper called ITSELF. inside the function body, the word ls resolves"
+        echo "the same way it did at the call site - to the function - because a"
+        echo "function body is not a different namespace. there is no 'super' or 'outer'"
+        echo "in shell."
+        echo
+        echo "the correct form:"
+        bash -c 'ls() { command ls -l "$@"; }; ls /etc' | head -1 | sed 's/^/    /'
+        echo "    (command ls ran the real one)"
+        echo
+        echo "this is the single most common bug in a .bashrc, and it is silent until"
+        echo "the function is called - so it ships."
+      } > /tmp/answer-recursion
+      cat /tmp/answer-recursion
+    verify:
+      - type: file_matches
+        path: /tmp/answer-recursion
+        pattern: "default FUNCNEST = \\[<unset>\\]"
+        describe: You checked the limit first
+      - type: file_matches
+        path: /tmp/answer-recursion
+        pattern: "(?i)NO LIMIT"
+        describe: And said what unset means
+      - type: file_matches
+        path: /tmp/answer-recursion
+        pattern: "(?i)maximum function nesting level exceeded"
+        describe: And triggered it safely
+      - type: file_matches
+        path: /tmp/answer-recursion
+        pattern: "(?i)command ls ran the real one"
+        describe: And fixed it
+      - type: file_matches
+        path: /tmp/answer-recursion
+        pattern: "(?i)not a different namespace"
+        describe: And explained why the body resolves to itself
+
+  - id: s3
+    instruction: >-
+      Find out what a function returns when nothing says so, and demonstrate the
+      case that always succeeds. Save to /tmp/answer-status.
+    walkthrough: |
+      {
+        printf '  %-44s rc=%s\n' 'f(){ true; }; f'  "$(bash -c 'f(){ true; }; f'; echo $?)"
+        printf '  %-44s rc=%s\n' 'f(){ false; }; f' "$(bash -c 'f(){ false; }; f'; echo $?)"
+        printf '  %-44s rc=%s\n' 'f(){ false; echo done; }; f' "$(bash -c 'f(){ false; echo done; }; f' >/dev/null; echo $?)"
+        printf '  %-44s rc=%s\n' 'f(){ return; }; false; f' "$(bash -c 'f(){ return; }; false; f'; echo $?)"
+        printf '  %-44s rc=%s\n' 'false; f(){ return; }; f' "$(bash -c 'false; f(){ return; }; f'; echo $?)"
+        echo
+        echo "a function returns the status of THE LAST COMMAND THAT RAN, unless a"
+        echo "return says otherwise. a bare 'return' returns whatever \$? already was."
+        echo
+        echo "and the last two rows are the same three commands in a different ORDER,"
+        echo "with different results - because A FUNCTION DEFINITION IS ITSELF A COMMAND,"
+        echo "and a successful one. defining f between the false and the call resets \$?"
+        echo "to 0 before return ever reads it:"
+        bash -c 'false; echo "      after false:                  \$?=$?"'
+        bash -c 'false; g(){ :; }; echo "      after false + a definition:   \$?=$?"'
+        echo
+        echo "so ROW 3 IS THE TRAP: a function whose last line is an echo ALWAYS"
+        echo "SUCCEEDS, whatever happened above it. that is the shape that made B08.5's"
+        echo "migration report two applied migrations while one failed."
+        echo
+        echo "return versus exit:"
+        bash -c 'return 3' 2>&1 | sed 's/^/    bash -c "return 3": /'
+        printf '    rc=%s\n' "$(bash -c 'return 3' 2>/dev/null; echo $?)"
+        bash -c 'f(){ exit 7; }; f; echo "NOT REACHED"'; printf '    f(){ exit 7; }; f  -> rc=%s and the echo never ran\n' "$?"
+        echo
+        echo "  return  ends the FUNCTION, and is an error outside one (status 2)"
+        echo "  exit    ends the WHOLE SHELL, even from inside a function"
+        echo
+        echo "exit is right in usage and die helpers, and wrong in a library function -"
+        echo "the caller loses its chance to clean up."
+      } > /tmp/answer-status
+      cat /tmp/answer-status
+    verify:
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "f\\(\\)\\{ false; \\}; f +rc=1"
+        describe: A failing last command fails the function
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "f\\(\\)\\{ false; echo done; \\}; f +rc=0"
+        describe: And a trailing echo makes it succeed
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "(?i)ALWAYS\\s+SUCCEEDS"
+        describe: You named the trap
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "f\\(\\)\\{ return; \\}; false; f +rc=1"
+        describe: A bare return carries the status it already had
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "after false \\+ a definition:   \\$\\?=0"
+        describe: And you found that a definition resets it
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "(?i)can only .return"
+        describe: And that return needs a function
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "rc=7 and the echo never ran"
+        describe: And that exit ends the script
+
+  - id: s4
+    instruction: >-
+      Find out what `unset` removes when a variable and a function share a name.
+      Save to /tmp/answer-unset.
+    walkthrough: |
+      {
+        bash -c '
+          f() { echo x; }
+          f=value
+          t=$(type -t f); printf "    both defined:     type -t f = [%s]  \$f = [%s]\n" "${t:-nothing}" "$f"
+          unset f
+          t=$(type -t f); printf "    after unset f:    type -t f = [%s]  \$f = [%s]\n" "${t:-nothing}" "${f:-<unset>}"
+          unset -f f
+          t=$(type -t f 2>/dev/null); printf "    after unset -f f: type -t f = [%s]\n" "${t:-nothing}"'
+        echo
+        echo "UNSET REMOVES THE VARIABLE AND LEAVES THE FUNCTION. a variable and a"
+        echo "function may share a name because they live in SEPARATE NAMESPACES, and"
+        echo "unset looks in the variable one first."
+        echo
+        echo "  unset f      removes the variable f"
+        echo "  unset -f f   removes the function f"
+        echo "  unset -v f   removes the variable, explicitly"
+        echo
+        echo "which matters when a test script tries to clear a stub between cases:"
+        echo "'unset mock_curl' leaves the stub installed, and the next test silently"
+        echo "runs against the mock it thought it had removed."
+        echo
+        echo "declare -f prints a function's source, which is the fastest way to find"
+        echo "out what an inherited wrapper actually does:"
+        bash -c 'greet() { echo "hi $1"; }; declare -f greet' | sed 's/^/    /'
+      } > /tmp/answer-unset
+      cat /tmp/answer-unset
+    verify:
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "after unset f: +type -t f = \\[function\\]"
+        describe: unset leaves the function in place
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "after unset -f f: type -t f = \\[nothing\\]"
+        describe: And unset -f removes it
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "(?i)SEPARATE NAMESPACES"
+        describe: You explained why they coexist
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "(?i)runs against the mock"
+        describe: And gave a case where it bites
+      - type: file_matches
+        path: /tmp/answer-unset
+        pattern: "greet \\(\\)"
+        describe: And used declare -f
+
+  - id: s5
+    instruction: >-
+      Write a wrapper worth shipping — one that adds a default, still lets a
+      caller override it, and cannot recurse. Save it to /tmp/mygrep.sh and your
+      reasoning to /tmp/answer-wrapper.
+    walkthrough: |
+      cat > /tmp/mygrep.sh <<'W'
+      #!/bin/bash
+      # A grep wrapper that excludes VCS directories by default.
+
+      grep() {
+        command grep --exclude-dir=.git "$@"
+      }
+
+      grep -r "$@" /tmp/funcs
+      W
+      chmod 0755 /tmp/mygrep.sh
+
+      {
+        echo "the wrapper:"
+        sed -n '/^grep()/,/^}/p' /tmp/mygrep.sh | sed 's/^/    /'
+        echo
+        echo "it works:"
+        bash /tmp/mygrep.sh -l 'copied' 2>&1 | sed 's/^/    /'
+        echo
+        echo "three decisions:"
+        echo
+        echo "  1. command grep - without it this recurses on the first call. this is"
+        echo "     the whole point of the lab."
+        echo
+        echo "  2. \"\$@\" LAST, so a caller's flags land after the default and can override it."
+        echo "     put the default after \"\$@\" and the wrapper wins over the caller,"
+        echo "     which is the opposite of what a default means."
+        echo
+        echo "  3. --exclude-dir rather than piping through another grep, so the exit"
+        echo "     status is still grep's own. wrapping a command in a pipeline"
+        echo "     replaces its status with the last stage's - B08.2's lesson - and a"
+        echo "     wrapper that changes the exit status of the thing it wraps is a"
+        echo "     wrapper nobody can use in an if."
+        echo
+        echo "what i would NOT do:"
+        echo
+        echo "  - name it grep at all, in a script. shadowing a standard tool means"
+        echo "    every reader of every line below has to know the shadow exists."
+        echo "    in a .bashrc it is a convenience; in a shared script it is a trap,"
+        echo "    and vcsgrep() costs nothing."
+        echo
+        echo "  - use an alias. aliases are not expanded in scripts or inside"
+        echo "    functions at all, so it would silently do nothing where it matters."
+        echo
+        echo "  - forget that anything SOURCING this file inherits the shadow. a"
+        echo "    function defined at the top level of a sourced script is defined in"
+        echo "    the caller's shell, for the rest of its life."
+      } > /tmp/answer-wrapper
+      cat /tmp/answer-wrapper
+    verify:
+      - type: file_exists
+        path: /tmp/mygrep.sh
+        describe: You wrote the wrapper
+      - type: file_matches
+        path: /tmp/mygrep.sh
+        pattern: "command grep"
+        describe: Using command so it cannot recurse
+      - type: file_matches
+        path: /tmp/answer-wrapper
+        pattern: "(?i)can override it"
+        describe: And put "$@" last so a caller wins
+      - type: file_matches
+        path: /tmp/answer-wrapper
+        pattern: "(?i)exit status of the thing it wraps"
+        describe: And preserved the status
+      - type: file_matches
+        path: /tmp/answer-wrapper
+        pattern: "(?i)shadowing a standard tool"
+        describe: And argued against shadowing in a shared script
+      - type: file_matches
+        path: /tmp/answer-wrapper
+        pattern: "(?i)inherits the shadow"
+        describe: And noted what sourcing does
+
+solution: >-
+  **The lookup order is alias → function → builtin → `PATH`.** A function shadows
+  both `ls` (external) and `echo` (builtin). `command NAME` skips functions and
+  runs the builtin or the `PATH` executable; `builtin NAME` skips functions and
+  runs the shell's own; `\NAME` skips **aliases only** and does nothing to a
+  function. Aliases are last in practice because they are not expanded in scripts
+  or inside functions at all.
+
+
+  **Check `FUNCNEST` before triggering recursion.** It is **unset by default** —
+  no limit — so bash recurses until it exhausts memory, which in a
+  memory-capped container means the OOM killer rather than an error message.
+
+
+  ```console
+  $ bash -c 'FUNCNEST=10; ls() { ls -l "$@"; }; ls /'
+  bash: ls: maximum function nesting level exceeded (10)
+  ```
+
+
+  The wrapper calls **itself**, because inside a function body the word `ls`
+  resolves exactly as it did at the call site — a function body is not a
+  different namespace, and shell has no `super`. `command ls -l "$@"` is correct.
+  This is the most common bug in a `.bashrc`, and it is silent until the function
+  is called, so it ships.
+
+
+  **A function returns the status of the last command that ran:**
+
+
+  | | rc |
+  |---|---|
+  | `f(){ true; }; f` | 0 |
+  | `f(){ false; }; f` | 1 |
+  | `f(){ false; echo done; }; f` | **0** |
+  | `f(){ return; }; false; f` | 1 |
+  | `false; f(){ return; }; f` | **0** |
+
+
+  **Row 3 is the trap** — a function ending in `echo` always succeeds, which is
+  the shape that made B08.5's migration report two applied migrations while one
+  failed.
+
+
+  **Rows 4 and 5 are the same three commands in a different order.** A bare
+  `return` returns whatever `$?` already held — but **a function definition is
+  itself a command, and a successful one**, so defining `f` between the `false`
+  and the call resets `$?` to 0 before `return` ever reads it. And `return` ends the *function* (an error outside one, status 2) while
+  `exit` ends the **whole shell**, even from inside a function.
+
+
+  **`unset f` removes the variable and leaves the function.** They live in
+  separate namespaces and `unset` looks in the variable one first; `unset -f` is
+  what removes a function. That bites in test scripts that try to clear a stub
+  between cases — the stub survives and the next test runs against a mock it
+  believes it removed.
+
+
+  **A wrapper worth shipping** makes three decisions: `command grep` so it cannot
+  recurse; `"$@"` **last**, so a caller's flags override the default rather than
+  the other way round; and `--exclude-dir` rather than a second `grep` in a
+  pipeline, so the exit status is still grep's own — a wrapper that changes the
+  status of what it wraps cannot be used in an `if`. And in a shared script,
+  don't name it `grep` at all.

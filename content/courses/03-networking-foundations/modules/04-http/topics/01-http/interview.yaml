@@ -1,0 +1,233 @@
+topic: topic.http
+
+questions:
+  - id: i1
+    level: L1
+    question: Describe an HTTP request and response as they appear on the wire.
+    model_answer: >-
+      Both have the same four-part shape. A request starts with a request line —
+      method, path and version, as in `GET /orders/42 HTTP/1.1`. Then headers,
+      one `Name: value` per line. Then a blank line. Then a body, if the method
+      has one.
+
+
+      A response is the same with a status line instead: version, status code
+      and a reason phrase, as in `HTTP/1.1 404 Not Found`. The reason phrase is
+      decorative — no client reads it.
+
+
+      Two details worth being precise about. Every line ends with CR LF, so the
+      blank line that terminates the headers is CRLF CRLF, and that four-byte
+      sequence is what a parser scans for. Omitting it means the headers never
+      end and the client hangs rather than erroring.
+
+
+      And the hostname is *not* on the request line — the path is. The hostname
+      is the `Host` header, which HTTP/1.1 requires, and that separation is what
+      makes virtual hosting possible: one address, one port, one process, and
+      `Host` deciding which site answers.
+
+
+      It is all text. A complete valid response is one `printf`, which is worth
+      doing once because it makes the rest of the protocol concrete.
+    signal: >-
+      Naming the blank line as a *part* of the format rather than formatting is
+      the discriminator — it is the thing you only notice after writing HTTP by
+      hand or debugging a hang. Separating the path from the Host header shows
+      they understand virtual hosting rather than having memorised a diagram.
+    follow_ups:
+      - "What happens if the blank line is missing?"
+      - "Why is the hostname a header rather than part of the request line?"
+      - "How does a client know where the body ends?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A request times out. What do you check, and what does a timeout actually
+      prove?
+    model_answer: >-
+      A timeout proves almost nothing on its own, which is why it is the least
+      useful thing a client can report. What matters is what arrived before it
+      fired.
+
+
+      I would run curl with a bounded timeout and ask for the counters:
+      `curl -s -m 5 -o /dev/null -w 'code=%{http_code} size=%{size_download}
+      ttfb=%{time_starttransfer}\n'`. Four readings, four different diagnoses.
+
+
+      An instant exit 7 is connection refused, not a timeout at all — the packet
+      arrived and the kernel answered, so the network is fine and nothing is
+      bound.
+
+
+      `code=000` with a timeout means no response ever started: a firewall
+      dropping silently, or a server that accepted the connection and never
+      answered.
+
+
+      A status code with `size_download` greater than zero, then a timeout, is
+      **broken framing** — a `Content-Length` larger than the body, or chunked
+      encoding with no terminating chunk. The client is doing exactly what it was
+      told and the network is fine.
+
+
+      A status code with a large `ttfb` and a successful finish is not a timeout
+      problem at all; it is a slow application.
+
+
+      The rule I would give somebody: bound every request with `-m`, then look at
+      what arrived. A timeout with bytes received is a framing bug, and no amount
+      of investigating the network will find it.
+    signal: >-
+      "A timeout proves nothing" plus the `size_download` distinction is the
+      senior answer. Most people treat a timeout as a network symptom and reach
+      for a packet capture. Distinguishing refused from timed-out, and knowing
+      that bytes-plus-timeout means framing, is what separates someone who has
+      debugged this from someone who has read about status codes.
+    follow_ups:
+      - "What would a Content-Length that is too small do instead?"
+      - "How would you tell a slow server from a stalled response?"
+      - "Why is connection refused better news than a timeout?"
+
+  - id: i3
+    level: L2
+    question: >-
+      How does a client know where a response body ends, and what happens when
+      the server gets it wrong?
+    model_answer: >-
+      Three mechanisms. `Content-Length` says read exactly that many bytes.
+      `Transfer-Encoding: chunked` sends size-prefixed chunks ending with a
+      zero-size chunk. And with neither, the body ends when the connection
+      closes.
+
+
+      Chunked exists because `Content-Length` requires knowing the size before
+      sending the first byte, which means buffering the whole response — no good
+      for streamed output or a report generated as it goes.
+
+
+      When the framing is wrong the client does not error; it obeys. A
+      `Content-Length` larger than the body makes it wait for bytes that never
+      come, until its own timeout, and the reported error is a timeout that
+      points at the network.
+
+
+      A `Content-Length` that is *smaller* is worse, and this is the part worth
+      knowing. The client stops early, and on a keep-alive connection the
+      leftover bytes become the beginning of the next response — so the failure
+      lands on a different request, possibly for a different user, as a parse
+      error with no connection to its cause. That is also the mechanism behind
+      request smuggling, where a proxy and a server disagree about where one
+      message ends, which is why a response carrying both `Content-Length` and
+      `Transfer-Encoding` is rejected by careful proxies.
+
+
+      Ending by connection close has its own flaw: a truncated response is
+      indistinguishable from a complete one, and keep-alive becomes impossible
+      because the close is the delimiter.
+    signal: >-
+      All three mechanisms is the baseline. The too-small case damaging the
+      *next* request is the discriminator — it is non-obvious and it is the one
+      with security consequences. Connecting it to request smuggling shows they
+      understand why the ambiguity matters rather than treating it as trivia.
+    follow_ups:
+      - "Why would a server ever choose chunked over Content-Length?"
+      - "What is wrong with ending a body by closing the connection?"
+      - "Why do proxies reject responses with both headers?"
+
+  - id: i4
+    level: L2
+    question: >-
+      What is the operational significance of the 4xx/5xx split, and where does
+      it break down?
+    model_answer: >-
+      It decides two things: whether to retry, and whether to alert.
+
+
+      4xx means the client sent something wrong, so an identical retry fails
+      identically — retrying is wasted work, and a rising 4xx rate is usually
+      somebody else's bad deployment rather than your incident. 5xx means the
+      server failed on a request that may have been fine, so retries are
+      reasonable and an alert is warranted. I would alert on the 5xx *ratio*
+      rather than the count, because a count scales with traffic and gets muted.
+
+
+      Where it breaks down: **429** is a 4xx that is worth retrying, after the
+      delay in `Retry-After` — and a 429 spike says something about your own
+      capacity or limits rather than about clients. **401** spiking usually means
+      a credential expired or a token issuer broke, so the clients are behaving
+      correctly and the fault is yours. And **400** can be caused by a proxy
+      mangling a request, in which case the client did nothing wrong either.
+
+
+      The other thing I would add is that 502, 503 and 504 are proxy answers and
+      they name where the failure was: 502 means an upstream refused or sent
+      something unparseable, 503 means there was no upstream to send to, and 504
+      means one accepted and did not answer in time. In a cluster those map to a
+      pod that is up but not serving, no healthy endpoints, and a slow
+      application — which is a first hypothesis before any log is read.
+
+
+      And retries interact with the method. Retrying a timed-out POST may create
+      a second order, because a timeout does not say whether the request was
+      processed. A mesh configured to retry everything on 5xx is a
+      duplicate-charge incident waiting for a slow afternoon.
+    signal: >-
+      Getting the retry/alert consequence rather than reciting definitions is
+      the core. Naming 429 and 401 as the exceptions shows real operational
+      experience. The idempotency caveat on retries is the answer that suggests
+      they have seen a duplicate-charge postmortem.
+    follow_ups:
+      - "Why alert on the 5xx ratio rather than the count?"
+      - "Which methods are safe to retry automatically, and why?"
+      - "What does a 503 from an ingress tell you about the pods behind it?"
+
+  - id: i5
+    level: L2
+    question: >-
+      A service works from outside the cluster and returns 404 from inside. Where
+      do you start?
+    model_answer: >-
+      By diffing the two requests rather than the components, because both paths
+      evidently reach a healthy thing.
+
+
+      The likeliest difference is the `Host` header. External traffic goes
+      through an ingress carrying `Host: checkout.example.com`; an internal
+      caller using a pod IP sends `Host: 10.244.7.19:8080`, which matches no
+      name-based rule and gets whatever the default backend does — usually a 404.
+
+
+      Two pieces of evidence confirm it quickly. `curl -v` prints the `> Host:`
+      line it actually sent. And the response headers say who answered — a
+      `Server: nginx` header on a 404 from a Node application means something in
+      front replied, not the application.
+
+
+      The third is the empty application log, which people report as a mystery
+      and is actually the confirmation: a 404 *from* the application would have
+      been logged like any other request. Silence means it never arrived.
+
+
+      The test that makes the internal call meaningful is
+      `curl -H 'Host: checkout.example.com' http://<pod-ip>:8080/...`, and for
+      HTTPS it has to be `--resolve name:443:<ip>` instead, because TLS chooses a
+      certificate from SNI during the handshake and `-H` sets only the HTTP
+      header.
+
+
+      Longer term I would fix both sides: the caller should use the Service name
+      rather than a pod IP, and the service should have an explicit default for
+      unmatched hosts so that health endpoints answer regardless — otherwise a
+      probe is one configuration change away from failing the same way.
+    signal: >-
+      "Diff the requests, not the components" is the transferable habit. Using
+      the `Server:` response header to identify who answered is a strong
+      practical signal, as is reading the empty log as evidence. Knowing that
+      `-H 'Host:'` is insufficient for HTTPS separates people who have actually
+      done this from people reasoning it out.
+    follow_ups:
+      - "Why does `-H 'Host:'` not work for HTTPS?"
+      - "What does the empty application log tell you?"
+      - "How would you stop the next internal caller hitting this?"

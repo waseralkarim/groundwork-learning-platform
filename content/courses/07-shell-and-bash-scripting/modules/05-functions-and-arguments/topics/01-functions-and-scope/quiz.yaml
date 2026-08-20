@@ -1,0 +1,461 @@
+id: quiz.functions-and-scope
+topic: topic.functions-and-scope
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.6.1]
+    stem: "In what order does the shell resolve a word in command position?"
+    options:
+      - id: a
+        text: alias, then function, then builtin, then PATH
+        correct: true
+      - id: b
+        text: builtin, then function, then PATH
+        note: >-
+          If builtins won, `echo() { ...; }` could not shadow `echo` — and it can.
+      - id: c
+        text: PATH, then builtin, then function
+        note: >-
+          This is backwards: a function shadows the real program, not the
+          reverse.
+      - id: d
+        text: function, then PATH, then builtin
+        note: >-
+          Builtins are searched before `PATH`, which is why `[` is fast.
+    explanation: >-
+      A function outranks a builtin and both outrank the executable. `command
+      NAME` skips functions and runs the builtin or the `PATH` executable;
+      `builtin NAME` skips functions and runs the shell's own. `\NAME` escapes
+      **aliases only** — it does nothing to a function.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.6.1]
+    stem: "What does `ls() { ls -l \"$@\"; }` do when called?"
+    options:
+      - id: a
+        text: Calls itself until bash runs out of memory
+        correct: true
+      - id: b
+        text: Runs `/usr/bin/ls -l`, because the body refers to the real command
+        note: >-
+          A function body is not a different namespace — `ls` inside resolves
+          exactly as it did outside.
+      - id: c
+        text: Fails immediately with "recursive function definition"
+        note: >-
+          Recursion is legal and sometimes wanted; bash does not object.
+      - id: d
+        text: Recurses a few hundred times and then stops
+        note: >-
+          Only if `FUNCNEST` is set, and it is **unset** by default.
+    explanation: >-
+      The word `ls` inside the body resolves to the function, because a function
+      body is not a separate namespace and shell has no `super`. `FUNCNEST` is
+      **unset by default**, so there is no nesting limit — bash recurses until it
+      exhausts memory. `command ls -l "$@"` is the correct form, and this is the
+      most common bug in a `.bashrc`.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.6.2]
+    stem: >-
+      What is the exit status of `f() { false; echo done; }` when called?
+    options:
+      - id: a
+        text: "0 — the status of the last command that ran"
+        correct: true
+      - id: b
+        text: "1 — the status of the failing command"
+        note: >-
+          That would require an explicit `return 1`; the `echo` overwrote it.
+      - id: c
+        text: "1, because `set -e` would have aborted the function"
+        note: >-
+          Even with errexit, this is the case B08.5 measured — a function called
+          in an `if` condition runs its whole body with errexit suppressed.
+      - id: d
+        text: Undefined unless there is an explicit `return`
+        note: >-
+          It is precisely defined: the last command's status.
+    explanation: >-
+      A function returns the status of **the last command that ran** unless a
+      `return` says otherwise. So a function ending in `echo` **always
+      succeeds** — the shape that made B08.5's migration report two applied
+      migrations while one had failed. A bare `return` returns whatever `$?`
+      already was.
+
+  - id: q4
+    type: multi_choice
+    level: L1
+    objectives: [OBJ-B08.6.2]
+    stem: "Which are true of `return` but not `exit`?"
+    options:
+      - id: a
+        text: It ends only the current function
+        correct: true
+      - id: b
+        text: It is an error when used outside a function or sourced script
+        correct: true
+      - id: c
+        text: It truncates its argument to one byte
+        note: >-
+          Both do. `return 256` and `exit 256` are both 0.
+      - id: d
+        text: It sets `$?` for the caller
+        note: >-
+          Both do that too.
+    explanation: >-
+      `bash -c 'return 3'` gives `return: can only 'return' from a function or
+      sourced script` and status 2. `exit` inside a function ends **the whole
+      shell** — right in a `usage` or `die` helper, wrong in a library function,
+      because the caller loses its chance to clean up.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.3]
+    stem: "A script ends with `exit \"$failures\"`. What happens when `failures` is 256?"
+    options:
+      - id: a
+        text: The script reports success
+        correct: true
+      - id: b
+        text: The status is clamped to 255
+        note: >-
+          `exit -1` becomes 255, but values above 255 wrap rather than clamp.
+      - id: c
+        text: bash refuses the argument as out of range
+        note: >-
+          256 is accepted silently. Only a *non-numeric* argument draws a
+          complaint.
+      - id: d
+        text: The status is 256, and the caller sees it
+        note: >-
+          The kernel only carries one byte back to the parent.
+    explanation: >-
+      An exit status is a single unsigned byte, so the value is taken modulo 256.
+      `exit 256` → **0**, `exit 300` → 44, `exit -1` → 255. Never exit a count:
+      put the number in the message and `exit 1`.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.3]
+    stem: "A CI step reports exit status 143. What is the most likely cause?"
+    options:
+      - id: a
+        text: The process was killed by SIGTERM — probably a timeout or a cancellation
+        correct: true
+      - id: b
+        text: The script called `exit 143` deliberately
+        note: >-
+          Possible, and it would be a mistake for exactly this reason — it is
+          indistinguishable from the signal.
+      - id: c
+        text: A command was not found
+        note: >-
+          That is 127.
+      - id: d
+        text: A file existed but was not executable
+        note: >-
+          That is 126.
+    explanation: >-
+      **128 + N** means killed by signal N: 130 is `INT` (128+2), 143 is `TERM`
+      (128+15), 137 is `KILL` (128+9). 126 means found-but-not-executable and 127
+      means not-found. 1–125 are yours. That is why `exit "$count"` is unsound —
+      a count of 143 is indistinguishable from a cancellation, and a supervisor
+      may retry on one and not the other.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.4]
+    stem: >-
+      `deploy` declares `local stage=production` and calls `log`, which was
+      passed nothing and declares nothing. What does `log` see in `$stage`?
+    options:
+      - id: a
+        text: "`production` — a called function sees its caller's locals"
+        correct: true
+      - id: b
+        text: Nothing — `local` confines the variable to `deploy`
+        note: >-
+          That is lexical scope. Shell is dynamically scoped.
+      - id: c
+        text: The global `stage`, if one exists, and nothing otherwise
+        note: >-
+          The local **hides** the global for the duration of the call, including
+          inside `log`.
+      - id: d
+        text: An error under `set -u`
+        note: >-
+          The variable is set — it is `deploy`'s local.
+    explanation: >-
+      Shell scope is **dynamic**: what a function can see follows the **call
+      stack**, not the text of the file. `local` does not isolate a variable —
+      it hides any outer one of the same name for the duration of the call
+      **and everything the call makes**. The same `log` invoked outside `deploy`
+      sees nothing.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.4]
+    stem: >-
+      `outer` declares `local x=before` and calls `inner`, which runs `x=changed`
+      without declaring `x`. What is `x` after `outer` returns?
+    options:
+      - id: a
+        text: Unset globally — `inner` wrote to `outer`'s local, which is now gone
+        correct: true
+      - id: b
+        text: "`changed` globally — an undeclared assignment always creates a global"
+        note: >-
+          Only when no variable of that name is in scope. Here `outer`'s local
+          was.
+      - id: c
+        text: "`before` globally — `inner` could not reach `outer`'s local"
+        note: >-
+          It can, and it did: `outer` sees `changed` after the call.
+      - id: d
+        text: An error — assigning to another function's local is not permitted
+        note: >-
+          Shell has no notion of a variable a function should not touch.
+    explanation: >-
+      A callee can **write** to its caller's locals, not just read them.
+      `inner` assigned to the `x` currently in scope — `outer`'s — so `outer`
+      sees `changed`, and when `outer` returns that variable disappears with it.
+      This is why an undeclared helper variable silently corrupts its caller.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.4]
+    stem: >-
+      A `for i in alpha beta gamma` loop calls a helper that runs
+      `for i in 1 2 3` without declaring `i`. What does the outer loop print?
+    options:
+      - id: a
+        text: "`3` every time"
+        correct: true
+      - id: b
+        text: "`alpha beta gamma` — the outer loop reassigns `i` each iteration"
+        note: >-
+          It does reassign at the top of each iteration, but the helper
+          overwrites it again before the body's next use.
+      - id: c
+        text: It runs once and exits, because the helper consumed the list
+        note: >-
+          The list was already expanded; the loop still runs three times.
+      - id: d
+        text: It loops forever
+        note: >-
+          `for ... in` iterates a fixed list, so it cannot.
+    explanation: >-
+      The outer loop still runs three times — `for` re-assigns from its list each
+      iteration — but every use of `i` **after** the call sees the helper's
+      leftover `3`. One word fixes it: `local i`. Every common name (`i`, `n`,
+      `line`, `count`, `file`, `tmp`) is one a caller is likely to use too, and
+      there is no warning because nothing is wrong.
+
+  - id: q10
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B08.6.5]
+    stem: >-
+      In which of these is `v` still `outer` afterwards, having started as
+      `outer`?
+    options:
+      - id: a
+        text: "`( v=inner; )`"
+        correct: true
+      - id: b
+        text: "`x=$(v=inner; echo x)`"
+        correct: true
+      - id: c
+        text: "`echo x | { v=inner; }`"
+        correct: true
+      - id: d
+        text: "`f(){ local v=inner; }; f`"
+        correct: true
+      - id: e
+        text: "`{ v=inner; }`"
+        note: >-
+          A brace group is grouping only — no fork. Adding a pipe is what
+          changes it.
+    explanation: >-
+      Two rules produce the whole table. `local` **hides** a name for the
+      duration of a call, so the outer variable was never touched. Everything
+      else here **forked** — `( )`, `$( )` and **every stage of a pipeline** run
+      in a subshell, which inherits everything and returns only its output and
+      exit status.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.5]
+    stem: >-
+      A script runs `find … | while read -r f; do cp "$f" "$DEST/"; n=$((n+1));
+      done` and reports `n=0`, but the files are copied. Why?
+    options:
+      - id: a
+        text: >-
+          The loop runs in a subshell — `cp` writes to the shared filesystem,
+          `n` writes to a per-process variable
+        correct: true
+      - id: b
+        text: "`read` returns non-zero at end of input, resetting `n`"
+        note: >-
+          `read`'s final failure ends the loop; it does not touch `n`.
+      - id: c
+        text: The arithmetic is wrong — `n` was never initialised
+        note: >-
+          `n=$((n+1))` on an unset `n` gives 1, not 0. And it does reach 4 —
+          inside the subshell.
+      - id: d
+        text: "`find` output is buffered, so the loop ran after the `echo`"
+        note: >-
+          Buffering changes timing, not process boundaries.
+    explanation: >-
+      The right-hand stage of a pipeline is a subshell. **The loop did all its
+      work and the result was thrown away**, which is why the symptom is always
+      "it does the job and reports nothing". Fix with `done < <(find …)`, a plain
+      redirect, or `mapfile`. `shopt -s lastpipe` also works but silently does
+      nothing when job control is on — so it behaves differently at an
+      interactive prompt than in the script.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.6]
+    stem: >-
+      A function increments a counter and prints a value. The caller writes
+      `v=$(f)`. What happens to the counter?
+    options:
+      - id: a
+        text: It is incremented in a subshell and the caller sees no change
+        correct: true
+      - id: b
+        text: It is incremented normally — command substitution captures output, not scope
+        note: >-
+          Capturing the output is exactly what requires the fork.
+      - id: c
+        text: The increment fails, because a subshell cannot write to variables
+        note: >-
+          It can write to its own copy; the copy is discarded when it exits.
+      - id: d
+        text: It depends on whether the counter was declared `local`
+        note: >-
+          The fork discards the assignment either way.
+    explanation: >-
+      `$( )` runs its contents in a subshell, so the value comes back and every
+      side effect does not. That is the price of the one form that reads like a
+      real function call and the only one that composes — `$(a $(b x))`. If the
+      function must both return a value and have a side effect, use a global or
+      a nameref.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.6]
+    stem: >-
+      Why is a nameref parameter conventionally written `local -n _out=$1`
+      rather than `local -n out=$1`?
+    options:
+      - id: a
+        text: >-
+          So it cannot collide with a caller's variable of the same name, which
+          produces a circular reference
+        correct: true
+      - id: b
+        text: Because bash requires nameref variables to begin with an underscore
+        note: >-
+          It requires nothing of the sort; the prefix is convention.
+      - id: c
+        text: To mark it as private, which bash enforces
+        note: >-
+          Shell has no privacy. Nothing is enforced.
+      - id: d
+        text: Because `local -n` cannot be used with a name that exists globally
+        note: >-
+          It can — that is the normal case. Only a name identical to the
+          *target* breaks.
+    explanation: >-
+      A nameref whose parameter has the same name as its target refers to
+      itself: bash prints `warning: dest: circular name reference`, and when the
+      target is the caller's own `local` of that name the assignment is
+      **lost** — the caller keeps its original value. It is a warning, not a
+      failure, so under `set -e` the script carries on and reads a stale value
+      with the only evidence on stderr. The cleverest option has the quietest
+      failure.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.7]
+    stem: >-
+      A test script runs `unset mock_curl` between cases, and the next test still
+      hits the mock. Why?
+    options:
+      - id: a
+        text: "`unset` removes the variable of that name; the function needs `unset -f`"
+        correct: true
+      - id: b
+        text: The function was exported, so it is redefined in each child shell
+        note: >-
+          `export -f` would make it visible to children, but `unset -f` in this
+          shell would still remove it here.
+      - id: c
+        text: "`unset` cannot remove a function once it has been called"
+        note: >-
+          `unset -f` removes it whenever.
+      - id: d
+        text: The mock is an alias, and aliases need `unalias`
+        note: >-
+          True of aliases, but aliases are not even expanded inside scripts.
+    explanation: >-
+      Variables and functions live in **separate namespaces** and may share a
+      name; `unset` looks in the variable namespace first. `unset -f name`
+      removes the function, `unset -v name` removes the variable explicitly.
+      `type -t name` tells you which is currently winning.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.6.8]
+    stem: >-
+      Which rule about writing shell functions prevents the most bugs seen in
+      this topic?
+    options:
+      - id: a
+        text: >-
+          A function is a question or a producer, never both — a question
+          returns a status and prints nothing
+        correct: true
+      - id: b
+        text: Always use `function name { }` rather than `name() { }`
+        note: >-
+          A style choice with no behavioural difference, and the less portable
+          of the two.
+      - id: c
+        text: Never define a function before it is used
+        note: >-
+          The opposite is true — a function must be defined before it is called,
+          which is an argument for `main "$@"` last.
+      - id: d
+        text: Always return an explicit numeric status encoding the result
+        note: >-
+          This is the `exit "$failures"` bug: one byte, with 126/127/128+N
+          already taken.
+    explanation: >-
+      The seeded health check mixed the two: `check_service`'s `if/else` consumed
+      the probe's status and turned it into text, after which the information
+      existed only as characters on stdout. Separating them makes the status
+      available to the caller, keeps `$( )` clean for producers, and stops the
+      trailing-`echo` problem — because a question does not end in an `echo`.

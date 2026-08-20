@@ -1,0 +1,281 @@
+id: troubleshooting.the-check-that-always-passed
+topic: topic.functions-and-scope
+title: The health check that has never failed
+level: L2
+objectives: [OBJ-B08.6.3, OBJ-B08.6.7]
+reveal_policy: progressive
+
+situation: >-
+  A service has been down for six hours before anyone notices. The health check
+  that should have paged runs every minute, has run 340,000 times, and has never
+  once reported a failure.
+
+
+  Its output for the last six hours contains the line `worker DOWN`.
+
+
+  The on-call engineer's first hypothesis is that the alerting rule is broken —
+  the check is clearly detecting the problem and saying so. The alerting rule
+  fires on the job's **exit status**, and the job exits 0.
+
+
+  A second engineer notes that the summary line says `0 services down` on the
+  same runs that print `worker DOWN`, which makes it a script problem rather than
+  an alerting one.
+
+
+  Work out how a script can print `DOWN` and report zero failures, and why fixing
+  the obvious defect would not have been enough.
+
+symptoms:
+  - "The check prints 'worker DOWN' and the summary says '0 services down'"
+  - "It exits 0 on every run, including runs where a service is down"
+  - "The probe itself is correct — run by hand it returns non-zero for worker"
+  - "No command in the script fails and no error is logged"
+  - "The alerting rule is correct and fires on a non-zero exit status"
+
+artifacts:
+  - type: config
+    label: The health check
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      SERVICES=${1:-/etc/monitoring/services.txt}
+
+      check_service() {
+        local name=$1
+        local port=$2
+        if probe "$name" "$port"; then
+          echo "  $name ok"
+        else
+          echo "  $name DOWN"
+        fi
+      }
+
+      failures=0
+      while read -r name port; do
+        check_service "$name" "$port"
+      done < "$SERVICES"
+
+      echo "$failures services down"
+      exit "$failures"
+
+  - type: log
+    label: A run from the outage window
+    content: |
+      $ /opt/monitoring/healthcheck.sh
+        api ok
+        worker DOWN
+        cache ok
+      0 services down
+      $ echo $?
+      0
+
+  - type: command_output
+    label: The probe, checked by hand
+    content: |
+      $ probe worker 9000; echo "rc=$?"
+      rc=1
+      $ probe api 8080; echo "rc=$?"
+      rc=0
+
+  - type: command_output
+    label: What an exit status can carry
+    content: |
+      $ bash -c 'exit 1';   echo $?    → 1
+      $ bash -c 'exit 255'; echo $?    → 255
+      $ bash -c 'exit 256'; echo $?    → 0
+      $ bash -c 'exit 300'; echo $?    → 44
+      $ bash -c 'kill -TERM $$'; echo $?    → 143
+      $ bash -c 'nosuchcommand';  echo $?    → 127
+
+  - type: log
+    label: The monitoring team's own summary
+    content: |
+      Checks configured:  1
+      Checks firing:      0
+      Last state change:  none recorded since deployment (11 months)
+
+diagnostic_questions:
+  - "The word DOWN is printed. Where does that information go afterwards?"
+  - "Which command in the script ever assigns to `failures`?"
+  - "What is `check_service`'s exit status, and does anything look at it?"
+  - "Suppose `failures` were counted correctly. What would `exit \"$failures\"` do at 256?"
+  - "What does 'no state change in 11 months' tell you on its own?"
+
+hints:
+  - "Follow the probe's exit status forwards. How far does it get?"
+  - "`failures=0` appears once in the file. Count the assignments."
+  - "What is the last command inside `check_service`?"
+  - "An exit status is one byte. Which values are already spoken for?"
+
+root_cause: >-
+  **Two independent defects, and fixing either alone leaves the check broken.**
+
+
+  **1. `failures` is never incremented.** It is initialised to 0 and never
+  assigned again. `check_service` consumes the probe's exit status in its
+  `if`/`else` and turns it into **text** — after which the information exists
+  only as characters on stdout, where nothing reads it.
+
+
+  And the caller could not recover it even if it tried: `check_service`'s last
+  command is an `echo`, so **the function always returns 0** whichever branch it
+  took. `if check_service …` would also have always passed. That is the same
+  shape B08.5 found in the migration runner.
+
+
+  **2. `exit "$failures"` is unsound even when the count is correct.** An exit
+  status is a single unsigned byte:
+
+
+  - 256 services down exits **0** — a success.
+  - 300 down exits 44.
+  - 143 down is indistinguishable from **killed by SIGTERM**, and 127 down from
+    **command not found** — both of which a supervisor may treat as retryable
+    infrastructure faults rather than as the alert they are.
+
+
+  So the fix everyone reaches for first — add `failures=$((failures + 1))` in the
+  else branch — produces a check that works at this scale and fails silently at
+  another. That is worse than the current state, because it would then be
+  believed.
+
+
+  **Nothing failed.** `probe` was correct, `set -euo pipefail` was present and
+  had nothing to act on, the alerting rule was correct, and the script's own
+  output contained the word `DOWN` 340,000 times. The defect is that **a status
+  was converted to text and never converted back**, and that the script's
+  contract with its supervisor was a number that cannot hold one.
+
+method: >-
+  **1. Separate "is it detecting" from "is it reporting".** The log answers the
+  first: `worker DOWN` is printed. So the probe and the loop work, and the
+  question is only what happens to that fact afterwards. That immediately rules
+  out the probe, the service list, the loop and the alerting rule — most of the
+  system.
+
+
+  **2. Follow the exit status forwards, one hop at a time.** `probe` returns 1.
+  `if` consumes it. `echo` prints a word. `check_service` returns the `echo`'s
+  status, which is 0. The caller ignores it. `failures` is untouched. Five hops,
+  and the information is destroyed at the second.
+
+
+  **3. Count the assignments to the variable you do not believe.** `grep -c
+  'failures=' script` returns 1. A counter assigned exactly once is not a
+  counter, and that is a one-second check worth doing before reading any logic.
+
+
+  **4. Ask what a function returns, not what it prints.** `check_service` looks
+  like it reports a result and returns nothing usable. Any function whose last
+  line is an `echo` always succeeds — worth checking on sight, because it makes
+  every `if` around it a no-op.
+
+
+  **5. Read `exit "$failures"` as a contract with the supervisor and ask what it
+  can carry.** One byte, with 126, 127 and 128+N already meaning something else.
+  A count is not a status. This is the step people skip because the line looks
+  reasonable and the immediate bug is elsewhere.
+
+
+  **6. Treat "no state change in 11 months" as evidence, not reassurance.** A
+  check that has never fired has never been tested. Any control whose failure
+  path has not run is unproven, and the correct assumption for an untested
+  failure path is that it does not work.
+
+
+  The habit: **a check is not a control until its failure path has run.** Give
+  every alert a deliberate exercise — feed it a known-bad input and confirm the
+  page arrives.
+
+resolution: >-
+  **Immediately:** confirm the service state by hand, page manually, and treat
+  every check built from this template as unverified until proven otherwise.
+
+
+  **Rewrite so the status survives.** The central change is that a function is a
+  **question or a producer, never both**:
+
+
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+
+  SERVICES=${1:-/etc/monitoring/services.txt}
+
+  # a QUESTION: returns a status, prints nothing
+  service_is_up() {
+    local name=$1 port=$2
+    probe "$name" "$port"
+  }
+
+  main() {
+    local name port failures=0 checked=0
+
+    while read -r name port; do
+      checked=$((checked + 1))
+      if service_is_up "$name" "$port"; then
+        echo "  $name ok"
+      else
+        echo "  $name DOWN" >&2
+        failures=$((failures + 1))
+      fi
+    done < "$SERVICES"
+
+    [ "$checked" -gt 0 ] || { echo "no services checked" >&2; exit 1; }
+
+    echo "$failures of $checked services down"
+    [ "$failures" -eq 0 ] || exit 1      # a STATUS, not a count
+  }
+
+  main "$@"
+  ```
+
+
+  Four changes, each answering one of the findings:
+
+
+  - **`service_is_up` returns a status and prints nothing.** The caller decides
+    what to say, so the fact survives as a fact.
+
+  - **`exit 1`, not `exit "$failures"`.** The count goes in the message. One byte
+    cannot carry a count, and the values that look like counts collide with
+    "killed by a signal".
+
+  - **`checked` is asserted.** A check that examines nothing and reports zero
+    failures is the same lie in a different form — and an empty or unreadable
+    service list would have produced exactly that.
+
+  - **`DOWN` goes to stderr**, so a caller capturing the summary with `$( )` gets
+    the summary and not the noise.
+
+
+  **Then exercise the failure path, as a test:**
+
+
+  ```bash
+  printf 'definitely-not-a-service 1\n' > /tmp/bad.txt
+  ./healthcheck.sh /tmp/bad.txt; echo "rc=$?"     # must be 1
+  ./healthcheck.sh /dev/null;    echo "rc=$?"     # must be 1 — nothing checked
+  ```
+
+
+  Two lines, permanent, and they would have caught this on the day it was
+  written.
+
+
+  **Audit the rest.** `grep -rn 'exit "\$' /opt/monitoring/` finds every other
+  script exiting a variable, and any function whose last line is an `echo` and
+  whose status is then tested is the same defect. `shellcheck` will not catch
+  either of these — they are semantic — which is worth knowing about the limits
+  of the tooling.
+
+
+  **For the postmortem:** nothing failed. The probe was right, the loop was
+  right, the alerting rule was right, and the script printed the word `DOWN`
+  340,000 times. Two general findings: a function that converts a status into
+  text destroys it, so decide whether a function is a question or a producer; and
+  a check that has never fired has never been tested — the correct assumption for
+  an unexercised failure path is that it does not work.

@@ -1,0 +1,299 @@
+topic: topic.functions-and-scope
+
+exercises:
+  - id: e1
+    title: Six one-liners
+    level: L1
+    objectives: [OBJ-B08.6.1, OBJ-B08.6.2]
+    kind: interpretation
+    prompt: >-
+      Say what each does, and flag any that do not do what they appear to.
+
+
+      1. `f() { echo hi }`
+
+      2. `ls() { ls -l "$@"; }`
+
+      3. `f() { false; echo done; }; f; echo $?`
+
+      4. `bash -c 'return 3'; echo $?`
+
+      5. `f() { exit 7; }; f; echo "after"`
+
+      6. `f() { echo x; }; f=value; unset f; type -t f`
+    answer: >-
+      1. **A syntax error.** The last command inside the braces needs a
+         terminator: `f() { echo hi; }`. The braces are reserved *words*, so they
+         also need whitespace around them — `f() {echo hi;}` fails too.
+
+
+      2. **Infinite recursion.** Inside the body, `ls` resolves to the function,
+         because a function body is not a separate namespace. `FUNCNEST` is unset
+         by default, so bash recurses until it exhausts memory. Correct form:
+         `ls() { command ls -l "$@"; }`.
+
+
+      3. **Prints `done` and then `0`.** A function returns the status of the
+         last command that ran, and that is the `echo`. A function ending in an
+         `echo` always succeeds, whatever happened above it.
+
+
+      4. **`return: can only 'return' from a function or sourced script`, and
+         status 2.** `return` is only valid inside a function or a sourced file.
+
+
+      5. **Prints nothing.** `exit` inside a function ends the **whole shell**,
+         so `after` never runs and the script exits 7.
+
+
+      6. **`function`.** `unset` removed the *variable* `f` and left the
+         function — they live in separate namespaces and `unset` searches the
+         variable one first. `unset -f f` removes the function.
+    explanation: >-
+      Four of the six are cases where the shell is doing exactly what it
+      documents and the reader's expectation comes from another language:
+      function bodies are not namespaces, `return` is not `exit`, a status comes
+      from the last command, and names are not unique across namespaces.
+
+  - id: e2
+    title: Predict what each function sees
+    level: L2
+    objectives: [OBJ-B08.6.4]
+    kind: interpretation
+    prompt: >-
+      Given this script, say what each of the three `echo`s prints and why.
+
+
+      ```bash
+      show() { echo "A: ${env:-<unset>}"; }
+      inner() { env=modified; show; }
+      outer() { local env=local-value; inner; echo "B: $env"; }
+
+      env=global
+      outer
+      echo "C: $env"
+      ```
+    answer: >-
+      **A: `modified`** — `show` was passed nothing and declares nothing, so it
+      reads the `env` currently in scope. Two frames up, `outer` declared
+      `local env`; one frame up, `inner` assigned to it. Dynamic scope means
+      `show` sees whatever the *call stack* has, not what is written near it in
+      the file.
+
+
+      **B: `modified`** — this is the part people get wrong. `inner` did **not**
+      create a global. There was already an `env` in scope — `outer`'s local — so
+      the assignment went there. `outer` now sees a value a function it called
+      wrote into its own local variable.
+
+
+      **C: `global`** — `outer`'s local disappeared when `outer` returned, and the
+      global underneath was never touched. It was hidden for the duration of the
+      call, not overwritten.
+
+
+      The one-line summary: **`local` hides, it does not isolate.** Everything
+      called from `outer` shares `outer`'s `env`, and nothing outside `outer`
+      can see it.
+    explanation: >-
+      Change one thing and the answers change completely: if `outer` had *not*
+      said `local`, B and C would both be `modified`, because `inner` would have
+      written to the global. The presence of `local` two frames away decides
+      where a third function's assignment lands, which is why an undeclared
+      variable in a helper is so hard to reason about.
+
+  - id: e3
+    title: Which of these survive?
+    level: L2
+    objectives: [OBJ-B08.6.5]
+    kind: interpretation
+    prompt: >-
+      `v` starts as `outer` each time. After each line, is it `inner` or `outer`?
+
+
+      1. `{ v=inner; }`
+
+      2. `( v=inner; )`
+
+      3. `f() { v=inner; }; f`
+
+      4. `f() { local v=inner; }; f`
+
+      5. `echo x | { v=inner; }`
+
+      6. `while read -r _; do v=inner; done <<< x`
+
+      7. `echo x | while read -r _; do v=inner; done`
+
+      8. `x=$(v=inner; echo hello)`
+    answer: >-
+      **inner:** 1, 3, 6. **outer:** 2, 4, 5, 7, 8.
+
+
+      1. A brace group is grouping only — no fork.
+
+      2. `( )` is a subshell — a fork.
+
+      3. A plain function call runs in the current shell.
+
+      4. `local` hid the outer `v` for the call; it was never touched.
+
+      5. **Every stage of a pipeline** is a subshell. The only difference from
+         line 1 is the pipe.
+
+      6. A here-string is a redirect, not a pipe — no fork.
+
+      7. The loop is the right-hand stage of a pipeline. This is the classic:
+         the loop does all its work and the result is discarded.
+
+      8. Command substitution forks.
+
+
+      **Two rules cover all eight.** `local` hides a name for the duration of a
+      call. Everything else that lost the value **forked** — a subshell inherits
+      everything and returns only its output and exit status.
+    explanation: >-
+      Lines 1 and 5 differ by a single `|`, and lines 6 and 7 do the same work by
+      two different routes. If you can classify those two pairs at reading speed
+      you will catch the piped-`while read` bug on sight, which is by far the
+      most common instance of this in real scripts.
+
+  - id: e4
+    title: Choose a return mechanism
+    level: L2
+    objectives: [OBJ-B08.6.6]
+    kind: short_answer
+    prompt: >-
+      For each requirement, say which of the four mechanisms — stdout, a fixed
+      global, a nameref, or the exit status — you would use, and why.
+
+
+      1. `file_is_stale PATH` — should a caller rebuild this file?
+
+      2. `checksum_of PATH` — return a hex digest.
+
+      3. `fetch_with_cache URL` — return the body, and record a cache hit or miss
+         in a counter the caller reads afterwards.
+
+      4. `parse_config PATH` — set twelve configuration variables.
+    answer: >-
+      **1. Exit status.** The value *is* a yes/no, which is what `if` was built
+      for: `if file_is_stale "$f"; then`. Anything else forces the caller to
+      compare a string. Print nothing.
+
+
+      **2. stdout.** A single value, no side effect, and the caller wants
+      `sum=$(checksum_of "$f")`. The fork costs nothing here because there is
+      nothing to lose, and it is the only form that composes. Two cautions:
+      declare and assign on separate lines, since `local sum=$(...)` discards the
+      exit status (SC2155); and send any diagnostic to stderr so it does not end
+      up in the digest.
+
+
+      **3. A nameref, or a global.** This is the case stdout cannot serve: the
+      counter is a side effect, and `$( )` would discard it. `fetch_with_cache
+      "$url" body` writing through `local -n _out=$2` gives the caller both. A
+      fixed global works too and is simpler, at the cost of the caller having to
+      know the name and two nested calls colliding. Prefix the nameref parameter
+      with `_` or a caller passing a variable of the same name gets a circular
+      reference, a warning on stderr, and a silently stale value.
+
+
+      **4. Globals — deliberately, with `declare -g`.** Twelve values will not fit
+      through stdout without inventing a serialisation the caller has to parse,
+      and twelve namerefs is worse than the problem. Name them with a shared
+      prefix (`CFG_*`) so it is obvious where they came from, and set them with
+      `declare -g` so the intent is written down rather than being the accident
+      that happens when someone forgets `local`.
+    explanation: >-
+      The choice is decided by one question: **does the function have a side
+      effect the caller needs?** If yes, stdout is out, because `$( )` forks. If
+      no, stdout is almost always right. Everything else is about how many values
+      there are and whether the calls nest.
+
+  - id: e5
+    title: Review a deploy library
+    level: L2
+    objectives: [OBJ-B08.6.8]
+    kind: interpretation
+    prompt: >-
+      Review this file, which is `source`d by several scripts.
+
+
+      ```bash
+      # deploy-lib.sh
+      RESULT=""
+
+      count_files() {
+        n=0
+        find "$1" -type f | while read -r f; do n=$((n+1)); done
+        RESULT=$n
+      }
+
+      cp() { command cp -v "$@"; }
+
+      is_ready() {
+        local host=$1
+        curl -sf "http://$host/health" > /dev/null
+        echo "checked $host"
+      }
+
+      deploy() {
+        for i in $(seq 3); do
+          count_files "/srv/rel/$i"
+          echo "release $i has $RESULT files"
+        done
+        if is_ready "$TARGET"; then echo "ready"; else exit 1; fi
+      }
+      ```
+    answer: >-
+      **Seven defects. Three are silent.**
+
+
+      **1. `count_files` always reports 0.** The `while` loop is the right stage
+      of a pipeline, so it runs in a subshell and `n` never leaves it. Use
+      `done < <(find "$1" -type f)`.
+
+
+      **2. `n` is not `local`.** It is a global that every caller now has,
+      clobbering any caller's own `n`. Same for the loop variable `i` in
+      `deploy` — but see 3.
+
+
+      **3. `is_ready` always returns true.** Its last command is `echo "checked
+      $host"`, so `curl`'s status is discarded and the `if` in `deploy` always
+      takes the ready branch. This is the worst one: the health check exists,
+      runs, and cannot fail.
+
+
+      **4. `cp` is redefined for every script that sources this file.** A
+      *sourced* function is defined in the caller's shell for the rest of its
+      life — so an unrelated script that sources this to get `deploy` silently
+      gets a verbose `cp` too, changing its output. It at least uses `command`,
+      so it does not recurse; but shadowing a standard tool in a shared library
+      is not a decision the caller made.
+
+
+      **5. `RESULT` as a fixed global** means two nested calls collide, and the
+      name is generic enough that a caller may well have its own. `deploy` also
+      reads it immediately, so a nameref or plain stdout would be better here.
+
+
+      **6. `$TARGET` is read but never declared, documented or defaulted.** It is
+      the `targt` bug waiting: a caller that misspells it gets whatever else is
+      in scope, and `set -u` will not help if any `TARGET` exists anywhere.
+
+
+      **7. `exit 1` in a sourced library** kills the *calling* script. A library
+      function should `return 1` and let the caller decide.
+
+
+      **What I would change first**, if only one thing: **3**, because a health
+      check that cannot fail is worse than no health check — it is a control
+      somebody is relying on.
+    explanation: >-
+      Note how many of these come from the file being **sourced** rather than
+      executed. A sourced file runs in the caller's shell, so every function
+      definition, every unquoted global and every `exit` reaches out of the file.
+      That is the argument for the six-rule convention: in a library, the cost of
+      a missing `local` is paid by code the author never saw.

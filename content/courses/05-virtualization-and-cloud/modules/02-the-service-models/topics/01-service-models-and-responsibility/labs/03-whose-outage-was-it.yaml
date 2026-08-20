@@ -1,0 +1,300 @@
+id: lab.whose-outage-was-it
+topic: topic.service-models-and-responsibility
+title: Five outages, and the one with no satisfying answer
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A05.2.5, OBJ-A05.2.7]
+
+intro: >-
+  Five outages in /tmp/incidents/incidents.txt. For each, two questions that are
+  not the same question: **whose fault was it**, and **who could have prevented
+  it**.
+
+
+  In the provider's layers those have the same answer. In the shared band they
+  come apart, and that is what makes those incidents argumentative. One of the
+  five has no satisfying answer at all, and identifying which is the point.
+
+setup:
+  - /opt/lab/seed-responsibility.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read the five incidents. For each, record separately whose fault it was and
+      who could have prevented it. Save to /tmp/answer-fault.
+    hint: >-
+      Keep the two columns genuinely separate. For at least two of them the
+      answers differ, and those are the interesting ones.
+    walkthrough: |
+      cat /tmp/incidents/incidents.txt
+      {
+        printf '%-7s %-28s %s\n' INC FAULT PREVENTABLE-BY
+        printf '%-7s %-28s %s\n' INC-1 provider "nobody - but impact was ours to limit"
+        printf '%-7s %-28s %s\n' INC-2 "provider acted, we scheduled" "US - set a maintenance window"
+        printf '%-7s %-28s %s\n' INC-3 us "US - the script set public-read"
+        printf '%-7s %-28s %s\n' INC-4 "provider changed, announced 30d" "US - read notices, test node images"
+        printf '%-7s %-28s %s\n' INC-5 vendor "nobody on our side"
+        echo
+        echo "for INC-3 the two columns agree. for INC-2 and INC-4 they do not, and those are the ones that produce arguments."
+      } > /tmp/answer-fault
+      cat /tmp/answer-fault
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fault
+        pattern: "INC-3 +us"
+        describe: You attributed the public bucket to yourselves
+      - type: file_matches
+        path: /tmp/answer-fault
+        pattern: "(?i)INC-2.*US|INC-2.*window"
+        describe: And identified the maintenance window as preventable by you
+      - type: file_matches
+        path: /tmp/answer-fault
+        pattern: "(?i)do not|differ|disagree"
+        describe: And noted where the two columns come apart
+
+  - id: s2
+    instruction: >-
+      INC-2 and INC-4 both involve a provider action you could have prepared for.
+      Write to /tmp/answer-shared-failures what mechanism was missing in each,
+      and what the two have in common.
+    hint: >-
+      In both cases the provider did exactly what they said they would. Ask what
+      your side of that shared layer was supposed to do.
+    walkthrough: |
+      {
+        echo "INC-2 - managed postgres patched during a 3 hour window at an arbitrary time."
+        echo "  missing mechanism: a maintenance window that was actually set. it was left at the default of 'any time', which is a decision made by not deciding."
+        echo "  the provider did nothing wrong. mandatory minor patches are part of the managed service and are why it is managed."
+        echo
+        echo "INC-4 - node image update changed the default seccomp profile; our application used a blocked syscall. announced 30 days ahead."
+        echo "  missing mechanism: somebody reading the provider's change feed, and a staging environment that gets node images before production does."
+        echo "  30 days notice was given and consumed by nobody."
+        echo
+        echo "what they have in common: both are SHARED layers where the provider acted correctly and our half was never assigned to anyone."
+        echo "neither failed loudly. the maintenance window was never set and nothing complained; the change notice arrived and nothing errored when it was not read. shared layers have no error state, which is why they need a named owner and a schedule rather than attention."
+      } > /tmp/answer-shared-failures
+      cat /tmp/answer-shared-failures
+    verify:
+      - type: file_matches
+        path: /tmp/answer-shared-failures
+        pattern: "(?i)maintenance window"
+        describe: You identified the missing mechanism for INC-2
+      - type: file_matches
+        path: /tmp/answer-shared-failures
+        pattern: "(?i)change feed|notice|announced"
+        describe: And for INC-4
+      - type: file_matches
+        path: /tmp/answer-shared-failures
+        pattern: "(?i)no error state|never assigned|nothing complained"
+        describe: And what the two have in common
+
+  - id: s3
+    instruction: >-
+      One incident has no satisfying answer — you could not have prevented it and
+      cannot fix it. Identify it and say what your options actually are. Save to
+      /tmp/answer-no-answer.
+    hint: >-
+      Look for the one where you have no access, no control, and no ability to
+      act during the outage.
+    walkthrough: |
+      {
+        echo "INC-5 - the saas crm was down for 6 hours on a vendor database failure. we had no access to our data and nothing we could do."
+        echo
+        echo "why there is no satisfying answer: at saas we own three layers - data, access control and configuration. availability is not among them. we handed over the ability to act, which is what buying saas means, and during the outage there was no lever to pull."
+        echo
+        echo "what our options actually are, and none is a fix:"
+        echo "1. the SLA. 99.9% monthly is about 43 minutes; a 6 hour outage breaches it and the remedy is a service credit worth a fraction of the bill, which will not cover what the outage cost. an sla is a refund, not a guarantee."
+        echo "2. export our data on a schedule, so an outage is a loss of the application rather than a loss of the data too. this is the one real mitigation and it is ours to build."
+        echo "3. a documented degraded mode - what the business does for six hours without the crm. this is a process answer rather than a technical one and it is usually missing."
+        echo "4. accept it, having priced it. concentration on one vendor is the trade we made."
+        echo
+        echo "the honest postmortem finding is not 'the vendor failed'. it is that we had no data export and no degraded mode for a dependency we cannot influence."
+      } > /tmp/answer-no-answer
+      cat /tmp/answer-no-answer
+    verify:
+      - type: file_matches
+        path: /tmp/answer-no-answer
+        pattern: "INC-5"
+        describe: You identified the incident with no good answer
+      - type: file_matches
+        path: /tmp/answer-no-answer
+        pattern: "(?i)refund|credit"
+        describe: And that the SLA is a refund rather than a guarantee
+      - type: file_matches
+        path: /tmp/answer-no-answer
+        pattern: "(?i)export"
+        describe: And named data export as the real mitigation
+
+  - id: s4
+    instruction: >-
+      INC-1 was a provider control-plane outage where your pods kept serving.
+      Write to /tmp/answer-blast what you actually lost, and what that says about
+      designing around provider failures.
+    hint: >-
+      Read carefully what kept working and what did not. The distinction is the
+      lesson.
+    walkthrough: |
+      {
+        echo "what kept working: every pod continued serving traffic for the full 45 minutes. the data plane was unaffected."
+        echo "what we lost: the ability to deploy, scale, or replace a failed pod. the control plane was down, not the workload."
+        echo
+        echo "that distinction is the design lesson. a control plane outage is survivable if the data plane is independent of it - and on kubernetes it largely is, because kubelets keep running what they were told to run."
+        echo
+        echo "what it means in practice:"
+        echo "- do not put a control plane call on a request path. if serving a request requires the api server, a control plane outage becomes a user-facing outage."
+        echo "- expect to be frozen rather than down. no deploys, no scaling, no self-healing for the duration - so an unrelated pod crash during the window does not get replaced."
+        echo "- have a change freeze answer ready. the worst version of this is a control plane outage during an active incident that needs a deploy to fix."
+        echo
+        echo "fault was entirely the provider's and there is nothing to fix on our side about the outage itself. what is ours is how much depends on that control plane, and that is a design decision we can revisit."
+      } > /tmp/answer-blast
+      cat /tmp/answer-blast
+    verify:
+      - type: file_matches
+        path: /tmp/answer-blast
+        pattern: "(?i)data plane|kept serving"
+        describe: You distinguished what kept working
+      - type: file_matches
+        path: /tmp/answer-blast
+        pattern: "(?i)deploy|scal"
+        describe: And what was actually lost
+      - type: file_matches
+        path: /tmp/answer-blast
+        pattern: "(?i)request path|frozen"
+        describe: And drew a design conclusion from it
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-postmortem the three questions a postmortem should ask
+      about a provider incident, and which one people skip.
+    hint: >-
+      One of the obvious questions ends the conversation rather than improving
+      anything.
+    walkthrough: |
+      {
+        echo "1. what happened, technically? facts before attribution."
+        echo "2. who could have PREVENTED it, and what would that have taken? not whose fault - who had the ability. in shared layers this is frequently us even when the change was theirs."
+        echo "3. what do we change so the next one costs less? usually not 'switch provider' - usually a mechanism on our side of a shared layer, or a dependency that should not have been in series."
+        echo
+        echo "the question people ask instead is 'whose fault was it', and it ends the conversation. if the answer is 'the provider' the review stops, nothing changes, and the same incident costs the same next time."
+        echo
+        echo "fault and preventability are the same party in the provider's layers and different parties in the shared band. that is exactly why the shared band produces arguments, and why asking about preventability rather than fault is what makes those reviews productive."
+        echo
+        echo "question 3 is where the value is, and question 1 phrased as blame reliably prevents reaching it."
+      } > /tmp/answer-postmortem
+      cat /tmp/answer-postmortem
+    verify:
+      - type: file_matches
+        path: /tmp/answer-postmortem
+        pattern: "(?i)prevent"
+        describe: You included preventability as a distinct question
+      - type: file_matches
+        path: /tmp/answer-postmortem
+        pattern: "(?i)whose fault"
+        describe: And identified the question people ask instead
+      - type: file_matches
+        path: /tmp/answer-postmortem
+        pattern: "(?i)ends the conversation|stops"
+        describe: And why it is unproductive
+
+solution: >-
+  **Two columns, and they are not the same column.**
+
+
+  ```text
+  INC    fault                        preventable by
+  INC-1  provider                     nobody — but the impact was ours to bound
+  INC-2  provider acted, we scheduled  US — set a maintenance window
+  INC-3  us                            US
+  INC-4  provider changed, announced   US — read notices, test node images
+  INC-5  vendor                        nobody on our side
+  ```
+
+
+  For INC-3 they agree — a script set `public-read` and that is entirely ours.
+  For **INC-2 and INC-4 they come apart**, and those are the ones that produce
+  arguments in a review.
+
+
+  **Both are shared-layer failures where the provider did exactly what they said
+  they would.**
+
+
+  INC-2: a mandatory minor patch applied inside a maintenance window that was
+  left at its default of "any time". That is not the provider doing something
+  unexpected; mandatory patching is what a managed service *is*. The missing
+  mechanism was a two-minute configuration change.
+
+
+  INC-4: a node image changed a default seccomp profile, announced 30 days in
+  advance, and the notice was consumed by nobody. The missing mechanism was
+  someone owning the change feed, plus a staging environment that receives node
+  images first.
+
+
+  Neither failed loudly. The window was never set and nothing complained; the
+  notice arrived and nothing errored when it went unread. **Shared layers have no
+  error state**, which is why they need a named owner and a schedule rather than
+  attention.
+
+
+  **INC-5 is the one with no satisfying answer.**
+
+
+  At SaaS you own data, access control and configuration. Availability is not
+  among them. You handed over the ability to act — that is what buying SaaS
+  means — and during six hours there was no lever.
+
+
+  The options, none of which is a fix:
+
+
+  - **The SLA**, which is a refund. 99.9% monthly is about 43 minutes, so six
+    hours breaches it, and the remedy is a credit worth a fraction of the bill.
+
+  - **Scheduled data export**, which is the one real mitigation and is yours to
+    build. It turns the outage into a loss of the application rather than a loss
+    of access to your data.
+
+  - **A documented degraded mode** — what the business does for six hours without
+    the CRM. A process answer, usually missing.
+
+  - **Accepting it, having priced it.** Concentration on one vendor was the trade.
+
+
+  The honest finding is not "the vendor failed". It is that you had no export and
+  no degraded mode for a dependency you cannot influence.
+
+
+  **INC-1 is worth reading precisely.** The control plane was down and the data
+  plane was not: pods kept serving for all 45 minutes. What was lost was
+  deploying, scaling and self-healing.
+
+
+  That distinction is the design lesson. **Never put a control-plane call on a
+  request path** — if serving a request needs the API server, a control-plane
+  outage becomes a user-facing one. Expect to be *frozen* rather than *down*, and
+  have an answer for the worst version: a control-plane outage during an
+  unrelated incident that needs a deploy to fix.
+
+
+  **And the postmortem.**
+
+
+  1. What happened, technically? Facts before attribution.
+
+  2. **Who could have prevented it, and what would that have taken?**
+
+  3. What do we change so the next one costs less?
+
+
+  The question people ask instead is *whose fault was it*, and it ends the
+  conversation — if the answer is "the provider", the review stops, nothing
+  changes, and the next one costs the same.
+
+
+  Fault and preventability are the same party in the provider's layers and
+  different parties in the shared band. Asking about preventability is what makes
+  those reviews produce something.

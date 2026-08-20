@@ -1,0 +1,214 @@
+topic: topic.tcp-and-udp
+
+questions:
+  - id: i1
+    level: L1
+    question: When would you choose UDP over TCP?
+    model_answer: >-
+      When messages are small, independent, and better lost than late.
+
+
+      Voice and video are the clearest case: retransmitting a 20ms audio sample
+      means it arrives after the moment it was needed, so the retransmission
+      helps nobody and the delay hurts. Metrics and syslog are the next: high
+      volume, individually worthless, and the sending application must never
+      block because a collector is slow. DNS queries are a third — one small
+      message where a handshake would double the cost, with TCP fallback when the
+      answer is too big for a datagram.
+
+
+      What I would be explicit about is that choosing UDP is choosing a failure
+      mode. Loss is not a defect you tolerate; it is the property you are buying.
+      A metrics pipeline that drops datagrams keeps a monitoring problem from
+      becoming an application problem, and that is the whole point.
+
+
+      The counterpart is that where reliability is needed over UDP — QUIC, most
+      game protocols — the application rebuilds acknowledgements and
+      retransmission itself. That is not redundant work; it lets them choose
+      *which* things are reliable rather than having ordering imposed on
+      everything, which is what head-of-line blocking costs you.
+    signal: >-
+      "Better lost than late" is the phrase to listen for. Framing loss as the
+      chosen property rather than an accepted flaw is the senior version, and it
+      is what predicts whether someone will propose switching a metrics pipeline
+      to TCP. Mentioning QUIC shows they know why the industry moved.
+    follow_ups:
+      - "What breaks if you switch a metrics pipeline to TCP?"
+      - "Why does DNS use both protocols?"
+      - "What does QUIC rebuild that TCP already had?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A UDP service works for one client and silently ignores the rest. What is
+      happening?
+    model_answer: >-
+      The receiving socket has been connected. `connect()` on a UDP socket sends
+      no packets — it is purely local — and it records a peer address. From then
+      on the kernel delivers only datagrams from that peer and discards
+      everything else before the application sees them.
+
+
+      Servers do it for convenience, usually so they can reply with `send()`
+      rather than carrying the client's address around. It is correct for a
+      client and wrong for a server.
+
+
+      `ss -uan` proves it in one line: the socket shows `ESTAB` with a specific
+      peer instead of `UNCONN` with a wildcard. `ESTAB` on a protocol with no
+      connections should look wrong immediately.
+
+
+      The reason it is hard to find is that nothing logs it. The senders called
+      `sendto()`, the kernel accepted the datagram, and `sendto()` returned
+      success — which is all it has ever meant. The receiver never saw the
+      discarded datagrams, so it has nothing to write down, and no counter
+      records them either.
+
+
+      Testing does not catch it because one client is exactly the passing case.
+      It needs a test with two concurrent senders, which nobody writes unless
+      they already know this failure exists.
+    signal: >-
+      Knowing that `connect()` on UDP sends nothing and filters incoming
+      datagrams is the discriminator — it surprises most people. Reaching for
+      `ss -uan` rather than tcpdump is the practical signal. Explaining why
+      neither end can log it, and why single-client testing passes, shows they
+      have thought about why it survives to production.
+    follow_ups:
+      - "Why does neither end log anything?"
+      - "How would you write a test that catches it?"
+      - "What should the server do instead if it needs to reply?"
+
+  - id: i3
+    level: L2
+    question: >-
+      Metrics are 4% lower than what applications report sending. The network
+      provider says there is no loss. Where do you look?
+    model_answer: >-
+      At the collector, and specifically at `Udp: RcvbufErrors` in
+      `/proc/net/snmp` — datagrams that arrived correctly and were dropped
+      because the socket receive buffer was full. The application was not reading
+      fast enough. That is the answer most of the time, and the loss is entirely
+      inside the receiving machine.
+
+
+      The signature is the correlation: loss that scales with your own traffic,
+      steady, worse in bursts, near zero overnight. Genuine network loss is
+      rarely so neatly proportional to your own send rate, so the shape of the
+      graph is itself evidence — and it means the provider is almost certainly
+      right.
+
+
+      I would also check `ss -uanm`, which shows the buffer size and the drop
+      count on the socket directly, and compare the buffer against
+      `net.core.rmem_max`. A common finding is that both are the default, so
+      even if the application asked for more the kernel would refuse.
+
+
+      The fix is `net.core.rmem_max` raised *and* the application requesting a
+      larger `SO_RCVBUF` — both halves, or nothing changes. And that buys burst
+      tolerance rather than throughput: if the reader is persistently slower than
+      the arrival rate, the answer is more collector instances, client-side
+      aggregation, or sampling.
+
+
+      What I would push back on is switching to TCP, which does not make the
+      collector faster and replaces silent loss with backpressure into the
+      applications.
+    signal: >-
+      Naming `RcvbufErrors` immediately is the main signal — it is the counter
+      almost nobody watches and the answer most of the time. Using the
+      load-correlation as evidence, and being willing to conclude the provider is
+      right, shows real diagnostic discipline. Resisting the TCP proposal with a
+      reason is the senior part.
+    follow_ups:
+      - "Why does a bigger buffer not always fix it?"
+      - "What would switching to TCP actually change?"
+      - "How would you reduce the datagram count without losing information?"
+
+  - id: i4
+    level: L2
+    question: >-
+      What is head-of-line blocking, and why did it matter enough to create
+      HTTP/3?
+    model_answer: >-
+      TCP delivers bytes in order, so if one segment is lost, everything behind
+      it waits in the receiver's buffer — already arrived, already correct,
+      undeliverable — until the lost segment is retransmitted. That is
+      head-of-line blocking, and it is the price of the ordering guarantee.
+
+
+      With HTTP/1.1 it was mostly invisible: one request per connection, so a
+      stall affected only that request. HTTP/2 multiplexes many streams over a
+      single TCP connection to avoid the cost of many connections — and that made
+      the problem much worse, because now a single lost packet stalls *every*
+      stream on that connection, including ones whose data had arrived
+      completely.
+
+
+      So HTTP/2 solved connection overhead and created a shared stall. HTTP/3
+      moves to QUIC, which runs over UDP and implements ordering per stream
+      rather than per connection, so a lost packet stalls only the stream it
+      belonged to.
+
+
+      It is a good illustration of a general pattern: when TCP's guarantees are
+      too coarse, protocols move to UDP and rebuild the parts they want at a
+      finer granularity. QUIC also folds the TLS handshake into the transport
+      handshake, which removes a round trip — another cost of TCP's design being
+      worked around rather than accepted.
+    signal: >-
+      The HTTP/2-made-it-worse point is the discriminator; many people describe
+      head-of-line blocking without noticing that multiplexing amplified it.
+      Framing QUIC as "rebuild the guarantees at the right granularity" rather
+      than "UDP is faster" shows the concept is understood rather than recited.
+    follow_ups:
+      - "Why is per-stream ordering better than per-connection?"
+      - "What else does QUIC fold in that TCP kept separate?"
+      - "When would HTTP/2's shared connection still be the right choice?"
+
+  - id: i5
+    level: L2
+    question: >-
+      How do you health-check a UDP service, and why is it different from TCP?
+    model_answer: >-
+      You cannot do it at the transport layer, so it has to be done at the
+      application layer: send something the service is required to answer, and
+      wait for the answer.
+
+
+      The reason is that a UDP send succeeds regardless. `nc -u -z` returns zero
+      whether or not anything is on the far side, because `sendto()` returns when
+      the kernel accepts the datagram — long before delivery, and with no
+      connection on which a failure could be reported. There is simply no
+      transport-level evidence to gather.
+
+
+      TCP is different because establishing a connection is itself a round trip
+      that either succeeds or fails, so a successful connect proves something is
+      listening. That is why `tcpSocket` probes exist and there is no UDP
+      equivalent.
+
+
+      DNS is checkable because a query has a reply — you send one and require an
+      answer. StatsD is not, because nothing ever replies, which is why UDP
+      metrics pipelines are so often broken for weeks with nobody noticing.
+
+
+      In practice, for a UDP service in Kubernetes, I would expose a small HTTP
+      endpoint from the same process and probe that — it proves the process is
+      alive and reachable, and it can also assert that the UDP socket is bound
+      and being read. The other signal worth having for a collector is the count
+      of *distinct source addresses* seen recently, because volume from one
+      chatty sender looks exactly like a healthy fleet.
+    signal: >-
+      Explaining *why* there is no transport-level check — rather than just
+      saying probes do not support UDP — is the core. The DNS-versus-StatsD
+      contrast shows they have thought about which UDP services are checkable at
+      all. The distinct-sources idea is an unusually good practical answer.
+    follow_ups:
+      - "What would that HTTP endpoint actually assert?"
+      - "Why is message volume a poor health signal for a collector?"
+      - "What happens to a UDP Service that routes to a pod which is not listening?"

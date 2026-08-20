@@ -1,0 +1,477 @@
+id: quiz.encryption
+topic: topic.encryption
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.2.1]
+    stem: What problem does asymmetric encryption solve that symmetric does not?
+    options:
+      - id: a
+        text: Getting a key to someone you have never shared a secret with
+        correct: true
+      - id: b
+        text: Encrypting large amounts of data efficiently
+        note: >-
+          The opposite. It is thousands of times slower and cannot encrypt more
+          than a few hundred bytes at a time.
+      - id: c
+        text: Making the ciphertext impossible to tamper with
+        note: >-
+          Neither kind provides integrity. That is a separate mechanism.
+      - id: d
+        text: Removing the need to keep any key secret
+        note: >-
+          The private half is still secret, and losing it is still fatal.
+    explanation: >-
+      Symmetric encryption is fast and its entire difficulty is distribution:
+      both parties need the same key, and you cannot send it over the channel you
+      are protecting. Asymmetric encryption removes that — publish one half, keep
+      the other — and pays for it with a severe cost and size penalty. That is
+      why every real system uses both, with the slow one carrying only a key.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.2.1]
+    stem: >-
+      You receive a message that decrypts correctly with your private key. What
+      does that prove about the sender?
+    options:
+      - id: a
+        text: Nothing — the public key is public, so anyone could have sent it
+        correct: true
+      - id: b
+        text: That they hold the matching private key
+        note: >-
+          Encryption to you uses your *public* key. No private key of theirs was
+          involved.
+      - id: c
+        text: That they are who they claim, since only they could encrypt it
+        note: >-
+          Anyone can encrypt with a published key. That is what publishing it
+          means.
+      - id: d
+        text: That the message was not altered in transit
+        note: >-
+          A different property again, and one plain encryption does not provide.
+    explanation: >-
+      The public key is public by design, so successful decryption proves only
+      that somebody used it. Confidentiality and authenticity are separate
+      properties needing separate mechanisms — a signature or a MAC, both of
+      which require the *sender* to hold a key. This confusion is common because
+      encryption feels private and private feels trusted.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.2.2]
+    stem: >-
+      A vendor advertises "proprietary military-grade encryption with an
+      undisclosed algorithm". How should you read that?
+    options:
+      - id: a
+        text: As a warning — an algorithm nobody can review is an algorithm nobody has reviewed
+        correct: true
+      - id: b
+        text: As stronger, because attackers must break the algorithm first
+        note: >-
+          Algorithms leak — from binaries, libraries and reverse engineering —
+          and unlike a key they cannot be rotated afterwards.
+      - id: c
+        text: As equivalent to AES, since the strength is in the key either way
+        note: >-
+          Only if the algorithm is sound, which is exactly what cannot be
+          established here.
+      - id: d
+        text: As a compliance requirement in regulated industries
+        note: >-
+          Regulators generally require *published, validated* algorithms, which
+          is the opposite.
+    explanation: >-
+      Kerckhoffs's principle: a system should stay secure with everything except
+      the key public. Real ciphers are published precisely so that decades of
+      people can fail to break them, and that failure is the evidence of
+      strength. Secrecy of the algorithm is not a second layer of protection —
+      it is the absence of review, plus a secret that cannot be rotated when it
+      leaks.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.2.2]
+    stem: >-
+      A database is encrypted with a key stored in the application's config file
+      on the same host. What does that stop?
+    options:
+      - id: a
+        text: Someone who obtains the bare disk — and very little else
+        correct: true
+      - id: b
+        text: Any attacker who compromises the application
+        note: >-
+          They read the config, and in any case the running application decrypts
+          for them.
+      - id: c
+        text: Anyone reading the backups
+        note: >-
+          If the backup includes the config, it includes the key. If it is taken
+          through the database, it is plaintext.
+      - id: d
+        text: Nothing at all
+        note: >-
+          A stolen or decommissioned disk is a real threat, and this does stop
+          it. The claim is narrow, not empty.
+    explanation: >-
+      The key and the data share a blast radius, so one compromise gets both. It
+      is still worth doing — disks leave buildings — but "the database is
+      encrypted" and "an attacker who gets in cannot read the data" are
+      different claims, and only the first is true here. The useful question
+      when someone offers encryption as an answer is always **which threat does
+      that stop**.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.3]
+    stem: >-
+      What happens when you ask RSA-2048 to encrypt a 246-byte file?
+    options:
+      - id: a
+        text: It refuses — the payload limit is a hard 245 bytes
+        correct: true
+      - id: b
+        text: It succeeds but takes noticeably longer
+        note: >-
+          The limit is structural, not a performance threshold.
+      - id: c
+        text: It silently splits the input into blocks
+        note: >-
+          No chunking exists. Any splitting scheme is something you would have to
+          build.
+      - id: d
+        text: It truncates the input to what fits
+        note: >-
+          It errors rather than silently discarding data.
+    explanation: >-
+      RSA encrypts a number smaller than its modulus. A 2048-bit modulus is 256
+      bytes and PKCS#1 v1.5 padding takes 11, leaving exactly 245. Ask for 246
+      and you get `data too large for key size`. This is why "encrypt the file
+      with RSA" is not slow advice but impossible advice, and it is what forces
+      hybrid encryption.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.3]
+    stem: >-
+      In `openssl speed rsa2048` output, which figures are the slow ones and why
+      does it matter?
+    options:
+      - id: a
+        text: sign and decaps — the private-key operations, roughly thirty times slower than the public ones
+        correct: true
+      - id: b
+        text: verify and encaps, because verification checks more
+        note: >-
+          Those use the public key and are the fast operations.
+      - id: c
+        text: keygen only — the rest are equally fast
+        note: >-
+          Keygen is slowest of all, but sign and decaps are still far slower than
+          verify and encaps.
+      - id: d
+        text: They are all within a few percent of each other
+        note: >-
+          The gap within one algorithm is around thirtyfold.
+    explanation: >-
+      RSA's two directions have very different costs: public-key operations run
+      at tens of thousands a second, private-key operations at around two
+      thousand. It matters because a benchmark that measures only verification
+      makes RSA look far cheaper than it is — and the private side is the one a
+      server performs on every connection that uses it.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.4]
+    stem: In hybrid encryption, what does the recipient's public key encrypt?
+    options:
+      - id: a
+        text: A freshly generated symmetric key, which encrypts everything else
+        correct: true
+      - id: b
+        text: The message itself, in chunks small enough to fit
+        note: >-
+          No system does this. The chunking would be enormous and the cost
+          prohibitive.
+      - id: c
+        text: A hash of the message, to prove it was not altered
+        note: >-
+          That describes a signature, and it uses the *sender's* private key.
+      - id: d
+        text: The recipient's password, which unlocks the data
+        note: >-
+          No password is involved. The symmetric key is random, not derived from
+          one.
+    explanation: >-
+      Generate a random symmetric key, encrypt the data with it fast, encrypt
+      that 32-byte key with the recipient's public key, send both. The slow
+      algorithm handles 32 bytes and the fast one handles everything else. TLS,
+      PGP, `age` and every encrypted-storage system work this way, which is why
+      building it by hand makes the TLS handshake legible.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.4]
+    stem: >-
+      Why does modern TLS use ephemeral Diffie–Hellman rather than encrypting a
+      session key with the server's RSA key?
+    options:
+      - id: a
+        text: Forward secrecy — a stolen long-term key cannot decrypt previously recorded traffic
+        correct: true
+      - id: b
+        text: Diffie–Hellman is unbreakable where RSA is not
+        note: >-
+          Both are secure at appropriate sizes. The difference is what a future
+          key compromise exposes.
+      - id: c
+        text: It avoids needing a certificate at all
+        note: >-
+          A certificate is still needed, to authenticate the key exchange against
+          an active attacker.
+      - id: d
+        text: RSA cannot generate a key long enough for AES-256
+        note: >-
+          RSA comfortably carries 32 bytes. The limit is 245.
+    explanation: >-
+      With RSA key transport, the recorded handshake contains the session key
+      encrypted to the server's long-term key — so an attacker who obtains that
+      key at any point in the future decrypts everything they recorded. With
+      ephemeral Diffie–Hellman the private halves are discarded after the
+      session, leaving nothing that decrypts the recording. That is why TLS 1.3
+      removed RSA key transport entirely.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.5]
+    stem: What does ECB mode leak that CBC does not?
+    options:
+      - id: a
+        text: Where the plaintext repeats — identical blocks produce identical ciphertext
+        correct: true
+      - id: b
+        text: The key, over enough ciphertext
+        note: >-
+          The key is not recoverable. The structure of the data is.
+      - id: c
+        text: The length of the plaintext
+        note: >-
+          Both leak approximate length. That is not the difference.
+      - id: d
+        text: Nothing — ECB is simply slower
+        note: >-
+          ECB is the faster of the two, being parallelisable. Speed is not the
+          issue.
+    explanation: >-
+      ECB encrypts each block independently, so identical plaintext blocks give
+      identical ciphertext blocks and structure survives encryption. On
+      fixed-width records you can count the records and locate the one that
+      differs without any key — which is how a salary field gets found in an
+      encrypted payroll file. It is also why a chosen-plaintext confirmation
+      works: encrypt a guess, compare blocks.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.5]
+    stem: "A code review finds a hardcoded IV. Is that a problem, given an IV is not secret?"
+    options:
+      - id: a
+        text: Yes — an IV need not be secret but must never repeat under one key
+        correct: true
+      - id: b
+        text: "No — IVs are transmitted in the clear, so their value cannot matter"
+        note: >-
+          Being public and being constant are different properties. Only one of
+          them is safe.
+      - id: c
+        text: Only if the IV is shorter than the block size
+        note: >-
+          Length is not the issue. A full-length constant IV is just as broken.
+      - id: d
+        text: Only for asymmetric encryption
+        note: >-
+          IVs belong to symmetric modes. Asymmetric encryption does not use one.
+    explanation: >-
+      The two properties are independent, and the naming of the equivalent
+      value — nonce, *number used once* — states the requirement plainly. A
+      constant IV means the same plaintext always produces the same ciphertext,
+      which reintroduces ECB's leak at the level of whole messages, and in
+      counter mode it is far worse: every message shares a keystream, and XORing
+      two ciphertexts cancels the key out entirely.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.6]
+    stem: >-
+      An attacker flips one bit of an AES-256-CTR ciphertext. What does the
+      recipient see?
+    options:
+      - id: a
+        text: A successful decryption, with exactly the corresponding plaintext bit flipped
+        correct: true
+      - id: b
+        text: A decryption error, because the ciphertext is now invalid
+        note: >-
+          Unauthenticated modes have no validity check. There is nothing to fail.
+      - id: c
+        text: Complete garbage, because the change cascades
+        note: >-
+          That is closer to CBC's behaviour. In counter mode the change is
+          localised and predictable.
+      - id: d
+        text: The original message, since AES corrects errors
+        note: >-
+          Ciphers do not detect or correct errors. That is not what they are for.
+    explanation: >-
+      Counter mode computes `ciphertext = plaintext XOR keystream`, so a flipped
+      ciphertext bit flips exactly that plaintext bit and nothing else. It is not
+      corruption but a *chosen* change: an attacker who knows the message format
+      can turn `TRANSFER 0100` into `TRANSFER 0000` with one byte, no key, and no
+      error anywhere. This is malleability, and every unauthenticated mode has
+      it.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.6]
+    stem: >-
+      A deployment script encrypts a config file with `openssl enc -aes-256-cbc`.
+      What is the finding?
+    options:
+      - id: a
+        text: The output is malleable — `openssl enc` supports no authenticated mode at all
+        correct: true
+      - id: b
+        text: CBC is broken and should be AES-256-ECB
+        note: >-
+          ECB is strictly worse. CBC's problem is the absence of authentication,
+          not the chaining.
+      - id: c
+        text: 256-bit keys are excessive and slow the deployment
+        note: >-
+          AES-256 runs at over a gigabyte a second. Key size is not the issue.
+      - id: d
+        text: Nothing — the file is encrypted, which is what was asked for
+        note: >-
+          Encrypted, yes. Protected against modification, no — and the script
+          almost certainly assumes both.
+    explanation: >-
+      `openssl enc -ciphers` lists CBC, CFB, CTR, ECB and OFB, and asking for
+      `-aes-256-gcm` returns `enc: AEAD ciphers not supported`. The subcommand
+      predates AEAD and was never extended, so every file it has produced is
+      malleable — and it never warned anyone. Anyone who can write to that file
+      can steer what it decrypts to. Use `age`, `gpg`, or a real AEAD API.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.7]
+    stem: >-
+      Two messages are encrypted with AES-256-CTR under the same key and nonce.
+      What does an attacker get from the two ciphertexts alone?
+    options:
+      - id: a
+        text: The XOR of the two plaintexts — the keystream, and so the key, cancels out
+        correct: true
+      - id: b
+        text: Nothing, unless they can break AES-256
+        note: >-
+          AES is never attacked here. The arithmetic removes it from the problem.
+      - id: c
+        text: The key, directly
+        note: >-
+          The key is not recoverable. It is simply not needed.
+      - id: d
+        text: The first block of each message only
+        note: >-
+          Counter mode is a stream — the cancellation applies across the whole
+          overlapping length.
+    explanation: >-
+      `c1 XOR c2 = (p1 XOR ks) XOR (p2 XOR ks) = p1 XOR p2`. The keystream
+      appears twice and cancels, so the key leaves the equation entirely and a
+      longer key would change nothing. With structured messages the shared format
+      cancels to zeroes and only the differing data remains; with any one
+      plaintext known, the others fall out directly. This is the two-time pad,
+      and it is the oldest break in the subject.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.8]
+    stem: >-
+      You need to encrypt records in a database so that backups never contain
+      plaintext. What is the most important design decision after choosing AEAD?
+    options:
+      - id: a
+        text: Storing a key identifier with each record, so keys can ever be rotated
+        correct: true
+      - id: b
+        text: Choosing between AES-256 and AES-128
+        note: >-
+          Either is fine. This decision has no practical consequence here.
+      - id: c
+        text: Whether to use a block or a stream cipher
+        note: >-
+          AEAD settles this. Both AES-GCM and ChaCha20-Poly1305 are appropriate.
+      - id: d
+        text: Compressing the records before encrypting them
+        note: >-
+          Compressing before encrypting can leak plaintext through ciphertext
+          length, and it is not the primary decision.
+    explanation: >-
+      Without a key id stored beside the ciphertext, rotation means decrypting
+      and re-encrypting everything in one operation you cannot pause — which is
+      why "we rotate annually" so often means "we have never rotated". With one,
+      rotation is ordinary: new writes use the new key, reads select by id, old
+      data migrates in the background. It has to be designed in, because adding
+      it later requires the migration you were trying to avoid.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.2.8]
+    stem: >-
+      Which single question best evaluates a claim that some data is "encrypted"?
+    options:
+      - id: a
+        text: "Where is the key, and who can read it?"
+        correct: true
+      - id: b
+        text: "Which cipher and key length?"
+        note: >-
+          Almost always AES-256, almost never the weak point. It is the question
+          people ask because it is the easiest to answer.
+      - id: c
+        text: "Is the algorithm approved by a standards body?"
+        note: >-
+          Approval covers the primitive, not how it was used. Every failure in
+          this topic used an approved cipher correctly implemented.
+      - id: d
+        text: "How often is the data re-encrypted?"
+        note: >-
+          Rotation matters, but it is downstream of where the key lives.
+    explanation: >-
+      The cipher is a ten-second decision and is essentially never the weakness.
+      Everything difficult is key management: where it lives, who can read it,
+      whether it shares a blast radius with the data, and what happens when it
+      leaks. A key in the same config file, host or backup as the data means the
+      encryption stops a stolen disk and nothing else — which is a real but very
+      narrow claim.

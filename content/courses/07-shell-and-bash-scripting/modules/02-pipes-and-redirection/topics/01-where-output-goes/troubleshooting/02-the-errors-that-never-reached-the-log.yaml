@@ -1,0 +1,279 @@
+id: troubleshooting.the-errors-that-never-reached-the-log
+topic: topic.where-output-goes
+title: A clean log for a job that has been failing for six weeks
+level: L2
+objectives: [OBJ-B08.2.3, OBJ-B08.2.5]
+reveal_policy: progressive
+
+situation: >-
+  A nightly reindex job has been silently doing nothing for six weeks. It was
+  noticed only because search results went stale enough for a customer to
+  complain.
+
+
+  `/var/log/reindex.log` contains a tidy line every night: `reindex complete`.
+  No errors, no warnings, no gaps.
+
+
+  Running the script by hand reproduces the failure immediately and prints a
+  clear error about a missing index directory.
+
+
+  The job's crontab line has not changed since it was created. Neither has the
+  script, apart from one change six weeks ago that added a compression step.
+
+
+  Work out why six weeks of failures produced a clean log.
+
+symptoms:
+  - "The job has failed nightly for six weeks and the log shows success"
+  - "Running the script by hand prints an obvious error"
+  - "The log contains one 'reindex complete' line per night with no gaps"
+  - "The crontab line is unchanged since creation"
+  - "One change six weeks ago added a compression step"
+
+artifacts:
+  - type: config
+    label: The crontab line, unchanged
+    content: |
+      0 1 * * * /opt/jobs/reindex.sh 2>&1 >> /var/log/reindex.log
+
+  - type: config
+    label: The script, with the change from six weeks ago marked
+    content: |
+      #!/bin/bash
+      # /opt/jobs/reindex.sh
+
+      SRC=/srv/search/index
+      DEST=/srv/search/snapshots
+
+      build_index "$SRC" > "$DEST/index.new"
+      +  build_index "$SRC" | gzip > "$DEST/index.new.gz"     # added 6 weeks ago
+
+      mv "$DEST/index.new.gz" "$DEST/index.gz"
+
+      echo "reindex complete"
+
+  - type: command_output
+    label: Running it by hand
+    content: |
+      $ /opt/jobs/reindex.sh
+      build_index: cannot open /srv/search/index: No such file or directory
+      reindex complete
+      $ echo $?
+      0
+
+  - type: command_output
+    label: What the archive actually contains
+    content: |
+      $ ls -l /srv/search/index.gz
+      -rw-r--r-- 1 search search 20 Aug 17 01:00 /srv/search/index.gz
+
+      $ gzip -dc /srv/search/index.gz | wc -c
+      0
+
+  - type: log
+    label: The cron mail spool
+    content: |
+      $ ls -l /var/mail/root
+      -rw------- 1 root root 8420331 Aug 17 01:00 /var/mail/root
+      # 6 weeks of unread mail, one message per night
+
+  - type: config
+    label: The crontab header
+    content: |
+      # (no MAILTO line is set)
+      PATH=/usr/local/bin:/usr/bin:/bin
+
+diagnostic_questions:
+  - "Where did the error message go, if it is not in the log file?"
+  - "Why does the script exit 0 when build_index failed?"
+  - "What did adding the compression step change about the exit status?"
+  - "What is 20 bytes, and why is that number suspicious?"
+  - "What is in /var/mail/root?"
+
+hints:
+  - "Read the crontab line's two redirections in order, left to right."
+  - "A pipeline's exit status is the status of which command?"
+  - "gzip succeeded. What did it compress?"
+  - "Nobody set MAILTO."
+
+root_cause: >-
+  **Two independent faults, and each one on its own would have been caught.**
+
+
+  **Fault one: the redirections are in the wrong order.**
+
+
+  ```text
+  /opt/jobs/reindex.sh 2>&1 >> /var/log/reindex.log
+  ```
+
+
+  `2>&1` makes descriptor 2 a copy of **wherever descriptor 1 points at that
+  moment** — and at that moment descriptor 1 is still cron's stdout. The later
+  `>>` moves descriptor 1 to the log file and leaves descriptor 2 pointing at
+  cron.
+
+
+  So every error message has been going to **cron's mail** for six weeks. With no
+  `MAILTO` set it goes to root's local spool, which is the 8 MB of unread mail in
+  the artifacts — one message per night, containing exactly the error that would
+  have explained everything.
+
+
+  A **clean log for a failing job is the signature of this bug**, and it is the
+  opposite of what people expect: the absence of errors was read as evidence of
+  health.
+
+
+  **Fault two: the compression step hid the exit status.**
+
+
+  Before the change, `build_index "$SRC" > "$DEST/index.new"` failed and the
+  script's last command — `echo` — still returned 0, so cron saw success. That
+  was already wrong. Adding the pipe made it worse in a new way:
+
+
+  ```bash
+  build_index "$SRC" | gzip > "$DEST/index.new.gz"
+  ```
+
+
+  A pipeline's exit status is the status of its **last** command. `build_index`
+  failed and wrote nothing; `gzip` **succeeded** in compressing zero bytes and
+  exited 0. So even a `set -e` would not have caught it.
+
+
+  The 20-byte `index.gz` is the tell: that is the size of a gzip stream
+  containing nothing. `gzip -dc | wc -c` returning 0 confirms it. **The artifact
+  existed, was recent, and was empty** — which is why every "does the file exist
+  and is it fresh" check passed.
+
+
+  **And `mv` moved the empty file into place**, replacing yesterday's equally
+  empty one, so the failure looked identical every night.
+
+
+  **Why it fails visibly by hand.** Run in a terminal, descriptor 1 is the
+  terminal when `2>&1` is applied, so stderr goes to the terminal too and the
+  error is right there. The redirection ordering only hides the error when
+  descriptor 1 is going somewhere else — which is exactly the cron case, and
+  never the case anybody tests.
+
+method: >-
+  **1. Read a clean log during a failure as suspicious.** Silence is a claim.
+  A job that fails by hand and logs success is not a mystery about the job; it is
+  a question about where its output went.
+
+
+  **2. Read the redirections left to right.** `2>&1 >> file` copies descriptor 1
+  *before* it is moved. Say it out loud in order — "make 2 a copy of where 1 is
+  now; now move 1" — and the bug is obvious. It is not obvious read as a phrase.
+
+
+  **3. Follow the missing output rather than looking for it.** If stderr did not
+  reach the file it went somewhere: cron's mail, the journal, or `/dev/null`.
+  `ls -l /var/mail/root` found six weeks of it, and that mail contains the
+  diagnosis in full.
+
+
+  **4. Ask what a pipeline's exit status reports.** The last command's. Whenever
+  a failing command is not last, its status is invisible — and the command doing
+  the real work is almost never last.
+
+
+  **5. Check the artifact, not the status.** 20 bytes is a gzip header with no
+  content. Any check that asked "is the file bigger than a plausible minimum"
+  would have failed on night one, and "does the file exist and is it recent"
+  passed every night for six weeks.
+
+
+  **6. Notice that two faults compound.** Either one alone would have been
+  caught: with correct redirection the error was in the log; with a correct exit
+  status cron would have mailed a failure. Together they produce a job that
+  reports success and does nothing.
+
+
+  The habit: **an operation that cannot fail cannot be trusted to have
+  happened** — and if the only evidence is the job's own report, the job has not
+  been checked.
+
+resolution: >-
+  **Immediately:** read the mail. Six weeks of nightly messages contain the exact
+  error and its start date, which is the fastest available timeline for the
+  incident review.
+
+
+  Then rebuild the index by hand once the missing directory is restored, and
+  verify the artifact rather than the exit status.
+
+
+  **Fix the redirection:**
+
+
+  ```text
+  MAILTO=platform-alerts@example.com
+  0 1 * * * /opt/jobs/reindex.sh >> /var/log/reindex.out 2>> /var/log/reindex.err
+  ```
+
+
+  `2>>` at the end so stderr follows its own file. Two files, so "did it produce
+  results" and "did it complain" stay separately answerable at 08:00. And
+  `MAILTO` set, because cron mail going to an unread local spool is a second
+  silent channel.
+
+
+  **Fix the exit status:**
+
+
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+
+  build_index "$SRC" | gzip > "$DEST/index.new.gz"
+  st=("${PIPESTATUS[@]}")
+  [ "${st[0]}" -eq 0 ] || { echo "build_index failed: ${st[0]}" >&2; exit 1; }
+
+  # the artifact is the evidence; the exit status is only an opinion
+  [ "$(stat -c %s "$DEST/index.new.gz")" -gt 1000000 ] \
+    || { echo "index implausibly small" >&2; exit 1; }
+
+  mv "$DEST/index.new.gz" "$DEST/index.gz"
+  echo "reindex complete"
+  ```
+
+
+  `set -o pipefail` alone would catch this one, and `PIPESTATUS` is kept because
+  it names **which** stage failed — the difference between an actionable alert
+  and "something went wrong".
+
+
+  The size assertion is the part that generalises. It would also catch a dump
+  that succeeded against an empty source, a disk that filled mid-write, or a
+  credential that authenticated and selected nothing — failures nobody predicted
+  and no exit status reports.
+
+
+  **And move the `mv` after the checks**, which it already is above. The original
+  moved an empty file into place unconditionally, so a failed run actively
+  replaced the last good artifact. Writing to a temp name and renaming only on
+  success is the same pattern as the safe in-place edit, and for the same reason.
+
+
+  **Monitor the result, not the runner:**
+
+
+  ```bash
+  # alert if the index is older than 26 hours or smaller than expected
+  find /srv/search/index.gz -mmin -1560 -size +1M | grep -q . \
+    || echo "index stale or too small" >&2
+  ```
+
+
+  **For the postmortem:** the crontab line was written correctly-looking and has
+  been wrong since the day it was created; the compression change was a
+  reasonable improvement that happened to hide the exit status; and six weeks of
+  detailed error messages were delivered every night to a mailbox nobody had ever
+  opened. Nothing was lost and nothing was silent — the information existed the
+  whole time, in a place no alert pointed at.

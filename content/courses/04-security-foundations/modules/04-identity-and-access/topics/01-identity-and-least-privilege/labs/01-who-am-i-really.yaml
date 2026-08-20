@@ -1,0 +1,292 @@
+id: lab.who-am-i-really
+topic: topic.identity-and-least-privilege
+title: Measure the identity and the privilege you actually have
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A04.4.1, OBJ-A04.4.2, OBJ-A04.4.4, OBJ-A04.4.5]
+
+intro: >-
+  You are running as a specific identity with a specific set of powers, and
+  neither is what a manifest would tell you. Both are readable from the running
+  process.
+
+
+  The number that matters most is one almost nobody looks at: not what you hold
+  now, but the ceiling on what you could ever regain.
+
+setup:
+  - /opt/lab/seed-identity.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Establish who you are, two ways — from the name database and from the
+      kernel — and save both to /tmp/answer-identity.
+    hint: >-
+      `id` consults /etc/passwd. `/proc/self/status` reports what the kernel is
+      enforcing. Note the four values on the `Uid:` line.
+    walkthrough: |
+      {
+        echo "from the name database:"
+        id
+        echo
+        echo "from the kernel:"
+        grep -E '^(Name|Uid|Gid|Groups):' /proc/self/status
+        echo
+        echo "the kernel knows numbers. the names come from /etc/passwd, and nothing requires them to exist - a container running as a uid with no passwd entry works fine and shows only the number."
+        echo "the Uid line has four values: real, effective, saved and filesystem. they are equal here because nothing has changed identity; setuid is what makes them differ."
+      } > /tmp/answer-identity
+      cat /tmp/answer-identity
+    verify:
+      - type: file_matches
+        path: /tmp/answer-identity
+        pattern: "uid=10001"
+        describe: You recorded the identity from the name database
+      - type: file_matches
+        path: /tmp/answer-identity
+        pattern: "Uid:"
+        describe: And from the kernel's own view of the process
+      - type: file_matches
+        path: /tmp/answer-identity
+        pattern: "real, effective, saved"
+        describe: And noted what the four Uid values are
+
+  - id: s2
+    instruction: >-
+      Find the boundary. Try to read /etc/shadow, then establish exactly which
+      rule stopped you and who could read it. Save to /tmp/answer-boundary.
+    hint: >-
+      Look at the file's mode, owner and group, then at your own groups. Check
+      whether the group that could read it has any members.
+    walkthrough: |
+      {
+        echo "attempt:"
+        cat /etc/shadow 2>&1 | head -1
+        echo
+        echo "why:"
+        stat -c '%A %U:%G %n' /etc/shadow
+        echo "my groups: $(id -Gn)"
+        echo "members of the shadow group: $(getent group shadow)"
+        echo
+        echo "the file is mode 0640, owned root:shadow. i am neither root nor in the shadow group, so the 'other' class applies and it is ---. this is authorization: the kernel knows exactly who i am and is refusing."
+        echo "the shadow group has no members at all, so only root can read it. that is the control working - password hashes were once in world-readable /etc/passwd, which is what /etc/shadow was invented to stop."
+      } > /tmp/answer-boundary
+      cat /tmp/answer-boundary
+    verify:
+      - type: file_matches
+        path: /tmp/answer-boundary
+        pattern: "Permission denied"
+        describe: The read was refused
+      - type: file_matches
+        path: /tmp/answer-boundary
+        pattern: "root:shadow"
+        describe: And you identified the owner and group that control it
+      - type: file_matches
+        path: /tmp/answer-boundary
+        pattern: "(?i)authorization"
+        describe: And classified the failure as authorization rather than authentication
+
+  - id: s3
+    instruction: >-
+      Measure the privilege you hold. Read your capability sets, decode both the
+      effective and the bounding one, and save to /tmp/answer-capabilities.
+    hint: >-
+      `/proc/self/status` has the Cap lines. Decode with `/sbin/capsh --decode=` —
+      the full path matters, because /sbin is not on your PATH.
+    walkthrough: |
+      {
+        grep -E '^Cap(Inh|Prm|Eff|Bnd)' /proc/self/status
+        echo
+        eff=$(grep ^CapEff /proc/self/status | cut -f2)
+        bnd=$(grep ^CapBnd /proc/self/status | cut -f2)
+        echo "effective, decoded:"
+        /sbin/capsh --decode=$eff
+        echo "bounding, decoded:"
+        /sbin/capsh --decode=$bnd
+        echo
+        echo "effective is what i hold right now: nothing at all."
+        echo "bounding is the ceiling - what i could ever regain, including by executing a setuid binary. it holds fourteen capabilities, and cap_setuid and cap_dac_override are both in it."
+        echo "an audit that reads only the effective set concludes this process is unprivileged. the bounding set is what an attacker actually works within, which is why dropping ALL capabilities and disabling privilege escalation are two separate settings that both matter."
+      } > /tmp/answer-capabilities
+      cat /tmp/answer-capabilities
+    verify:
+      - type: file_matches
+        path: /tmp/answer-capabilities
+        pattern: "CapEff:\\s*0{16}"
+        describe: Your effective capability set is empty
+      - type: file_matches
+        path: /tmp/answer-capabilities
+        pattern: "cap_setuid"
+        describe: And you decoded the bounding set, which is not empty
+      - type: file_matches
+        path: /tmp/answer-capabilities
+        pattern: "(?i)ceiling"
+        describe: And distinguished what you hold from what you could regain
+
+  - id: s4
+    instruction: >-
+      List every setuid binary on the filesystem and explain, using one of them,
+      how an unprivileged user changes a file they cannot read. Save to
+      /tmp/answer-setuid.
+    hint: >-
+      `find / -xdev -perm -4000 -type f`. Then look at the mode of
+      /usr/bin/passwd and compare it to an ordinary binary like /usr/bin/ls.
+    walkthrough: |
+      {
+        echo "setuid binaries on this filesystem:"
+        find / -xdev -perm -4000 -type f 2>/dev/null
+        echo "count: $(find / -xdev -perm -4000 -type f 2>/dev/null | wc -l)"
+        echo
+        echo "compare the modes:"
+        stat -c '%A %U:%G %n' /usr/bin/passwd /usr/bin/ls
+        echo
+        echo "passwd has s where ls has x. executing it produces a process running as its owner - root - rather than as me. that is how i can change my own password, which means writing to /etc/shadow, a file i cannot even read."
+        echo "it is a real privilege escalation, granted deliberately and scoped to one narrow job. every setuid binary is therefore part of the attack surface: a bug in any of them is a path to root for anyone who can run it."
+        echo "one of these arrived with openssh-client, added to this image for a single topic. adding a package added an escalation path - which is the ordinary way attack surface grows, not by a bad decision but by a reasonable one nobody counted."
+      } > /tmp/answer-setuid
+      cat /tmp/answer-setuid
+    verify:
+      - type: file_matches
+        path: /tmp/answer-setuid
+        pattern: "/usr/bin/passwd"
+        describe: You found the setuid binaries
+      - type: command_exit
+        command: "test $(sed -n 's/^count: //p' /tmp/answer-setuid) -ge 5"
+        exit_code: 0
+        describe: And counted several of them
+      - type: file_matches
+        path: /tmp/answer-setuid
+        pattern: "rws"
+        describe: And identified the s bit that distinguishes them
+      - type: file_matches
+        path: /tmp/answer-setuid
+        pattern: "(?i)attack surface"
+        describe: And explained why each one matters
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-blast-radius what an attacker who obtained a shell as
+      you could reach, and which single measurement from this lab most changes
+      that answer.
+    hint: >-
+      You have four measurements now: identity, what you were refused,
+      capabilities held, and capabilities reachable. One of those is the ceiling.
+    walkthrough: |
+      {
+        echo "a shell as uid 10001 in this container reaches:"
+        echo "- everything under /tmp and /home/learner, which is tmpfs and dies with the session"
+        echo "- read access to the image's files, but no write: the root filesystem is not writable to me"
+        echo "- no access to /etc/shadow, and no ability to change any account"
+        echo "- no capabilities at all in the effective set"
+        echo "- no network egress, so nothing outside this container"
+        echo
+        echo "the measurement that most changes the answer is the BOUNDING set, not the effective one. effective says i hold nothing; bounding says fourteen capabilities remain reachable, including cap_setuid and cap_dac_override, and there are setuid binaries on the filesystem to reach them through."
+        echo "that gap is the difference between 'this process is unprivileged' and 'this process cannot become privileged', and only the second is a real constraint. in a container spec they are two separate settings: dropping ALL capabilities lowers the floor, and allowPrivilegeEscalation false lowers the ceiling."
+      } > /tmp/answer-blast-radius
+      cat /tmp/answer-blast-radius
+    verify:
+      - type: file_matches
+        path: /tmp/answer-blast-radius
+        pattern: "(?i)bounding"
+        describe: You identified the bounding set as the measurement that matters
+      - type: file_matches
+        path: /tmp/answer-blast-radius
+        pattern: "(?i)floor|ceiling"
+        describe: And distinguished lowering the floor from lowering the ceiling
+
+solution: >-
+  **Identity is numbers, and names are a convenience.**
+
+
+  `id` reported `uid=10001(learner)`; `/proc/self/status` reported `Uid: 10001
+  10001 10001 10001`. The kernel enforces on the number, and the name is a
+  lookup in `/etc/passwd` for your benefit. A container running as a uid with no
+  passwd entry works perfectly and shows only the number — which is why
+  `runAsUser: 10001` and an account existing in the image are two independent
+  facts.
+
+
+  The four values on the `Uid:` line are real, effective, saved and filesystem
+  uid. They are identical here because nothing has changed identity. Making them
+  differ is exactly what setuid does.
+
+
+  **The boundary, and which kind of failure it is.**
+
+
+  `/etc/shadow` is mode `0640`, owned `root:shadow`. You are not root and not in
+  the shadow group, so the *other* class applies and it is `---`. The kernel
+  knows precisely who you are and refuses anyway: that is **authorization**, and
+  it is a different failure from not being able to prove who you are.
+
+
+  Worth noticing: the shadow group has **no members**. Only root can read that
+  file. Password hashes lived in world-readable `/etc/passwd` historically, and
+  `/etc/shadow` exists specifically to end that — the control you just bounced
+  off is the fix for a decades-old design mistake.
+
+
+  **The number almost nobody reads.**
+
+
+  ```text
+  CapEff: 0000000000000000     ← nothing at all
+  CapBnd: 00000000a80425fb     ← fourteen capabilities
+  ```
+
+
+  Decoded, the bounding set contains `cap_setuid`, `cap_dac_override`,
+  `cap_chown`, `cap_net_raw` and ten more.
+
+
+  **Effective** is what the process holds now. **Bounding** is the ceiling on
+  what it could ever regain — including across an `execve` of a setuid binary,
+  and there are nine of those on this filesystem.
+
+
+  An audit reading only `CapEff` concludes this process is unprivileged. That is
+  true and it is not the same as *cannot become privileged*, and only the second
+  is a constraint an attacker has to respect. This is why
+  `capabilities.drop: ["ALL"]` and `allowPrivilegeEscalation: false` are separate
+  settings: one lowers the floor, the other lowers the ceiling, and most tooling
+  reports only the floor.
+
+
+  **setuid, the sanctioned escalation.**
+
+
+  ```text
+  -rwsr-xr-x root:root /usr/bin/passwd
+  -rwxr-xr-x root:root /usr/bin/ls
+     ↑
+     s, not x
+  ```
+
+
+  Running `passwd` gives you a process running as **root**, doing one narrow job
+  on your behalf — which is how you change a password stored in a file you cannot
+  read. It is a real escalation, granted deliberately, and it is why every setuid
+  binary is attack surface: a bug in any of them is a path to root for anyone who
+  can execute it.
+
+
+  One of the nine is `/usr/lib/openssh/ssh-keysign`, which arrived when this
+  course added `openssh-client` for a single topic. **Adding a package added an
+  escalation path.** Nobody decided to do that; it came along with a reasonable
+  decision, and that is how attack surface almost always grows.
+
+
+  **The blast radius.**
+
+
+  A shell here reaches tmpfs that dies with the session, read-only image files,
+  no capabilities, no egress, and no route to any account. That is a genuinely
+  small radius, and it is small because of the *bounding* set and the isolation
+  around it rather than because of the zero in `CapEff`.
+
+
+  The transferable question, which the last lab in this topic asks of four real
+  workloads: **if this is fully compromised, what does the attacker reach?**
+  Answered by listing things rather than by consulting a manifest.

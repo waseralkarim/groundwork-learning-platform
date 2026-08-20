@@ -1,0 +1,142 @@
+id: topic.distributions-and-versions
+slug: distributions-and-versions
+title: "The Distribution: Old on Purpose"
+summary: >-
+  A distribution is a kernel, a userland, an archive and a release policy — and
+  the policy is why the software is older than upstream. This topic identifies a
+  system from the machine rather than from memory, and reads the version strings
+  that policy produces, including the three comparison rules that are not string
+  comparison.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 110
+status: published
+
+prerequisites:
+  - topic: topic.files-and-filesystems
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B06.1.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify the distribution, release and codename of a running system from
+      the machine itself, portably.
+    assessed_by: [quiz.q1, quiz.q2, lab.what-am-i-running, exercise.e1]
+
+  - id: OBJ-B06.1.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe what a distribution provides beyond a kernel, and what
+      distinguishes one from another.
+    assessed_by: [quiz.q3, quiz.q4, lab.what-am-i-running]
+
+  - id: OBJ-B06.1.3
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret a package version string, naming each component and what it
+      records.
+    assessed_by: [quiz.q5, quiz.q6, lab.read-a-version-string, exercise.e2]
+
+  - id: OBJ-B06.1.4
+    level: L2
+    verb: predict
+    statement: >-
+      Predict the result of comparing two package versions, including the cases
+      where it is not string comparison.
+    assessed_by: [quiz.q7, quiz.q8, quiz.q9, lab.version-comparison-traps, assessment.A]
+
+  - id: OBJ-B06.1.5
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why a stable release ships software older than upstream, and what
+      that policy buys and costs.
+    assessed_by: [quiz.q10, quiz.q11, lab.read-a-version-string, exercise.e3]
+
+  - id: OBJ-B06.1.6
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish release models — fixed, rolling and long-term support — by
+      what each one guarantees.
+    assessed_by: [quiz.q12, quiz.q13, lab.choose-a-release, exercise.e4]
+
+  - id: OBJ-B06.1.7
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a failure caused by a version assumption, and identify the
+      comparison that was wrong.
+    assessed_by: [quiz.q14, lab.version-comparison-traps, troubleshooting.the-version-that-went-backwards]
+
+  - id: OBJ-B06.1.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a distribution and release choice for a stated situation, naming
+      what it commits you to.
+    assessed_by: [quiz.q15, lab.choose-a-release, exercise.e5, assessment.B, assessment.C, troubleshooting.the-base-image-nobody-chose]
+
+terminology:
+  - term: distribution
+    definition: >-
+      A kernel, a userland, an archive of packages built to work together, and a
+      policy about when any of it changes. The last two are what actually
+      distinguish one from another.
+  - term: os-release
+    definition: >-
+      `/etc/os-release` — the standard machine-readable identity of a system.
+      Present on every modern distribution, unlike the tools people reach for.
+  - term: codename
+    definition: >-
+      A release's name — `trixie`, `noble`, `jammy`. Used by package archives, so
+      it appears in sources and in version suffixes.
+  - term: upstream version
+    definition: >-
+      The version the software's own authors released. The first part of a
+      package version, and the only part upstream knows about.
+  - term: distribution revision
+    definition: >-
+      The number after the hyphen. It counts changes the distribution made to the
+      same upstream release — a patch, a build fix, a security backport.
+  - term: epoch
+    definition: >-
+      A number before a colon, as in `4:14.2.0-1`. It exists to force ordering
+      when upstream versioning goes backwards, and it beats every other component.
+  - term: backport
+    definition: >-
+      A fix taken from a newer upstream release and applied to an older one, so
+      the version number stays put while the bug goes away. It is why "our
+      version is old" is a weak argument about vulnerability.
+  - term: fixed release
+    definition: >-
+      Versions frozen at release and changed only for security and grave bugs.
+      Predictable, and increasingly far behind upstream.
+  - term: rolling release
+    definition: >-
+      Continuously updated, always close to upstream. No upgrade event, and no
+      point at which the system is known to be unchanging.
+  - term: long-term support
+    definition: >-
+      A release supported for years rather than months. What is supported is
+      usually security fixes only — the versions do not move.
+  - term: security suffix
+    definition: >-
+      A marker such as `~deb13u2` or `+deb12u1` identifying a security or point
+      update. `~` sorts *before* nothing, which is what makes it work.
+  - term: derivative
+    definition: >-
+      A distribution built from another's archive — Ubuntu from Debian, Rocky
+      from RHEL. It inherits most decisions and diverges on policy.
+
+foreshadows:
+  - "B06.2's package management reads the same archive this topic identifies."
+  - "C14's base image choice is this decision made for a container, with the same trade."
+  - "G43's vulnerability scanning depends on version comparison being correct, and on understanding backports."
+  - "B07's systemd and journald behaviour differs by release, which is why identifying one precisely matters."
+
+tags: [linux, distributions, packaging, versions, debian, fundamentals]

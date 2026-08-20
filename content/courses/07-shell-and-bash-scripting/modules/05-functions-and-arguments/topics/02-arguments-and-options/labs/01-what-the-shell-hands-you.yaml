@@ -1,0 +1,337 @@
+id: lab.what-the-shell-hands-you
+topic: topic.arguments-and-options
+title: Find out exactly what your script received
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.7.1, OBJ-B08.7.2]
+
+intro: >-
+  Four ways to expand the argument list, three different answers, and only one
+  of them tells the truth.
+
+
+  You will settle each by running it, then find out what `shift` does when it
+  cannot do what you asked — which is not what anyone predicts.
+
+setup:
+  - /opt/lab/seed-args.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Use /tmp/args/argv to find out what a script actually receives, including
+      an argument with a space and one that looks like an option. Save to
+      /tmp/answer-argv.
+    walkthrough: |
+      {
+        echo "three arguments, one containing a space:"
+        /tmp/args/argv a "b c" d
+        echo
+        echo "an argument that looks like an option:"
+        /tmp/args/argv -n /srv/data
+        echo
+        echo "none at all:"
+        /tmp/args/argv
+        echo
+        echo "\$0 is the invocation NAME, not an argument - \$# does not count it."
+      } > /tmp/answer-argv
+      cat /tmp/answer-argv
+    verify:
+      - type: file_matches
+        path: /tmp/answer-argv
+        pattern: '\$# = 3'
+        describe: Three arguments were received
+      - type: file_matches
+        path: /tmp/answer-argv
+        pattern: '\$2  = \[b c\]'
+        describe: With the space preserved inside one argument
+      - type: file_matches
+        path: /tmp/answer-argv
+        pattern: '\(no arguments\)'
+        describe: And an empty list is distinguishable
+      - type: file_matches
+        path: /tmp/answer-argv
+        pattern: '(?i)not an argument'
+        describe: And you noted what $0 is
+
+  - id: s2
+    instruction: >-
+      Compare `"$@"`, `"$*"`, `$@` and `$*` on the same list, and show what
+      `IFS` does to one of them. Save to /tmp/answer-expansions.
+    hint: >-
+      `set -- a "b c" d` gives you a list to experiment on without a script.
+    walkthrough: |
+      {
+        bash -c '
+          set -- a "b c" d
+          printf "  %-24s %s\n" "\$#" "$#"
+          printf "  %-24s " "\"\$@\""; printf "[%s]" "$@"; echo
+          printf "  %-24s " "\"\$*\""; printf "[%s]" "$*"; echo
+          printf "  %-24s " "\$@ (unquoted)"; printf "[%s]" $@; echo
+          printf "  %-24s " "\$* (unquoted)"; printf "[%s]" $*; echo
+          ( IFS=:; printf "  %-24s " "\"\$*\" with IFS=:"; printf "[%s]" "$*"; echo )
+          printf "  %-24s " "\"\${@:2}\""; printf "[%s]" "${@:2}"; echo
+          printf "  %-24s " "\"\${@: -1}\""; printf "[%s]" "${@: -1}"; echo
+        '
+        echo
+        echo "ONLY \"\$@\" REPRODUCES THE LIST. it expands to one word per argument and"
+        echo "splits nothing, which is why it is the only correct way to forward"
+        echo "arguments to another command."
+        echo
+        echo "\"\$*\" joins them into a SINGLE word using the first character of IFS -"
+        echo "which makes it right for exactly one job, building a message:"
+        echo "    die() { echo \"\$0: \$*\" >&2; exit 1; }"
+        echo
+        echo "the two unquoted forms are identical to each other and wrong: the shell"
+        echo "word-splits the result, so 'b c' becomes two arguments. that is B08.1's"
+        echo "rule arriving here as a concrete bug."
+        echo
+        echo "note the SPACE in \${@: -1}. without it, \${@:-1} is the use-a-default"
+        echo "form and means something completely different."
+      } > /tmp/answer-expansions
+      cat /tmp/answer-expansions
+    verify:
+      - type: file_matches
+        path: /tmp/answer-expansions
+        pattern: '"\$@" +\[a\]\[b c\]\[d\]'
+        describe: "\"$@\" keeps the list intact"
+      - type: file_matches
+        path: /tmp/answer-expansions
+        pattern: '"\$\*" +\[a b c d\]'
+        describe: "\"$*\" joins it into one word"
+      - type: file_matches
+        path: /tmp/answer-expansions
+        pattern: '\$@ \(unquoted\) +\[a\]\[b\]\[c\]\[d\]'
+        describe: And unquoted forms split it into four
+      - type: file_matches
+        path: /tmp/answer-expansions
+        pattern: '\[a:b c:d\]'
+        describe: You showed IFS choosing the join character
+      - type: file_matches
+        path: /tmp/answer-expansions
+        pattern: '(?i)ONLY "\$@" REPRODUCES'
+        describe: And stated which one is correct
+
+  - id: s3
+    instruction: >-
+      Find out what `shift` returns, and what it does when asked to shift more
+      than it has. Save to /tmp/answer-shift.
+    hint: >-
+      Try shifting past the end and then look at what is left.
+    walkthrough: |
+      {
+        bash -c '
+          set -- one two three
+          shift 2; printf "  shift 2 -> rc=%s \$#=%s [%s]\n" "$?" "$#" "$*"
+          set -- one two three
+          shift 5; printf "  shift 5 -> rc=%s \$#=%s [%s]\n" "$?" "$#" "$*"
+          set -- one two three
+          shift; shift; shift; printf "  three single shifts -> rc=%s \$#=%s\n" "$?" "$#"
+          shift;             printf "  one more            -> rc=%s \$#=%s\n" "$?" "$#"
+        '
+        echo
+        echo "SHIFT IS ALL-OR-NOTHING. asked to shift 5 with 3 arguments it returns 1"
+        echo "and shifts NOTHING - it does not shift what it can and stop. the list is"
+        echo "completely unchanged."
+        echo
+        echo "so a parser doing 'shift 2' to consume an option and its value leaves"
+        echo "EVERYTHING in place when the value is missing, and the loop reads the same"
+        echo "argument again on the next pass."
+        echo
+        echo "and under set -e that failing shift ENDS THE SCRIPT, silently, with no"
+        echo "message - because there is no failing command to name:"
+        bash -c 'set -e; set -- one; shift 3; echo "NOT REACHED"'; printf "    rc=%s\n" "$?"
+        echo
+        echo "the guard is a count check BEFORE the shift, not after:"
+        echo "    [ \$# -ge 2 ] || die \"--out needs a value\""
+        echo "    out=\$2; shift 2"
+      } > /tmp/answer-shift
+      cat /tmp/answer-shift
+    verify:
+      - type: file_matches
+        path: /tmp/answer-shift
+        pattern: 'shift 2 -> rc=0 \$#=1 \[three\]'
+        describe: A shift it can do succeeds
+      - type: file_matches
+        path: /tmp/answer-shift
+        pattern: 'shift 5 -> rc=1 \$#=3 \[one two three\]'
+        describe: And one it cannot changes nothing
+      - type: file_matches
+        path: /tmp/answer-shift
+        pattern: '(?i)ALL-OR-NOTHING'
+        describe: You named the behaviour
+      - type: file_matches
+        path: /tmp/answer-shift
+        pattern: 'rc=1'
+        describe: And showed it ends a script under set -e
+      - type: file_matches
+        path: /tmp/answer-shift
+        pattern: '(?i)BEFORE the shift'
+        describe: And gave the guard
+
+  - id: s4
+    instruction: >-
+      Show what `--` does, and why a script must honour it. Save to
+      /tmp/answer-ddash.
+    hint: >-
+      Try creating a file whose name begins with a dash, then removing it.
+    walkthrough: |
+      mkdir -p /tmp/dashdir && cd /tmp/dashdir
+      : > ./-rf
+      : > normal.txt
+      {
+        echo "a file whose name begins with a dash:"
+        ls -l /tmp/dashdir | sed 's/^/    /'
+        echo
+        echo "trying to remove it the obvious way:"
+        ( cd /tmp/dashdir && rm -rf 2>&1 | head -2 | sed 's/^/    /' ) || true
+        echo "    (rm read the NAME as its own options - the file is still here)"
+        echo "    files left: $(ls /tmp/dashdir | wc -l)"
+        echo
+        echo "with -- :"
+        ( cd /tmp/dashdir && rm -- -rf )
+        echo "    files left: $(ls /tmp/dashdir | wc -l)"
+        echo
+        echo "-- MEANS END OF OPTIONS. everything after it is an operand, however it"
+        echo "starts. that is why you see it in find -exec rm -- {} + and in"
+        echo "git checkout -- FILE."
+        echo
+        echo "the same applies to a script you write. a parser that does not handle --"
+        echo "cannot be given a filename beginning with a dash at all, and both getopts"
+        echo "and getopt(1) handle it for you:"
+        bash -c '
+          while getopts ":v" OPT; do echo "    got -$OPT"; done
+          shift $((OPTIND - 1))
+          printf "    operands after --: "; printf "[%s]" "$@"; echo
+        ' _ -v -- -v
+      } > /tmp/answer-ddash
+      cat /tmp/answer-ddash
+    verify:
+      - type: file_matches
+        path: /tmp/answer-ddash
+        pattern: '(?i)files left: 2'
+        describe: The dash-named file survives a bare rm
+      - type: file_matches
+        path: /tmp/answer-ddash
+        pattern: '(?i)files left: 1'
+        describe: And -- removes it
+      - type: file_matches
+        path: /tmp/answer-ddash
+        pattern: '(?i)END OF OPTIONS'
+        describe: You stated what -- means
+      - type: file_matches
+        path: /tmp/answer-ddash
+        pattern: 'operands after --: \[-v\]'
+        describe: And showed getopts leaving -v as an operand
+
+  - id: s5
+    instruction: >-
+      Say where a script should take each kind of input, and demonstrate the one
+      rule that is a security matter. Save to /tmp/answer-channels.
+    walkthrough: |
+      {
+        echo "a script has four input channels, and choosing is part of the design:"
+        echo
+        echo "  arguments     what changes per invocation - the target, the flags"
+        echo "  environment   ambient context - DEPLOY_ENV, LOG_LEVEL"
+        echo "  a file        many settings, versioned, shared between runs"
+        echo "  stdin         data, especially streamed or large"
+        echo
+        echo "and one rule with teeth. compare the permissions:"
+        stat -c '    %A  %n' /proc/self/cmdline /proc/self/environ
+        echo
+        echo "/proc/PID/cmdline is WORLD-READABLE, so every argument is visible to every"
+        echo "user on the machine, for as long as the process runs:"
+        cat > /tmp/backup-tool <<'T'
+      #!/bin/bash
+      # a tool that takes credentials as arguments
+      sleep 5
+      T
+        chmod 0755 /tmp/backup-tool
+        /tmp/backup-tool --user=svc --password=hunter2 &
+        pid=$!
+        sleep 0.3
+        printf '    ps sees: '; ps -o args= -p "$pid"
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        echo
+        echo "/proc/PID/environ is readable only by the OWNER, which makes the"
+        echo "environment better than an argument - but it still passes to every child"
+        echo "and lands in crash dumps."
+        echo
+        echo "SO: NEVER PUT A SECRET IN AN ARGUMENT. a file with restrictive permissions"
+        echo "beats both, and reading it into the process is one line."
+      } > /tmp/answer-channels
+      cat /tmp/answer-channels
+    verify:
+      - type: file_matches
+        path: /tmp/answer-channels
+        pattern: '-r--r--r--  /proc/self/cmdline'
+        describe: cmdline is world-readable
+      - type: file_matches
+        path: /tmp/answer-channels
+        pattern: '-r--------  /proc/self/environ'
+        describe: And environ is not
+      - type: file_matches
+        path: /tmp/answer-channels
+        pattern: '(?i)ps sees:.*hunter2'
+        describe: And you read a password out of another process
+      - type: file_matches
+        path: /tmp/answer-channels
+        pattern: '(?i)NEVER PUT A SECRET IN AN ARGUMENT'
+        describe: And stated the rule
+
+solution: >-
+  **What a script receives.** `$#` counts the arguments and **`$0` is not one of
+  them** — it is the invocation name, and `shift` never touches it. An argument
+  containing a space is one argument, and one that looks like an option is just
+  a string until something parses it.
+
+
+  **Four expansions, three answers:**
+
+
+  | | Result |
+  |---|---|
+  | `"$@"` | `[a][b c][d]` |
+  | `"$*"` | `[a b c d]` |
+  | `$@` | `[a][b][c][d]` |
+  | `$*` | `[a][b][c][d]` |
+  | `"$*"` with `IFS=:` | `[a:b c:d]` |
+
+
+  **Only `"$@"` reproduces the list** — one word per argument, splitting nothing.
+  `"$*"` joins with the first character of `IFS`, which makes it right for
+  exactly one job: building a message, as in `die() { echo "$0: $*" >&2; }`. The
+  unquoted forms are identical to each other and wrong.
+
+
+  Note the space in `${@: -1}`. Without it, `${@:-1}` is the use-a-default form.
+
+
+  **`shift` is all-or-nothing:**
+
+
+  ```console
+  $ set -- one two three; shift 5; echo "rc=$? $# [$*]"
+  rc=1 3 [one two three]
+  ```
+
+
+  It does **not** shift what it can and stop — the list is completely unchanged.
+  So a parser doing `shift 2` for an option and its value leaves everything in
+  place when the value is missing, and re-reads the same argument. Under `set -e`
+  the failing shift **ends the script silently**, because there is no failing
+  command to name. Guard with a count *before* the shift.
+
+
+  **`--` ends options.** A file called `-rf` cannot be removed by `rm -rf` — the
+  name is read as flags — and `rm -- -rf` removes it. Both `getopts` and
+  `getopt(1)` honour it, and a parser you write must too.
+
+
+  **And the channel matters.** `/proc/PID/cmdline` is `-r--r--r--`, so `ps` shows
+  every argument to every user on the machine; `/proc/PID/environ` is
+  `-r--------`. Never put a secret in an argument — and prefer a file to the
+  environment, which still passes to children and lands in crash dumps.

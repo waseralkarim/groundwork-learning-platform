@@ -1,0 +1,240 @@
+id: lab.two-transports
+topic: topic.tcp-and-udp
+title: Two sockets on two protocols, side by side
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A03.3.1, OBJ-A03.3.2, OBJ-A03.3.3]
+
+intro: >-
+  The clearest way to see what TCP adds is to put a TCP socket and a UDP socket
+  next to each other and read what the kernel says about each.
+
+
+  You will bind the same port number on both protocols — which is allowed, and
+  is itself a fact worth establishing — then connect to each and watch what
+  changes. One of them acquires a peer and a state. The other does not, and
+  cannot.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Start a TCP listener and a UDP listener, both on port 9400, both on
+      127.0.0.1, in the background.
+
+
+      Then save every socket on that port to /tmp/answer-both.
+    hint: >-
+      `nohup nc -l -k 127.0.0.1 9400 &` for TCP and
+      `nohup nc -u -l -k 127.0.0.1 9400 &` for UDP. Then `ss -tuln`.
+    walkthrough: |
+      nohup nc    -l -k 127.0.0.1 9400 >/dev/null 2>&1 &
+      nohup nc -u -l -k 127.0.0.1 9400 >/dev/null 2>&1 &
+      sleep 1
+      ss -tuln | grep ':9400' > /tmp/answer-both
+      cat /tmp/answer-both
+    verify:
+      - type: command_exit
+        command: "test $(wc -l < /tmp/answer-both) -eq 2"
+        exit_code: 0
+        describe: Two sockets on the same port number — one per protocol
+      - type: file_matches
+        path: /tmp/answer-both
+        pattern: 'LISTEN'
+        describe: The TCP one is LISTEN
+      - type: file_matches
+        path: /tmp/answer-both
+        pattern: 'UNCONN'
+        describe: And the UDP one is UNCONN
+
+  - id: s2
+    instruction: >-
+      Write to /tmp/answer-same-port why binding the same port number twice was
+      allowed.
+    hint: >-
+      A bind claims an address and a port. What else is part of a socket's
+      identity?
+    walkthrough: |
+      echo "ports are namespaced per protocol, so tcp 9400 and udp 9400 are different sockets entirely and neither bind conflicts with the other; the protocol is part of the socket identity alongside the address and the port" > /tmp/answer-same-port
+    verify:
+      - type: file_matches
+        path: /tmp/answer-same-port
+        pattern: "protocol"
+        describe: You identified the protocol as part of the identity
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-same-port) -ge 12"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+  - id: s3
+    instruction: >-
+      Explain the two different State values in /tmp/answer-both. Write to
+      /tmp/answer-states why one says LISTEN and the other cannot.
+    hint: >-
+      LISTEN describes a socket waiting for something to be established. What
+      would a UDP socket be waiting to establish?
+    walkthrough: |
+      echo "listen means a socket is waiting for a connection to be established, and udp has no connections at all, so a bound udp socket is simply unconnected: it has a local address and port, no peer, and no state to progress through" > /tmp/answer-states
+    verify:
+      - type: file_matches
+        path: /tmp/answer-states
+        pattern: "connection|establish"
+        describe: You explained LISTEN in terms of connections
+      - type: file_matches
+        path: /tmp/answer-states
+        pattern: "no peer|unconnect|no connection"
+        describe: And UNCONN as the absence of one
+
+  - id: s4
+    instruction: >-
+      Send one message over TCP and one over UDP to those listeners, then save
+      the sockets again to /tmp/answer-after.
+
+
+      Something changed on exactly one of the two rows.
+    hint: >-
+      `printf 'hi\n' | nc -w 1 127.0.0.1 9400` and the same with `-u`. Then
+      `ss -tuan | grep 9400`.
+    walkthrough: |
+      printf 'hi\n' | nc    -w 1 127.0.0.1 9400 >/dev/null 2>&1
+      printf 'hi\n' | nc -u -w 1 127.0.0.1 9400 >/dev/null 2>&1
+      sleep 1
+      ss -tuan | grep ':9400' > /tmp/answer-after
+      cat /tmp/answer-after
+    verify:
+      - type: file_matches
+        path: /tmp/answer-after
+        pattern: 'LISTEN'
+        describe: The TCP listener is still listening
+      - type: file_matches
+        path: /tmp/answer-after
+        pattern: 'UNCONN'
+        describe: And the UDP socket is still unconnected, having received a datagram
+
+  - id: s5
+    instruction: >-
+      Now the difference that matters most. Test a TCP port with nothing bound
+      and then a UDP port with nothing bound, recording both exit statuses in
+      /tmp/answer-closed.
+    hint: >-
+      `nc -z -w 2 127.0.0.1 9999` and `printf 'x' | nc -u -w 1 127.0.0.1 9999`.
+      Record `$?` after each.
+    walkthrough: |
+      {
+        nc -z -w 2 127.0.0.1 9999 >/dev/null 2>&1
+        echo "tcp_rc=$?"
+        printf 'x' | nc -u -w 1 127.0.0.1 9999 >/dev/null 2>&1
+        echo "udp_rc=$?"
+      } > /tmp/answer-closed
+      cat /tmp/answer-closed
+    verify:
+      - type: file_matches
+        path: /tmp/answer-closed
+        pattern: 'tcp_rc=1'
+        describe: TCP failed — the kernel sent a reset and the sender was told
+      - type: file_matches
+        path: /tmp/answer-closed
+        pattern: 'udp_rc=0'
+        describe: UDP succeeded, with nothing there to receive it
+
+  - id: s6
+    instruction: >-
+      Confirm the kernel noticed the UDP datagram had nowhere to go, even though
+      the sender did not. Save the UDP counters to /tmp/answer-noports.
+    hint: >-
+      `/proc/net/snmp` has a `Udp:` header line and a values line. `NoPorts` is
+      the third field.
+    walkthrough: |
+      awk '/^Udp:/ { n++; if (n==2) print "InDatagrams=" $2, "NoPorts=" $3, "OutDatagrams=" $5 }' /proc/net/snmp > /tmp/answer-noports
+      cat /tmp/answer-noports
+    verify:
+      - type: file_matches
+        path: /tmp/answer-noports
+        pattern: 'NoPorts=[1-9][0-9]*'
+        describe: The kernel counted the datagram that arrived nowhere
+      - type: file_matches
+        path: /tmp/answer-noports
+        pattern: 'OutDatagrams=[1-9][0-9]*'
+        describe: And counted it being sent, successfully, by a sender that was never told
+
+  - id: s7
+    instruction: >-
+      Write to /tmp/answer-what-send-proves what a successful UDP send actually
+      proves, given what you just measured.
+    hint: >-
+      `sendto()` returned before anything was delivered. What had happened at
+      the moment it returned?
+    walkthrough: |
+      echo "it proves only that the kernel accepted the datagram for sending; there is no acknowledgement, no connection and no return path for a failure, so the datagram may have been discarded at the far end or never have arrived and the sender cannot tell the difference" > /tmp/answer-what-send-proves
+    verify:
+      - type: file_matches
+        path: /tmp/answer-what-send-proves
+        pattern: "kernel|accepted|handed"
+        describe: You identified what the return value actually reports
+      - type: file_matches
+        path: /tmp/answer-what-send-proves
+        pattern: "acknowledg|cannot tell|no return|never"
+        describe: And that nothing reports failure back
+
+solution: |
+  ```bash
+  nohup nc    -l -k 127.0.0.1 9400 >/dev/null 2>&1 &   # TCP
+  nohup nc -u -l -k 127.0.0.1 9400 >/dev/null 2>&1 &   # UDP
+  ss -tuln | grep :9400
+
+  nc -z -w 2 127.0.0.1 9999;             echo $?       # 1 — refused
+  printf 'x' | nc -u -w 1 127.0.0.1 9999; echo $?      # 0 — "succeeded"
+  awk '/^Udp:/ { n++; if (n==2) print }' /proc/net/snmp
+  ```
+
+  **What you just established.**
+
+  ```text
+  LISTEN 0 1  127.0.0.1:9400  0.0.0.0:*     <- tcp
+  UNCONN 0 0  127.0.0.1:9400  0.0.0.0:*     <- udp
+  ```
+
+  **The same port number, twice, with no conflict.** A socket's identity
+  includes its protocol, so TCP 9400 and UDP 9400 are different sockets that
+  different processes could own. DNS relies on exactly this, using both for the
+  same service.
+
+  **LISTEN and UNCONN are not two words for the same thing.** LISTEN describes a
+  socket waiting for a connection to be *established*. UDP has nothing to
+  establish, so a bound UDP socket is simply unconnected: a local address and
+  port, no peer, no history, and no state to progress through.
+
+  The practical consequence is that a TCP server knows how many clients it has
+  and when each arrived, and a UDP server does not. It has received some
+  datagrams from some addresses. Whether any of those senders still exists is
+  not knowable from the socket.
+
+  **And after receiving a datagram, the UDP socket was still UNCONN.** Nothing
+  about receiving creates state — which is exactly what "connectionless" means,
+  and it is worth having seen rather than been told.
+
+  **The two closed-port tests are the difference between the protocols in two
+  lines.**
+
+  | | TCP | UDP |
+  |---|---|---|
+  | Command result | fails, exit 1 | succeeds, exit 0 |
+  | Time taken | milliseconds | instant |
+  | Kernel counted | `OutRsts`, `AttemptFails` | `NoPorts` |
+  | Sender learns | **yes** | **no** |
+
+  The kernel *noticed* in both cases — `NoPorts` incremented — and only in the
+  TCP case is there a mechanism to tell the sender. UDP may emit an ICMP
+  port-unreachable message, and `sendto()` has already returned success, so
+  there is nothing left to report it to; an unconnected socket usually never
+  sees it at all.
+
+  **Which gives the single most important sentence in this topic: a successful
+  UDP send proves the kernel accepted the datagram, and nothing else.** Not that
+  it was delivered, not that anything is listening, not that the address is even
+  reachable. Every reliable protocol built on UDP — QUIC, most game networking,
+  anything with an application-level ack — exists because of that sentence.

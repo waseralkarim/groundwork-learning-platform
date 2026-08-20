@@ -1,0 +1,334 @@
+id: lab.where-values-disappear
+topic: topic.functions-and-scope
+title: Generate the subshell-boundary table yourself
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.6.5]
+
+intro: >-
+  Ten constructs. The same assignment inside each. Five keep it and five throw it
+  away, and one pair differs by a single `|`.
+
+
+  You will predict the table, generate it, then find the seeded script whose
+  counter is always zero.
+
+setup:
+  - /opt/lab/seed-functions.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/funcs/boundaries to see what it tests, and commit a prediction
+      to /tmp/prediction before running it.
+    hint: >-
+      For each construct ask one question: does the shell fork to run this?
+    walkthrough: |
+      sed -n '1,12p' /tmp/funcs/boundaries
+      cat > /tmp/prediction <<'P'
+      keeps inner : group, function, for loop, redirected while, process substitution
+      keeps outer : local, subshell, command substitution, pipeline, piped while
+      least sure  : process substitution, and the two while loops
+      P
+      cat /tmp/prediction
+    verify:
+      - type: file_exists
+        path: /tmp/prediction
+        describe: You committed a prediction before measuring
+      - type: file_matches
+        path: /tmp/prediction
+        pattern: "(?i)keeps inner"
+        describe: With an answer for both groups
+
+  - id: s2
+    instruction: >-
+      Run it and save the real table to /tmp/answer-table.
+    walkthrough: |
+      /tmp/funcs/boundaries | tee /tmp/answer-table
+    verify:
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "group +inner"
+        describe: A brace group keeps the value
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "subshell +outer"
+        describe: A subshell does not
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "cmd subst +outer"
+        describe: Nor does command substitution
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "function +inner"
+        describe: A plain function call does
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "local +outer"
+        describe: And local hides rather than shares
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "piped loop +outer"
+        describe: And a piped while loop discards its work
+
+  - id: s3
+    instruction: >-
+      Two rows differ only by a `|`. Isolate that pair, explain it, and state the
+      rule that produces the whole table. Save to /tmp/answer-rule.
+    hint: >-
+      Compare `{ v=inner; }` with `echo x | { v=inner; }`.
+    walkthrough: |
+      {
+        echo "the pair that differs by one character:"
+        v=outer; { v=inner; };            echo "    { v=inner; }              -> $v"
+        v=outer; echo x | { v=inner; };   echo "    echo x | { v=inner; }     -> $v"
+        echo
+        echo "the brace group is not a fork - it is grouping only. adding a pipe makes it"
+        echo "a PIPELINE STAGE, and EVERY stage of a pipeline runs in its own subshell."
+        echo
+        echo "proving they are different processes:"
+        echo "    parent shell pid: $$"
+        echo x | { echo "    pipeline stage pid: $BASHPID"; }
+        { echo "    brace group pid:    $BASHPID"; }
+        echo
+        echo "(\$\$ is the SCRIPT's pid and does not change in a subshell - \$BASHPID is"
+        echo "the current shell's, which is why it is the right one to look at here.)"
+        echo
+        echo "TWO RULES PRODUCE THE ENTIRE TABLE:"
+        echo
+        echo "  1. local hides a name for the duration of the call. nothing forked;"
+        echo "     the outer variable was never touched and is visible again after."
+        echo
+        echo "  2. everything else that lost the value FORKED. ( ), \$( ) and every"
+        echo "     stage of a pipeline run in a subshell. a subshell inherits"
+        echo "     everything and returns only its OUTPUT and its EXIT STATUS."
+        echo "     assignments die with it."
+        echo
+        echo "which is why the symptom is always the same: the work happens, and the"
+        echo "result is thrown away."
+      } > /tmp/answer-rule
+      cat /tmp/answer-rule
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "\\{ v=inner; \\} +-> inner"
+        describe: The brace group keeps it
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "echo x \\| \\{ v=inner; \\} +-> outer"
+        describe: And the pipeline does not
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)EVERY stage of a pipeline"
+        describe: You named the reason
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)TWO RULES"
+        describe: And stated the rule behind the whole table
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)thrown away"
+        describe: And what the symptom looks like
+
+  - id: s4
+    instruction: >-
+      /tmp/funcs/backup.sh copies files and reports zero. Show that it really
+      copies them, find where the count goes, and save to /tmp/answer-backup.
+    hint: >-
+      Check the archive directory afterwards. The loop body is not the problem.
+    walkthrough: |
+      {
+        echo "the run:"
+        bash /tmp/funcs/backup.sh 2>&1 | sed 's/^/    /'
+        echo
+        echo "but the files ARE copied:"
+        echo "    files in the archive: $(ls /tmp/funcs/archive | wc -l)"
+        ls /tmp/funcs/archive | sed 's/^/      /'
+        echo
+        echo "the loop:"
+        grep -n 'find\|copied=\|done' /tmp/funcs/backup.sh | sed 's/^/    /'
+        echo
+        echo "find is on the LEFT of a pipe and the while loop is on the RIGHT, so the"
+        echo "loop runs in a subshell. cp writes to the filesystem, which is shared, so"
+        echo "the copies survive. copied=\$((copied + 1)) writes to a VARIABLE, which is"
+        echo "per-process, so it does not."
+        echo
+        echo "the loop reached 4 - here is the same loop printing as it goes:"
+        find /tmp/funcs/src -type f -name '*.conf' | { c=0; while read -r f; do c=$((c+1)); done; echo "    inside the subshell the count reached $c"; }
+        echo "    outside it, the value is gone"
+      } > /tmp/answer-backup
+      cat /tmp/answer-backup
+    verify:
+      - type: file_matches
+        path: /tmp/answer-backup
+        pattern: "copied 0 files"
+        describe: The script reports zero
+      - type: file_matches
+        path: /tmp/answer-backup
+        pattern: "files in the archive: 4"
+        describe: While actually copying four
+      - type: file_matches
+        path: /tmp/answer-backup
+        pattern: "(?i)per-process"
+        describe: You explained why one survived and the other did not
+      - type: file_matches
+        path: /tmp/answer-backup
+        pattern: "the count reached 4"
+        describe: And showed the loop really counted
+
+  - id: s5
+    instruction: >-
+      Fix it three different ways, prove each reports 4, and say which you would
+      ship. Save to /tmp/answer-fixes.
+    hint: >-
+      Process substitution, a plain redirect, and a shell option.
+    walkthrough: |
+      # fix 1: process substitution — the loop body does not move
+      cat > /tmp/fix-procsub.sh <<'F1'
+      #!/bin/bash
+      set -euo pipefail
+      SRC=${1:-/tmp/funcs/src}; DEST=${2:-/tmp/funcs/archive}; mkdir -p "$DEST"
+      copied=0
+      while read -r f; do
+        cp "$f" "$DEST/"
+        copied=$((copied + 1))
+      done < <(find "$SRC" -type f -name '*.conf')
+      echo "copied $copied files"
+      F1
+
+      cat > /tmp/fix-mapfile.sh <<'F2'
+      #!/bin/bash
+      set -euo pipefail
+      SRC=${1:-/tmp/funcs/src}; DEST=${2:-/tmp/funcs/archive}; mkdir -p "$DEST"
+      mapfile -t files < <(find "$SRC" -type f -name '*.conf')
+      copied=0
+      for f in "${files[@]}"; do
+        cp "$f" "$DEST/"
+        copied=$((copied + 1))
+      done
+      echo "copied $copied files"
+      F2
+
+      cat > /tmp/fix-lastpipe.sh <<'F3'
+      #!/bin/bash
+      set -euo pipefail
+      shopt -s lastpipe
+      SRC=${1:-/tmp/funcs/src}; DEST=${2:-/tmp/funcs/archive}; mkdir -p "$DEST"
+      copied=0
+      find "$SRC" -type f -name '*.conf' | while read -r f; do
+        cp "$f" "$DEST/"
+        copied=$((copied + 1))
+      done
+      echo "copied $copied files"
+      F3
+
+      {
+        for f in procsub mapfile lastpipe; do
+          printf '  %-10s %s\n' "$f" "$(bash /tmp/fix-$f.sh 2>&1 | tail -1)"
+        done
+        echo
+        echo "all three report 4."
+        echo
+        echo "i would ship PROCESS SUBSTITUTION."
+        echo
+        echo "  < <(find ...) is the smallest change - the loop body does not move, and"
+        echo "  the diff is one line. it also keeps find's output streaming, so a"
+        echo "  directory with a million files does not have to fit in memory first."
+        echo
+        echo "  mapfile is the right choice when you need the list TWICE, or need to"
+        echo "  count it before deciding what to do. it buffers everything first."
+        echo
+        echo "  lastpipe i would not ship. it changes the meaning of every pipeline in"
+        echo "  the file, not just this one, and it silently does nothing when job"
+        echo "  control is on - so it works in the script and not when a colleague"
+        echo "  pastes the same loop into a terminal to debug it. a fix that behaves"
+        echo "  differently under investigation than in production is a bad fix."
+        echo
+        echo "and none of the three is the real lesson. the script reported a number it"
+        echo "never checked. the durable fix is to assert it:"
+        echo "    [ \"\$copied\" -eq \"\$(find \"\$SRC\" -type f -name '*.conf' | wc -l)\" ] || exit 1"
+      } > /tmp/answer-fixes
+      cat /tmp/answer-fixes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "procsub +copied 4 files"
+        describe: Process substitution reports four
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "mapfile +copied 4 files"
+        describe: And so does mapfile
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "lastpipe +copied 4 files"
+        describe: And lastpipe
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "(?i)job\\s+control"
+        describe: And you gave a reason to reject one of them
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "(?i)never checked"
+        describe: And named the durable fix
+
+solution: >-
+  **The table.** The same `v=inner` assignment inside ten constructs:
+
+
+  | Construct | `v` afterwards |
+  |---|---|
+  | `{ v=inner; }` group | inner |
+  | `f(){ v=inner; }; f` | inner |
+  | `for i in x; do v=inner; done` | inner |
+  | `while read; do v=inner; done <<< x` | inner |
+  | `{ v=inner; } < <(echo x)` | inner |
+  | `f(){ local v=inner; }; f` | **outer** |
+  | `( v=inner; )` | **outer** |
+  | `x=$(v=inner; ...)` | **outer** |
+  | `echo x \| { v=inner; }` | **outer** |
+  | `echo x \| while read; do v=inner; done` | **outer** |
+
+
+  **The pair that differs by one character** is rows 1 and 9. A brace group is
+  grouping only; adding a pipe makes it a **pipeline stage**, and every stage of
+  a pipeline runs in its own subshell. `$BASHPID` shows the different process
+  (`$$` does not — it stays the script's pid inside a subshell).
+
+
+  **Two rules produce the whole table.** `local` hides a name for the duration
+  of the call, so the outer variable was never touched. Everything else in the
+  second group **forked** — a subshell inherits everything and returns only its
+  output and exit status.
+
+
+  Which gives the symptom: **the work happens and the result is thrown away.**
+
+
+  **`backup.sh` is that bug in production.** It reports `copied 0 files` and the
+  archive contains four, because `cp` writes to the filesystem — shared — and
+  `copied=$((copied + 1))` writes to a variable — per-process.
+
+
+  **Three fixes, all reporting 4:**
+
+
+  ```bash
+  done < <(find ...)                 # process substitution
+  mapfile -t files < <(find ...)     # read it all first
+  shopt -s lastpipe                  # run the last stage in this shell
+  ```
+
+
+  **Ship process substitution.** It is a one-line diff, the loop body does not
+  move, and `find` keeps streaming so a huge directory need not fit in memory.
+  `mapfile` is right when you need the list twice or need to count it first.
+  `lastpipe` changes every pipeline in the file and **silently does nothing when
+  job control is on** — so it works in the script and not when a colleague pastes
+  the loop into a terminal to debug it. A fix that behaves differently under
+  investigation is a bad fix.
+
+
+  And none of the three is the real lesson: the script reported a number nobody
+  checked. Assert it.

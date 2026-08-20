@@ -1,0 +1,181 @@
+id: troubleshooting.disk-full-nothing-there
+topic: topic.files-and-filesystems
+title: The disk is full and there is nothing on it
+level: L3
+objectives: [OBJ-A01.5.5]
+reveal_policy: progressive
+
+situation: >-
+  It is 02:40. An alert fires: `/var` is 100% full on the primary application
+  host. Writes are failing, the service is returning 500s, and the on-call
+  engineer has already deleted the two largest log files they could find — about
+  30 GB between them.
+
+
+  `df` has not moved. They have deleted more. It has still not moved. The
+  runbook's next line says "restart the application", which will clear it, and
+  they would like to understand why before they do.
+
+
+  Work out what is happening, and what you would do that is neither "delete more"
+  nor "restart".
+
+symptoms:
+  - "/var reports 100% used and has not moved after deleting ~30 GB"
+  - "du -x -sh /var accounts for 6 GB of a 200 GB filesystem"
+  - "The application is logging normally — no errors about its own log files"
+  - "df -i shows inode usage at 4%"
+  - "Restarting the application 'fixes it' — this has happened three times this quarter"
+
+artifacts:
+  - type: command_output
+    label: The two views of the same filesystem
+    content: |
+      $ df -h /var
+      Filesystem      Size  Used Avail Use% Mounted on
+      /dev/sdb1       200G  200G     0 100% /var
+
+      $ df -i /var
+      Filesystem      Inodes  IUsed   IFree IUse% Mounted on
+      /dev/sdb1        13.1M   524K   12.6M    4% /var
+
+      $ du -x -sh /var
+      6.1G    /var
+
+  - type: command_output
+    label: What is actually open
+    content: |
+      $ ls -l /proc/*/fd/* 2>/dev/null | grep '(deleted)' | head -5
+      l-wx------ 1 app app 64 Aug 16 02:11 /proc/2841/fd/3 -> /var/log/app/app.log (deleted)
+      l-wx------ 1 app app 64 Aug 16 02:11 /proc/2841/fd/7 -> /var/log/app/audit.log (deleted)
+      l-wx------ 1 app app 64 Aug 15 19:02 /proc/2841/fd/9 -> /var/log/app/app.log.1 (deleted)
+
+  - type: config
+    label: The log rotation configuration
+    content: |
+      /var/log/app/*.log {
+          daily
+          rotate 7
+          missingok
+          notifempty
+          # no copytruncate, and no postrotate signal
+      }
+
+  - type: log
+    label: The application's own logging setup
+    content: |
+      # config/logging.yaml
+      handlers:
+        file:
+          class: logging.FileHandler      # opens once, holds the descriptor
+          filename: /var/log/app/app.log
+      # no SIGHUP handler is installed
+
+diagnostic_questions:
+  - "Why do df and du disagree, and which of them is wrong?"
+  - "What does '(deleted)' in a /proc/PID/fd link mean about the blocks?"
+  - "Why did deleting more files change nothing?"
+  - "Why does restarting the application work?"
+  - "What is the rotation configuration doing, and what would make it correct?"
+
+hints:
+  - "du walks names. Ask what happens to a file that no longer has one."
+  - "The application opened its log once, at start-up. What is it holding?"
+  - "There is a way to free the blocks that does not involve killing the process."
+  - "Look at what the rotate configuration does NOT contain."
+
+root_cause: >-
+  Deleted log files are still held open by the application, so their blocks were
+  never released.
+
+
+  The rotation configuration renames log files and does not tell the application
+  about it — there is no `copytruncate` and no `postrotate` signal, and the
+  application's file handler opens its log once at start-up and holds the
+  descriptor for the process's lifetime. After a rotation the application keeps
+  writing to the renamed file, and when the rotated file is eventually deleted the
+  application is still attached to the inode.
+
+
+  The link count is zero and the file has no name, so `du` cannot see it. The
+  kernel will not free the blocks while a descriptor is open, so `df` still counts
+  them. Deleting more files cannot help: the space is held by files that are
+  already deleted.
+
+
+  Restarting works because it closes every descriptor at once, which is why this
+  has happened three times without anyone learning the cause.
+
+method: >-
+  **1. Compare df with du before deleting anything else.** 200 GB used against
+  6 GB accounted for is not a rounding error; it is the diagnosis. When those two
+  disagree by that much, stop deleting — the space is held by something without a
+  name, and more deletions cannot reach it.
+
+
+  **2. Rule out the other cause of the same gap.** `df -i` at 4% says this is not
+  inode exhaustion. It takes one command and eliminates the other common ENOSPC.
+
+
+  **3. Find the holder.** `lsof +L1`, or `/proc/*/fd` where `lsof` is missing.
+  The link target ending in `(deleted)` names both the file and the process, and
+  here it is one PID holding three of them, including a file rotated the previous
+  evening.
+
+
+  **4. Read the rotation config with that in mind.** No `copytruncate`, no
+  `postrotate` signal, and an application that opens its log once. Those three
+  facts together are the whole mechanism, and none of them is visible from the
+  filesystem alone.
+
+
+  **5. Free the space without an outage.** Truncation in place empties the inode
+  the descriptor points at, so the blocks are released and the writer keeps
+  working. Only if that is impossible does restarting become the answer.
+
+resolution: >-
+  **Right now**, free the space without restarting:
+
+
+  ```bash
+  # The application is still writing to these inodes, so truncate rather than
+  # delete. This frees every block immediately.
+  : > /proc/2841/fd/3
+  : > /proc/2841/fd/7
+  : > /proc/2841/fd/9
+  ```
+
+
+  Writing to the `/proc/PID/fd/N` path truncates the file the descriptor refers
+  to, even though it has no name in the filesystem any more. `df` drops
+  immediately.
+
+
+  **Then fix the rotation**, which is the actual defect:
+
+
+  ```
+  /var/log/app/*.log {
+      daily
+      rotate 7
+      missingok
+      notifempty
+      copytruncate        # copy then truncate in place, keeping the inode
+  }
+  ```
+
+
+  `copytruncate` is the fix that requires nothing from the application. The better
+  arrangement, if the application can be changed, is a `postrotate` signal and a
+  handler that reopens the log — that avoids the small window in which
+  `copytruncate` can lose lines.
+
+
+  **And make it visible.** Two monitoring changes would have turned this into a
+  ticket:
+
+
+  - Alert on the gap between `df` used and `du` total, not just on disk usage.
+    A growing gap is deleted-but-open files and nothing else.
+  - Alert on disk growth *rate*. This filled over hours; the level alert fired at
+    100%, which is the last useful moment rather than the first.

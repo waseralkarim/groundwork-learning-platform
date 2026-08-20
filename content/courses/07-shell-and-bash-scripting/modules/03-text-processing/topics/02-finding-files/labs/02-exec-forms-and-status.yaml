@@ -1,0 +1,260 @@
+id: lab.exec-forms-and-status
+topic: topic.finding-files
+title: The form that runs every command and reports none of the failures
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.4.2, OBJ-B08.4.5]
+
+intro: >-
+  `-exec cmd \;` and `-exec cmd +` look like a style choice. They differ in
+  three ways, and one of them is that the first **discards the command's exit
+  status entirely**.
+
+
+  You will measure the process count, prove the status difference with a command
+  that always fails, and then find out what happens to find's own errors in a
+  pipeline.
+
+setup:
+  - /opt/lab/seed-find.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Count how many processes each -exec form starts for the same set of files.
+      Save to /tmp/answer-processes.
+    hint: >-
+      Have the command print one line each time it runs, and count the lines.
+    walkthrough: |
+      cd /tmp/find
+      {
+        n=$(find archive -name '*.log' | wc -l)
+        echo "matching files: $n"
+        echo
+        printf '  -exec echo {} \\;  invocations: %s\n' "$(find archive -name '*.log' -exec echo x \; | wc -l)"
+        printf '  -exec echo {} +   invocations: %s\n' "$(find archive -name '*.log' -exec echo x {} + | wc -l)"
+        echo
+        echo "one process per file versus one process total. on a directory with 50,000 logs that is 50,000 forks against 1."
+        echo
+        echo "the other syntactic difference: with + the {} must be LAST on the command line, because find appends the batch of paths there. with \\; the {} can appear anywhere and more than once."
+      } > /tmp/answer-processes
+      cat /tmp/answer-processes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-processes
+        pattern: "\\\\;  invocations: 8"
+        describe: The per-file form ran once per file
+      - type: file_matches
+        path: /tmp/answer-processes
+        pattern: "\\+   invocations: 1"
+        describe: And the batched form ran once
+      - type: file_matches
+        path: /tmp/answer-processes
+        pattern: "(?i)must be LAST"
+        describe: And you noted the syntactic constraint
+
+  - id: s2
+    instruction: >-
+      Find out what each form does with a command that always fails. Save to
+      /tmp/answer-status.
+    hint: >-
+      `false` always exits 1. Run find with it both ways and check find's own
+      exit status.
+    walkthrough: |
+      cd /tmp/find
+      {
+        find archive -name '*.log' -exec false \; 2>/dev/null
+        echo "  -exec false \\;  -> find rc=$?"
+        find archive -name '*.log' -exec false {} + 2>/dev/null
+        echo "  -exec false +   -> find rc=$?"
+        echo
+        echo "identical intent, opposite reporting."
+        echo
+        echo "-exec cmd \\; IGNORES the command's exit status entirely. every single invocation can fail and find still exits 0."
+        echo
+        echo "-exec cmd + propagates a failure into find's status."
+        echo
+        echo "what that means for a retention job written as 'find ... -exec rm {} \\;': if the filesystem is read-only, or the files are owned by somebody else, or the disk is full during a compression step, every rm fails and the job reports success. that is not a hypothetical - it is the default form people copy."
+      } > /tmp/answer-status
+      cat /tmp/answer-status
+    verify:
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "false \\\\;  -> find rc=0"
+        describe: The per-file form reported success despite every command failing
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "false \\+   -> find rc=1"
+        describe: While the batched form propagated the failure
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "(?i)IGNORES the command"
+        describe: And you stated the rule
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "(?i)reports success"
+        describe: And what it means for a real job
+
+  - id: s3
+    instruction: >-
+      Make part of the tree unreadable and find out what find reports — alone,
+      and in a pipeline. Save to /tmp/answer-find-status.
+    hint: >-
+      Create a directory, put a file in it, then remove your own permission to
+      read it.
+    walkthrough: |
+      cd /tmp/find
+      mkdir -p locked && : > locked/secret.log && chmod 000 locked
+      {
+        find . -name '*.log' >/dev/null 2>/tmp/fe.txt
+        echo "  find alone           rc=$?"
+        echo "  stderr said: $(head -1 /tmp/fe.txt)"
+        echo
+        find . -name '*.log' 2>/dev/null | wc -l >/dev/null
+        echo "  find | wc            rc=$?   <- wc's status, not find's"
+        set -o pipefail
+        find . -name '*.log' 2>/dev/null | wc -l >/dev/null
+        echo "  with set -o pipefail rc=$?"
+        set +o pipefail
+        echo
+        echo "find returns 1 when it could not read part of the tree. that is the status that matters most in a cleanup job, because the files it could not see are exactly the ones that will not be processed - silently, and every run."
+        echo
+        echo "and in a pipeline that status is replaced by the last command's. so 'find ... | xargs rm' returns 0 whether find walked the whole tree or gave up on half of it."
+        echo
+        echo "pipefail restores it, and PIPESTATUS names which stage failed."
+      } > /tmp/answer-find-status
+      chmod 755 locked
+      cat /tmp/answer-find-status
+    verify:
+      - type: file_matches
+        path: /tmp/answer-find-status
+        pattern: "find alone +rc=1"
+        describe: find reported the unreadable directory
+      - type: file_matches
+        path: /tmp/answer-find-status
+        pattern: "(?i)Permission denied"
+        describe: And said so on stderr
+      - type: file_matches
+        path: /tmp/answer-find-status
+        pattern: "find \\| wc +rc=0"
+        describe: While the pipeline discarded that status
+      - type: file_matches
+        path: /tmp/answer-find-status
+        pattern: "pipefail rc=1"
+        describe: And pipefail restored it
+
+  - id: s4
+    instruction: >-
+      Build the comparison table for all four ways of acting on found files, and
+      say which you would default to. Save to /tmp/answer-table.
+    walkthrough: |
+      cd /tmp/find
+      {
+        printf '  %-26s %-9s %-14s %s\n' FORM BATCHES "CMD FAILURE" "FIND FAILURE"
+        printf '  %-26s %-9s %-14s %s\n' "-exec cmd \\;" "no" "IGNORED" "visible"
+        printf '  %-26s %-9s %-14s %s\n' "-exec cmd +" "yes" "propagated" "visible"
+        printf '  %-26s %-9s %-14s %s\n' "| xargs -0 cmd" "yes" "xargs status" "LOST (no pipefail)"
+        printf '  %-26s %-9s %-14s %s\n' "| xargs -0 -I{} cmd {}" "NO" "xargs status" "LOST (no pipefail)"
+        echo
+        echo "showing that -I really does give up batching:"
+        printf '    xargs -0 echo        invocations: %s\n' "$(find archive -name '*.log' -print0 | xargs -0 echo | wc -l)"
+        printf '    xargs -0 -I{} echo {} invocations: %s\n' "$(find archive -name '*.log' -print0 | xargs -0 -I{} echo {} | wc -l)"
+        echo
+        echo "and that xargs runs even when it received nothing:"
+        printf '    empty | xargs echo RAN -> '; find . -name 'no-such-file' -print0 | xargs -0 echo "RAN"
+        printf '    empty | xargs -r echo  -> '; find . -name 'no-such-file' -print0 | xargs -0 -r echo "RAN"; echo "(nothing = correct)"
+        echo
+        echo "my default: -exec cmd + . it is the only one of the four that reports BOTH the command's failure and find's own, and it batches. i would reach for xargs when i need -P for parallelism or -n to cap the batch size, and accept that i then have to set pipefail."
+      } > /tmp/answer-table
+      cat /tmp/answer-table
+    verify:
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "(?i)IGNORED"
+        describe: Your table records which form discards failures
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "-I\\{\\} echo \\{\\} invocations: 8"
+        describe: And you showed -I giving up batching
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "RAN"
+        describe: And that xargs runs on empty input
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "(?i)my default: -exec cmd \\+"
+        describe: And chose a default with a reason
+
+solution: >-
+  **Process count.**
+
+
+  ```text
+  -exec echo {} \;  invocations: 8
+  -exec echo {} +   invocations: 1
+  ```
+
+
+  One process per file against one total. On 50,000 logs that is 50,000 forks
+  against one. The `+` form also requires `{}` to be **last**, because find
+  appends the batch there; `\;` allows it anywhere and more than once.
+
+
+  **Exit status — the difference nobody knows.**
+
+
+  ```text
+  -exec false \;  -> find rc=0
+  -exec false +   -> find rc=1
+  ```
+
+
+  **`-exec cmd \;` ignores the command's exit status entirely.** Every
+  invocation can fail and find still exits 0.
+
+
+  For a retention job written as `find … -exec rm {} \;`, that means a read-only
+  filesystem, files owned by another user, or a disk that fills during
+  compression all produce a job that reports success and deleted nothing. That is
+  the default form people copy.
+
+
+  **find's own errors, and what a pipeline does to them.**
+
+
+  ```text
+  find alone           rc=1     find: './locked': Permission denied
+  find | wc            rc=0     ← wc's status
+  with set -o pipefail rc=1
+  ```
+
+
+  find returns 1 when it could not read part of the tree — the status that
+  matters most in a cleanup job, because the files it could not see are exactly
+  the ones that will never be processed. In a pipeline that is replaced by the
+  last command's, so `find … | xargs rm` returns 0 whether find walked everything
+  or gave up on half.
+
+
+  **The four forms.**
+
+
+  | Form | Batches | Command failure | find's failure |
+  |---|---|---|---|
+  | `-exec cmd \;` | no | **ignored** | visible |
+  | `-exec cmd +` | yes | propagated | visible |
+  | `\| xargs -0 cmd` | yes | xargs's status | **lost** without pipefail |
+  | `\| xargs -0 -I{} cmd {}` | **no** | xargs's status | **lost** without pipefail |
+
+
+  `-I` silently sets one item per invocation — 8 processes against 1 — so a
+  pipeline written for batching quietly becomes one process per file. And `xargs`
+  runs the command **even with no input** unless given `-r`.
+
+
+  **Default to `-exec cmd +`.** It is the only one of the four that reports both
+  the command's failure and find's own, and it batches. Reach for `xargs` when
+  you need `-P` for parallelism or `-n` to cap the batch size — and accept that
+  you must then set `pipefail`.

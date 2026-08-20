@@ -1,0 +1,30 @@
+flowchart LR
+    subgraph shell["the parent shell"]
+        V["count=0"]
+    end
+
+    subgraph p1["subshell 1 — its own process"]
+        C1["producer<br/>writes to fd 1"]
+    end
+
+    subgraph kern["kernel"]
+        BUF["pipe buffer<br/><i>writer blocks when full</i>"]
+    end
+
+    subgraph p2["subshell 2 — its own process"]
+        C2["while read<br/>count=count+1"]
+        V2["count=3<br/><i>in THIS process</i>"]
+        C2 --> V2
+    end
+
+    C1 --> BUF --> C2
+    shell -. "forks, copies count=0" .-> p1
+    shell -. "forks, copies count=0" .-> p2
+    V2 -. "dies with the subshell" .-> X["parent still sees count=0"]
+
+    LB["stdio buffering:<br/>writing to a TERMINAL → flush per line<br/>writing to a PIPE → flush per 4-8 KB block"]
+    LB -.-> C1
+
+    style X fill:#fdecea,stroke:#c0392b
+    style LB fill:#fdf6e3,stroke:#b58900
+    style BUF fill:#e8f0fb,stroke:#3b6ea5

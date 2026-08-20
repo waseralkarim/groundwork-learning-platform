@@ -1,0 +1,470 @@
+id: quiz.the-layers
+topic: topic.the-layers
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.1.1]
+    stem: What does a container share with its host that a virtual machine does not?
+    options:
+      - id: a
+        text: The kernel
+        correct: true
+      - id: b
+        text: The filesystem
+        note: >-
+          A container has its own mount namespace and image layers. The host
+          filesystem is not shared by default.
+      - id: c
+        text: The network interfaces
+        note: >-
+          Containers normally get their own network namespace with their own
+          interfaces.
+      - id: d
+        text: The process table
+        note: >-
+          A PID namespace gives a container its own process tree, starting at
+          PID 1.
+    explanation: >-
+      This is the defining difference and everything else follows from it. No
+      kernel to boot means milliseconds to start and no per-workload memory
+      overhead, which is the density argument that decided the industry. It also
+      means the isolation boundary is a set of kernel features rather than
+      hardware — so a kernel vulnerability is a container escape.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.1.1]
+    stem: What is a "serverless" function actually running on?
+    options:
+      - id: a
+        text: Usually a microVM — a stripped-down VM booting in around 125 ms
+        correct: true
+      - id: b
+        text: A fifth kind of isolation with no machine underneath
+        note: >-
+          There is always a machine. The platform hides it, which is what the
+          name refers to.
+      - id: c
+        text: A plain container, with no hypervisor involved
+        note: >-
+          Multi-tenant function platforms need a hypervisor boundary because
+          they run other people's code.
+      - id: d
+        text: Bare metal, allocated per invocation
+        note: >-
+          Allocating physical machines per invocation would be far too slow and
+          too expensive.
+    explanation: >-
+      Function platforms run other customers' code, which is hostile
+      multi-tenancy, so a container boundary is insufficient. A microVM —
+      Firecracker or similar — gives hypervisor-grade isolation with
+      container-like startup, which is exactly the combination the problem needs.
+      "Serverless" describes the billing and operational model, not a new
+      isolation primitive.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.1.2]
+    stem: >-
+      `/proc/cpuinfo` contains the `hypervisor` flag. What does that establish?
+    options:
+      - id: a
+        text: Something is virtualising this CPU — you are in a VM or in a container inside one
+        correct: true
+      - id: b
+        text: The machine supports virtualisation and could run VMs
+        note: >-
+          That is `vmx` or `svm`. The `hypervisor` flag means one is already
+          present above you.
+      - id: c
+        text: You are in a container
+        note: >-
+          Containers do not set it. It is set by a hypervisor, and a container on
+          bare metal would not show it.
+      - id: d
+        text: Nested virtualisation is enabled
+        note: >-
+          It says a hypervisor is present, not how many levels there are.
+    explanation: >-
+      The flag is a feature bit a hypervisor sets specifically to tell its guest
+      it is virtualised. Combining it with whether `/sys/class/dmi` is readable
+      gives the full census: flag absent plus DMI readable is bare metal; flag
+      present plus DMI readable is a VM; flag present plus DMI missing is a
+      container inside a VM.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.1.2]
+    stem: >-
+      A container that started ten seconds ago reads `/proc/uptime` and gets five
+      days. Why?
+    options:
+      - id: a
+        text: Uptime is not namespaced — the value belongs to the machine
+        correct: true
+      - id: b
+        text: The image was built five days ago
+        note: >-
+          Build time has no relationship to anything in `/proc`.
+      - id: c
+        text: The container was restarted from a checkpoint
+        note: >-
+          No checkpointing is involved; a fresh container reports this.
+      - id: d
+        text: The clock inside the container is wrong
+        note: >-
+          The clock is correct. The value is accurate — about a different thing.
+    explanation: >-
+      Namespaces virtualise process ids, network interfaces, mounts and
+      hostnames. Uptime is not among them, so the file reports the machine's
+      boot time. It is one of three borrowed numbers — with CPU count and total
+      memory — and a process logging "uptime" from it reports something
+      meaningless.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.3]
+    stem: >-
+      Why can a container not set `vm.swappiness` even when given extra
+      privileges?
+    options:
+      - id: a
+        text: It is not namespaced — there is one value for the whole machine
+        correct: true
+      - id: b
+        text: The setting does not exist inside containers
+        note: >-
+          It is readable at `/proc/sys/vm/swappiness`. Reading works; writing is
+          the problem.
+      - id: c
+        text: Only the init system may change sysctls
+        note: >-
+          Any sufficiently privileged process can, on a machine where the
+          setting is its to change.
+      - id: d
+        text: Swap is disabled in containers
+        note: >-
+          Swap behaviour is configurable, and it is unrelated to why the write
+          fails.
+    explanation: >-
+      `net.*` settings are namespaced, so each container has its own. Most `vm.*`
+      and `kernel.*` settings are not, so changing one would change it for the
+      host and every other container. That is a property of the shared kernel
+      rather than a permission that can be granted — and a workload that needs a
+      specific value for a non-namespaced sysctl needs a VM.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.3]
+    stem: >-
+      You read `/proc/modules` inside a fresh container and see dozens of loaded
+      modules. What does that tell you?
+    options:
+      - id: a
+        text: You are reading the host kernel's module table, because you share its kernel
+        correct: true
+      - id: b
+        text: The image ships with kernel modules preloaded
+        note: >-
+          Images contain userspace files. A container cannot load a module, and
+          `/lib/modules` is usually absent entirely.
+      - id: c
+        text: The container runtime loaded them on your behalf at startup
+        note: >-
+          Those modules were loaded by the host, often long before this
+          container existed.
+      - id: d
+        text: The listing is a synthetic placeholder
+        note: >-
+          It is the real table — which is the point.
+    explanation: >-
+      It is the most direct proof of kernel sharing available in one command. You
+      loaded none of them and the container was created seconds ago; the modules
+      belong to the kernel you are running on. A VM would show its own, because
+      it booted its own kernel.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.4]
+    stem: >-
+      A container is limited to 0.5 cores on a 16-core host. What does `nproc`
+      report?
+    options:
+      - id: a
+        text: 16 — it describes the machine, and there is no CPU namespace
+        correct: true
+      - id: b
+        text: 1, rounded up from the quota
+        note: >-
+          Nothing rounds the quota into a CPU count. `nproc` never consults the
+          cgroup.
+      - id: c
+        text: "0.5"
+        note: >-
+          It reports a whole number of processors, and it is not reading the
+          limit at all.
+      - id: d
+        text: It varies with current load
+        note: >-
+          It reports the machine's configured processors, which does not change
+          with load.
+    explanation: >-
+      Namespaces virtualise process ids, interfaces and mounts. Limits are
+      enforced by cgroups, a separate mechanism that constrains usage without
+      changing what any file reports. So the answer is the machine's count, and
+      the number that applies to you is `cpu.max` — quota divided by period.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.4]
+    stem: "`cpu.max` reads `50000 100000`. What is the limit?"
+    options:
+      - id: a
+        text: 0.5 cores — 50ms of CPU per 100ms period
+        correct: true
+      - id: b
+        text: 50,000 cores
+        note: >-
+          The values are microseconds, not core counts.
+      - id: c
+        text: 5 cores
+        note: >-
+          That would be `500000 100000`. Check the ratio.
+      - id: d
+        text: Unlimited — the first value is a maximum, not a quota
+        note: >-
+          Unlimited is written as the literal string `max` in the first field.
+    explanation: >-
+      Quota divided by period, both in microseconds: 50000 ÷ 100000 = 0.5. Doing
+      it by hand once is worth it, because `50000 100000` does not look like "half
+      a core" until you have. Unlimited is the literal `max`, which any parser
+      needs to handle separately.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.5]
+    stem: >-
+      A service has a terrible p99 and its CPU dashboard shows 3%. What should
+      you check?
+    options:
+      - id: a
+        text: "`throttled_usec` in cpu.stat — it is using its whole quota, which is 3% of the host"
+        correct: true
+      - id: b
+        text: Whether the host is overloaded
+        note: >-
+          Possible, but 3% of a host while latency is bad is the signature of a
+          quota being hit, not of a busy host.
+      - id: c
+        text: Memory, since CPU is clearly fine
+        note: >-
+          CPU is not fine. The percentage is measured against the wrong
+          denominator.
+      - id: d
+        text: The network, since the process is not CPU-bound
+        note: >-
+          It may well be entirely CPU-bound and stopped at the end of every
+          period.
+    explanation: >-
+      The dashboard is showing usage as a fraction of the *host*. A container
+      using its full 0.5-core quota on a 16-core machine shows about 3% and is
+      completely saturated. `throttled_usec` is the counter that tells the truth,
+      and `cpu.pressure` is the per-cgroup replacement for load average.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.5]
+    stem: >-
+      Under a 0.5-core quota, a workload run with 16 threads instead of 1 does
+      what to throughput?
+    options:
+      - id: a
+        text: Reduces it — measured at about 40% of the single-threaded result
+        correct: true
+      - id: b
+        text: Improves it slightly, since more threads can be scheduled
+        note: >-
+          There is half a core to schedule onto. More threads cannot create more
+          CPU.
+      - id: c
+        text: Leaves it unchanged, wasting only memory
+        note: >-
+          This is the common intuition and the measurement contradicts it.
+      - id: d
+        text: Improves it up to the core count, then plateaus
+        note: >-
+          That is the behaviour without a quota. Under one, the plateau is the
+          quota and past it throughput falls.
+    explanation: >-
+      Sixteen threads contend for half a core and pay context-switching for
+      nothing, so the measured work completed was about 40% of the
+      correctly-sized run. Over-threading in a container is not merely wasteful,
+      it is slower — which is why sizing from `nproc` is a performance bug and
+      not just untidy.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.6]
+    stem: >-
+      Which claim about container startup is most useful operationally?
+    options:
+      - id: a
+        text: The runtime's work is 5–50 ms; end to end is often an order of magnitude more
+        correct: true
+      - id: b
+        text: Containers start in 5–50 ms
+        note: >-
+          True of the runtime creating a process, and not what anybody waits
+          for.
+      - id: c
+        text: Container startup is unpredictable and cannot be measured
+        note: >-
+          It is very measurable — a loop around `docker run --rm image true`.
+      - id: d
+        text: Startup is dominated by the application's own initialisation
+        note: >-
+          Often significant, and it does not explain the gap between the quoted
+          figure and the observed one.
+    explanation: >-
+      Measured end to end on the machine these labs run on, `docker run --rm
+      image true` took about 760 ms against the quoted 5–50 ms, once the CLI, the
+      daemon round trip, image setup and network attachment are included. Both
+      numbers are true and the second is the one that explains why a pod takes
+      several seconds to become ready.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.6]
+    stem: What does a VM's few hundred megabytes of overhead actually buy?
+    options:
+      - id: a
+        text: Its own kernel — and therefore its own tunables, modules, OS and a hardware-assisted boundary
+        correct: true
+      - id: b
+        text: Faster I/O through dedicated virtual devices
+        note: >-
+          Virtualised I/O is generally slower than native, not faster.
+      - id: c
+        text: Better CPU performance through hardware assistance
+        note: >-
+          Hardware assistance reduces the virtualisation penalty; it does not
+          make a guest faster than bare metal.
+      - id: d
+        text: Isolation from other processes in the same guest
+        note: >-
+          Processes inside one guest are isolated by that guest's kernel, as
+          they would be anywhere.
+    explanation: >-
+      The overhead is the guest kernel and its page cache, and everything it
+      enables follows from having one: a different kernel version, a different
+      operating system, modules, non-namespaced sysctls, and a boundary the
+      hypervisor enforces so that a fully compromised guest kernel is still
+      contained.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.7]
+    stem: >-
+      When is a container definitively the wrong choice, in a way no
+      configuration can fix?
+    options:
+      - id: a
+        text: When the workload needs a different operating system
+        correct: true
+      - id: b
+        text: When it needs elevated capabilities
+        note: >-
+          Capabilities can be granted. Usually a bad idea, and possible.
+      - id: c
+        text: When it needs more than 32 GB of memory
+        note: >-
+          Containers can be given as much memory as the host has.
+      - id: d
+        text: When it must run as root
+        note: >-
+          Containers can run as root. Also usually a bad idea, and possible.
+    explanation: >-
+      A Linux kernel cannot run a Windows binary, and no flag changes that — it
+      is a property of what a kernel is rather than of what a container is
+      permitted to do. Everything else on the list is a permission that can be
+      granted. And running Linux containers on Windows does not work around it:
+      it quietly starts a virtual machine.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.8]
+    stem: >-
+      A platform runs code submitted by its customers. Which layer, and why?
+    options:
+      - id: a
+        text: A hypervisor boundary — microVM or gVisor — because the tenancy is hostile
+        correct: true
+      - id: b
+        text: Containers with seccomp, dropped capabilities and a read-only root
+        note: >-
+          All correct hardening, and all software in the same kernel as the
+          attacker. A kernel vulnerability is still an escape.
+      - id: c
+        text: Bare metal, so there is no shared kernel to attack
+        note: >-
+          There is still a shared kernel, and now no isolation between
+          executions at all.
+      - id: d
+        text: Whichever is cheapest, since the code is sandboxed by the language runtime
+        note: >-
+          Language sandboxes are routinely escaped and are not a substitute for
+          an isolation boundary.
+    explanation: >-
+      Hostile multi-tenancy is the constraint that eliminates options rather than
+      trading them off. A container's boundary is enforced by kernel features
+      running in the same kernel as the hostile code, so it is not sufficient
+      against an attacker deliberately probing it. This is precisely why
+      Firecracker, gVisor and Kata Containers exist.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.1.8]
+    stem: >-
+      What is the most useful first question when choosing a layer for a
+      workload?
+    options:
+      - id: a
+        text: "What constraint eliminates a layer outright?"
+        correct: true
+      - id: b
+        text: "Which layer is cheapest at this scale?"
+        note: >-
+          Worth asking second. Asking it first produces a choice that a
+          constraint later invalidates.
+      - id: c
+        text: "Which layer does the rest of the estate use?"
+        note: >-
+          Consistency has real value and is not a reason to ignore a constraint.
+      - id: d
+        text: "Which layer starts fastest?"
+        note: >-
+          Only decisive when startup is on a critical path, which it often is
+          not.
+    explanation: >-
+      Most workloads run acceptably on most layers, so looking for what *removes*
+      options is faster and more defensible than comparing four on merit. Hostile
+      tenancy, a kernel requirement, hardware access and a hard latency floor all
+      eliminate outright. When nothing does, saying so is itself the answer — the
+      decision is a trade and should be argued as one.

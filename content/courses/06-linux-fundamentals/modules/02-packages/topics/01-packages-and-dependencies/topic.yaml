@@ -1,0 +1,149 @@
+id: topic.packages-and-dependencies
+slug: packages-and-dependencies
+title: "Packages: What Put This File Here"
+summary: >-
+  A package is a manifest before it is an archive, and the manifest is what lets
+  you ask a running system where any file came from. This topic follows the
+  question in both directions — file to package, package to consequence — and
+  spends its time on the two answers that hurt: the file no package owns, and
+  the dependency nobody declared.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 115
+status: published
+
+prerequisites:
+  - topic: topic.distributions-and-versions
+    hardness: required
+  - topic: topic.files-and-filesystems
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B06.2.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify which package owns a given file, and which files a given package
+      owns.
+    assessed_by: [quiz.q1, quiz.q2, lab.what-put-this-file-here, exercise.e1]
+
+  - id: OBJ-B06.2.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe what a package contains beyond its files, and what the package
+      database records about it.
+    assessed_by: [quiz.q3, quiz.q4, lab.what-put-this-file-here]
+
+  - id: OBJ-B06.2.3
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret a dependency declaration, distinguishing Depends, Pre-Depends,
+      Recommends and Suggests by what each one guarantees.
+    assessed_by: [quiz.q5, quiz.q6, quiz.q7, lab.the-closure, exercise.e2]
+
+  - id: OBJ-B06.2.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain the difference between the packages that were asked for and the
+      packages that are installed.
+    assessed_by: [quiz.q8, quiz.q9, lab.the-closure, exercise.e3]
+
+  - id: OBJ-B06.2.5
+    level: L2
+    verb: predict
+    statement: >-
+      Predict the consequence of removing a package, including the cases where
+      removal is refused.
+    assessed_by: [quiz.q10, quiz.q11, lab.what-removal-costs, exercise.e4]
+
+  - id: OBJ-B06.2.6
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish files the package system manages from files it does not, and
+      state what is lost for the second kind.
+    assessed_by: [quiz.q12, lab.what-put-this-file-here, lab.find-the-real-finding, assessment.C]
+
+  - id: OBJ-B06.2.7
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a failure caused by an undeclared dependency or an unmanaged
+      file.
+    assessed_by: [quiz.q13, quiz.q14, lab.find-the-real-finding, troubleshooting.the-dependency-nobody-declared, troubleshooting.the-config-that-came-back]
+
+  - id: OBJ-B06.2.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify how software reaches a machine, naming what the choice commits you
+      to maintaining.
+    assessed_by: [quiz.q15, lab.what-removal-costs, exercise.e5, assessment.A, assessment.B]
+
+terminology:
+  - term: package
+    definition: >-
+      An archive of files plus a manifest: metadata, a dependency declaration, a
+      list of configuration files, and scripts that run around installation. The
+      manifest is the part that makes it a package rather than a tarball.
+  - term: package database
+    definition: >-
+      The local record of what is installed — on Debian, `/var/lib/dpkg/`. It is
+      a description of the machine, not of the archive, and it is what every
+      "what is installed" question actually reads.
+  - term: file ownership
+    definition: >-
+      The mapping from a path to the package that placed it there. `dpkg -S`
+      asks in that direction; `dpkg -L` asks in the other.
+  - term: Depends
+    definition: >-
+      A hard requirement: the package will not be configured until it is met. The
+      only relationship that is a guarantee.
+  - term: Pre-Depends
+    definition: >-
+      Stronger than Depends — the requirement must be fully installed *before
+      unpacking* even begins. Rare, and it makes some removals impossible.
+  - term: Recommends
+    definition: >-
+      Installed by default but not required. Software that works without it, in a
+      way somebody would consider broken — which is why it is the source of the
+      dependency nobody declared.
+  - term: Suggests
+    definition: >-
+      Related software, never installed automatically. Documentation, effectively.
+  - term: dependency closure
+    definition: >-
+      Everything that gets installed as a consequence of asking for something.
+      The gap between the two numbers is the honest size of a request.
+  - term: manual and automatic
+    definition: >-
+      Whether a package was asked for or pulled in. It is recorded, and it is
+      what makes `autoremove` possible and dangerous.
+  - term: essential
+    definition: >-
+      A flag marking packages the system does not function without. Removal is
+      refused rather than warned about.
+  - term: conffile
+    definition: >-
+      A configuration file the package system tracks by checksum, so it can tell
+      whether you edited it and decide what an upgrade should do with it.
+  - term: alternatives
+    definition: >-
+      A symlink layer letting several packages provide the same command. It is
+      why `dpkg -S /usr/bin/awk` finds nothing while the binary it points at is
+      owned.
+  - term: unowned file
+    definition: >-
+      A file no package placed. It receives no upgrades, no security fixes and no
+      integrity checking, and nothing on the machine records that it exists.
+
+foreshadows:
+  - "B06.3's filesystem hierarchy explains why /usr/local is where unowned files are supposed to go."
+  - "C14's image layers are this dependency closure made visible as size."
+  - "G43's SBOM generation reads exactly the database this topic queries."
+  - "D22's configuration management exists because conffile handling does not scale to a fleet."
+
+tags: [linux, packaging, dpkg, apt, dependencies, fundamentals]

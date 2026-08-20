@@ -1,0 +1,514 @@
+id: quiz.the-filesystem-hierarchy
+topic: topic.the-filesystem-hierarchy
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.3.1]
+    stem: Where does software installed by the administrator, outside the package manager, belong?
+    options:
+      - id: a
+        text: "`/usr/local`, or `/opt` for a self-contained third-party tree"
+        correct: true
+      - id: b
+        text: "`/usr/bin`, alongside everything else executable"
+        note: >-
+          That is package territory. Files there can be overwritten by an
+          upgrade, and they pollute the ownership question for everything else.
+      - id: c
+        text: "`/var/lib`, since it is not part of the base system"
+        note: >-
+          `/var/lib` is for state that changes as the system runs, not for
+          programs.
+      - id: d
+        text: "`/srv`, which exists for exactly this"
+        note: >-
+          `/srv` is for data this machine *serves* to others, not for the
+          software that serves it.
+    explanation: >-
+      `/usr/local` is for software you build or install yourself; `/opt` is for
+      self-contained vendor trees, one subdirectory each. Both are reserved by
+      policy — no Debian package may install files under `/usr/local` — which is
+      why nothing there will ever be clobbered by an upgrade, and why nothing
+      there will ever be patched by one either.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.3.1]
+    stem: >-
+      On a container image, `/boot`, `/media`, `/mnt` and `/srv` are all empty.
+      What does that tell you?
+    options:
+      - id: a
+        text: >-
+          Nothing is wrong — the hierarchy targets a machine with a bootloader,
+          removable media and mounted disks, and a container has none of those
+        correct: true
+      - id: b
+        text: The image was built incorrectly and is missing standard content
+        note: >-
+          They are empty on every container image. There is nothing for them to
+          contain.
+      - id: c
+        text: Those directories should be removed to save space
+        note: >-
+          An empty directory costs nothing, and software is entitled to assume
+          the standard paths exist.
+      - id: d
+        text: The container is running with a read-only root filesystem
+        note: >-
+          Unrelated. A read-only root affects whether you can write, not what
+          the image shipped.
+    explanation: >-
+      Roughly a third of the standard layout is vestigial in a container, and
+      that is the contract being honoured rather than waste. The useful corollary
+      is about the *other* reserved directories: `/opt` and `/usr/local` being
+      empty is a positive fact — it says nobody installed anything outside the
+      package system, which is the fastest answer to "what here is not being
+      patched".
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.3.2]
+    stem: On a modern Debian system, what is `/bin`?
+    options:
+      - id: a
+        text: A symlink to `/usr/bin` — the usr-merge consolidated them
+        correct: true
+      - id: b
+        text: A directory holding the binaries needed before `/usr` is mounted
+        note: >-
+          That was its purpose historically. The initramfs made it unnecessary
+          and the directories were merged.
+      - id: c
+        text: A directory of essential binaries, distinct from `/usr/bin`
+        note: >-
+          They are the same directory now. `/bin/sh` and `/usr/bin/sh` are the
+          same inode.
+      - id: d
+        text: A bind mount of `/usr/bin` created at boot
+        note: >-
+          A plain symlink, present in the filesystem image — no mount is
+          involved.
+    explanation: >-
+      `/bin`, `/sbin`, `/lib` and `/lib64` are all symlinks into `/usr`. Two
+      consequences you will meet: `/bin/sh` and `/usr/bin/sh` are the same file,
+      so comparing paths as strings is wrong; and `/usr` alone is now a complete
+      installed system, which is exactly what lets a container image be one
+      hashable directory tree.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.3.2]
+    stem: >-
+      On a typical slim container image, roughly how much of the total size is
+      under `/usr`, and why does that matter?
+    options:
+      - id: a
+        text: >-
+          Nearly all of it — and because nothing under `/usr` changes at runtime,
+          it can be shipped as an immutable layer or mounted read-only
+        correct: true
+      - id: b
+        text: About half, with `/var` holding the rest
+        note: >-
+          `/var` on a fresh image is a few megabytes, mostly the package
+          database.
+      - id: c
+        text: Very little — most of an image is application code in `/opt`
+        note: >-
+          `/opt` is empty unless somebody installed a vendor tree there.
+      - id: d
+        text: It varies too much to generalise, and the split carries no meaning
+        note: >-
+          The split is the point: one directory holds everything installed, and
+          nothing in it changes.
+    explanation: >-
+      On the lab image `/usr` is 306 MB of roughly 320 MB. The important half is
+      the second: `/usr` holds everything a package installed and nothing that
+      changes while the system runs. That single property is what allows it to be
+      mounted read-only, shared between machines, or shipped as an immutable
+      container layer — the same fact used three ways.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.3]
+    stem: >-
+      `dpkg -S /usr/local` reports no path found, while `dpkg -S /var/log` names
+      two packages. What does the difference mean?
+    options:
+      - id: a
+        text: >-
+          Policy forbids any package from installing under `/usr/local`, so it is
+          deliberately unowned — while `/var/log` is ordinary package territory
+        correct: true
+      - id: b
+        text: "`/usr/local` was created manually by an administrator on this machine"
+        note: >-
+          It is created by `base-files.postinst` on every Debian system, as a
+          directory nothing owns.
+      - id: c
+        text: The package database is incomplete for directories
+        note: >-
+          It records directories fine — `/var/log` is a directory and it is
+          owned.
+      - id: d
+        text: "`/usr/local` is on a different filesystem, so dpkg cannot see it"
+        note: >-
+          `dpkg -S` searches recorded file lists, not the filesystem. Mounts are
+          irrelevant to it.
+      - id: e
+        text: Nothing has been installed there yet, so no package claims it
+        note: >-
+          Even with software installed there, no package would own it — packages
+          are forbidden from shipping files under that path.
+    explanation: >-
+      Across all 162 packages on the lab image, exactly zero ship a file under
+      `/usr/local` or `/opt`. The directories are created by a maintainer script
+      — `base-files.postinst` has a function literally named `install_local_dir`
+      — so they exist for you to use while nothing owns them. The payoff is
+      predictive: an empty `dpkg -S` under `/usr/local` is the system working as
+      designed, while the same answer under `/usr/bin` is a genuine finding.
+
+  - id: q6
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B06.3.3]
+    stem: Which directories on a Debian system are owned by no package?
+    options:
+      - id: a
+        text: "`/usr/local`"
+        correct: true
+      - id: b
+        text: "`/opt`"
+        correct: true
+      - id: c
+        text: "`/srv`"
+        correct: true
+      - id: d
+        text: "`/var/log`"
+        note: >-
+          Owned — `dpkg -S /var/log` names `base-files` and `apt`. This is the
+          contrast that shows the others are a deliberate exclusion.
+      - id: e
+        text: "`/etc`"
+        note: >-
+          Heavily owned, and about two thirds of its files are tracked as
+          conffiles with recorded checksums.
+    explanation: >-
+      Three directories are reserved for software the distribution did not
+      install, and the package system declines to claim them. `/var/log` proves
+      the refusal is deliberate rather than a limitation — the same system claims
+      that one happily. Whatever sits in the three unowned directories is, by
+      construction, software nobody is patching.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.4]
+    stem: >-
+      A backup job captures all of `/var`. What is most likely wrong with it?
+    options:
+      - id: a
+        text: >-
+          It is backing up caches — possibly far larger than the real state —
+          because `/var/cache` and caches inside `/var/lib` are regenerable
+        correct: true
+      - id: b
+        text: "`/var` contains no data worth backing up"
+        note: >-
+          `/var/lib` is exactly where irreplaceable state lives. The problem is
+          what comes with it.
+      - id: c
+        text: It will miss the application's configuration
+        note: >-
+          True but separate, and `/etc` should be restored from its source
+          repository rather than from a backup anyway.
+      - id: d
+        text: "`/var` cannot be backed up while the system is running"
+        note: >-
+          It can. Consistency for databases needs care, which is a different
+          problem from what to include.
+    explanation: >-
+      `/var/lib` holds state that cannot be regenerated and `/var/cache` holds
+      data that can — they are adjacent, look identical, and the cache is often
+      ten times larger. Worse, real services put caches *inside* `/var/lib`, so
+      the rule cannot be "back up `/var/lib`". It has to be "back up what cannot
+      be regenerated", applied path by path.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.4]
+    stem: Why is `/run` a tmpfs, emptied at every boot?
+    options:
+      - id: a
+        text: >-
+          Because it holds data valid only for this boot — pid files, sockets —
+          and starting empty makes stale entries impossible
+        correct: true
+      - id: b
+        text: To make the system faster, since RAM is quicker than disk
+        note: >-
+          A side effect. The content is tiny and the reason is lifetime, not
+          speed.
+      - id: c
+        text: Because its contents are secret and should not persist on disk
+        note: >-
+          Pid files and sockets are not secret. Some runtime credentials live
+          there, but that is not why the directory is a tmpfs.
+      - id: d
+        text: To keep the root filesystem read-only
+        note: >-
+          The tmpfs makes writes possible under a read-only root, but `/run` was
+          a tmpfs long before that was common.
+    explanation: >-
+      Lifetime is the design. A stale pid file left by a crashed process is an
+      entire class of bug — a service that refuses to start because something
+      claims to already be running — and mounting `/run` as a tmpfs deletes that
+      class rather than mitigating it. It is worth recognising as a pattern:
+      making the wrong state *impossible to represent* beats detecting it.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.4]
+    stem: >-
+      Which is the strongest reason to restore `/etc` from a configuration
+      repository rather than from last night's backup?
+    options:
+      - id: a
+        text: >-
+          The backup captures drift as faithfully as intent, so restoring it
+          reintroduces every undocumented local edit
+        correct: true
+      - id: b
+        text: Backups of `/etc` are usually corrupt
+        note: >-
+          There is nothing unreliable about them. The problem is what they
+          faithfully contain.
+      - id: c
+        text: "`/etc` is small enough that restoring it is not worth the effort"
+        note: >-
+          Size is irrelevant; the question is which copy is authoritative.
+      - id: d
+        text: The package manager will regenerate `/etc` on reinstall
+        note: >-
+          It restores package *defaults* only, and specifically will not restore
+          your changes.
+    explanation: >-
+      A backup preserves the machine's actual state, including hand-edits nobody
+      recorded and conffile conflicts that were silently resolved months ago.
+      Restoring it reproduces the drift along with the configuration. The
+      repository holds the intent, and a machine rebuilt from intent is one you
+      can rebuild again — which is the same argument B06.2 made about owning
+      configuration files rather than negotiating with them.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.5]
+    stem: >-
+      A service that "writes no files" fails immediately under a read-only root.
+      What is the most likely cause?
+    options:
+      - id: a
+        text: >-
+          Something underneath it writes — the language runtime, the TLS library
+          or the logging framework — in paths its authors never think about
+        correct: true
+      - id: b
+        text: A read-only root prevents reading shared libraries
+        note: >-
+          Reading is unaffected. Only writes are refused.
+      - id: c
+        text: The application must be recompiled for read-only filesystems
+        note: >-
+          Nothing about the binary changes. The filesystem refuses writes at
+          runtime.
+      - id: d
+        text: Read-only roots are incompatible with network services
+        note: >-
+          They are routine for network services. Sockets in `/run` need a
+          writable tmpfs, which is one line.
+    explanation: >-
+      The JVM writes to `/tmp/hsperfdata_<user>`, Python writes `__pycache__`,
+      OpenSSL may write a seed file under `$HOME`, and logging libraries create
+      their own directories at startup. None appear in anyone's mental model of
+      the application. The method that works is to stop predicting: start it,
+      read the error, add the narrowest path that fixes it, repeat — and what you
+      end up with is a tested list of every write, which nobody had before.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.5]
+    stem: >-
+      For a path a service must write but does not need to survive a restart,
+      what should you prefer?
+    options:
+      - id: a
+        text: "A `tmpfs` mount, sized explicitly"
+        correct: true
+      - id: b
+        text: A named volume, so the data is there if you later need it
+        note: >-
+          That is how caches and scratch quietly become things people are afraid
+          to delete — and it puts them in backups.
+      - id: c
+        text: Disabling the read-only root for that container
+        note: >-
+          That gives up every guarantee to solve one path, and makes the whole
+          filesystem writable.
+      - id: d
+        text: A bind mount from the host
+        note: >-
+          It ties the container to a host directory and persists data that was
+          never meant to survive.
+    explanation: >-
+      A tmpfs satisfies the write *and* guarantees the data cannot outlive the
+      container, which is two properties for one line of configuration. Size it
+      explicitly, because a tmpfs consumes memory. And keep the path narrow —
+      `/var/lib/app/cache` rather than `/var` — since every extra writable byte is
+      somewhere state can hide and somewhere a compromise can persist.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.6]
+    stem: >-
+      A write fails with `Permission denied` while the containing filesystem is
+      mounted read-write. What should you look at?
+    options:
+      - id: a
+        text: The directory's ownership and permission bits, and the uid the process runs as
+        correct: true
+      - id: b
+        text: The mount options, since the filesystem must actually be read-only
+        note: >-
+          A read-only mount produces `Read-only file system` (EROFS), a
+          different message. This one is EACCES.
+      - id: c
+        text: Whether the disk is full
+        note: >-
+          A full filesystem gives `No space left on device` (ENOSPC).
+      - id: d
+        text: SELinux or AppArmor, since standard permissions cannot produce this
+        note: >-
+          They can produce it, but ordinary ownership explains it far more often
+          and takes one command to check.
+    explanation: >-
+      Two independent gates guard every write. The **mount** is checked first,
+      applies to every process including root, and refuses with `Read-only file
+      system`. The **mode** is checked second and refuses with `Permission
+      denied`. The lab container demonstrates the second precisely: `/run` is
+      mounted read-write and is `755 root:root`, so an unprivileged process still
+      cannot write — and no amount of remounting will fix that.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.6]
+    stem: >-
+      A script in `/dev/shm` is mode `0755`, owned by you, and refuses to run
+      with `Permission denied`. Why?
+    options:
+      - id: a
+        text: "The filesystem is mounted `noexec`, which the permission bits cannot override"
+        correct: true
+      - id: b
+        text: The script has a missing or malformed interpreter line
+        note: >-
+          That produces a different failure, usually naming the interpreter or
+          reporting a bad ELF header.
+      - id: c
+        text: "`/dev/shm` allows only binaries, not shell scripts"
+        note: >-
+          No filesystem distinguishes those. `noexec` blocks both equally.
+      - id: d
+        text: The file's group ownership is wrong
+        note: >-
+          Owner permissions already grant execute, so group would not be
+          consulted for you.
+    explanation: >-
+      `noexec` is a property of the mount and is checked independently of the
+      mode — a file can be `0755`, owned by you, and still refuse to execute.
+      Notably `/dev/shm` is a Docker default that the lab broker never
+      configures: a world-writable path nobody explicitly authorised, made
+      harmless by `noexec`. That is defence in depth working as intended.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.7]
+    stem: >-
+      After adding a volume at `/etc/app/conf.d`, the service ignores the default
+      configuration files the image shipped there. What happened?
+    options:
+      - id: a
+        text: >-
+          The mount covers the directory rather than merging with it — the
+          shipped files are intact underneath and unreachable
+        correct: true
+      - id: b
+        text: The volume was created empty and overwrote the files on disk
+        note: >-
+          Nothing was overwritten. Remove the mount and every file reappears.
+      - id: c
+        text: The image's files were deleted when the volume initialised
+        note: >-
+          Named volumes can seed from image content, but a bind mount does not,
+          and nothing is deleted either way.
+      - id: d
+        text: The service caches its configuration and needs a restart
+        note: >-
+          The files are genuinely not visible in that mount namespace; restarts
+          change nothing.
+    explanation: >-
+      Mounting over a directory hides whatever was underneath — silently, with no
+      warning, and the container starts successfully. It presents weeks later as
+      a missing feature nobody connects to a volume. This platform relies on the
+      same behaviour deliberately: a tmpfs over `/home/learner` masks anything the
+      image baked in there, which is why the lab shell settings live in
+      `/etc/bash.bashrc` instead. When files that should exist do not, run
+      `mountpoint` before assuming deletion.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.3.8]
+    stem: >-
+      A restore procedure reads: install the OS, install the package, restore the
+      backup of `/etc` and `/var`. What is it most likely to miss?
+    options:
+      - id: a
+        text: "Anything installed outside the package system — typically in `/opt` or `/usr/local`"
+        correct: true
+      - id: b
+        text: The application's state, which lives in `/var/lib`
+        note: >-
+          That is captured — `/var` is in the backup.
+      - id: c
+        text: The kernel and bootloader configuration
+        note: >-
+          Real for a bare-metal restore, and not what this procedure is missing
+          in the common case.
+      - id: d
+        text: Nothing — that procedure is complete for a typical service
+        note: >-
+          It is complete only if every binary came from a package, which is
+          rarely true after a few years.
+    explanation: >-
+      The procedure assumes everything came from a package. Vendor agents
+      installed by a script, and helpers built in-house and dropped into
+      `/usr/local/bin`, are reinstalled by nothing — and the hierarchy predicts
+      exactly this, since those are the directories reserved for software the
+      package system does not manage. Anything there is by construction something
+      a reinstall will not bring back, which is why the restore has to name it and
+      why the procedure has to be tested rather than assumed.

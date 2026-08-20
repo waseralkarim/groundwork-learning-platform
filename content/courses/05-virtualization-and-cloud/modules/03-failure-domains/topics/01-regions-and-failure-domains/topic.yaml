@@ -1,0 +1,139 @@
+id: topic.regions-and-failure-domains
+slug: regions-and-failure-domains
+title: "Failure Domains: What Actually Shares a Fate"
+summary: >-
+  Redundancy adds nines quickly and only when failures are independent, which
+  they almost never are. This topic computes what a topology really survives —
+  including the result that three quorum nodes across two zones tolerate a
+  random zone loss half the time.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.service-models-and-responsibility
+    hardness: required
+
+objectives:
+  - id: OBJ-A05.3.1
+    level: L1
+    verb: describe
+    statement: >-
+      Describe what a region and an availability zone are, and which failures
+      each boundary is drawn against.
+    assessed_by: [quiz.q1, quiz.q2, lab.count-the-domains, exercise.e1]
+
+  - id: OBJ-A05.3.2
+    level: L1
+    verb: identify
+    statement: >-
+      Identify the failure domains a deployment spans, and what shares a fate
+      within each.
+    assessed_by: [quiz.q3, quiz.q4, lab.count-the-domains]
+
+  - id: OBJ-A05.3.3
+    level: L2
+    verb: calculate
+    statement: >-
+      Calculate composite availability for components in series and in parallel,
+      and convert it to downtime.
+    assessed_by: [quiz.q5, quiz.q6, lab.compose-the-numbers, exercise.e2, assessment.A]
+
+  - id: OBJ-A05.3.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why parallel redundancy only multiplies availability when failures
+      are independent, and what breaks the assumption.
+    assessed_by: [quiz.q7, quiz.q8, lab.compose-the-numbers, exercise.e3]
+
+  - id: OBJ-A05.3.5
+    level: L2
+    verb: calculate
+    statement: >-
+      Calculate whether a quorum survives the loss of a zone, given a node
+      placement.
+    assessed_by: [quiz.q9, quiz.q10, lab.the-quorum-that-was-not, assessment.B]
+
+  - id: OBJ-A05.3.6
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose the correlated failure in a topology described as redundant.
+    assessed_by: [quiz.q11, quiz.q12, lab.find-the-shared-fate, troubleshooting.the-zone-we-were-not-in]
+
+  - id: OBJ-A05.3.7
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what a multi-region deployment buys and what it costs, beyond
+      availability arithmetic.
+    assessed_by: [quiz.q13, lab.find-the-shared-fate, exercise.e4, troubleshooting.the-failover-that-made-it-worse]
+
+  - id: OBJ-A05.3.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a placement decision by naming the failures it survives and the
+      ones it does not.
+    assessed_by: [quiz.q14, quiz.q15, lab.find-the-shared-fate, exercise.e5, assessment.C]
+
+terminology:
+  - term: region
+    definition: >-
+      A geographic area with its own set of zones. The boundary against a
+      regional disaster, and the unit most cloud services are scoped to.
+  - term: availability zone
+    definition: >-
+      One or more datacentres with independent power, cooling and network,
+      within a region. The boundary against a facility-level failure.
+  - term: failure domain
+    definition: >-
+      A set of things that fail together. Naming yours is more useful than
+      counting replicas, because replicas in one domain are one thing.
+  - term: correlated failure
+    definition: >-
+      Failures that were assumed independent and are not. It is what turns
+      calculated availability into a number that never materialises.
+  - term: series composition
+    definition: >-
+      Components all required. Availability multiplies, so it always falls —
+      every dependency you add makes the system worse.
+  - term: parallel composition
+    definition: >-
+      Any one component suffices. Unavailability multiplies, so nines are added
+      quickly — provided the failures are independent.
+  - term: quorum
+    definition: >-
+      A majority, needed for a distributed system to accept writes. `floor(n/2)+1`,
+      and where the nodes sit decides which failures it survives.
+  - term: shared fate
+    definition: >-
+      Things that look separate and depend on one component — a single vault
+      cluster, one control plane, one DNS zone, one deployment pipeline.
+  - term: blast radius
+    definition: >-
+      What one failure takes with it. The same question as A04.4's, asked about
+      infrastructure rather than credentials.
+  - term: RPO and RTO
+    definition: >-
+      How much data you may lose, and how long recovery may take. Both are
+      decisions; left unstated they are whatever the system happens to do.
+  - term: failover
+    definition: >-
+      Switching to a standby. It is a procedure with its own failure modes, and
+      an untested one is a plan rather than a capability.
+  - term: static stability
+    definition: >-
+      Continuing to work during a failure without needing a control plane to
+      act. It is why a data plane that keeps serving beats one that must be
+      rescued.
+
+foreshadows:
+  - "E27's Kubernetes topology constraints are the placement decisions computed here."
+  - "F37's SLOs are these numbers, chosen deliberately and then measured."
+  - "H45's multi-region architecture is this topic at the next scale."
+  - "H47's disaster recovery turns RPO and RTO from terms into tested procedures."
+
+tags: [cloud, availability, failure-domains, regions, quorum, fundamentals]

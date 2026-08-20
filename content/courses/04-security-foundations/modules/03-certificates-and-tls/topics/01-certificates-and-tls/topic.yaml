@@ -1,0 +1,149 @@
+id: topic.certificates-and-tls
+slug: certificates-and-tls
+title: "Certificates: Six Ways to Fail, Six Different Fixes"
+summary: >-
+  A certificate is a signed statement that a name belongs to a public key. TLS
+  is that statement plus a key exchange plus hybrid encryption — all three built
+  in earlier topics. What is worth your time is the verification step, because
+  "certificate error" covers six unrelated faults and the fix for each is
+  different.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 140
+status: published
+
+prerequisites:
+  - topic: topic.encryption
+    hardness: required
+  - topic: topic.http
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A04.3.1
+    level: L1
+    verb: describe
+    statement: >-
+      Describe what a certificate asserts, who asserts it, and what a client
+      must already trust for it to mean anything.
+    assessed_by: [quiz.q1, quiz.q2, lab.be-your-own-ca, exercise.e1]
+
+  - id: OBJ-A04.3.2
+    level: L1
+    verb: identify
+    statement: >-
+      Identify a certificate's subject, issuer, validity window, subject
+      alternative names and basic constraints from the certificate itself.
+    assessed_by: [quiz.q3, quiz.q4, lab.be-your-own-ca, exercise.e2]
+
+  - id: OBJ-A04.3.3
+    level: L2
+    verb: trace
+    statement: >-
+      Trace a chain from leaf to trust anchor, and state what each signature in
+      it proves.
+    assessed_by: [quiz.q5, quiz.q6, lab.be-your-own-ca, assessment.A]
+
+  - id: OBJ-A04.3.4
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a verification failure from its error code, and give the fix that
+      matches that specific fault.
+    assessed_by: [quiz.q7, quiz.q8, quiz.q9, lab.six-ways-to-fail, troubleshooting.the-chain-that-works-in-curl, assessment.B]
+
+  - id: OBJ-A04.3.5
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish what a certificate proves from what it does not, including why
+      a valid certificate says nothing about trustworthiness.
+    assessed_by: [quiz.q10, quiz.q11, lab.six-ways-to-fail, exercise.e3]
+
+  - id: OBJ-A04.3.6
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why verifiers disagree about the same certificate, using the CN
+      and subject alternative name rules.
+    assessed_by: [quiz.q12, lab.works-in-curl-fails-in-the-browser, exercise.e4, troubleshooting.the-chain-that-works-in-curl]
+
+  - id: OBJ-A04.3.7
+    level: L2
+    verb: trace
+    statement: >-
+      Trace a TLS handshake, naming which earlier primitive performs each step.
+    assessed_by: [quiz.q13, lab.the-handshake-in-the-open, assessment.C]
+
+  - id: OBJ-A04.3.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a remediation for a TLS failure, distinguishing fixes from
+      workarounds that disable verification.
+    assessed_by: [quiz.q14, quiz.q15, lab.works-in-curl-fails-in-the-browser, exercise.e5]
+
+terminology:
+  - term: certificate
+    definition: >-
+      A public key, a set of names, a validity window and some constraints —
+      signed by an issuer. The signature is the whole of its value.
+  - term: certificate authority
+    definition: >-
+      An issuer whose signature some population of clients already trusts. The
+      trust is a configuration decision, not a mathematical property.
+  - term: trust store
+    definition: >-
+      The set of certificates a client trusts without further proof. On this lab
+      image it holds around 150 of them, any one of which can issue for any name.
+  - term: chain of trust
+    definition: >-
+      Leaf signed by intermediate, intermediate signed by root, root already in
+      the trust store. Verification walks it; a missing link is the most common
+      TLS fault in production.
+  - term: intermediate certificate
+    definition: >-
+      A CA certificate signed by a root, used for day-to-day issuance so the
+      root's key can stay offline. The server must send it — clients are not
+      required to have it.
+  - term: leaf certificate
+    definition: >-
+      The end-entity certificate, for the actual service. `CA:FALSE`, so it
+      cannot sign anything else.
+  - term: CSR
+    definition: >-
+      Certificate signing request — a public key plus requested names, signed by
+      the matching private key to prove possession. The private key never leaves.
+  - term: subject alternative name
+    definition: >-
+      The list of names a certificate is valid for. This is the field that
+      counts; browsers ignore the common name entirely.
+  - term: common name
+    definition: >-
+      A legacy subject field. OpenSSL still falls back to it when no SAN is
+      present; browsers do not — which is why one certificate can pass `curl`
+      and fail Chrome.
+  - term: basic constraints
+    definition: >-
+      Whether a certificate may sign others, and how deep. `CA:FALSE` on a leaf
+      is what stops any certificate holder minting certificates for anyone else.
+  - term: SNI
+    definition: >-
+      Server Name Indication — the hostname sent in the clear during the
+      handshake, so a server with many certificates knows which to present.
+  - term: verify return code
+    definition: >-
+      OpenSSL's numeric verdict. 0 is success; 10, 18, 19, 20, 21 and 62 are six
+      distinct faults with six different fixes.
+  - term: pinning
+    definition: >-
+      Accepting only a specific certificate or key rather than anything a CA
+      signs. It removes the trust store's breadth and adds an outage the day the
+      certificate is renewed.
+
+foreshadows:
+  - "B12's TLS termination and E29's Ingress both fail in exactly the ways catalogued here."
+  - "C15's healthcheck against an HTTPS endpoint hits the hostname and chain rules directly."
+  - "E29's ServiceAccount tokens and admission webhooks are verified by the same chain walk."
+  - "G43's signing and provenance reuse the certificate as a binding of identity to a key."
+
+tags: [security, tls, certificates, pki, openssl, debugging, fundamentals]

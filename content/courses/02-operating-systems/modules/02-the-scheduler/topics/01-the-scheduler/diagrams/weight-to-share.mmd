@@ -1,0 +1,7 @@
+graph TD
+    A["nice value<br/>-20 … 0 … 19"] -->|"lookup table,<br/>each step ≈ 1.25×"| B["weight<br/>88761 … 1024 … 15"]
+    B --> C["vruntime advances at<br/>real time ÷ weight"]
+    C --> D["the scheduler picks by vruntime,<br/>so a heavy task falls behind slowly<br/>and is chosen more often"]
+    D --> E["<b>CPU share = your weight ÷ sum of<br/>all runnable weights</b>"]
+    E --> F["nice 0 vs nice 19<br/>1024 : 15 ≈ <b>68 : 1</b>"]
+    E --> G["no competitors:<br/>sum is your own weight<br/><b>share = 100%, whatever your nice</b>"]

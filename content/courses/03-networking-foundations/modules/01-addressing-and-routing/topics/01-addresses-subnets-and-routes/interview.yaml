@@ -1,0 +1,203 @@
+topic: topic.addresses-subnets-and-routes
+
+questions:
+  - id: i1
+    level: L1
+    question: What does the /24 in 10.0.1.5/24 mean, and why does it matter?
+    model_answer: >-
+      It is the prefix length: the first 24 bits of the address identify the
+      network and the remaining 8 identify the host on it. Written as a mask
+      that is 255.255.255.0.
+
+
+      What it decides is one thing, and everything else follows. When the machine
+      sends a packet it compares the destination against its own networks. If the
+      destination is inside one, the destination is a neighbour: ARP for its MAC
+      address and send the frame directly, no router involved. If it is outside,
+      send the frame to a router instead — addressed to the router's MAC but
+      carrying the destination's IP.
+
+
+      The arithmetic falls out of it. A /24 is 256 addresses, `10.0.1.0` is the
+      network address and `10.0.1.255` the broadcast, so 254 are usable.
+
+
+      And it is why an address without a mask is unusable: the machine has no way
+      to answer the neighbour-or-router question, which it has to answer for
+      every packet it sends.
+    signal: >-
+      "It decides who is a neighbour" is the answer to listen for. Candidates
+      who describe the mask as "the size of the network" have half of it;
+      candidates who connect it to the ARP-versus-gateway decision have the part
+      that lets them diagnose anything.
+    follow_ups:
+      - "What is the broadcast address of 10.0.1.5/26?"
+      - "Two machines on one switch, one /24 and one /25. What happens?"
+      - "How many usable hosts does a /23 give you?"
+
+  - id: i2
+    level: L2
+    question: >-
+      Machine A can reach machine B, but B cannot reach A. They are on the same
+      switch. Where do you start?
+    model_answer: >-
+      By comparing their prefix lengths, because a mismatch produces exactly this
+      asymmetry and almost nothing else does.
+
+
+      Each machine answers "neighbour or router" using only its own mask. If A
+      has a /24 and B has a /25, A believes B is local and sends directly, so A's
+      packets arrive. B believes A is outside its network, so it sends replies to
+      its default gateway — which usually will not route them back onto the wire
+      they came from. A sees a timeout; B sees requests arriving and being
+      answered normally. Both machines behave exactly as configured and the
+      configuration is wrong on one of them.
+
+
+      Concretely I would run `ip -br addr` on both and read the two prefixes side
+      by side, then `ip route get` from each towards the other. The presence or
+      absence of `via` in those two answers is the whole diagnosis: one will be
+      direct and the other will name a gateway.
+
+
+      If the masks match, I would look at the ARP caches next — an entry in state
+      `FAILED` means the route was right and the next hop did not answer, which
+      is a different problem.
+    signal: >-
+      Recognising one-directional failure as a mask signature is the
+      discriminator; most people start with firewalls. Using `ip route get` from
+      both ends rather than reasoning about a table is the practical half.
+      Knowing what to check *if* the masks match shows they have a real
+      sequence rather than one trick.
+    follow_ups:
+      - "Why does the gateway not just forward the reply back?"
+      - "What would you check if the masks turned out to match?"
+      - "How would you catch this across a whole fleet before it bites?"
+
+  - id: i3
+    level: L2
+    question: >-
+      Explain longest-prefix match, and why a VPN can break a connection that was
+      working.
+    model_answer: >-
+      When a machine sends a packet it finds every route in the table matching
+      the destination and picks the one with the longest prefix — the most
+      specific. The order routes are listed in means nothing; routing tables are
+      not firewall rules. The default route is `0.0.0.0/0`, so it matches
+      everything and loses to anything, which is why it is the answer only when
+      nothing else matches.
+
+
+      A VPN client adds routes, and that is where it bites. Say a database is at
+      `10.24.3.10` and was reached via the default route to the local gateway,
+      out to a cloud VPC. The VPN connects and pushes `10.0.0.0/8`. That is a
+      prefix of 8 against the default's 0, so it wins, and every `10.x` address
+      now goes down the tunnel. The corporate network has never heard of that
+      database, the packets are dropped on the far side, and the symptom is a
+      connection that worked ten seconds ago timing out.
+
+
+      `ip route get 10.24.3.10` before and after connecting shows it in one line
+      each way, which is why that is the first command rather than the last.
+
+
+      The same rule is why full-tunnel VPNs push `0.0.0.0/1` and `128.0.0.0/1`:
+      between them they cover everything, both beat the default's /0, and the
+      original default route is left intact for when the tunnel drops.
+    signal: >-
+      "Order is irrelevant, specificity decides" is the core. The VPN example
+      shows they have hit it in practice. The `0.0.0.0/1` trick is a strong
+      extra — it is only obvious once the rule is genuinely understood, and
+      people who have merely read about routing do not produce it.
+    follow_ups:
+      - "How would you fix the database case without disabling the VPN?"
+      - "What should the VPN have pushed instead of a /8?"
+      - "Why is the failure a timeout rather than 'network unreachable'?"
+
+  - id: i4
+    level: L2
+    question: >-
+      What is the difference between "Network is unreachable", "No route to host"
+      and a connection timeout?
+    model_answer: >-
+      They tell you three different things about how far the packet got, and
+      treating them as interchangeable throws away the best free evidence you
+      get.
+
+
+      **Network is unreachable** means no route matched — not even a default. The
+      kernel refused to send anything, so nothing left the machine. That
+      eliminates the switch, the gateway, the firewall and the destination all at
+      once, and the fault is local, usually a missing default route. It is also
+      instant, which is part of the evidence.
+
+
+      **No route to host** means a route existed and ARP for the next hop got no
+      reply. The machine knew where to send the frame and could not address it.
+      That points at the local segment: the gateway being down, a VLAN problem,
+      the neighbour genuinely absent.
+
+
+      **Connection refused** — worth adding — means the packet arrived and
+      something actively rejected it. The network worked perfectly; nothing is
+      listening on that port.
+
+
+      **Timeout** is the only ambiguous one. The packet may have arrived, and
+      nothing came back. The fault could be anywhere along the path, and it is
+      the one that actually requires investigation.
+
+
+      So three of the four are diagnoses on their own, and people report all four
+      as "it doesn't work".
+    signal: >-
+      Getting all four right, with the local-versus-remote split, is the answer.
+      Mentioning that unreachable is *instant* while a timeout takes seconds
+      shows they have used the difference under pressure — users report timing
+      without realising it is diagnostic.
+    follow_ups:
+      - "Which of those can you fix on the machine reporting it?"
+      - "What would produce 'No route to host' on a network you control?"
+      - "How does the timing of each help you?"
+
+  - id: i5
+    level: L2
+    question: >-
+      You are allocating address space for a new environment. What do you think
+      about?
+    model_answer: >-
+      Two things, and the second one matters more than people expect.
+
+
+      **Size generously, because resizing means renumbering.** A subnet cannot
+      grow in place — a /24 becoming a /23 has to consume its neighbour, and the
+      neighbour is in use. Private address space is free and effectively
+      unlimited, so allocating four times what I think I need costs nothing.
+      Kubernetes is where this bites hardest: a /16 pod CIDR with a /24 per node
+      caps the cluster at 256 nodes, and changing it means rebuilding the
+      cluster.
+
+
+      **Avoid collisions with anything I might ever connect to.** Two networks
+      using the same private range cannot be joined — the routing is genuinely
+      ambiguous and no configuration resolves it, so somebody renumbers. That
+      means avoiding the defaults everyone else uses: `192.168.0.0/16` and
+      `192.168.1.0/24` in particular, and `10.0.0.0/16`, and Docker's
+      `172.17.0.0/16`. Picking an odd corner of `10.0.0.0/8` costs nothing and
+      avoids an acquisition or a partner VPN becoming a renumbering project.
+
+
+      Then the ordinary things: a consistent scheme so a subnet's address tells
+      you its region and role, room between allocations rather than packing them,
+      and writing down what was allocated somewhere findable — because the
+      failure mode of address planning is always somebody reusing a range that
+      was already spoken for.
+    signal: >-
+      "Resizing means renumbering" and "overlaps cannot be joined" are the two
+      load-bearing ideas. Naming the specific ranges to avoid, and Docker's
+      172.17 in particular, shows scars. The Kubernetes node-count arithmetic is
+      a good sign they have done this for real rather than in the abstract.
+    follow_ups:
+      - "What happens when two companies merge and both use 10.0.0.0/16?"
+      - "How many nodes does a /16 pod CIDR support, and why?"
+      - "Which default ranges would you specifically avoid, and why those?"

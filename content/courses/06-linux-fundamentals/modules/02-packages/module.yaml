@@ -1,0 +1,8 @@
+id: module.packages
+slug: packages
+title: Packages
+summary: >-
+  What a package is beyond a compressed archive — a manifest, a dependency
+  declaration and a set of promises — how to ask the database what put a file on
+  the system, and what the answer costs when it comes back empty.
+order: 2

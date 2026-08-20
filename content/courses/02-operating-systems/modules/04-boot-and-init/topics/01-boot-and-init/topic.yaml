@@ -1,0 +1,155 @@
+id: topic.boot-and-init
+slug: boot-and-init
+title: "Boot and Init: From Firmware to PID 1"
+summary: >-
+  Everything that has to happen before your service exists, and the dependency
+  model of whatever starts it. systemd's ordering rules are not what most people
+  think, and Kubernetes reimplemented them under different names.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.processes
+    hardness: required
+  - topic: topic.cgroups
+    hardness: required
+  - topic: topic.files-and-filesystems
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A02.5.1
+    level: L2
+    verb: trace
+    statement: >-
+      Trace the boot sequence from firmware to the first user-space process,
+      naming what each stage hands to the next.
+    assessed_by: [quiz.q1, quiz.q2, lab.read-your-boot, exercise.e1]
+
+  - id: OBJ-A02.5.2
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret a kernel command line, and identify the parameters that matter
+      for boot and for recovery.
+    assessed_by: [quiz.q3, quiz.q4, lab.read-your-boot]
+
+  - id: OBJ-A02.5.3
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why an initramfs exists, and what fails without one.
+    assessed_by: [quiz.q5, lab.read-your-boot, exercise.e1]
+
+  - id: OBJ-A02.5.4
+    level: L3
+    verb: distinguish
+    statement: >-
+      Distinguish requirement dependencies from ordering dependencies, and
+      predict the start order a set of units produces.
+    assessed_by: [quiz.q6, quiz.q7, quiz.q8, lab.order-these-units, exercise.e2, assessment.A]
+
+  - id: OBJ-A02.5.5
+    level: L3
+    verb: distinguish
+    statement: >-
+      Distinguish the unit types, and say when a unit counts as started rather
+      than ready.
+    assessed_by: [quiz.q9, quiz.q10, lab.order-these-units, exercise.e3]
+
+  - id: OBJ-A02.5.6
+    level: L3
+    verb: explain
+    statement: >-
+      Explain how restart policy and start rate limiting decide whether a
+      failing service is retried at all.
+    assessed_by: [quiz.q11, quiz.q12, lab.three-that-will-not-start]
+
+  - id: OBJ-A02.5.7
+    level: L3
+    verb: trace
+    statement: >-
+      Trace a systemd unit's dependency and readiness model onto its Kubernetes
+      equivalent.
+    assessed_by: [quiz.q13, exercise.e4, lab.what-init-is-missing, assessment.B]
+
+  - id: OBJ-A02.5.8
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a service that will not start, from its unit file and its journal
+      output.
+    assessed_by: [quiz.q14, quiz.q15, lab.three-that-will-not-start, troubleshooting.works-on-boot-not-on-restart, troubleshooting.the-service-that-stopped-being-retried, assessment.C]
+
+terminology:
+  - term: firmware
+    definition: >-
+      UEFI or legacy BIOS. It initialises hardware and loads a bootloader. It
+      understands partitions and, for UEFI, the FAT filesystem on the EFI system
+      partition — nothing else.
+  - term: bootloader
+    definition: >-
+      GRUB, systemd-boot or equivalent. It chooses a kernel, assembles the
+      kernel command line, loads the kernel and the initramfs into memory and
+      jumps to the kernel.
+  - term: initramfs
+    definition: >-
+      A compressed root filesystem loaded into RAM alongside the kernel. It
+      exists to hold the drivers needed to reach the real root — NVMe, RAID,
+      LUKS, LVM, network storage — which cannot live on a root you cannot yet
+      mount.
+  - term: switch_root
+    definition: >-
+      The handover from the initramfs to the real root filesystem. The RAM disk
+      is freed and `/sbin/init` on the real root becomes PID 1.
+  - term: kernel command line
+    definition: >-
+      The parameters the bootloader hands the kernel, readable afterwards at
+      /proc/cmdline. It is where `root=`, `init=`, `panic=` and every recovery
+      option live.
+  - term: unit
+    definition: >-
+      systemd's unit of management — a service, socket, mount, timer, device or
+      target. Each gets its own cgroup, which is how systemd accounts for and
+      limits it.
+  - term: target
+    definition: >-
+      A unit that groups others and acts as a synchronisation point. It replaces
+      the numbered runlevels, and it starts nothing by itself.
+  - term: requirement dependency
+    definition: >-
+      `Requires=`, `Wants=`, `BindsTo=` — whether another unit is pulled in, and
+      what happens if it fails. It says nothing about ordering.
+  - term: ordering dependency
+    definition: >-
+      `After=`, `Before=` — when a unit may start relative to another. It says
+      nothing about whether that unit is started at all.
+  - term: Type=notify
+    definition: >-
+      A service that tells systemd when it is genuinely ready, via `sd_notify`.
+      The only unit type where "started" and "ready" are the same event.
+  - term: Type=oneshot
+    definition: >-
+      A unit that runs to completion. Units ordered after it wait for it to
+      exit, which makes it the right shape for a migration.
+  - term: start rate limiting
+    definition: >-
+      `StartLimitBurst` starts within `StartLimitIntervalSec` — exceed it and
+      systemd stops retrying, however permissive `Restart=` is.
+  - term: journal
+    definition: >-
+      systemd's structured log store. Entries carry the unit, PID, uid and
+      priority as fields, which is why `journalctl -u name` can exist at all.
+  - term: reaping
+    definition: >-
+      Collecting the exit status of orphaned processes, which PID 1 inherits.
+      An application given PID 1 in a container usually does not do it.
+
+foreshadows:
+  - "C16's `--init` flag and tini exist because a container's PID 1 is an application that was never written to be one."
+  - "E29's initContainers are ordering dependencies and its readiness probes are Type=notify, under different names."
+  - "E29's CrashLoopBackOff is start rate limiting with a different backoff curve, and it fails in the same way for the same reason."
+  - "B07 manages systemd units day to day — this topic is the model those commands operate on."
+
+tags: [boot, init, systemd, firmware, units, linux]

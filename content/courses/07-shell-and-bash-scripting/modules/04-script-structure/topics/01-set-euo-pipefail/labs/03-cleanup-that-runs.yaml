@@ -1,0 +1,352 @@
+id: lab.cleanup-that-runs
+topic: topic.set-euo-pipefail
+title: Watch a cleanup handler run twice
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.5.7]
+
+intro: >-
+  `trap cleanup EXIT` is the right pattern. `trap cleanup EXIT INT TERM` — which
+  looks more thorough — introduces two bugs, and only one of them is the double
+  run.
+
+
+  You will confirm cleanup fires on an errexit abort, then signal a running
+  deploy and watch what happens after the handler returns.
+
+setup:
+  - /opt/lab/seed-strict.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Establish the property the whole pattern rests on — that the EXIT trap
+      runs even when errexit aborts the script. Save to /tmp/answer-exit.
+    hint: >-
+      Set a trap, then run a failing command with `set -e`.
+    walkthrough: |
+      {
+        echo "normal end:"
+        bash -c 'trap "echo   cleanup ran" EXIT; echo "  work done"'
+        echo
+        echo "errexit abort:"
+        bash -c 'set -e; trap "echo   cleanup ran" EXIT; false; echo "  NOT reached"'
+        echo
+        echo "explicit exit:"
+        bash -c 'set -e; trap "echo   cleanup ran" EXIT; exit 3'; echo "  rc=$?"
+        echo
+        echo "all three paths out run the handler. that is what makes"
+        echo "    WORKDIR=\$(mktemp -d)"
+        echo "    cleanup() { rm -rf \"\$WORKDIR\"; }"
+        echo "    trap cleanup EXIT"
+        echo "a complete solution in three lines - there is no path where the script"
+        echo "finishes and the directory survives."
+        echo
+        echo "note the abort did NOT print 'NOT reached'. errexit stopped the script"
+        echo "and the trap still fired."
+      } > /tmp/answer-exit
+      cat /tmp/answer-exit
+    verify:
+      - type: file_matches
+        path: /tmp/answer-exit
+        pattern: "(?s)errexit abort:.*cleanup ran"
+        describe: The trap fires on an errexit abort
+      - type: file_matches
+        path: /tmp/answer-exit
+        pattern: "rc=3"
+        describe: And on an explicit exit, preserving the status
+      - type: file_matches
+        path: /tmp/answer-exit
+        pattern: "(?i)no path where the script"
+        describe: And you said why that matters
+
+  - id: s2
+    instruction: >-
+      Run /tmp/strict/deploy.sh normally and read its trap line. Predict what
+      happens if it is signalled mid-run, and record the prediction in
+      /tmp/answer-predict.
+    walkthrough: |
+      {
+        echo "the script:"
+        sed -n '5,15p' /tmp/strict/deploy.sh | sed 's/^/    /'
+        echo
+        echo "normal run:"
+        bash /tmp/strict/deploy.sh | sed 's/^/    /'
+        echo
+        echo "prediction if signalled during the sleep:"
+        echo "  the TERM handler runs cleanup, and the script dies. one cleanup line."
+      } > /tmp/answer-predict
+      cat /tmp/answer-predict
+    verify:
+      - type: file_matches
+        path: /tmp/answer-predict
+        pattern: "trap cleanup EXIT INT TERM"
+        describe: You read the trap line
+      - type: file_matches
+        path: /tmp/answer-predict
+        pattern: "deploy complete"
+        describe: And ran it normally first
+      - type: file_matches
+        path: /tmp/answer-predict
+        pattern: "(?i)one cleanup line"
+        describe: And committed a prediction
+
+  - id: s3
+    instruction: >-
+      Signal it mid-run and capture what actually happens. Save the output to
+      /tmp/answer-signal.
+    hint: >-
+      `DEPLOY_SECONDS` makes it sleep. Start it in the background, sleep briefly,
+      then send it TERM.
+    walkthrough: |
+      {
+        echo "=== signalled mid-run ==="
+        DEPLOY_SECONDS=5 bash /tmp/strict/deploy.sh > /tmp/sig.out 2>&1 &
+        pid=$!
+        sleep 1
+        kill -TERM "$pid"
+        wait "$pid"; rc=$?
+        sed 's/^/    /' /tmp/sig.out
+        echo "    exit status: $rc"
+      } > /tmp/answer-signal
+      cat /tmp/answer-signal
+    verify:
+      - type: file_matches
+        path: /tmp/answer-signal
+        pattern: "(?s)cleanup: removing.*deploy complete.*cleanup: removing"
+        describe: Cleanup ran, the script continued, then cleanup ran again
+      - type: file_matches
+        path: /tmp/answer-signal
+        pattern: "exit status: 0"
+        describe: And it reported success after being killed
+
+  - id: s4
+    instruction: >-
+      Explain both bugs — there are two — and write the corrected trap block to
+      /tmp/fixed-deploy.sh. Prove the fix. Save your explanation to
+      /tmp/answer-fix.
+    hint: >-
+      One bug is that the handler ran twice. The other is the line printed
+      between the two runs.
+    walkthrough: |
+      cat > /tmp/fixed-deploy.sh <<'FIX'
+      #!/bin/bash
+      set -euo pipefail
+
+      WORKDIR=$(mktemp -d)
+
+      cleanup() {
+        [ -n "${WORKDIR:-}" ] || return 0
+        echo "cleanup: removing $WORKDIR"
+        rm -rf "$WORKDIR"
+        WORKDIR=
+      }
+      trap cleanup EXIT
+      trap 'cleanup; exit 143' TERM
+      trap 'cleanup; exit 130' INT
+
+      echo "deploying into $WORKDIR"
+      touch "$WORKDIR/artifact"
+      sleep "${DEPLOY_SECONDS:-0}"
+      echo "deploy complete"
+      FIX
+      chmod 0755 /tmp/fixed-deploy.sh
+
+      {
+        echo "TWO bugs, and the second is the dangerous one."
+        echo
+        echo "bug 1 - the handler ran twice. TERM fired it, then EXIT fired it again on"
+        echo "the way out. for rm -rf that is harmless. for a handler that releases a"
+        echo "lock, posts a notification, decrements a counter or restores a database"
+        echo "from a snapshot, it is not."
+        echo
+        echo "bug 2 - THE SCRIPT CARRIED ON. look at the order:"
+        echo "    cleanup: removing /tmp/tmp.XXXX     <- the TERM handler"
+        echo "    deploy complete                     <- resumed"
+        echo "    cleanup: removing /tmp/tmp.XXXX     <- the EXIT handler"
+        echo
+        echo "a trap handler RETURNS, and execution resumes where it was interrupted."
+        echo "so the deploy printed 'deploy complete' after its working directory had"
+        echo "been deleted - and exited 0. anything after that sleep would have been"
+        echo "operating on a directory that no longer exists, and a CI job would have"
+        echo "recorded a successful deploy of a killed process."
+        echo
+        echo "the fix: a signal handler must EXIT, and the handler must be idempotent"
+        echo "because EXIT will still fire after it."
+        echo
+        echo "    cleanup() {"
+        echo "      [ -n \"\${WORKDIR:-}\" ] || return 0     # idempotent"
+        echo "      rm -rf \"\$WORKDIR\"; WORKDIR="
+        echo "    }"
+        echo "    trap cleanup EXIT"
+        echo "    trap 'cleanup; exit 143' TERM          # 128 + 15"
+        echo "    trap 'cleanup; exit 130' INT           # 128 + 2"
+        echo
+        echo "143 and 130 are the conventional 128+signal statuses, which tell a"
+        echo "supervisor the process was signalled rather than that it failed."
+        echo
+        echo "=== the fixed script, signalled the same way ==="
+        DEPLOY_SECONDS=5 bash /tmp/fixed-deploy.sh > /tmp/sig2.out 2>&1 &
+        pid=$!
+        sleep 1
+        kill -TERM "$pid"
+        wait "$pid"; rc=$?
+        sed 's/^/    /' /tmp/sig2.out
+        echo "    exit status: $rc"
+        echo
+        echo "one cleanup, no 'deploy complete', and 143. and the normal path still works:"
+        bash /tmp/fixed-deploy.sh | sed 's/^/    /'
+      } > /tmp/answer-fix
+      cat /tmp/answer-fix
+    verify:
+      - type: file_exists
+        path: /tmp/fixed-deploy.sh
+        describe: You wrote the corrected script
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?i)THE SCRIPT CARRIED ON"
+        describe: And found the second bug
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?i)handler RETURNS"
+        describe: And explained why
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "exit status: 143"
+        describe: And the fix exits 128+15
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?s)fixed script.*deploying into.*cleanup: removing"
+        describe: With a single cleanup
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?s)normal path still works:.*deploy complete"
+        describe: And the success path intact
+
+  - id: s5
+    instruction: >-
+      Find out whether an ERR trap fires inside a function, and what changes it.
+      Save to /tmp/answer-err.
+    hint: >-
+      Try it with `set -e` and then with `set -eE`.
+    walkthrough: |
+      {
+        echo "ERR trap, failure inside a function:"
+        printf '  set -e   : '; bash -c 'set -e;  trap "echo FIRED" ERR; f(){ false; }; f' 2>&1 || echo "(nothing printed)"
+        printf '  set -eE  : '; bash -c 'set -eE; trap "echo FIRED" ERR; f(){ false; }; f' 2>&1
+        echo
+        echo "an ERR trap is NOT inherited by functions, subshells or command"
+        echo "substitutions unless set -E is given. so without -E the trap is silent in"
+        echo "exactly the places where a failure is hardest to see, which is the"
+        echo "opposite of what you wanted it for."
+        echo
+        echo "with -E and \$LINENO / \$BASH_COMMAND it becomes a real diagnostic:"
+        cat > /tmp/errdemo.sh <<'DEMO'
+      #!/bin/bash
+      set -eEuo pipefail
+      trap 'echo "failed at line $LINENO: $BASH_COMMAND" >&2' ERR
+      deploy() {
+        echo "starting"
+        false
+      }
+      deploy
+      DEMO
+        bash /tmp/errdemo.sh 2>&1 | sed 's/^/    /'
+        echo
+        echo "that single line answers the main complaint about set -e - that it exits"
+        echo "without saying why."
+        echo "so whenever an ERR trap is present the preamble is written set -eEuo pipefail."
+      } > /tmp/answer-err
+      cat /tmp/answer-err
+    verify:
+      - type: file_matches
+        path: /tmp/answer-err
+        pattern: "set -e   : \\(nothing printed\\)"
+        describe: The trap is silent without -E
+      - type: file_matches
+        path: /tmp/answer-err
+        pattern: "set -eE  : FIRED"
+        describe: And fires with it
+      - type: file_matches
+        path: /tmp/answer-err
+        pattern: "failed at line 6: false"
+        describe: And names the line and the command
+      - type: file_matches
+        path: /tmp/answer-err
+        pattern: "set -eEuo pipefail"
+        describe: And you drew the conclusion for the preamble
+
+solution: >-
+  **The property everything rests on:** the EXIT trap runs on a normal end, on an
+  explicit `exit`, **and on an errexit abort**. So three lines are a complete
+  solution — there is no path where the script finishes and the temporary
+  directory survives.
+
+
+  **`trap cleanup EXIT INT TERM` looks more thorough and is worse:**
+
+
+  ```console
+  deploying into /tmp/tmp.yCW
+  cleanup: removing /tmp/tmp.yCW      ← the TERM handler
+  deploy complete                      ← the script RESUMED
+  cleanup: removing /tmp/tmp.yCW      ← the EXIT handler
+  exit status: 0
+  ```
+
+
+  **Bug 1 — the handler ran twice.** Harmless for `rm -rf`; not for a handler
+  that releases a lock, posts a notification or decrements a counter.
+
+
+  **Bug 2 — the script carried on, and this is the dangerous one.** A trap
+  handler *returns*, and execution resumes at the point of interruption. The
+  deploy printed `deploy complete` **after its working directory had been
+  deleted**, and exited **0** — a CI job would record a successful deploy of a
+  killed process.
+
+
+  **The fix:** a signal handler must `exit`, and the handler must be idempotent
+  because EXIT still fires after it.
+
+
+  ```bash
+  cleanup() {
+    [ -n "${WORKDIR:-}" ] || return 0
+    rm -rf "$WORKDIR"
+    WORKDIR=
+  }
+  trap cleanup EXIT
+  trap 'cleanup; exit 143' TERM      # 128 + 15
+  trap 'cleanup; exit 130' INT       # 128 + 2
+  ```
+
+
+  128+signal tells a supervisor the process was *signalled* rather than that it
+  failed.
+
+
+  **And the ERR trap needs `set -E`:**
+
+
+  ```console
+  $ bash -c 'set -e;  trap "echo FIRED" ERR; f(){ false; }; f'    # nothing
+  $ bash -c 'set -eE; trap "echo FIRED" ERR; f(){ false; }; f'
+  FIRED
+  ```
+
+
+  It is not inherited by functions, subshells or command substitutions without
+  it — silent exactly where failures are hardest to see. With `-E`, `$LINENO` and
+  `$BASH_COMMAND`:
+
+
+  ```console
+  failed at line 6: false
+  ```
+
+
+  which is why the preamble is written `set -eEuo pipefail` whenever an ERR trap
+  is present.

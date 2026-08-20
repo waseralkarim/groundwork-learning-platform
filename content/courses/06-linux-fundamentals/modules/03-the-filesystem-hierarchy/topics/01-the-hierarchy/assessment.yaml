@@ -1,0 +1,204 @@
+id: assessment.the-filesystem-hierarchy
+topic: topic.the-filesystem-hierarchy
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a restore that cannot work
+    kind: explain
+    objectives: [OBJ-B06.3.8, OBJ-B06.3.3]
+    prompt: >-
+      A nightly backup captures `/etc`, `/var` and `/home`, excluding `/var/log`.
+      It has been green for fourteen months. The restore procedure is: install
+      the base OS, `apt-get install ledger`, restore the archive, start the
+      service.
+
+
+      A rehearsal on fresh hardware produces a machine that starts and then fails
+      its first schema migration.
+
+
+      In about 200 words: explain what the backup is missing, why nobody noticed,
+      and what you would change.
+    rubric:
+      - "Identifies that the procedure assumes every binary came from a package"
+      - "Names /usr/local and /opt as the directories the archive does not cover"
+      - "Explains that those directories are reserved for unpackaged software, so apt cannot restore them"
+      - "Notes that a green backup says nothing about a restore nobody executed"
+      - "Proposes capturing them explicitly and rehearsing the restore"
+    model_answer: >-
+      The archive covers `/etc`, `/var` and `/home`. The migration tool does not
+      live in any of them — a helper like `ledger-migrate` belongs in
+      `/usr/local/bin`, and a vendor agent in `/opt`. Neither is in the backup,
+      and neither is reinstalled by `apt-get`, because **no package owns those
+      directories**.
+
+
+      That is not an accident of this machine. `/usr/local`, `/opt` and `/srv` are
+      reserved for software the distribution did not install — Debian policy
+      forbids a package from writing under `/usr/local`, and `dpkg -S` confirms
+      nothing owns them. So anything there is by construction something a
+      reinstall will not bring back, and the hierarchy predicted this before
+      anybody looked.
+
+
+      **Nobody noticed because the backup was never the thing being tested.** A
+      green job means files were copied. It says nothing about whether the
+      restore procedure produces a working machine, and that procedure had never
+      been executed — the rehearsal is the first time anybody ran step 4.
+
+
+      What I would change: capture `/opt` and `/usr/local` explicitly, or script
+      their reinstallation; name paths with reasons rather than trees; and end
+      the procedure with a verification that exercises a migration. A restore
+      nobody has tested is a hypothesis, and the moment you find out is the moment
+      you cannot afford to.
+    common_failures:
+      - "Blaming the backup tool rather than the scope it was given"
+      - "Proposing to back up the whole filesystem instead of naming what is unowned"
+      - "Missing that a green backup and a working restore are different claims"
+      - "Not connecting the gap to the directories the package system deliberately does not own"
+
+  - id: B
+    title: Reason about two refusals
+    kind: reason
+    objectives: [OBJ-B06.3.6, OBJ-B06.3.5]
+    prompt: >-
+      A container runs with a read-only root and a tmpfs at `/run`. The process
+      runs as uid 10001. Two writes fail:
+
+
+      ```text
+      touch /var/lib/app/x   ->  Read-only file system
+      touch /run/app.pid     ->  Permission denied
+      ```
+
+
+      An engineer proposes setting `read_only: false` to fix both.
+
+
+      In about 250 words: explain each failure, evaluate the proposal, and give
+      what you would do instead.
+    rubric:
+      - "Identifies the first as the mount (EROFS) and the second as the mode (EACCES)"
+      - "States that /run is mounted read-write, so the second is not a mount problem"
+      - "Explains that the two gates are checked independently"
+      - "Evaluates the proposal as fixing one failure and not the other"
+      - "Proposes a narrow volume plus a correctly-owned tmpfs"
+    model_answer: >-
+      They are two different gates, and only one of them is about the filesystem
+      being read-only.
+
+
+      **`/var/lib/app` is the mount.** `Read-only file system` is `EROFS` — the
+      root filesystem is mounted `ro`, that applies to every process including
+      root, and no permission change can affect it.
+
+
+      **`/run/app.pid` is the mode.** `Permission denied` is `EACCES`. `/run` is a
+      tmpfs mounted **read-write**, so the mount already permits the write; the
+      directory is `755` owned by root and the process is uid 10001. The mount
+      says yes and the mode says no.
+
+
+      **So the proposal fixes one of the two and not the other.** Setting
+      `read_only: false` makes `/var/lib/app` writable, and `/run` still fails,
+      because its refusal was never about the root filesystem. The engineer will
+      then be debugging the remaining failure with the main safeguard already
+      discarded — which is the worst of both.
+
+
+      What I would do instead, per path:
+
+
+      ```yaml
+      read_only: true
+      volumes:
+        - app-data:/var/lib/app
+      tmpfs:
+        - /run:size=8m,mode=0755,uid=10001
+        - /tmp:size=256m,noexec
+      ```
+
+
+      A narrow volume for state that must survive, and a tmpfs with the right
+      ownership for runtime data that must not. `/run` on tmpfs is a feature: a
+      stale pid file after a crash is an entire class of bug that an
+      empty-at-every-boot filesystem removes.
+
+
+      The general point is that the error messages already distinguished the two
+      cases, and treating both as "a permissions problem" is what produced a fix
+      that could not work.
+    common_failures:
+      - "Treating both failures as the same problem"
+      - "Accepting read_only: false because it resolves the first symptom"
+      - "Proposing chmod on a read-only filesystem"
+      - "Making /var writable wholesale rather than naming the path"
+
+  - id: C
+    title: Diagnose a service that lost half its functionality
+    kind: diagnose
+    objectives: [OBJ-B06.3.7, OBJ-B06.3.4]
+    prompt: >-
+      A service loads plugins from a directory the image populates. After a
+      platform change added a shared assets volume, five of seven plugins stopped
+      loading. The image digest is unchanged. `find / -name 'pdf.so'` inside the
+      container returns nothing, and the team concluded the build dropped the
+      files.
+
+
+      In about 250 words: say what happened, why the team's evidence misled them,
+      and what you would change.
+    rubric:
+      - "Identifies a volume mounted over the plugin directory, covering rather than merging"
+      - "States that the files are intact underneath and the change is reversible"
+      - "Explains that find returning nothing proves unreachability, not deletion"
+      - "Uses mountpoint or /proc/1/mountinfo as the decisive check"
+      - "Proposes mounting a file, or a directory the image never populates"
+    model_answer: >-
+      The assets volume was mounted on the plugin directory, and **a mount covers
+      a directory rather than merging with it**. From the moment the container
+      started, the process sees the volume's contents and nothing else.
+
+
+      **The plugins were never deleted.** They are in the image layer, intact,
+      underneath the mount, and they reappear the instant the volume is removed.
+
+
+      **Why the evidence misled them.** `find` returning nothing reads as proof of
+      deletion and is not — it proves *unreachability*, and from inside the mount
+      namespace those are indistinguishable. Only one of them is reversible, which
+      is the argument for checking that one first: it costs a second.
+
+
+      An unchanged image digest with changed behaviour should have redirected the
+      investigation immediately. It places the fault strictly between image and
+      running process, and that is a short list: mounts, entrypoint, environment.
+
+
+      The decisive check is one command:
+
+
+      ```bash
+      mountpoint /usr/lib/app/plugins     # "... is a mountpoint"
+      cat /proc/1/mountinfo               # authoritative, whatever the manifest says
+      ```
+
+
+      **Partial failure was also a clue** rather than a complication: the two
+      surviving plugins do not depend on the covered path, which narrows the fault
+      before you understand the mechanism.
+
+
+      What I would change: put the assets where they belong and mount them there;
+      where a mount must land inside a populated directory, mount the **single
+      file** rather than the directory; or have the image expose an empty
+      `plugins.d/` intended for mounting, so the merging question cannot arise. And
+      add a pre-deploy check that warns when a mount path is non-empty in the
+      image — sometimes intended, never a surprise.
+    common_failures:
+      - "Accepting that the files were deleted and investigating the build"
+      - "Recommending a rebuild or a digest comparison as the next step"
+      - "Identifying the mount but not explaining why find found nothing"
+      - "Fixing the instance without preventing the class"

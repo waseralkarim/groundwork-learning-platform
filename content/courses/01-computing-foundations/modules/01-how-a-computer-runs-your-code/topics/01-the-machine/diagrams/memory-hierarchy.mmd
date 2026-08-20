@@ -1,0 +1,8 @@
+graph TD
+    R["Registers · ~1 KB · 0.3 ns"] --> L1["L1 cache · 64 KB · 1 ns"]
+    L1 --> L2["L2 cache · 1 MB · 4 ns"]
+    L2 --> L3["L3 cache · 32 MB · 15 ns"]
+    L3 --> RAM["RAM · 8 GB–2 TB · 80 ns"]
+    RAM --> SSD["NVMe SSD · TB · 50 us"]
+    SSD --> NET["Network · 500 us"]
+    NET --> HDD["Spinning disk seek · 5 ms"]

@@ -1,0 +1,8 @@
+id: module.encryption
+slug: encryption
+title: Encryption
+summary: >-
+  The only primitive that protects confidentiality, and the four things people
+  expect it to do that it does not — starting with integrity, which is a
+  separate control that encryption without it actively undermines.
+order: 2

@@ -1,0 +1,29 @@
+flowchart TB
+    subgraph pkg["Packages own it — you do not edit it"]
+        USR["/usr<br/>306 MB of a 320 MB image<br/><i>code, libraries, data</i>"]
+        BIN["/bin /sbin /lib /lib64<br/><i>symlinks into /usr since the usr-merge</i>"]
+        BIN -.-> USR
+    end
+
+    subgraph shared["Shared — the package ships a default, you may edit it"]
+        ETC["/etc<br/>111 files, 75 tracked as conffiles<br/><i>dpkg records an md5 to detect your edits</i>"]
+    end
+
+    subgraph runtime["The system writes it as it runs"]
+        LIB["/var/lib — state<br/><i>cannot be regenerated. back this up.</i>"]
+        CACHE["/var/cache — cache<br/><i>can be regenerated. never back this up.</i>"]
+        LOG["/var/log — history"]
+        RUN["/run — this boot only<br/><i>tmpfs: empty at every start</i>"]
+        TMP["/tmp — scratch, 1777"]
+    end
+
+    subgraph yours["Yours — no package may write here at all"]
+        LOCAL["/usr/local<br/><i>0 of 162 packages ship anything here</i>"]
+        OPT["/opt<br/><i>self-contained third-party trees</i>"]
+        SRV["/srv<br/><i>data this host serves</i>"]
+    end
+
+    style pkg fill:#e8f0fb,stroke:#3b6ea5
+    style shared fill:#fdf6e3,stroke:#b58900
+    style runtime fill:#e8f4ea,stroke:#2f7d4f
+    style yours fill:#fdecea,stroke:#c0392b

@@ -1,0 +1,8 @@
+id: module.ports-and-sockets
+slug: ports-and-sockets
+title: Ports, Sockets and Connections
+summary: >-
+  How a packet that reached the right machine reaches the right process, what a
+  connection actually consists of, and why a service can be running perfectly
+  and be unreachable.
+order: 2

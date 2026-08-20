@@ -1,0 +1,199 @@
+topic: topic.ports-and-sockets
+
+exercises:
+  - id: e1
+    title: Read a socket table
+    level: L1
+    objectives: [OBJ-A03.2.2]
+    kind: interpretation
+    prompt: >-
+      ```text
+      State   Recv-Q Send-Q  Local Address:Port   Peer Address:Port  Process
+      LISTEN  0      4096       127.0.0.1:5432         0.0.0.0:*     users:(("postgres",pid=902,fd=6))
+      LISTEN  128    128          0.0.0.0:8080         0.0.0.0:*     users:(("api",pid=1104,fd=3))
+      LISTEN  0      511          0.0.0.0:443          0.0.0.0:*     users:(("nginx",pid=771,fd=8))
+      ESTAB   0      0          10.0.1.5:443       203.0.113.9:51001
+      ```
+
+
+      For each of the three listeners, say who can reach it. Then say which one
+      has a problem right now, and what the problem is.
+    answer: >-
+      postgres on 127.0.0.1:5432 is reachable only from this machine. api on
+      0.0.0.0:8080 and nginx on 0.0.0.0:443 are reachable on every address the
+      machine has. The api has a problem: its Recv-Q of 128 equals its Send-Q of
+      128, so the accept queue is completely full and new connections are being
+      dropped silently — clients will see timeouts while the process looks
+      healthy.
+    explanation: >-
+      The first two columns are the finding, and they only mean this on a LISTEN
+      row: `Recv-Q` is connections completed and waiting to be accepted, and
+      `Send-Q` is the backlog limit.
+
+
+      **api is at its limit.** 128 waiting against a backlog of 128 means the
+      queue is full, so the kernel drops further connections without sending a
+      reset. The client sees a timeout; the server logs nothing, because from its
+      point of view no connection was ever made. `ListenOverflows` is the only
+      place this is recorded.
+
+
+      The cause is that the application is not calling `accept()` fast enough —
+      blocked, saturated, or stuck. Raising the backlog would turn refusals into
+      slower responses and change nothing about the throughput.
+
+
+      **postgres on loopback is not necessarily wrong.** For a database reached
+      only by an application on the same host it is exactly right. It becomes a
+      bug the moment something on another machine is supposed to connect — and
+      then it is a bug that every local test passes.
+
+
+      **nginx's backlog of 511** is the traditional default, and worth noticing
+      only in that it is much smaller than `somaxconn` usually allows. An
+      application asks for a backlog and the kernel caps it; raising `somaxconn`
+      while the application never asks for more changes nothing.
+
+  - id: e2
+    title: Count the connections
+    level: L2
+    objectives: [OBJ-A03.2.4]
+    kind: calculation
+    prompt: >-
+      A load balancer at `10.0.1.5` holds connections to a backend pool. Each
+      backend listens on port 8080.
+
+
+      Assuming an ephemeral port range of 32768–60999, how many simultaneous
+      connections can the load balancer hold to **one** backend? To **eight**
+      backends? And what changes if all eight sit behind a single virtual IP on
+      port 8080?
+    answer: >-
+      28232 to one backend — the size of the ephemeral range. About 225856 to
+      eight distinct backends, because the four-tuple only has to be unique
+      overall and the destination address differs. Behind a single virtual IP the
+      destination address and port are identical for all of them, so the limit
+      collapses back to 28232 in total.
+    explanation: >-
+      The arithmetic is 60999 − 32768 + 1 = 28232 ports, and the constraint binds
+      per destination address and port pair.
+
+
+      **Eight distinct backends multiply it**, because each is a different
+      destination address, so the same source port may be reused for each. That
+      is the four-tuple doing its job.
+
+
+      **A single virtual IP collapses it**, and this is the practically important
+      case. Every connection then has the same destination address and port, so
+      all of them compete for the same 28232 source ports — and each closed
+      connection holds its tuple in TIME-WAIT for about a minute afterwards,
+      which consumes the budget faster than the connection rate alone suggests.
+
+
+      That is why a busy proxy in front of a single VIP is one of the few places
+      port exhaustion is genuinely reached. The remedies in order: keep-alive, so
+      connections are reused rather than reopened; more source addresses on the
+      proxy, which multiplies the budget exactly as distinct destinations do; and
+      only then a wider ephemeral range.
+
+  - id: e3
+    title: Explain the two waits
+    level: L2
+    objectives: [OBJ-A03.2.5, OBJ-A03.2.6]
+    kind: short_answer
+    prompt: >-
+      Two machines. Machine A is a busy API client with 18000 sockets in
+      TIME-WAIT. Machine B is a service with 4000 sockets in CLOSE-WAIT, rising
+      by about 200 an hour.
+
+
+      For each: whose side the state is on, whether it expires, whether it is a
+      problem, and what you would do.
+    answer: >-
+      A's TIME-WAIT is on the side that closed first — A itself — expires after
+      about 60 seconds, and is normal for a busy client. Nothing to do unless it
+      is approaching port exhaustion against a single destination, in which case
+      the answer is keep-alive. B's CLOSE-WAIT is on the side that has not closed
+      — B's own application — never expires on its own, and is always a bug: the
+      code is not calling `close()`, each socket holds a file descriptor, and it
+      will eventually exhaust them.
+    explanation: >-
+      The two states look similar in a socket listing and are opposites in every
+      respect that matters.
+
+
+      **TIME-WAIT is correct.** Holding the tuple for twice the maximum segment
+      lifetime stops a delayed duplicate from the old connection being mistaken
+      for part of a new one reusing the same numbers. 18000 on a busy client is
+      unremarkable and self-clearing.
+
+
+      The only reason to care is exhaustion, and even then the fix is fewer
+      connections rather than faster recycling — `tcp_tw_recycle` was removed
+      from Linux for breaking clients behind NAT.
+
+
+      **CLOSE-WAIT is a leak, and the arithmetic makes it urgent.** 200 an hour
+      against a typical `RLIMIT_NOFILE` of 65536 gives a few weeks before the
+      process cannot open anything at all — and the failure then arrives as an
+      inability to open log files, config files or new connections, none of which
+      resembles a socket bug.
+
+
+      For B I would run `ss -tan state close-wait` and group by peer, which
+      usually points at the specific backend or client whose connections are
+      being abandoned, and then look for the error path in that code that returns
+      without closing.
+
+  - id: e4
+    title: Three failures, three next steps
+    level: L2
+    objectives: [OBJ-A03.2.7]
+    kind: interpretation
+    prompt: >-
+      You are debugging connectivity to `10.0.1.5:5432` from an application
+      server. Three attempts, three outcomes:
+
+
+      **A** — `Connection refused`, returned in 2ms
+
+
+      **B** — `Connection timed out`, after 130 seconds
+
+
+      **C** — connects, then `Connection reset by peer` after 4 seconds
+
+
+      For each: what is proved, what is eliminated, and what you check next.
+    answer: >-
+      A proves the packet arrived and the machine answered with a reset — so
+      routing, firewalls and host availability are all fine, and nothing is bound
+      to that address and port. Check `ss -tlnp` on the server. B proves nothing
+      came back; the packet may not have arrived at all. Check routing, firewalls
+      and whether the host is up. C proves the path and the binding are both fine
+      and the connection was torn down after being established — check the
+      server's logs, its idle timeouts, and any proxy in the path.
+    explanation: >-
+      **A is the most informative failure in networking**, and people treat it as
+      bad news. A reset means the machine received the SYN and answered it. That
+      eliminates every network-shaped explanation at once and leaves exactly two:
+      nothing is listening, or something is listening on a different address.
+      `ss -tlnp | grep :5432` on the server settles it in one line.
+
+
+      **B eliminates nothing**, which is what makes it expensive. The 130 seconds
+      is itself a detail worth reading: that is the client retransmitting its SYN
+      `tcp_syn_retries` times — six by default, with exponential backoff — before
+      giving up. A firewall configured to DROP produces exactly this; one
+      configured to REJECT produces A instead, which is why REJECT is kinder on
+      an internal network.
+
+
+      **C is a different investigation entirely.** The handshake completed, so
+      the address, the port, the route and the firewall are all correct.
+      Something ended an established connection: the server process crashing, an
+      authentication failure that closes abruptly, an idle timeout on a proxy or
+      NAT gateway in the path, or a connection limit being enforced. The four
+      seconds is a clue — a consistent interval usually means a timeout somewhere
+      rather than a crash.

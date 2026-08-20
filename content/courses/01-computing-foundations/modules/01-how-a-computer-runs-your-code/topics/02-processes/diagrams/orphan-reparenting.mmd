@@ -1,0 +1,12 @@
+graph TD
+    subgraph before["Before the parent exits"]
+        I1["PID 1 · init"] --> P1["PID 4200 · parent"]
+        P1 --> C1["PID 4201 · child"]
+    end
+
+    subgraph after["Parent exits — kernel reparents immediately"]
+        I2["PID 1 · init"] --> C2["PID 4201 · child<br/>PPID is now 1"]
+        P2["PID 4200 · gone"]
+    end
+
+    before -->|"parent exits"| after

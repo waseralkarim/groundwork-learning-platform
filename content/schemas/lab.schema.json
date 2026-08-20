@@ -1,0 +1,302 @@
+{
+  "$defs": {
+    "Check": {
+      "additionalProperties": false,
+      "description": "A verification step, executed inside the lab by `labcheck`.\n\nClosed vocabulary on purpose. Content authors describe *what* must be true;\nthey never supply shell that we would then have to run somewhere.",
+      "properties": {
+        "type": {
+          "enum": [
+            "file_exists",
+            "file_matches",
+            "file_mode",
+            "command_output",
+            "command_exit",
+            "command_ran",
+            "process_running",
+            "port_listening",
+            "http_check"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pattern"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        },
+        "equals": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Equals"
+        },
+        "equals_command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Equals Command"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mode"
+        },
+        "describe": {
+          "maxLength": 200,
+          "minLength": 5,
+          "title": "Describe",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "describe"
+      ],
+      "title": "Check",
+      "type": "object"
+    },
+    "LabStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^s\\d+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "instruction": {
+          "maxLength": 1500,
+          "minLength": 10,
+          "title": "Instruction",
+          "type": "string"
+        },
+        "hint": {
+          "anyOf": [
+            {
+              "maxLength": 800,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hint"
+        },
+        "verify": {
+          "items": {
+            "$ref": "#/$defs/Check"
+          },
+          "title": "Verify",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "instruction"
+      ],
+      "title": "LabStep",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "topic": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Topic",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 140,
+      "minLength": 5,
+      "title": "Title",
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "guided",
+        "challenge",
+        "troubleshooting"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "tier": {
+      "enum": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "title": "Tier",
+      "type": "integer"
+    },
+    "image": {
+      "maxLength": 120,
+      "minLength": 3,
+      "title": "Image",
+      "type": "string"
+    },
+    "duration_minutes": {
+      "maximum": 180,
+      "minimum": 5,
+      "title": "Duration Minutes",
+      "type": "integer"
+    },
+    "objectives": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Objectives",
+      "type": "array"
+    },
+    "intro": {
+      "maxLength": 2000,
+      "minLength": 20,
+      "title": "Intro",
+      "type": "string"
+    },
+    "setup": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Setup",
+      "type": "array"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/LabStep"
+      },
+      "minItems": 1,
+      "title": "Steps",
+      "type": "array"
+    },
+    "solution": {
+      "minLength": 30,
+      "title": "Solution",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "topic",
+    "title",
+    "type",
+    "tier",
+    "image",
+    "duration_minutes",
+    "objectives",
+    "intro",
+    "steps",
+    "solution"
+  ],
+  "title": "Lab",
+  "type": "object"
+}

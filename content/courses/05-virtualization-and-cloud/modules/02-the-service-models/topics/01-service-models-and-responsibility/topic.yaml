@@ -1,0 +1,139 @@
+id: topic.service-models-and-responsibility
+slug: service-models-and-responsibility
+title: "Service Models: Where the Boundary Sits, and What Never Moves"
+summary: >-
+  Every cloud service model is the same stack with the boundary drawn in a
+  different place. Compute that boundary for one application deployed four ways
+  and the count of what you own falls from fourteen layers to three — and those
+  three are where nearly every cloud breach happens.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 110
+status: published
+
+prerequisites:
+  - topic: topic.the-layers
+    hardness: required
+  - topic: topic.identity-and-least-privilege
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A05.2.1
+    level: L1
+    verb: distinguish
+    statement: >-
+      Distinguish IaaS, PaaS and SaaS by where the responsibility boundary sits
+      rather than by product name.
+    assessed_by: [quiz.q1, quiz.q2, lab.diff-the-boundary, exercise.e1]
+
+  - id: OBJ-A05.2.2
+    level: L1
+    verb: identify
+    statement: >-
+      Identify, for a given layer of a stack, who applies the patch and who is
+      paged when it fails.
+    assessed_by: [quiz.q3, quiz.q4, lab.whose-patch-is-it]
+
+  - id: OBJ-A05.2.3
+    level: L2
+    verb: compare
+    statement: >-
+      Compare how the set of responsibilities changes across service models, as
+      a count rather than an impression.
+    assessed_by: [quiz.q5, quiz.q6, lab.diff-the-boundary, exercise.e2]
+
+  - id: OBJ-A05.2.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain which responsibilities never transfer at any service model, and
+      why they account for most cloud breaches.
+    assessed_by: [quiz.q7, quiz.q8, lab.diff-the-boundary, assessment.A]
+
+  - id: OBJ-A05.2.5
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose who was responsible for a given incident, distinguishing fault
+      from the ability to have prevented it.
+    assessed_by: [quiz.q9, quiz.q10, lab.whose-outage-was-it, troubleshooting.the-outage-nobody-owned]
+
+  - id: OBJ-A05.2.6
+    level: L2
+    verb: evaluate
+    statement: >-
+      Evaluate a vendor's shared-responsibility claim for what it omits and what
+      it leaves ambiguous.
+    assessed_by: [quiz.q11, quiz.q12, lab.what-the-diagram-omits, exercise.e3]
+
+  - id: OBJ-A05.2.7
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what "shared" responsibility means operationally, and why it is
+      the category that fails most often.
+    assessed_by: [quiz.q13, lab.whose-outage-was-it, exercise.e4, troubleshooting.the-patch-that-was-announced]
+
+  - id: OBJ-A05.2.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a service model for a stated situation, naming what is given up
+      alongside what is gained.
+    assessed_by: [quiz.q14, quiz.q15, lab.what-the-diagram-omits, exercise.e5, assessment.B, assessment.C]
+
+terminology:
+  - term: IaaS
+    definition: >-
+      Infrastructure as a service. You get virtual machines and networks; the
+      operating system upward is yours, including every patch.
+  - term: PaaS
+    definition: >-
+      Platform as a service. You supply an application or an image; the runtime,
+      the OS and the machine are the provider's — with a shared band in between.
+  - term: SaaS
+    definition: >-
+      Software as a service. You supply data, users and configuration. Everything
+      else is somebody else's, including whether it is available today.
+  - term: shared responsibility model
+    definition: >-
+      The provider's statement of which layers are theirs and which are yours.
+      Accurate as far as it goes, and it says least about the band where the two
+      meet.
+  - term: the irreducible three
+    definition: >-
+      Data, access control and configuration. They are yours at every service
+      model including SaaS, and they account for most cloud breaches.
+  - term: shared layer
+    definition: >-
+      A layer where both parties must act — the provider publishes and you
+      adopt. It is the category that fails most, because "shared" is often read
+      as "theirs".
+  - term: maintenance window
+    definition: >-
+      When a provider is permitted to act on a managed service. Left at its
+      default it means "any time", which is a decision made by not deciding.
+  - term: undifferentiated heavy lifting
+    definition: >-
+      A vendor's term for work that does not distinguish your product. Usually
+      true, and worth checking against what you are handing over with it.
+  - term: concentration risk
+    definition: >-
+      Everything you run depending on one provider's control plane or region.
+      Moving up the service models reduces your work and increases this.
+  - term: exit cost
+    definition: >-
+      What it takes to leave a provider. It rises with each step up the models,
+      and is rarely priced at the point the decision is made.
+  - term: fault versus preventability
+    definition: >-
+      Whose mistake it was, against who could have stopped it. In shared layers
+      these differ, and confusing them ends postmortems early.
+
+foreshadows:
+  - "D19's cloud fundamentals build directly on this boundary."
+  - "D21's IaC provisions the layers this topic assigns to you."
+  - "E27's managed Kubernetes is the PaaS row of the table, with its shared band made concrete."
+  - "H45's multi-region design is this question asked about failure domains."
+
+tags: [cloud, service-models, shared-responsibility, iaas, paas, saas, fundamentals]

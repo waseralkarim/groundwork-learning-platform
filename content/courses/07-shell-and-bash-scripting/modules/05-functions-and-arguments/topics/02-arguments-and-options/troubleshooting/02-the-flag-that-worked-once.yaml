@@ -1,0 +1,259 @@
+id: troubleshooting.the-flag-that-worked-once
+topic: topic.arguments-and-options
+title: The region that got JSON and the eleven that did not
+level: L2
+objectives: [OBJ-B08.7.4, OBJ-B08.7.7]
+reveal_policy: progressive
+
+situation: >-
+  A billing pipeline collects a usage report from each of twelve regions and
+  feeds them to a parser expecting JSON. It has run every night for three weeks
+  since a change, and the parser has been rejecting eleven of the twelve regions
+  every night as malformed.
+
+
+  Those regions are recorded as having zero usage. The first month-end that
+  depends on it is in four days.
+
+
+  The collector calls one function per region with identical flags, including
+  `-f json`. The first region — `us-east`, always first — is valid JSON. The
+  other eleven are plain text.
+
+
+  The change three weeks ago wrapped the existing call in a loop, to add the new
+  regions. The diff is four lines and touches no option handling.
+
+
+  Everything exits 0. Nothing is logged as an error by the collector.
+
+
+  Work out why the same call produces JSON once and text eleven times.
+
+symptoms:
+  - "One region of twelve is formatted correctly; the other eleven are not"
+  - "All twelve are called with identical flags"
+  - "The collector exits 0 and logs no error"
+  - "It is always the first region that works, whichever one is first"
+  - "The change that introduced it added a loop and touched no option handling"
+  - "Eleven regions are being recorded as zero usage"
+
+artifacts:
+  - type: config
+    label: The collector, after the change
+    content: |
+      #!/bin/bash
+      set -uo pipefail
+
+      collect_region() {
+        local OPT verbose=0 format=text region=
+        while getopts ":vf:" OPT; do
+          case $OPT in
+            v) verbose=1 ;;
+            f) format=$OPTARG ;;
+          esac
+        done
+        shift $((OPTIND - 1))
+        region=${1:-unknown}
+        emit_report "$region" "$format" > "/srv/reports/$region.out"
+        echo "collected $region (format=$format)"
+      }
+
+      for r in us-east us-west eu-west eu-north ap-south ap-east \
+               sa-east af-south me-central ca-central au-east in-west; do
+        collect_region -v -f json "$r"
+      done
+
+  - type: log
+    label: The diff, three weeks ago
+    content: |
+      -collect_region -v -f json us-east
+      +for r in us-east us-west eu-west eu-north ap-south ap-east \
+      +         sa-east af-south me-central ca-central au-east in-west; do
+      +  collect_region -v -f json "$r"
+      +done
+
+  - type: log
+    label: The collector's own output
+    content: |
+      collected us-east (format=json)
+      collected us-west (format=text)
+      collected eu-west (format=text)
+      collected eu-north (format=text)
+      ... nine more, all format=text
+
+  - type: command_output
+    label: The same function, instrumented
+    content: |
+      enter: OPTIND=1 args=[-v -f json us-east]
+      after loop: OPTIND=4
+      result: region=us-east format=json
+
+      enter: OPTIND=4 args=[-v -f json us-west]
+      after loop: OPTIND=4
+      result: region=us-west format=text
+
+  - type: log
+    label: The parser's rejections
+    content: |
+      2026-08-18 02:14  us-west.out: expected '{', found 'r'   SKIPPED
+      2026-08-18 02:14  eu-west.out: expected '{', found 'r'   SKIPPED
+      ... eleven per night, every night for 21 nights
+
+diagnostic_questions:
+  - "The region name is correct on every line. What does that tell you about the shift?"
+  - "How much of `getopts`' state is per-call, and how much is not?"
+  - "What is `OPTIND` when the second call begins?"
+  - "The diff touched no option handling. Why is it still the cause?"
+  - "Why did nothing report an error?"
+
+hints:
+  - "Compare the two instrumented calls in the artifacts. One number differs."
+  - "`getopts` keeps three pieces of state. Two are set per option. What about the third?"
+  - "Ask what the function did before the change — how many times was it called?"
+
+root_cause: >-
+  **`OPTIND` is a global, and nothing resets it between calls.**
+
+
+  It enters the first call at 1 and leaves it at 4. The second call asks `getopts`
+  for argument number 4 of its own three-argument list, finds nothing there,
+  returns non-zero immediately, and **the loop body never runs**. So `format`
+  keeps its default of `text` and `verbose` stays 0.
+
+
+  `local OPT ... format=text` re-initialises the *outputs* on every call, which is
+  correct and is what makes this look thoroughly written. `OPTIND` is not among
+  them, because it is `getopts`' own state rather than the function's.
+
+
+  **Why the output looks right.** `shift $((OPTIND - 1))` is `shift 3` — the same
+  as the first call, because `OPTIND` is still 4 — so `$1` still lands on the
+  region name. Twelve lines, in order, correctly named, exit 0. Only the `format`
+  field differs, and only from the second line on.
+
+
+  **Why the diff is the cause despite touching nothing relevant.** Before the
+  change the function was called **once**, and `OPTIND` starts at 1 in a fresh
+  shell — so a top-level parse never needs a reset. The defect was latent from the
+  day the function was written and became reachable the moment somebody wrapped
+  the call in a loop. The diff is four lines, adds no options, and is exactly
+  where the bug came from.
+
+
+  **Why nothing reported an error.** The collector's job is to write a file, and
+  it wrote one; the parser downstream rejected it and skipped, which it treats as
+  a data problem rather than a pipeline failure. The two halves each behaved
+  reasonably and neither owned the question "is this the format we asked for".
+
+method: >-
+  **1. Read what is right before chasing what is wrong.** Every region name is
+  correct, in order, one line each. That means the `shift` consumed the expected
+  number of arguments — so the parser ran and produced a *different* answer,
+  rather than failing to run. That distinction points straight at parser state
+  instead of at the loop, the arguments or the regions.
+
+
+  **2. Note that it is always the first, whichever one is first.** Position, not
+  identity. Reorder the list and the bug follows position — a two-minute
+  experiment that eliminates every hypothesis about a specific region, its data,
+  or its endpoint.
+
+
+  **3. Ask which state is per-call and which is not.** `getopts` keeps three
+  things: the option letter, `OPTARG`, and `OPTIND`. The first two are set fresh
+  on every option. `OPTIND` is an index into a list, is a plain global, and is the
+  only one that could carry across a call.
+
+
+  **4. Instrument the boundary, not the body.** Print `OPTIND` on entry and after
+  the loop. Two lines, and the answer is visible immediately: in at 1 out at 4,
+  then in at **4**.
+
+
+  **5. Read the diff for what it enabled rather than what it changed.** It adds a
+  loop and touches no option handling — and that is precisely the point. The
+  defect existed and was unreachable. "This change cannot have caused it because
+  it does not touch that code" is wrong whenever the change alters **how many
+  times** something runs.
+
+
+  **6. Ask who owns the assertion.** The collector checked that it wrote a file;
+  the parser checked that the file was JSON and skipped when it was not. Neither
+  owned "the format is the one we asked for", so eleven-twelfths of the data went
+  missing for 21 nights with a green pipeline.
+
+
+  The habit: **when something works the first time and not after, look for state
+  that outlives the call.**
+
+resolution: >-
+  **Immediately:** re-run the collection for the affected nights before month-end,
+  and correct the eleven regions recorded as zero usage.
+
+
+  **The fix is one line:**
+
+
+  ```bash
+  collect_region() {
+    local OPT OPTIND=1 verbose=0 format=text region=
+    ...
+  }
+  ```
+
+
+  Both halves matter. **`=1`** starts this call at the beginning of its own
+  argument list. **`local`** restores the caller's `OPTIND` on return — a bare
+  `OPTIND=1` would fix this call and rewind any caller that was itself mid-parse,
+  turning a silent wrong value into an infinite loop.
+
+
+  Make it unconditional rather than applied when needed: the cost is one word, and
+  the condition that makes it necessary is introduced by an edit **somewhere else
+  in the file**, often years later.
+
+
+  **Then add the error branches**, because this parser silently accepts anything:
+
+
+  ```bash
+  :)  echo "collect_region: -$OPTARG needs a value" >&2; return 64 ;;
+  \?) echo "collect_region: unknown option -$OPTARG" >&2; return 64 ;;
+  ```
+
+
+  **And assert the outcome, which is what would actually have caught it:**
+
+
+  ```bash
+  case $format in json|text|csv) ;; *) die "bad format: $format" ;; esac
+  [ "$format" != json ] || head -c1 "/srv/reports/$region.out" | grep -q '{' \
+    || die "$region: asked for json, got something else"
+  ```
+
+
+  The collector asked for a format and never checked that it got one. That is the
+  same shape as every other incident in this course: **the exit status is the
+  command's opinion of itself; the resulting state is evidence.**
+
+
+  **Audit for the shape**, since this file will not be the only one:
+
+
+  ```bash
+  grep -rn -B3 'getopts' scripts/ | grep -L 'OPTIND=1'
+  ```
+
+
+  Any `getopts` inside a function without `OPTIND=1` is the same latent defect,
+  waiting for somebody to add a second call.
+
+
+  **For the postmortem:** the parser was correct, the loop was correct, the region
+  names were correct, and the pipeline was green for 21 nights while
+  eleven-twelfths of the data was silently wrong. Three findings worth carrying:
+  `getopts` keeps state that outlives a function call, so `local OPT OPTIND=1` is
+  unconditional; a change that alters how many times code runs can expose a defect
+  in code it does not touch; and when two components each behave reasonably,
+  check that somebody owns the assertion that joins them.

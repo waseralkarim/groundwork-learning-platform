@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "InterviewQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^i\\d+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "level": {
+          "$ref": "#/$defs/Level"
+        },
+        "question": {
+          "minLength": 10,
+          "title": "Question",
+          "type": "string"
+        },
+        "model_answer": {
+          "minLength": 40,
+          "title": "Model Answer",
+          "type": "string"
+        },
+        "signal": {
+          "minLength": 20,
+          "title": "Signal",
+          "type": "string"
+        },
+        "follow_ups": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Follow Ups",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "level",
+        "question",
+        "model_answer",
+        "signal"
+      ],
+      "title": "InterviewQuestion",
+      "type": "object"
+    },
+    "Level": {
+      "description": "The difficulty ladder. See docs/architecture/01-vision-and-principles.md.",
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5"
+      ],
+      "title": "Level",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "topic": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Topic",
+      "type": "string"
+    },
+    "questions": {
+      "items": {
+        "$ref": "#/$defs/InterviewQuestion"
+      },
+      "minItems": 1,
+      "title": "Questions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "topic",
+    "questions"
+  ],
+  "title": "InterviewSet",
+  "type": "object"
+}

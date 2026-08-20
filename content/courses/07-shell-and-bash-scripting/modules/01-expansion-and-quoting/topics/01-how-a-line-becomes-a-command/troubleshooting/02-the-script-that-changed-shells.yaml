@@ -1,0 +1,276 @@
+id: troubleshooting.the-script-that-changed-shells
+topic: topic.how-a-line-becomes-a-command
+title: A syntax error on a line nobody has touched
+level: L2
+objectives: [OBJ-B08.1.7, OBJ-B08.1.6]
+reveal_policy: progressive
+
+situation: >-
+  A deployment health-check script has run on every release for three years.
+  This morning, after a routine base-image update, it fails immediately:
+
+
+  ```text
+  /app/healthcheck.sh: 24: Syntax error: "(" unexpected
+  ```
+
+
+  Line 24 has not been modified in eleven months. `git log -L 24,24` confirms it.
+
+
+  The script runs correctly on every engineer's laptop and on the previous
+  image. It is executable, the shebang is present, and `bash healthcheck.sh`
+  works perfectly — including inside the new container.
+
+
+  The base image change was `FROM debian:12-slim` to `FROM alpine:3.20`, made to
+  reduce image size.
+
+
+  Work out why a line that has not changed no longer parses.
+
+symptoms:
+  - "Syntax error on a line unchanged for eleven months"
+  - "`bash healthcheck.sh` works; running it as before does not"
+  - "Works on laptops and on the previous image"
+  - "The only change was a base-image swap to Alpine"
+  - "The script is executable and the shebang is present"
+
+artifacts:
+  - type: config
+    label: The script, lines 20-28
+    content: |
+      20  check_endpoints() {
+      21    local failed=0
+      22    local urls
+      23
+      24    urls=("$@")
+      25
+      26    for u in "${urls[@]}"; do
+      27      curl -sf --max-time 5 "$u" >/dev/null || failed=$((failed + 1))
+      28    done
+
+  - type: config
+    label: The shebang, line 1
+    content: |
+      #!/bin/bash
+
+  - type: config
+    label: How the container invokes it
+    content: |
+      # Dockerfile, unchanged
+      HEALTHCHECK CMD sh /app/healthcheck.sh
+
+  - type: command_output
+    label: What each shell says about the file
+    content: |
+      $ bash -n /app/healthcheck.sh
+      $ echo $?
+      0
+
+      $ sh -n /app/healthcheck.sh
+      /app/healthcheck.sh: 24: Syntax error: "(" unexpected
+      $ echo $?
+      2
+
+  - type: command_output
+    label: What /bin/sh is on each image
+    content: |
+      # debian:12-slim
+      $ ls -l /bin/sh
+      lrwxrwxrwx 1 root root 4 ... /bin/sh -> dash
+
+      # alpine:3.20
+      $ ls -l /bin/sh
+      lrwxrwxrwx 1 root root 12 ... /bin/sh -> /bin/busybox
+
+      $ which bash
+      # (nothing)
+
+  - type: log
+    label: The base-image change
+    content: |
+      -FROM debian:12-slim
+      +FROM alpine:3.20
+       # image size 118MB -> 9MB
+
+diagnostic_questions:
+  - "The shebang says bash. What is actually interpreting the script?"
+  - "What is on line 24, and which shells support it?"
+  - "Why did this work on Debian, whose /bin/sh is also not bash?"
+  - "Is bash even present in the new image?"
+  - "Why does `bash healthcheck.sh` work inside the same container?"
+
+hints:
+  - "Read the HEALTHCHECK line in the Dockerfile very carefully."
+  - "A shebang is only consulted when the file is executed directly."
+  - "Line 24 is an array assignment. Which shells have arrays?"
+  - "Check whether bash exists in the Alpine image at all."
+
+root_cause: >-
+  **The script has never been run by bash in the container. The `HEALTHCHECK`
+  line invokes it as `sh /app/healthcheck.sh`, which ignores the shebang
+  entirely — and the base-image change swapped `sh` from dash to BusyBox ash.**
+
+
+  Two separate facts combine, and each is individually unremarkable.
+
+
+  **A shebang is only consulted when a file is executed directly.** `./script.sh`
+  or `exec script.sh` reads line 1 and runs the named interpreter. But `sh
+  script.sh` names the interpreter explicitly, and the `#!/bin/bash` line is then
+  just a comment. The Dockerfile has said `sh /app/healthcheck.sh` for three
+  years, so **bash has never interpreted this script inside the container.**
+
+
+  **Line 24 is an array assignment** — `urls=("$@")` — which is a bashism. Not
+  POSIX, and unsupported by dash and by BusyBox ash.
+
+
+  So why did it work on Debian? Because it did not. On Debian `/bin/sh` is dash,
+  which also lacks arrays. The most likely explanation is that
+  `check_endpoints` was **never called** on the previous image — a health check
+  that returns 0 because the failing function is never reached looks exactly like
+  a health check that passes. The Alpine image's BusyBox ash rejects the array
+  syntax at **parse time**, which is the difference: dash would also have failed,
+  but only if execution reached line 24, whereas a parse error kills the script
+  before line 1 runs.
+
+
+  That is the specific trap. **A parse-time error and a run-time error surface at
+  completely different moments**, so a latent bashism can sit in a script for
+  years until a shell that parses more strictly — or parses at all before running
+  — is put underneath it.
+
+
+  **`bash healthcheck.sh` works** because it names bash explicitly, which is why
+  everyone's reproduction attempt succeeded and proved nothing. And on laptops
+  the script is run directly, so the shebang applies and bash is present.
+
+
+  **In the new image bash does not exist at all.** Alpine ships BusyBox and no
+  bash unless installed. So the shebang could not have saved this even if the
+  Dockerfile had run the script directly — it would have failed with
+  `/bin/bash: not found` instead, which is a clearer error for the same
+  underlying problem.
+
+method: >-
+  **1. When a line that has not changed stops parsing, the interpreter changed.**
+  That is nearly the whole diagnosis. Source control proves the line is old;
+  therefore look at what is reading it.
+
+
+  **2. Find out what is actually invoking the script.** The shebang is a claim,
+  not a guarantee. `sh script.sh`, `bash script.sh`, `source script.sh` and a
+  systemd unit with `ExecStart=/bin/sh -c ...` all ignore it. Here the Dockerfile
+  said `sh /app/healthcheck.sh` and nobody had read that line in three years.
+
+
+  **3. Ask which shell `/bin/sh` is on this image.** It is dash on Debian,
+  BusyBox ash on Alpine, and bash on some RHEL derivatives — and only the last
+  one makes bashisms work by accident.
+
+
+  **4. Use the parse-only flags to locate it without running anything.**
+
+
+  ```bash
+  bash -n script.sh     # exit 0 — parses as bash
+  sh   -n script.sh     # syntax error at line 24
+  ```
+
+
+  Two commands, no side effects, and they name the line and the shell together.
+  This is the fastest available answer and it works on a script you are afraid to
+  execute.
+
+
+  **5. Separate parse-time from run-time failures.** A bashism in a branch that
+  never executes is invisible to a shell that runs line by line, and fatal to one
+  that parses the file first. That is why "it worked before" is not evidence that
+  the script was ever correct.
+
+
+  **6. Check the interpreter exists at all.** `which bash` in the Alpine image
+  returns nothing. A correct shebang would have produced `/bin/bash: not found` —
+  a different message for the same root cause, and worth predicting so it is not
+  investigated separately.
+
+resolution: >-
+  **Immediately:** make the container invoke the script the way it claims to be
+  invoked, and install the interpreter it needs.
+
+
+  ```dockerfile
+  RUN apk add --no-cache bash
+  HEALTHCHECK CMD /app/healthcheck.sh
+  ```
+
+
+  Dropping `sh` from the `HEALTHCHECK` line means the shebang is honoured, which
+  is the change that makes the file's first line true.
+
+
+  **Or remove the bashism and keep the small image**, which is the better answer
+  if the script is simple enough:
+
+
+  ```sh
+  #!/bin/sh
+  check_endpoints() {
+    failed=0
+    for u in "$@"; do
+      curl -sf --max-time 5 "$u" >/dev/null || failed=$((failed + 1))
+    done
+    return "$failed"
+  }
+  ```
+
+
+  `"$@"` already does what the array was there for, so the array added nothing.
+  That is common — most shell arrays in operations scripts exist to hold the
+  positional parameters that `"$@"` holds for free.
+
+
+  Adding `bash` to an Alpine image costs about 3 MB against a 9 MB base, so the
+  size argument is real but small. Choose deliberately rather than by accident.
+
+
+  **Then make the mismatch impossible to reintroduce.** Add both checks to CI:
+
+
+  ```bash
+  bash -n scripts/*.sh                    # does it parse as bash?
+  for f in scripts/*.sh; do
+    head -1 "$f" | grep -q '/bin/sh$' && sh -n "$f"   # if it claims sh, hold it to sh
+  done
+  shellcheck -s sh scripts/*.sh           # or -s bash, matching the shebang
+  ```
+
+
+  `shellcheck` is the one that would have caught this at authoring time — it
+  reports `SC3030: In POSIX sh, arrays are undefined` when told the target is
+  `sh`, and it takes under a second.
+
+
+  **And grep the repository for the invocation pattern**, because the Dockerfile
+  is not the only place it hides:
+
+
+  ```bash
+  grep -rn 'sh .*\.sh' Dockerfile* docker-compose* .github/ deploy/
+  ```
+
+
+  Any `sh script.sh`, `ExecStart=/bin/sh -c`, or CI `run: sh ./script.sh` has the
+  same defect waiting.
+
+
+  **For the postmortem:** the base-image change was correct and well-motivated,
+  the script's shebang was correct, and the script had never once been run by the
+  interpreter it named. The `HEALTHCHECK` line silently overrode it for three
+  years, and the health check was almost certainly not exercising the failing
+  function in that time — so the more uncomfortable finding is not the syntax
+  error. It is that **a health check which cannot have been checking anything
+  reported success on every release for three years**, and the base-image swap is
+  simply what made it visible.

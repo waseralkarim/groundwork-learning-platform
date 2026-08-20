@@ -1,0 +1,292 @@
+id: troubleshooting.the-config-that-came-back
+topic: topic.packages-and-dependencies
+title: The hardening that was applied and never arrived
+level: L2
+objectives: [OBJ-B06.2.7, OBJ-B06.2.6]
+reveal_policy: progressive
+
+situation: >-
+  An external assessment reports that 340 hosts still offer a deprecated SSH key
+  exchange algorithm. The team fixed this eleven months ago: a distribution
+  security update hardened the default, they tracked the package version across
+  the fleet, and every host reports the patched version installed.
+
+
+  The package version is correct on all 340. The behaviour is not.
+
+
+  Nobody has edited `sshd_config` recently. The team's configuration management
+  does not manage the file — it was decided years ago that the distribution's
+  defaults were good enough.
+
+
+  Somebody suggests the assessment tool is wrong. Somebody else suggests the
+  hosts need a reboot.
+
+
+  Work out why an installed fix is not in effect.
+
+symptoms:
+  - "340 hosts offer an algorithm that a patch removed eleven months ago"
+  - "Every host reports the patched package version installed"
+  - "sshd_config has not been edited recently by anyone"
+  - "Restarting sshd changes nothing"
+  - "Three hosts built this year are correct"
+
+artifacts:
+  - type: command_output
+    label: The package version, and the running configuration
+    content: |
+      $ dpkg-query -W -f='${Version}\n' openssh-server
+      1:10.0p1-7+deb13u4
+
+      $ grep -i kexalgorithms /etc/ssh/sshd_config
+      KexAlgorithms diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha256
+
+      $ sshd -T | grep -i kexalgorithms
+      kexalgorithms diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha256
+
+  - type: command_output
+    label: What else is in /etc/ssh
+    content: |
+      $ ls -la /etc/ssh/
+      -rw-r--r-- 1 root root  3242 Mar 14  2021 sshd_config
+      -rw-r--r-- 1 root root  3387 Sep  2  2025 sshd_config.dpkg-dist
+      -rw-r--r-- 1 root root  1650 Mar 14  2021 ssh_config
+
+      $ grep -i kexalgorithms /etc/ssh/sshd_config.dpkg-dist
+      # KexAlgorithms sntrup761x25519-sha512,curve25519-sha256,...
+      # (the deprecated algorithm is absent from this file entirely)
+
+  - type: command_output
+    label: What dpkg thinks of the file
+    content: |
+      $ dpkg -V openssh-server | grep -v '^missing'
+      ??5?????? c /etc/ssh/sshd_config
+
+      $ find /etc -name '*.dpkg-dist' -o -name '*.dpkg-old' | wc -l
+      14
+
+  - type: log
+    label: The unattended upgrade, from September
+    content: |
+      Sep  2 03:14:02 Preparing to unpack openssh-server_1:10.0p1-7+deb13u4
+      Sep  2 03:14:03 Configuration file '/etc/ssh/sshd_config'
+      Sep  2 03:14:03  ==> Modified (by you or by a script) since installation.
+      Sep  2 03:14:03  ==> Package distributor has shipped an updated version.
+      Sep  2 03:14:03    What would you like to do about it ?
+      Sep  2 03:14:03     ... keeping the local version currently installed
+      Sep  2 03:14:03 Setting up openssh-server (1:10.0p1-7+deb13u4) ...
+      Sep  2 03:14:04 Upgrade completed successfully.
+
+  - type: config
+    label: The fleet's upgrade configuration
+    content: |
+      # /etc/apt/apt.conf.d/50unattended-upgrades
+      Dpkg::Options {
+        "--force-confdef";
+        "--force-confold";
+      };
+
+  - type: log
+    label: A note in the wiki, from 2021
+    content: |
+      2021-03-14  Disabled a few weak ciphers in sshd_config across the fleet
+                  as part of the audit remediation. Ran once with Ansible;
+                  did not add it to the playbook since the change is permanent.
+
+diagnostic_questions:
+  - "The package version is correct. What else has to be correct for behaviour to change?"
+  - "What is `sshd_config.dpkg-dist`, and where did it come from?"
+  - "What did the upgrade log say it decided, and who decided it?"
+  - "Why are the three hosts built this year correct?"
+  - "The wiki says the file was edited in 2021. Why does that matter in 2026?"
+
+hints:
+  - "Compare the two files in /etc/ssh. One of them has the fix."
+  - "`dpkg -V` reports the config file. What does that flag mean?"
+  - "Read the upgrade log line about keeping the local version."
+  - "A fresh install has no local version to keep."
+
+root_cause: >-
+  **The fix shipped as a change to the default configuration file, and every host
+  declined it — because a one-off edit in 2021 made the file locally modified,
+  and the fleet's upgrade policy keeps local versions without asking.**
+
+
+  `sshd_config` is a **conffile**: dpkg records its checksum at install time so
+  an upgrade can tell whether the administrator changed it. In 2021 somebody ran
+  Ansible once to disable a few weak ciphers. That edit was correct and it made
+  the recorded checksum stop matching, permanently.
+
+
+  Eleven months ago the security update shipped a new default file with the
+  deprecated key exchange removed. dpkg compared three things — the recorded
+  checksum, the file on disk, and the file in the package — and found the last
+  case: **you changed it and the package changed it.** That is the only branch
+  that conflicts, and it prompts.
+
+
+  Nobody was there to answer. `--force-confold` in the unattended-upgrades
+  configuration answers it for you: keep the local version. The maintainer's file
+  was written alongside as `sshd_config.dpkg-dist`, and the upgrade exited zero.
+
+
+  So the fix has been sitting on disk, unread, on 340 hosts for eleven months.
+
+
+  ```console
+  $ dpkg -V openssh-server | grep -v '^missing'
+  ??5?????? c /etc/ssh/sshd_config
+  ```
+
+
+  dpkg has been reporting this the whole time. The `5` is an md5 mismatch and the
+  `c` marks a conffile — meaning "the administrator changed this", which is
+  normally unremarkable, and here is the whole finding.
+
+
+  **Why the three new hosts are correct:** a fresh install has no local version
+  to keep. The package's file is written as-is, hardened, with no conflict and no
+  prompt.
+
+
+  **Why the version tracking did not catch it:** the version is genuinely
+  correct. The package is installed, the binary is patched, and every binary-level
+  vulnerability the update fixed *is* fixed. Only the part delivered as a
+  configuration default was declined — so the fleet is in a state that is
+  simultaneously patched and vulnerable, and the metric everyone was watching
+  reports the first half.
+
+
+  Neither working theory was right. The assessment tool is correct, and a reboot
+  would change nothing because the file it would re-read is the one with the
+  problem.
+
+method: >-
+  **1. When a version is right and behaviour is wrong, stop checking the
+  version.** The package is one input to behaviour and configuration is another.
+  `sshd -T` prints sshd's *effective* configuration, and it disagreeing with your
+  expectations is the fastest confirmation that the gap is in configuration
+  rather than in code.
+
+
+  **2. List the configuration directory, do not just grep it.** The finding is
+  the presence of a second file. `sshd_config.dpkg-dist` is a filename that
+  carries its whole explanation, and grep will never show it to you.
+
+
+  **3. Know what the three suffixes mean.** `.dpkg-dist` is the maintainer's
+  version, saved because yours was kept. `.dpkg-old` is yours, saved because you
+  took theirs. `.dpkg-new` is the new version where the prompt was deferred. Each
+  one records a decision somebody made, or that a flag made for them.
+
+
+  **4. Ask dpkg what it thinks of the file.** `dpkg -V <package>` reports a
+  checksum mismatch on any conffile you have modified. On a healthy machine that
+  output is short and every line is a deliberate local change — which makes it a
+  drift report, not just an integrity check.
+
+
+  **5. Read the upgrade log for the decision.** The prompt and the answer are
+  both there. "Keeping the local version currently installed" is not noise; it is
+  the upgrade telling you it declined to apply half of itself.
+
+
+  **6. Find the flags that answered the question.** `--force-confold` in
+  unattended-upgrades is a deliberate and defensible choice — it prevents
+  overnight upgrades from overwriting local configuration. It also silently
+  declines every configuration change the distribution ships, forever.
+
+
+  **7. Ask why the newest hosts are correct.** "Works on new builds, broken on
+  old ones" almost always means state accumulated over time rather than a
+  difference in code, and it points straight at what was inherited from the past.
+
+
+  The habit: **an upgrade reporting success has told you the packages changed,
+  not that the behaviour did.** Anything delivered as a default is only delivered
+  where nobody has edited the file.
+
+resolution: >-
+  **Immediately:** find the fleet-wide extent before changing anything.
+
+
+  ```bash
+  # every host where the maintainer's version was declined
+  find /etc -name '*.dpkg-dist' -o -name '*.dpkg-old' -o -name '*.dpkg-new'
+
+  # every conffile that has been locally modified
+  dpkg -V | grep -v '^missing'
+  ```
+
+
+  Fourteen `.dpkg-dist` files on the example host means thirteen other packages
+  have shipped configuration changes that were also declined. Assume none of them
+  were reviewed.
+
+
+  **Then merge, do not overwrite.** The local file contains the 2021 hardening,
+  and the maintainer's file contains eleven months of upstream decisions. Both
+  matter:
+
+
+  ```bash
+  diff -u /etc/ssh/sshd_config /etc/ssh/sshd_config.dpkg-dist
+  ```
+
+
+  Take the maintainer's file as the new base, re-apply whichever local settings
+  are still justified, and verify with `sshd -T` rather than by reading the file —
+  the effective configuration is the only thing that answers the question.
+
+
+  **Then stop relying on package defaults for anything that matters.**
+
+
+  ```yaml
+  - name: sshd configuration
+    ansible.builtin.template:
+      src: sshd_config.j2
+      dest: /etc/ssh/sshd_config
+      validate: "/usr/sbin/sshd -t -f %s"
+    notify: restart sshd
+  ```
+
+
+  This is the structural fix and it inverts the model deliberately. The conffile
+  mechanism is a reasonable answer for one machine with an administrator at the
+  keyboard: it assumes somebody answers the prompt, somebody reads the
+  `.dpkg-dist`, and your version was deliberate. None of those hold across 340
+  hosts at 3am. Owning the file completely means divergence is **detected** rather
+  than negotiated.
+
+
+  The 2021 wiki note is the honest root of it: *"Ran once with Ansible; did not
+  add it to the playbook since the change is permanent."* A change applied once is
+  a change nothing will maintain, and it disabled five years of upstream security
+  defaults as a side effect nobody could have predicted at the time.
+
+
+  **Then make the declines visible.** Whatever `--force-confold` decides, somebody
+  must see it:
+
+
+  ```bash
+  # as a monitoring check — should be zero
+  find /etc \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) -print | wc -l
+  ```
+
+
+  Keep `--force-confold` — unattended upgrades overwriting local configuration is
+  a worse failure than this one. What was missing is that its decisions produced
+  no signal. A file appearing in `/etc` should raise a ticket, not sit there for
+  eleven months.
+
+
+  **For the postmortem:** every component behaved correctly. The security team
+  shipped the fix, the distribution packaged it, the upgrade ran, the version
+  metric was accurate, and the fleet was never hardened. The gap is that **the
+  fix was delivered as a default, and a default only applies where nobody has
+  edited the file** — so the hosts most carefully configured by hand were exactly
+  the hosts that did not receive it.

@@ -1,0 +1,271 @@
+id: troubleshooting.the-read-only-rollout
+topic: topic.the-filesystem-hierarchy
+title: The service that writes nothing, and cannot start
+level: L2
+objectives: [OBJ-B06.3.7, OBJ-B06.3.5]
+reveal_policy: progressive
+
+situation: >-
+  A hardening programme is turning on `read_only: true` across the estate. Forty
+  services went first and thirty-eight came up unchanged.
+
+
+  One of the two failures is a Java service that, according to its owners, "does
+  not write files" — it reads from a queue, transforms records, and writes to a
+  database. There is no file output anywhere in the code.
+
+
+  It now fails about forty seconds after start, intermittently. Sometimes it
+  serves traffic for a few minutes first. Two of six replicas survived a full day
+  before failing.
+
+
+  The owning team wants the flag reverted for their service. The platform team
+  says a service that writes nothing cannot be affected by a read-only
+  filesystem, and asked them to look again.
+
+
+  Both statements are reasonable. Work out what is writing.
+
+symptoms:
+  - "A service whose code writes no files fails under a read-only root"
+  - "Failure is delayed by tens of seconds and is intermittent between replicas"
+  - "Thirty-eight other services were unaffected by the same change"
+  - "No application log line mentions a file or a path"
+  - "Reverting read_only makes it stable again"
+
+artifacts:
+  - type: log
+    label: What the container prints before it dies
+    content: |
+      12:04:11  INFO  consumer started, 6 partitions assigned
+      12:04:11  INFO  ready
+      12:04:49  WARN  Unable to create temporary file
+      12:04:49  ERROR java.io.IOException: No such file or directory
+                        at java.base/java.io.File.createTempFile(File.java:2170)
+                        at com.corp.ledger.Export.buildBatch(Export.java:88)
+      12:04:49  ERROR shutting down
+
+  - type: command_output
+    label: What the JVM writes even when the application does not
+    content: |
+      # on an identical host WITHOUT read_only
+      $ docker exec ledger ls -la /tmp
+      drwxr-xr-x 2 app app   4096 hsperfdata_app
+      -rw------- 1 app app  32768 hsperfdata_app/1
+
+      $ docker exec ledger ls /var/cache/fontconfig 2>/dev/null
+      # (empty, but present)
+
+  - type: config
+    label: The change that was rolled out
+    content: |
+      # compose.yaml — the hardening change
+       services:
+         ledger:
+           image: registry.internal/ledger:5.2.1
+      +    read_only: true
+           volumes:
+             - ledger-data:/var/lib/ledger
+
+  - type: command_output
+    label: What the two surviving replicas had in common
+    content: |
+      replica-1  died 12:04   handled an export request at 12:04
+      replica-2  died 12:11   handled an export request at 12:11
+      replica-3  died 14:52   handled an export request at 14:52
+      replica-4  alive 26h    no export requests in that period
+      replica-5  alive 26h    no export requests in that period
+      replica-6  died 12:19   handled an export request at 12:19
+
+  - type: config
+    label: The two other services that also failed
+    content: |
+      billing-api   python   OSError: [Errno 30] Read-only file system:
+                             '/app/__pycache__/routes.cpython-312.pyc'
+
+      # and the one that took longest to explain:
+      report-gen    java     writes nothing; fails only when generating a PDF
+                             (font cache)
+
+diagnostic_questions:
+  - "The application writes no files. What else in the process might?"
+  - "Why is the failure delayed rather than immediate at startup?"
+  - "What do the replicas that survived have in common?"
+  - "Which directory does the stack trace implicate, and who owns it?"
+  - "Why did thirty-eight other services not notice?"
+
+hints:
+  - "Read the stack trace: `createTempFile`. Where does Java put temporary files?"
+  - "Compare which replicas died against what they were doing."
+  - "The JVM writes something at startup regardless of your code — look in /tmp."
+  - "The other two failures point at the same category of writer."
+
+root_cause: >-
+  **The application does not write files, and three other things inside the same
+  process do.**
+
+
+  The immediate failure is `File.createTempFile`, which writes to `java.io.tmpdir`
+  — `/tmp` by default. It is called from `Export.buildBatch`, on the export path
+  only. Under a read-only root there is no writable `/tmp`, so the call fails.
+
+
+  That explains everything the team found confusing:
+
+
+  **Why it is delayed and intermittent.** The write happens on the *export* code
+  path, not at startup. A replica fails the moment it first handles an export
+  request, which is why two replicas that received none survived 26 hours. The
+  failure is perfectly deterministic — it looks intermittent because the trigger
+  is traffic-dependent, exactly the shape B06.1's base-image scenario had.
+
+
+  **Why "we write nothing" was sincere and wrong.** Nobody wrote file-handling
+  code. `createTempFile` is a library call inside a batching helper, three frames
+  below anything the team thinks of as I/O.
+
+
+  And there are two more writers the same team also did not know about:
+
+
+  **The JVM itself** writes `/tmp/hsperfdata_<user>/<pid>` at startup, for
+  `jps`, `jstat` and every JMX tool. It fails silently when it cannot, so this one
+  causes no outage — it removes your ability to attach diagnostics, which you
+  discover during the *next* incident.
+
+
+  **Fontconfig**, in the `report-gen` service, builds a font cache under
+  `/var/cache/fontconfig` the first time it renders a PDF. Same shape: a
+  dependency of a dependency, writing to a path nobody declared, on a code path
+  that runs rarely.
+
+
+  The Python service is the same phenomenon with a different runtime — CPython
+  writing `__pycache__` next to source on first import.
+
+
+  **Why thirty-eight services were fine:** they either already declared a tmpfs
+  for `/tmp`, or they are statically compiled binaries whose runtimes write
+  nothing. The programme's success rate was not evidence that this service was
+  misconfigured; it was evidence that most services have less underneath them.
+
+
+  Neither team was wrong. "The application writes nothing" is true. "A service
+  that writes nothing is unaffected" is also true. **The false premise is that
+  the application is the only thing in the process.**
+
+method: >-
+  **1. Read the stack trace for the path, not the exception.**
+  `File.createTempFile` names both the operation and, implicitly, the directory.
+  `java.io.tmpdir` is `/tmp` unless somebody changed it, and that is the whole
+  diagnosis — available in the first log line anybody looked at.
+
+
+  **2. Treat "intermittent" as a question about triggers.** Line up which
+  replicas died against what they were doing. Two survivors handled no exports;
+  every death followed an export within the same minute. That converts
+  "intermittent" into "deterministic on a code path we are not always
+  exercising", which is a completely different investigation.
+
+
+  **3. Ask what writes that the author did not write.** The runtime, the standard
+  library, the TLS library, the font stack, the resolver. Each has a default path
+  and none of them appear in the application's source. This is the reframe the
+  whole scenario turns on.
+
+
+  **4. Compare against an unhardened instance.** `ls -la /tmp` on a host without
+  `read_only` shows `hsperfdata_app` sitting there — proof the JVM writes at
+  startup, obtained in one command, without reading any documentation.
+
+
+  **5. Read the other failures as the same class.** `__pycache__` in the Python
+  service and the font cache in `report-gen` are the identical pattern. Three
+  services, three runtimes, one cause — which is what tells you to fix the
+  pattern rather than the service.
+
+
+  **6. Do not accept "thirty-eight worked" as evidence about the thirty-ninth.**
+  It measures how much runtime sits under each service, not how well each is
+  configured.
+
+
+  The habit: **a read-only root does not test your code, it tests your
+  dependencies.** Predicting what a process writes by reading the application is
+  the wrong method — start it, read the error, add the narrowest path that fixes
+  it, and repeat until it stays up.
+
+resolution: >-
+  **Immediately:** give the service a writable `/tmp` and keep the flag.
+
+
+  ```yaml
+  services:
+    ledger:
+      read_only: true
+      tmpfs:
+        - /tmp:size=512m,noexec,nosuid
+      volumes:
+        - ledger-data:/var/lib/ledger
+  ```
+
+
+  `noexec` matters here. `/tmp` now holds export batches and JVM performance
+  data, which are data — nothing there should ever execute, and a writable
+  directory that can also run code is precisely where a compromised process would
+  put a payload.
+
+
+  Size it explicitly. A tmpfs draws on the container's memory, so an unbounded one
+  turns "somebody exported a large batch" into an OOM kill.
+
+
+  **Then find the rest before they find you.** The export path was discovered by
+  an outage; the font cache and `hsperfdata` were not on anybody's list either.
+  Exercise the rare paths deliberately in staging under `read_only`:
+
+
+  ```bash
+  # drive every code path that touches a file, then look
+  docker exec ledger find / -xdev -newer /proc/1 -type f 2>/dev/null | grep -v '^/proc'
+  ```
+
+
+  Anything newer than PID 1 was written after start, which is the list you want.
+
+
+  **Fix it as a platform default rather than per service.** Three runtimes hit
+  this in one rollout, so the base images should declare it:
+
+
+  ```text
+  Java     tmpfs /tmp                    (hsperfdata, createTempFile)
+  Python   PYTHONDONTWRITEBYTECODE=1     (or precompile at build time)
+  Fonts    fc-cache at build time        (or tmpfs /var/cache/fontconfig)
+  ```
+
+
+  The Python case is worth doing properly: setting `PYTHONDONTWRITEBYTECODE`
+  removes the write, and compiling bytecode at build time removes both the write
+  and the startup cost. That is better than making the directory writable.
+
+
+  **Push back on reverting the flag, and be specific about why.** Two of six
+  replicas survived a full day, which means without the read-only root this
+  service would have had an undiagnosed dependency on a writable `/tmp` that
+  nobody could see. The flag did not create the fragility — it made it visible in
+  staging rather than in an incident.
+
+
+  **And record what came out of it**, because it is the artefact nobody had: a
+  tested list of every path this service writes, including the three its authors
+  did not know about. That list is worth keeping even if somebody later turns the
+  flag off — it is what the backup policy and the volume layout are derived from.
+
+
+  **For the postmortem:** the owning team was right that their code writes
+  nothing, the platform team was right that a service writing nothing is
+  unaffected, and both were reasoning about the application when the writes came
+  from the runtime underneath it. Thirty-eight services succeeded because less was
+  underneath them, not because they were better configured.

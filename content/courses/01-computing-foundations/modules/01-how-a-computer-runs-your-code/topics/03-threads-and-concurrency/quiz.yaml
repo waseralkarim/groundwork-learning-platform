@@ -1,0 +1,435 @@
+id: quiz.threads-and-concurrency
+topic: topic.threads-and-concurrency
+pass_score: 70
+
+questions:
+  - id: q1
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-A01.6.1]
+    stem: Which of these do threads of one process share? Select all that apply.
+    options:
+      - id: a
+        text: The address space, including the heap and globals
+        correct: true
+      - id: b
+        text: Open file descriptors
+        correct: true
+      - id: c
+        text: Each thread's stack
+        note: >-
+          Every thread has its own stack. It is one of the few things that is
+          private, along with registers and the thread's identity.
+      - id: d
+        text: The working directory
+        correct: true
+    explanation: >-
+      Threads share nearly everything a process owns, which is why passing data
+      between them costs nothing and why they can corrupt each other's data. The
+      private parts are the stack, the registers and the TID.
+
+  - id: q2
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.6.1]
+    stem: One thread in a process segfaults. What happens to the others?
+    options:
+      - id: a
+        text: The whole process dies, including every other thread
+        correct: true
+      - id: b
+        text: Only that thread dies; the others continue
+        note: >-
+          That is the behaviour of separate processes. Threads share one address
+          space, and the fault is against the space they all use.
+      - id: c
+        text: The thread is restarted automatically
+        note: >-
+          Nothing in the kernel restarts a thread. A runtime might, but the
+          process is already gone.
+      - id: d
+        text: It depends on whether the thread held a lock
+        note: >-
+          Locks affect what state is left behind, not whether the process
+          survives.
+    explanation: >-
+      A segmentation fault is delivered to the process. This is the main
+      argument for process isolation over threads where robustness matters — a
+      worker process crashing takes one request with it, a worker thread takes
+      all of them.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.6.2]
+    stem: How do you list the threads of a running process?
+    options:
+      - id: a
+        text: "`ls /proc/<pid>/task` — one directory per thread"
+        correct: true
+      - id: b
+        text: "`ps -e` — every thread appears as its own row"
+        note: >-
+          `ps -e` lists processes. `ps -L` adds threads, and /proc/PID/task is
+          the underlying source.
+      - id: c
+        text: "`ls /proc/<pid>/fd`"
+        note: "That lists open file descriptors, not threads."
+      - id: d
+        text: Threads are not visible from outside the process
+        note: >-
+          They are entirely visible: the kernel schedules threads, so it tracks
+          each one.
+    explanation: >-
+      The kernel schedules threads, so each has an entry under the process's
+      `task` directory, named by TID. `ps -L` and `top -H` read the same source
+      and are easier to read.
+
+  - id: q4
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.6.3]
+    stem: What is the difference between concurrency and parallelism?
+    options:
+      - id: a
+        text: Concurrency is tasks in progress together; parallelism is tasks executing at the same instant
+        correct: true
+      - id: b
+        text: They are the same thing
+        note: >-
+          The distinction decides whether more threads can help: one CPU gives
+          concurrency and never parallelism.
+      - id: c
+        text: Concurrency needs multiple CPUs; parallelism does not
+        note: "The reverse. Parallelism is the one that requires more than one CPU."
+      - id: d
+        text: Concurrency is about threads; parallelism is about processes
+        note: >-
+          Both can be achieved with either. The distinction is about
+          simultaneity, not the mechanism.
+    explanation: >-
+      A single CPU interleaves tasks — real concurrency, no parallelism. Most
+      servers need concurrency: while one request waits on a database, another
+      can be served. A container limited below one CPU can never have
+      parallelism, however many threads it starts.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.6.3]
+    stem: >-
+      A container is limited to 0.5 CPU. How many of its threads can execute at
+      the same instant?
+    options:
+      - id: a
+        text: One at most, and only for part of each period
+        correct: true
+      - id: b
+        text: Two, since 0.5 rounds up
+        note: >-
+          The quota is time, not a count of cores. Half a CPU means half the CPU
+          time of one core.
+      - id: c
+        text: As many as the host has cores
+        note: >-
+          The threads may be spread across cores, but their total CPU time is
+          capped at half a core's worth per period.
+      - id: d
+        text: Unlimited — the limit only affects total usage
+        note: >-
+          Total usage is exactly what is limited, and when it is exhausted every
+          thread stops.
+    explanation: >-
+      A limit below 1.0 makes genuine parallelism impossible: the container may
+      consume half a CPU's worth of time per period, so at most one thread runs
+      at a time, and only until the quota is spent.
+
+  - id: q6
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.4]
+    stem: "`cpu.max` contains `50000 100000`. What does it mean?"
+    options:
+      - id: a
+        text: 50ms of CPU time per 100ms period — half a CPU
+        correct: true
+      - id: b
+        text: A minimum of 50,000 and a maximum of 100,000 CPU shares
+        note: >-
+          Shares are a different mechanism, used for weighting rather than
+          capping.
+      - id: c
+        text: 50,000 threads maximum, checked every 100,000 microseconds
+        note: "Neither number counts threads. Both are microseconds of time."
+      - id: d
+        text: 50% of the machine's total CPU capacity
+        note: >-
+          It is half of *one* CPU, regardless of how many the machine has.
+    explanation: >-
+      Quota and period, in microseconds. Divide the first by the second for the
+      CPU count. `max` in the first field means unlimited, in which case `nproc`
+      is finally the right number to use.
+
+  - id: q7
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.4]
+    stem: A container spends its CPU quota 30ms into a 100ms period. What happens next?
+    options:
+      - id: a
+        text: Every thread is stopped until the next period begins
+        correct: true
+      - id: b
+        text: Threads keep running, more slowly
+        note: >-
+          Throttling is not a slowdown. Runnable threads are taken off the CPU
+          entirely.
+      - id: c
+        text: The lowest-priority thread is stopped
+        note: >-
+          The limit applies to the cgroup as a whole, not to individual threads
+          by priority.
+      - id: d
+        text: The container is killed
+        note: >-
+          That is the memory limit's behaviour. Exceeding CPU throttles; it does
+          not kill.
+    explanation: >-
+      Seventy milliseconds of doing nothing at all. This is why a throttled
+      service has terrible latency while its CPU utilisation looks moderate — it
+      is idle for most of every period.
+
+  - id: q8
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.5]
+    stem: Which single metric proves a container is being limited by its CPU quota?
+    options:
+      - id: a
+        text: "`throttled_usec` in cpu.stat"
+        correct: true
+      - id: b
+        text: CPU utilisation percentage
+        note: >-
+          A throttled container is idle while stopped, so its utilisation can
+          look healthy. This is the metric that hides the problem.
+      - id: c
+        text: Load average
+        note: >-
+          Inside a container the load average is the host's, and it counts
+          uninterruptible tasks too.
+      - id: d
+        text: The number of threads
+        note: >-
+          Thread count is a clue about the cause, not evidence that throttling
+          is happening.
+    explanation: >-
+      `throttled_usec` counts exactly one thing: time the cgroup was stopped by
+      its own limit. Nothing else produces it, and any non-zero value means the
+      limit is shaping latency.
+
+  - id: q9
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.5]
+    stem: >-
+      A container's CPU utilisation is 45% and every request is slow. What is
+      the most likely explanation?
+    options:
+      - id: a
+        text: It is being throttled, and utilisation is measured against the wrong denominator
+        correct: true
+      - id: b
+        text: The CPU is fine, so the problem must be the network
+        note: >-
+          Possible, but throttling is far more common and is one command to rule
+          in or out.
+      - id: c
+        text: It needs more memory
+        note: >-
+          Memory pressure has its own signatures — reclaim, swap, OOM kills.
+      - id: d
+        text: 45% means there is headroom, so more workers would help
+        note: >-
+          This is the reasoning that produced the incident: more workers spend a
+          fixed quota faster and make it worse.
+    explanation: >-
+      A throttled container is stopped for part of every period, so it looks
+      moderately busy while requests wait. Check `throttled_usec` before
+      concluding anything about headroom.
+
+  - id: q10
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.6]
+    stem: >-
+      A team raises workers from 4 to 16 and latency gets worse. What happened?
+    options:
+      - id: a
+        text: Sixteen threads share the same quota, so throttling starts earlier in each period
+        correct: true
+      - id: b
+        text: The extra threads exhausted memory
+        note: >-
+          Thread stacks cost address space, but the described symptom is
+          latency, and the CPU quota is the far more likely constraint.
+      - id: c
+        text: More threads always means more context switching, which is the whole cost
+        note: >-
+          Switching does cost, but it is second order next to a quota being
+          spent four times faster.
+      - id: d
+        text: The scheduler deprioritised the process for using too many threads
+        note: "Linux does no such thing."
+    explanation: >-
+      The quota is fixed and shared. More workers do not add capacity; they add
+      contention for the same budget, so each request spends more wall time
+      stopped. The fix is to size workers from the limit, or to raise the limit.
+
+  - id: q11
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.6]
+    stem: >-
+      Why does `nproc` mislead inside a container?
+    options:
+      - id: a
+        text: It reports the host's CPUs — /proc/cpuinfo is not namespaced
+        correct: true
+      - id: b
+        text: It counts hyperthreads rather than physical cores
+        note: >-
+          True in general and unrelated to containers. The container problem is
+          that it describes a different machine entirely.
+      - id: c
+        text: It is only accurate when the container runs as root
+        note: "Privilege has nothing to do with it."
+      - id: d
+        text: It reflects the CPU limit, but rounds down
+        note: >-
+          It does not consult the limit at all. That is the entire problem.
+    explanation: >-
+      Anything sizing a worker pool, GC thread count or connection pool from
+      `nproc` inside a container is configuring for hardware it does not have —
+      the CPU twin of a JVM reading the host's RAM for its heap.
+
+  - id: q12
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.7]
+    stem: >-
+      Two threads each increment a shared counter a million times without
+      synchronisation. What is the final value?
+    options:
+      - id: a
+        text: Somewhere between one and two million, and different every run
+        correct: true
+      - id: b
+        text: Exactly two million
+        note: >-
+          That requires every increment to complete without interleaving, which
+          contention makes unlikely.
+      - id: c
+        text: Exactly one million, because one thread always wins
+        note: >-
+          Neither thread wins consistently. The result varies with the
+          interleaving.
+      - id: d
+        text: The program crashes
+        note: >-
+          Nothing crashes, and that is what makes this class of bug expensive:
+          the number is simply wrong, silently.
+    explanation: >-
+      `x = x + 1` is read, add, write. Two threads can read the same value before
+      either writes, so one increment is lost. The variability between runs is
+      the defining property — and the reason it may never reproduce in testing.
+
+  - id: q13
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.7]
+    stem: What does a mutex guarantee?
+    options:
+      - id: a
+        text: That one thread at a time runs the protected section
+        correct: true
+      - id: b
+        text: That the protected code runs faster
+        note: >-
+          The opposite: it removes parallelism from that section. A lock can
+          become the bottleneck while every CPU is idle.
+      - id: c
+        text: That the program is free of race conditions
+        note: >-
+          Only for the state it protects, and only if every access takes it. An
+          invariant spanning two locked sections can still be violated between
+          them.
+      - id: d
+        text: That threads run in the order they arrived
+        note: >-
+          Most mutexes make no fairness guarantee, and assuming ordering is its
+          own class of bug.
+    explanation: >-
+      A lock makes one interleaving impossible. It does not make code fast and
+      does not make it correct on its own. For a single counter an atomic
+      operation is cheaper: the hardware does read-modify-write indivisibly.
+
+  - id: q14
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.8]
+    stem: >-
+      A service stops responding. CPU usage is near zero, no errors are logged,
+      and a restart fixes it. What is the most likely cause?
+    options:
+      - id: a
+        text: A deadlock — threads blocked on locks, doing nothing
+        correct: true
+      - id: b
+        text: CPU saturation
+        note: >-
+          A saturated service is busy. Near-zero CPU is the discriminator that
+          rules this out.
+      - id: c
+        text: An OOM kill
+        note: >-
+          That kills the process and produces exit code 137 rather than a hang.
+      - id: d
+        text: Throttling
+        note: >-
+          A throttled service still makes progress between periods, and
+          `throttled_usec` would show it.
+    explanation: >-
+      Zero CPU with no progress means threads are blocked, not busy. `ps -L` with
+      `wchan` shows them parked in `futex_wait`, and a thread dump names the
+      lines. Restarting clears it and teaches nothing, which is why it recurs.
+
+  - id: q15
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.6.8]
+    stem: >-
+      A Linux machine shows a load average of 90 with 5% CPU usage. What does
+      that tell you?
+    options:
+      - id: a
+        text: Many tasks are in uninterruptible sleep, almost certainly waiting on I/O
+        correct: true
+      - id: b
+        text: The load average is broken
+        note: >-
+          It is measuring what Linux defines it to measure, which is not what
+          other systems mean by it.
+      - id: c
+        text: The CPU is oversubscribed
+        note: >-
+          Oversubscription would show high CPU usage as well.
+      - id: d
+        text: There are 90 processes running
+        note: >-
+          Load counts runnable *and* uninterruptible tasks, and averages over
+          time rather than counting processes.
+    explanation: >-
+      Linux includes uninterruptible sleep in its load average, so a machine
+      blocked on a slow disk shows a high load with an idle CPU. Adding CPU will
+      not help; the constraint is the I/O.

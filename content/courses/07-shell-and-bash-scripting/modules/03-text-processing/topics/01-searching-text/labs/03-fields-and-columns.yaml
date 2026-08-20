@@ -1,0 +1,327 @@
+id: lab.fields-and-columns
+topic: topic.searching-text
+title: The field extraction that returns nothing
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.3.6, OBJ-B08.3.7]
+
+intro: >-
+  `cut -d' ' -f2` on a real log returns the empty string for every line. It does
+  not error, it does not warn, and a comparison against the result quietly
+  succeeds at doing nothing.
+
+
+  You will find out why, learn the splitting rule that works on command output,
+  and then make an extraction that survives a column being added.
+
+setup:
+  - /opt/lab/seed-text.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Extract the second column of /tmp/text/access.log with cut and with awk.
+      Save both results to /tmp/answer-cut-vs-awk.
+    hint: >-
+      Look at the raw file first — how many spaces separate the columns?
+    walkthrough: |
+      cd /tmp/text
+      {
+        echo "the raw file, with spaces made visible:"
+        head -3 access.log | cat -A | sed 's/^/  /' | cut -c1-78
+        echo
+        echo "cut -d' ' -f2:"
+        cut -d' ' -f2 access.log | head -3 | sed 's/^/  [/;s/$/]/'
+        echo
+        echo "awk '{print \$2}':"
+        awk '{print $2}' access.log | head -3 | sed 's/^/  [/;s/$/]/'
+        echo
+        echo "cut returned the EMPTY STRING for every line. no error, no warning, exit status 0."
+      } > /tmp/answer-cut-vs-awk
+      cat /tmp/answer-cut-vs-awk
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cut-vs-awk
+        pattern: "\\[10.2.0.14\\]"
+        describe: awk extracted the address
+      - type: file_matches
+        path: /tmp/answer-cut-vs-awk
+        pattern: "^  \\[\\]$"
+        describe: And cut returned an empty field
+      - type: file_matches
+        path: /tmp/answer-cut-vs-awk
+        pattern: "(?i)no error, no warning"
+        describe: And you noted the failure is silent
+
+  - id: s2
+    instruction: >-
+      Explain the difference in splitting rules, and show the one awk form that
+      behaves like cut. Save to /tmp/answer-splitting.
+    hint: >-
+      cut splits on exactly one character. Try to make awk do the same and see
+      what it takes.
+    walkthrough: |
+      cd /tmp/text
+      printf 'alpha  22   ccc\n' > f.txt
+      {
+        echo "one line, with runs of spaces: 'alpha  22   ccc'"
+        echo
+        printf "  cut -d' ' -f2      -> [%s]\n" "$(cut -d' ' -f2 f.txt)"
+        printf "  awk '{print \$2}'   -> [%s]\n" "$(awk '{print $2}' f.txt)"
+        printf "  awk -F' '          -> [%s]\n" "$(awk -F' ' '{print $2}' f.txt)"
+        printf "  awk -F'[ ]'        -> [%s]\n" "$(awk -F'[ ]' '{print $2}' f.txt)"
+        echo
+        echo "cut -d' ' splits on EXACTLY ONE SPACE, so two consecutive spaces produce an empty field between them. column-aligned output is full of runs of spaces, so field 2 is that empty string."
+        echo
+        echo "awk's DEFAULT treats a RUN of whitespace - spaces, tabs, any mixture - as one separator, and ignores leading whitespace entirely. that is why it works on the output cut was reached for."
+        echo
+        echo "and note the third line: -F' ' does NOT behave like cut. a single space as the field separator is special-cased back to the default behaviour. to genuinely split on one space i need the bracket form -F'[ ]', which is almost never what i want."
+        echo
+        echo "the rule that survives: cut for DATA FILES with a real delimiter, awk for COMMAND OUTPUT."
+      } > /tmp/answer-splitting
+      cat /tmp/answer-splitting
+    verify:
+      - type: file_matches
+        path: /tmp/answer-splitting
+        pattern: "awk '\\{print \\$2\\}'   -> \\[22\\]"
+        describe: awk's default split found the field
+      - type: file_matches
+        path: /tmp/answer-splitting
+        pattern: "awk -F' '          -> \\[22\\]"
+        describe: And -F with a single space behaves the same
+      - type: file_matches
+        path: /tmp/answer-splitting
+        pattern: "awk -F'\\[ \\]'        -> \\[\\]"
+        describe: While the bracket form behaves like cut
+      - type: file_matches
+        path: /tmp/answer-splitting
+        pattern: "(?i)cut for DATA FILES"
+        describe: And you stated the rule
+
+  - id: s3
+    instruction: >-
+      Show where cut IS the right tool, using the CSV. Then show what happens to
+      a left-counted field when a column is added. Save to /tmp/answer-stability.
+    hint: >-
+      services.csv has a real delimiter. Then prepend a column to the log and
+      re-run an extraction that counts from the left.
+    walkthrough: |
+      cd /tmp/text
+      {
+        echo "a real delimited file - cut is correct here:"
+        cut -d, -f1,3 services.csv | sed 's/^/  /'
+        echo
+        echo "now: extracting the status code from access.log, counted from the left."
+        echo "  awk '{print \$5}' gives: $(awk '{print $5}' access.log | head -3 | tr '\n' ' ')"
+        echo
+        echo "somebody adds a request-id column at the front:"
+        awk '{print "req-" NR, $0}' access.log > access2.log
+        head -1 access2.log | cut -c1-60 | sed 's/^/    /'
+        echo
+        echo "  awk '{print \$5}' now gives: $(awk '{print $5}' access2.log | head -3 | tr '\n' ' ')"
+        echo "  ^ the wrong column, silently. every downstream comparison is now against a URL path."
+        echo
+        echo "counting from the RIGHT survives it:"
+        echo "  awk '{print \$(NF-1)}' original: $(awk '{print $(NF-1)}' access.log | head -3 | tr '\n' ' ')"
+        echo "  awk '{print \$(NF-1)}' with new column: $(awk '{print $(NF-1)}' access2.log | head -3 | tr '\n' ' ')"
+        echo
+        echo "NF is the number of fields on the line, so \$NF is the last and \$(NF-1) the one before. columns get added on the LEFT - a timestamp, a request id, a pod name - so counting from the right is the more stable choice."
+      } > /tmp/answer-stability
+      cat /tmp/answer-stability
+    verify:
+      - type: file_matches
+        path: /tmp/answer-stability
+        pattern: "orders,4"
+        describe: cut handled the real delimited file
+      - type: file_matches
+        path: /tmp/answer-stability
+        pattern: "(?i)wrong column, silently"
+        describe: And a left-counted field broke when a column was added
+      - type: file_matches
+        path: /tmp/answer-stability
+        pattern: "with new column: 200 500 200"
+        describe: While counting from the right survived
+      - type: file_matches
+        path: /tmp/answer-stability
+        pattern: "(?i)added on the LEFT"
+        describe: And you explained why that direction is safer
+
+  - id: s4
+    instruction: >-
+      Use awk to do something grep cannot: compare a field numerically, and
+      group by a field. Save to /tmp/answer-awk-power.
+    hint: >-
+      The status code is a field. So is the duration, if you strip the unit.
+    walkthrough: |
+      cd /tmp/text
+      {
+        echo "why grep is not enough here:"
+        echo "  grep -c ' 500 '            -> $(grep -c ' 500 ' access.log || true)"
+        echo "  awk '\$5 == 500' | wc -l    -> $(awk '$5 == 500' access.log | wc -l)"
+        echo
+        echo "they agree on this file, and grep is matching TEXT anywhere in the line while awk is comparing a FIELD. a 500-millisecond duration would fool the first and not the second:"
+        printf '2026-08-17T03:00:00Z  10.0.0.1  GET  /x  200   500ms\n' >> access.log
+        echo "  after adding a 200 response that took 500ms:"
+        echo "    grep -c ' 500 '         -> $(grep -c ' 500 ' access.log || true)"
+        echo "    awk '\$5 == 500' | wc -l -> $(awk '$5 == 500' access.log | wc -l)"
+        echo "  ^ grep now over-counts. the field comparison does not."
+        echo
+        echo "grouping by a field, which grep cannot do at all:"
+        awk '{n[$3]++} END {for (k in n) printf "    %-6s %d\n", k, n[k]}' access.log | sort
+        echo
+        echo "and a numeric threshold on the duration:"
+        awk '{d = $NF; sub(/ms$/, "", d); if (d+0 > 1000) print "    slow:", $4, d "ms"}' access.log
+        echo
+        echo "note d+0 forces a numeric comparison. awk compares numerically when a field LOOKS numeric and as a string otherwise, so being explicit avoids the case where 0500 and 500 disagree with expectations."
+      } > /tmp/answer-awk-power
+      cat /tmp/answer-awk-power
+    verify:
+      - type: file_matches
+        path: /tmp/answer-awk-power
+        pattern: "(?i)over-counts"
+        describe: You showed text matching counting a duration as a status
+      - type: file_matches
+        path: /tmp/answer-awk-power
+        pattern: "GET"
+        describe: And grouped by a field
+      - type: file_matches
+        path: /tmp/answer-awk-power
+        pattern: "(?i)slow:"
+        describe: And applied a numeric threshold
+      - type: file_matches
+        path: /tmp/answer-awk-power
+        pattern: "(?i)LOOKS numeric"
+        describe: And noted awk's comparison rule
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-tooling what you would do instead of parsing
+      human-readable output at all.
+    walkthrough: |
+      {
+        echo "the hierarchy, in order of preference:"
+        echo
+        echo "1. ask the tool for STRUCTURED output and parse that."
+        echo "     kubectl get pods -o json | jq -r '.items[].metadata.name'"
+        echo "     docker inspect --format '{{json .Config.Env}}'"
+        echo
+        echo "2. ask the tool for EXACTLY THE FIELDS i want, so nothing needs splitting."
+        echo "     ps -o pid=,rss= -C nginx"
+        echo "     kubectl get pods -o custom-columns=NAME:.metadata.name"
+        echo "     docker ps --format '{{.Names}}\\t{{.Status}}'"
+        echo "     git log --format='%H %s'"
+        echo
+        echo "3. only then split text myself - and count from the end with \$NF."
+        echo
+        echo "why: the output of a command is not an API. ps, df, kubectl and every cloud CLI produce text designed for HUMANS. that format changes when a column is added, a width shifts, or a value becomes localised, and nothing warns me because nothing promised."
+        echo
+        echo "options 1 and 2 are both SHORTER than the awk they replace, which is the easiest argument to make in review."
+        echo
+        echo "and whatever i end up doing, assert that i extracted something:"
+        echo "    result=\$(awk -F, 'NR>1 {print \$3}' services.csv)"
+        echo "    [ -n \"\$result\" ] || { echo 'no rows extracted' >&2; exit 1; }"
+        echo
+        echo "empty output plus exit status 0 is this whole topic's signature failure. the tool's success is an opinion; the output is the evidence."
+      } > /tmp/answer-tooling
+      cat /tmp/answer-tooling
+    verify:
+      - type: file_matches
+        path: /tmp/answer-tooling
+        pattern: "(?i)structured output"
+        describe: You put structured output first
+      - type: file_matches
+        path: /tmp/answer-tooling
+        pattern: "(?i)custom-columns|--format"
+        describe: And asking for exact fields second
+      - type: file_matches
+        path: /tmp/answer-tooling
+        pattern: "(?i)not an API"
+        describe: And explained why human output is unreliable
+      - type: file_matches
+        path: /tmp/answer-tooling
+        pattern: "(?i)signature failure|is the evidence"
+        describe: And required an assertion that something was extracted
+
+solution: >-
+  **`cut -d' ' -f2` returns the empty string for every line.**
+
+
+  No error, no warning, exit status 0. `awk '{print $2}'` returns the addresses.
+
+
+  **The splitting rules differ.**
+
+
+  ```text
+  line: 'alpha  22   ccc'
+  cut -d' ' -f2   -> []
+  awk '{print $2}'-> [22]
+  awk -F' '       -> [22]     ← NOT like cut
+  awk -F'[ ]'     -> []       ← like cut
+  ```
+
+
+  `cut -d' '` splits on **exactly one space**, so two consecutive spaces produce
+  an empty field between them. Column-aligned output — `ps`, `df`, `ls -l`, any
+  log — is full of runs of spaces.
+
+
+  `awk`'s default treats a **run** of whitespace as one separator and ignores
+  leading whitespace. And `-F' '` does *not* behave like `cut`: a single space as
+  the separator is special-cased back to the default. The bracket form `-F'[ ]'`
+  is the literal one, and is almost never what you want.
+
+
+  **The rule: `cut` for data files with a real delimiter, `awk` for command
+  output.**
+
+
+  **Counting from the left is fragile.**
+
+
+  Add a request-id column at the front and `awk '{print $5}'` silently returns
+  the URL path instead of the status code. `$(NF-1)` returns the status in both
+  files, because `NF` is the field count and columns get added on the **left** —
+  a timestamp, a request id, a pod name.
+
+
+  **awk does what grep cannot.**
+
+
+  ```text
+  grep -c ' 500 '          -> 3    (counts a 500ms duration as a status)
+  awk '$5 == 500' | wc -l  -> 2
+  ```
+
+
+  `grep` matches text anywhere in the line; awk compares a **field**. Add a 200
+  response that took 500ms and only grep is fooled.
+
+
+  awk also groups — `{n[$3]++} END {for (k in n) print k, n[k]}` — and applies
+  numeric thresholds, which text matching cannot do at all. Note `d+0` forces a
+  numeric comparison: awk compares numerically when a field *looks* numeric and
+  as a string otherwise, so `0500` and `500` can disagree with expectations.
+
+
+  **And the better answer is not to parse text.**
+
+
+  1. **Structured output** — `-o json`, then `jq`.
+  2. **Exactly the fields you want** — `ps -o pid=,rss=`, `--format
+     '{{.Names}}'`, `git log --format='%H %s'`. The tool does the splitting and
+     cannot get it wrong.
+  3. **Only then** split yourself, counting from the end.
+
+
+  The output of a command is not an API — `ps`, `df`, `kubectl` and every cloud
+  CLI produce text designed for humans, and that format changes without warning
+  because nothing promised. Options 1 and 2 are also **shorter** than the awk
+  they replace, which is the easiest argument to make in review.
+
+
+  Whatever you do, assert you extracted something. **Empty output plus exit 0 is
+  this topic's signature failure**, and the tool's success is an opinion while
+  the output is the evidence.

@@ -1,0 +1,263 @@
+id: assessment.arguments-and-options
+topic: topic.arguments-and-options
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a documented flag that destroyed data
+    kind: explain
+    objectives: [OBJ-B08.7.5, OBJ-B08.7.7]
+    prompt: >-
+      An engineer follows a runbook that says
+      `prune.sh --dry-run /srv/archive/exports`, and 40,000 files are deleted.
+
+
+      The script has not been modified in fourteen months. The nightly job has
+      used `-n` safely for two years. The captured log reads `delete=1 dry=1`
+      followed by 40,000 removals, exit 0.
+
+
+      ```bash
+      while getopts ":dn" OPT; do
+        case $OPT in
+          d) delete=1 ;;
+          n) dry=1 ;;
+          \?) echo "prune: ignoring unknown option -$OPTARG" >&2 ;;
+        esac
+      done
+      ```
+
+
+      In about 250 words: explain it, and say what you would change.
+    rubric:
+      - "States getopts has no long options and reads --dry-run as bundled letters"
+      - "Identifies the d in 'dry' as setting delete and the n in 'run' as setting dry"
+      - "Explains the warnings went to stderr and the wrapper captured stdout only"
+      - "Notes -n and --dry-run are different code paths, so two years of success proves nothing"
+      - "Identifies the 14-month-old commit that added the flag to the usage COMMENT as the cause"
+      - "Proposes getopt(1) so the documented options exist, and refusing rather than ignoring unknown options"
+      - "Ranks 'make deletion opt-in via --apply' above the parser fix, with the fail-safe reasoning"
+    model_answer: >-
+      **`getopts` has no concept of a long option.** It saw a word beginning with
+      a dash and read the rest as bundled single letters: `-`, `d`, `r`, `y`, `-`,
+      `r`, `u`, `n`. The optstring is `:dn` — the **`d`** in "dry" matched and set
+      `delete=1`, the **`n`** in "run" matched and set `dry=1`, and the script
+      checks `delete` first.
+
+
+      **The evidence went to the wrong stream.** The unmatched letters produced
+      `ignoring unknown option` warnings on **stderr**; the wrapper captures stdout
+      only. So the log shows `delete=1 dry=1`, 40,000 removals and exit 0, with
+      nothing recording that the operator asked for the opposite.
+
+
+      **Two years of safe nightly runs prove nothing**, because the nightly job
+      uses `-n` and the runbook uses `--dry-run` — different code paths, and only
+      one had ever been exercised.
+
+
+      **The cause is the fourteen-month-old commit**: it added `--dry-run` to the
+      *usage comment*. A diff with no executable change, which nothing tests and
+      which reads as harmless in review.
+
+
+      **What I would change.** Move to `getopt(1)` so the documented long options
+      exist, and **refuse** unknown options rather than "ignoring" them — a
+      destructive script that does not understand its arguments must not run. Fix
+      the wrapper to capture stderr. Add the seven-invocation parser test in CI;
+      one line of it catches this.
+
+
+      **But the change that matters most is making deletion opt-in.** Default to a
+      dry run and require `--apply`. Then a mis-parsed flag can only turn a
+      destructive run *safe*. Everything else catches errors; this decides which
+      way an error falls when you fail to — and it is the only change that would
+      have saved the archive even with the parser still wrong.
+
+  - id: B
+    title: Diagnose a pipeline that lost eleven-twelfths of its data
+    kind: diagnose
+    objectives: [OBJ-B08.7.3, OBJ-B08.7.4, OBJ-B08.7.7]
+    prompt: >-
+      A collector runs nightly across twelve regions. For three weeks the
+      downstream parser has rejected eleven of them as malformed, and those
+      regions are recorded as zero usage. Everything exits 0.
+
+
+      The first region in the list is always correct. Reordering the list moves
+      the problem.
+
+
+      ```bash
+      collect_region() {
+        local OPT verbose=0 format=text region=
+        while getopts ":vf:" OPT; do
+          case $OPT in
+            v) verbose=1 ;;
+            f) format=$OPTARG ;;
+          esac
+        done
+        shift $((OPTIND - 1))
+        region=${1:-unknown}
+        emit_report "$region" "$format" > "/srv/reports/$region.out"
+        echo "collected $region (format=$format)"
+      }
+
+      for r in us-east us-west eu-west ...; do
+        collect_region -v -f json "$r"
+      done
+      ```
+
+
+      The change three weeks ago replaced a single call with this loop and touched
+      no option handling.
+
+
+      Give the diagnosis, the fix, and what you would add so it cannot recur.
+    rubric:
+      - "Identifies OPTIND as global state that survives the call"
+      - "Uses 'always the first, whichever is first' to establish it is positional, not per-region"
+      - "Explains why the region name is still correct — the shift consumes the same count"
+      - "Explains why the loop diff is the cause despite touching no parsing: it made a latent defect reachable"
+      - "Gives local OPT OPTIND=1 and justifies BOTH local and =1"
+      - "Adds the : and \\? error branches"
+      - "Adds an assertion that the produced format is the one requested"
+    model_answer: >-
+      **`OPTIND` is a global and nothing resets it between calls.** It leaves the
+      first call at 4; the second asks `getopts` for argument 4 of its own
+      three-argument list, finds nothing, returns non-zero immediately, and the
+      loop body never runs — so `format` keeps its default `text`.
+
+
+      **"Always the first, whichever is first" is the clue that settles it.** The
+      failure follows *position*, not identity, which eliminates every hypothesis
+      about a specific region, its data or its endpoint.
+
+
+      **The region name is still correct** because `shift $((OPTIND - 1))` is
+      `shift 3` again, so `$1` lands where it should. Twelve lines, in order,
+      correctly named, exit 0 — which is exactly why three weeks passed.
+
+
+      **The loop diff is the cause despite touching no parsing.** A top-level parse
+      needs no reset, because `OPTIND` starts at 1 in a fresh shell. The defect was
+      latent from the day the function was written and became **reachable** the
+      moment the call was wrapped in a loop. "This change cannot have caused it
+      because it does not touch that code" is wrong whenever a change alters how
+      many *times* something runs.
+
+
+      **The fix:**
+
+
+      ```bash
+      local OPT OPTIND=1 verbose=0 format=text region=
+      ```
+
+
+      `=1` starts this call at the beginning; `local` restores the caller's
+      `OPTIND` on return, which matters if the caller is itself parsing — a bare
+      `OPTIND=1` would turn a silent wrong value into an infinite loop. Make it an
+      unconditional habit: it costs one word, and the condition that makes it
+      necessary arrives in an edit elsewhere in the file.
+
+
+      **What I would add.** The `:` and `\?` branches, so a missing value or
+      unknown option is refused rather than silently accepted. An enum check on
+      `format`. And the assertion that would actually have caught this — that the
+      file produced *is* the format requested:
+
+
+      ```bash
+      [ "$format" != json ] || head -c1 "/srv/reports/$region.out" | grep -q '{' \
+        || die "$region: asked for json, got something else"
+      ```
+
+
+      The collector checked that it wrote a file; the parser checked that the file
+      was JSON and skipped when it was not. Neither owned the question joining
+      them, so eleven-twelfths of the data went missing behind a green pipeline.
+
+  - id: C
+    title: Set a command-line standard for the team
+    kind: reason
+    objectives: [OBJ-B08.7.6, OBJ-B08.7.8]
+    prompt: >-
+      You are asked to write the standard for how the team's operational scripts
+      handle their command lines.
+
+
+      Say which parser to use and when; give the contract a script owes its
+      callers; state what can be enforced mechanically and what cannot; and name
+      one rule you would rank above all the others, with the reason.
+    rubric:
+      - "Chooses between getopts, getopt(1) and hand-rolled on a stated criterion, not taste"
+      - "Names the macOS/BSD getopt portability problem"
+      - "Names getopts-with-documented-long-options as the combination to forbid"
+      - "Gives a concrete contract: usage on stderr + exit 64, -h on stdout + exit 0, -- honoured, validation before work"
+      - "Requires local OPT OPTIND=1 unconditionally in any function that parses"
+      - "Forbids secrets in arguments, with the /proc/PID/cmdline reason"
+      - "Proposes a concrete parser test rather than review discipline"
+      - "Ranks safe-defaults / destruction-opt-in first, with the fail-safe reasoning"
+    model_answer: >-
+      **Which parser, decided by who types the command.**
+
+
+      **`getopts`** for scripts invoked by other scripts, cron or CI. No
+      dependency, portable to any POSIX shell, eight lines. Short flags are fine
+      when the caller is a file nobody re-reads.
+
+
+      **`getopt(1)`** for scripts humans type, especially during incidents. Long
+      options are self-documenting in a runbook, `--opt=value` and abbreviations
+      work, and it **permutes**, so `deploy.sh prod --dry-run` behaves the way GNU
+      tools have trained everyone to expect. Costs an external dependency and an
+      `eval`, both acceptable on an image we control. `|| exit 64` is mandatory:
+      on a bad option it exits non-zero **and still prints a usable list with the
+      bad option removed**, so an unguarded script silently discards the flag.
+
+
+      **Hand-rolled** for anything shipped to laptops. **macOS ships the BSD
+      `getopt`**, which has no long options and mangles whitespace — it fails by
+      producing *wrong arguments* rather than an error. Twelve lines of
+      `while`/`case` behave identically everywhere.
+
+
+      **Forbidden outright: `getopts` with long options in the help text.** On a
+      script whose optstring shares letters with the advertised flag, that
+      documentation is an instruction to enable features nobody asked for.
+
+
+      **The contract.** Usage on stderr and **exit 64** when called wrong; `-h` to
+      stdout and exit 0. Errors that name the input and the legal values. `--`
+      honoured. Validation immediately after parsing, before any work. Long
+      options that exist if documented. A real, tested dry run on anything
+      destructive. `local OPT OPTIND=1` in every function that parses —
+      unconditionally, because the defect is latent until somebody adds a second
+      call. And **no secrets in arguments**: `/proc/PID/cmdline` is world-readable,
+      so `ps` shows them to every user on the machine; a file with tight
+      permissions beats the environment, which still passes to children.
+
+
+      **Enforceable mechanically:** `shellcheck -S warning` in CI, and a
+      seven-invocation parser test per script — no arguments, unknown option, long
+      option, missing value, operand-before-option, `--`, `--help`. Seven lines,
+      and most parsers fail at least one. The test must assert **exit status**, not
+      just output: a script that prints "unknown option" and then does the work
+      passes an output-only check.
+
+
+      **Not enforceable:** whether the help text matches the parser, whether a
+      default is safe, whether the error message is useful. Those are review
+      rules, which is why they must be written down — an unwritten convention is
+      enforced by whoever happens to review, inconsistently.
+
+
+      **The rule I would rank above all others: safe defaults, with destruction
+      opt-in.** Every other rule catches errors. This one decides **which way an
+      error falls when you fail to catch it**. If deletion requires `--apply`, then
+      a mis-parsed flag, a mis-remembered option and a future bug in the parser all
+      fail in the safe direction. In both incidents this topic covers, it is the
+      only change that would still have prevented the loss with everything else
+      left wrong.
+

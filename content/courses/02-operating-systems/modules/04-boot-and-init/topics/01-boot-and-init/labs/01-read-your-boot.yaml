@@ -1,0 +1,246 @@
+id: lab.read-your-boot
+topic: topic.boot-and-init
+title: Reconstruct this machine's boot from what it kept
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A02.5.1, OBJ-A02.5.2, OBJ-A02.5.3]
+
+intro: >-
+  A boot leaves evidence. The parameters the bootloader chose, the kernel it
+  chose them for, the moment it happened, and the configuration that kernel was
+  built with are all still readable, hours or months later.
+
+
+  You will reconstruct this machine's boot from that evidence, decode the
+  parameters that would matter during a recovery, and confirm from the kernel's
+  own build configuration that it was compiled to use the RAM disk its command
+  line names.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Save the kernel command line this machine booted with to
+      /tmp/answer-cmdline.
+
+
+      Read it before moving on. Every space-separated token was a decision.
+    hint: "`cat /proc/cmdline > /tmp/answer-cmdline`"
+    walkthrough: |
+      cat /proc/cmdline > /tmp/answer-cmdline
+      cat /tmp/answer-cmdline
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cmdline
+        pattern: "initrd="
+        describe: The command line names an initramfs
+      - type: file_matches
+        path: /tmp/answer-cmdline
+        pattern: "console="
+        describe: And says where kernel messages were sent
+
+  - id: s2
+    instruction: >-
+      One parameter decides what happens after a kernel panic. Extract just that
+      parameter and its value to /tmp/answer-panic.
+    hint: >-
+      It is called `panic`. `-1` means reboot immediately; `0` means hang
+      forever.
+    walkthrough: |
+      tr ' ' '\n' < /tmp/answer-cmdline | grep '^panic=' > /tmp/answer-panic
+      cat /tmp/answer-panic
+    verify:
+      - type: file_matches
+        path: /tmp/answer-panic
+        pattern: '^panic=-?[0-9]+$'
+        describe: You isolated the panic behaviour
+
+  - id: s3
+    instruction: >-
+      Write to /tmp/answer-panic-meaning one sentence saying what that value
+      does, and what the operational trade is.
+    hint: >-
+      One choice gets the machine back quickly. The other keeps whatever the
+      kernel printed on the console.
+    walkthrough: |
+      echo "panic=-1 reboots immediately after a kernel panic, which restores service fast but discards the panic output unless a console or crash dump captured it, whereas panic=0 hangs and keeps the message on screen for someone to read" > /tmp/answer-panic-meaning
+    verify:
+      - type: file_matches
+        path: /tmp/answer-panic-meaning
+        pattern: "reboot|restart"
+        describe: You said what the value does
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-panic-meaning) -ge 15"
+        exit_code: 0
+        describe: And gave the trade rather than just the definition
+
+  - id: s4
+    instruction: >-
+      Work out when this machine booted. Save the boot time as a human-readable
+      date to /tmp/answer-boottime.
+    hint: >-
+      `/proc/stat` has a `btime` line — a unix timestamp. `date -d "@<seconds>"`
+      renders it.
+    walkthrough: |
+      date -d "@$(awk '/^btime/{print $2}' /proc/stat)" > /tmp/answer-boottime
+      cat /tmp/answer-boottime
+    verify:
+      - type: file_matches
+        path: /tmp/answer-boottime
+        pattern: '20[0-9][0-9]'
+        describe: A real date was computed from btime
+
+  - id: s5
+    instruction: >-
+      Cross-check it. Save the uptime in seconds to /tmp/answer-uptime, and
+      confirm it agrees with the boot time you just computed.
+    hint: >-
+      The first field of /proc/uptime is seconds since boot. `btime + uptime`
+      should be roughly now.
+    walkthrough: |
+      cut -d' ' -f1 /proc/uptime > /tmp/answer-uptime
+      cat /tmp/answer-uptime
+      awk '/^btime/{b=$2} END {
+             getline u < "/proc/uptime"; split(u, f, " ")
+             printf "btime+uptime=%d  now=%d  drift=%ds\n", b+f[1], systime(), systime()-(b+f[1])
+           }' /proc/stat
+    verify:
+      - type: file_matches
+        path: /tmp/answer-uptime
+        pattern: '^[0-9]+\.[0-9]+$'
+        describe: Seconds since boot were captured
+      - type: command_exit
+        command: "awk '/^btime/{b=$2} END { getline u < \"/proc/uptime\"; split(u,f,\" \"); d=systime()-(b+f[1]); if (d<0) d=-d; exit (d < 120) ? 0 : 1 }' /proc/stat"
+        exit_code: 0
+        describe: btime plus uptime lands within two minutes of now — the two agree
+
+  - id: s6
+    instruction: >-
+      Identify the kernel itself. Save its release and the full version banner to
+      /tmp/answer-kernel.
+    hint: "`uname -r` and `/proc/version`."
+    walkthrough: |
+      {
+        echo "release=$(uname -r)"
+        cat /proc/version
+      } > /tmp/answer-kernel
+      cat /tmp/answer-kernel
+    verify:
+      - type: file_matches
+        path: /tmp/answer-kernel
+        pattern: 'release=[0-9]+\.[0-9]+'
+        describe: The kernel release was captured
+      - type: file_matches
+        path: /tmp/answer-kernel
+        pattern: 'Linux version'
+        describe: Along with who built it and with what
+
+  - id: s7
+    instruction: >-
+      The command line names an initramfs. Confirm from the kernel's own build
+      configuration that it was compiled able to use one, and save the evidence
+      to /tmp/answer-initrd-config.
+    hint: >-
+      `/proc/config.gz` is the config this kernel was built with. The option is
+      `CONFIG_BLK_DEV_INITRD`.
+    walkthrough: |
+      zcat /proc/config.gz | grep -E '^CONFIG_BLK_DEV_INITRD=' > /tmp/answer-initrd-config
+      cat /tmp/answer-initrd-config
+    verify:
+      - type: file_matches
+        path: /tmp/answer-initrd-config
+        pattern: '^CONFIG_BLK_DEV_INITRD=y$'
+        describe: Initial RAM disk support is compiled in
+
+  - id: s8
+    instruction: >-
+      Last one. Check whether this machine booted via UEFI, and save the result
+      — the word `uefi` or `no-efi` — to /tmp/answer-firmware.
+    hint: >-
+      `/sys/firmware/efi` exists on a UEFI boot. Its absence is a fact, not a
+      fault — many hypervisors boot by a path involving no firmware at all.
+    walkthrough: |
+      if [ -d /sys/firmware/efi ]; then echo uefi > /tmp/answer-firmware; else echo no-efi > /tmp/answer-firmware; fi
+      cat /tmp/answer-firmware
+      ls /sys/firmware 2>&1 || true
+    verify:
+      - type: file_matches
+        path: /tmp/answer-firmware
+        pattern: '^(uefi|no-efi)$'
+        describe: You checked rather than assumed
+
+solution: |
+  ```bash
+  cat /proc/cmdline
+  tr ' ' '\n' < /proc/cmdline | grep '^panic='
+  date -d "@$(awk '/^btime/{print $2}' /proc/stat)"
+  cut -d' ' -f1 /proc/uptime
+  uname -r; cat /proc/version
+  zcat /proc/config.gz | grep '^CONFIG_BLK_DEV_INITRD='
+  [ -d /sys/firmware/efi ] && echo uefi || echo no-efi
+  ```
+
+  **What you just reconstructed.**
+
+  A representative command line from this platform:
+
+  ```text
+  initrd=\initrd.img WSL_ROOT_INIT=1 panic=-1 nr_cpus=16
+  hv_utils.timesync_implicit=1 console=hvc0 debug pty.legacy_count=0
+  ```
+
+  **`initrd=`** names the RAM filesystem the bootloader loaded alongside the
+  kernel. It exists because the driver needed to reach the real root — NVMe,
+  RAID, LUKS, LVM — lives *on* the real root, which cannot be mounted without
+  it. The initramfs breaks that circle: a small root in RAM with exactly the
+  modules this machine needs, used to mount the real one, then discarded.
+
+  This is why a kernel upgrade can produce a machine that cannot find a
+  perfectly healthy disk. The initramfs is generated per machine and per kernel;
+  if the generator omits the storage driver, the new kernel boots into an
+  emergency shell. Boot the previous kernel from the menu and regenerate.
+
+  **`panic=-1`** reboots immediately on a kernel panic. That is a real trade:
+  service returns in seconds, and the panic output is gone unless a serial
+  console or crash dump caught it. `panic=0` — the other common choice — hangs
+  forever with the message on screen, which is right for a machine you can
+  physically look at and wrong for one in a rack somewhere.
+
+  **`console=`** decides where kernel messages go. It is the difference between
+  a failed boot you can read and a black screen, and it is worth checking
+  *before* you need it.
+
+  **`btime` and `uptime` agree**, which is the cross-check. `btime` is an
+  absolute timestamp recorded once; `uptime` counts up from it. Their sum should
+  land on now, and a large disagreement means the clock moved after boot —
+  worth knowing when correlating logs across machines.
+
+  **The parameters worth memorising for a recovery**, none of which appear
+  above because this machine booted successfully:
+
+  | Parameter | When you type it |
+  |---|---|
+  | `systemd.unit=rescue.target` | Boot to a minimal state with a root shell |
+  | `systemd.unit=emergency.target` | More minimal still — root filesystem only |
+  | `init=/bin/sh` | Bypass systemd entirely. When init itself is broken |
+  | `systemd.log_level=debug` | The kernel is fine and userspace is not |
+  | `nomodeset` | Blank screen on boot |
+
+  `init=/bin/sh` is the last resort worth remembering, because it is the one
+  that works when nothing else does: the kernel runs a shell as PID 1 on the
+  real root, and you have a system with nothing started and everything present.
+
+  **`CONFIG_BLK_DEV_INITRD=y`** confirms from the kernel's own build
+  configuration that it can use the file its command line names. `/proc/config.gz`
+  is not always present — it needs `CONFIG_IKCONFIG_PROC` — but where it is, it
+  settles arguments about what a kernel supports without hunting for the distro's
+  build logs.
+
+  **`/sys/firmware/efi`** is absent here, which is correct and not a problem.
+  Many hypervisors, and this one, boot by a path that involves no firmware
+  stage at all. The check is worth doing rather than assuming, because it decides
+  whether `efibootmgr` is a tool you have.

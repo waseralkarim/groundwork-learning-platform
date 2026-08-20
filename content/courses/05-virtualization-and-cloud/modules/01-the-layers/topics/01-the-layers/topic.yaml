@@ -1,0 +1,143 @@
+id: topic.the-layers
+slug: the-layers
+title: "The Layers: What You Are Standing On, and Where It Leaks"
+summary: >-
+  A process runs on silicon, under a hypervisor, on a kernel it did not boot, in
+  a cgroup it cannot see. Every one of those layers leaves a fingerprint you can
+  read from inside — and three of them report numbers that are not true, which is
+  why runtimes size themselves wrong in containers.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.cgroups
+    hardness: required
+  - topic: topic.namespaces
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A05.1.1
+    level: L1
+    verb: distinguish
+    statement: >-
+      Distinguish bare metal, virtual machine, container and function by what
+      each one virtualises and what it shares.
+    assessed_by: [quiz.q1, quiz.q2, lab.count-your-layers, exercise.e1]
+
+  - id: OBJ-A05.1.2
+    level: L1
+    verb: identify
+    statement: >-
+      Identify which layers a running process is standing on, using evidence
+      readable from inside it.
+    assessed_by: [quiz.q3, quiz.q4, lab.count-your-layers]
+
+  - id: OBJ-A05.1.3
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what follows from a container sharing the host kernel, for
+      isolation and for what it can observe.
+    assessed_by: [quiz.q5, quiz.q6, lab.the-kernel-you-did-not-boot, exercise.e2]
+
+  - id: OBJ-A05.1.4
+    level: L2
+    verb: measure
+    statement: >-
+      Measure the gap between what the standard interfaces report and what the
+      process is actually allowed to use.
+    assessed_by: [quiz.q7, quiz.q8, lab.the-numbers-that-lie, assessment.A]
+
+  - id: OBJ-A05.1.5
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a runtime that sized itself from a number that was not true, and
+      identify the counter that proves it.
+    assessed_by: [quiz.q9, quiz.q10, lab.the-numbers-that-lie, troubleshooting.the-container-that-sized-itself]
+  - id: OBJ-A05.1.6
+    level: L2
+    verb: compare
+    statement: >-
+      Compare the layers on isolation strength, startup cost and density, using
+      figures rather than impressions.
+    assessed_by: [quiz.q11, quiz.q12, lab.choose-a-layer, exercise.e3]
+
+  - id: OBJ-A05.1.7
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what a hypervisor provides that a container runtime does not, and
+      when that difference decides the design.
+    assessed_by: [quiz.q13, lab.the-kernel-you-did-not-boot, exercise.e4]
+
+  - id: OBJ-A05.1.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a layer choice for a stated workload, naming what the alternatives
+      would have cost.
+    assessed_by: [quiz.q14, quiz.q15, lab.choose-a-layer, exercise.e5, assessment.B, assessment.C]
+
+terminology:
+  - term: bare metal
+    definition: >-
+      A kernel running directly on physical hardware, with nothing between them.
+      No virtualisation tax, no isolation between tenants, and one failure domain.
+  - term: hypervisor
+    definition: >-
+      Software presenting virtual hardware to guest operating systems. Type 1
+      runs on the metal; type 2 runs inside a host OS.
+  - term: virtual machine
+    definition: >-
+      A guest with its own kernel, booting its own virtual hardware. Strong
+      isolation, seconds to start, hundreds of megabytes of overhead each.
+  - term: container
+    definition: >-
+      A process on the host kernel, with namespaces limiting what it sees and
+      cgroups limiting what it uses. Milliseconds to start, no kernel of its own.
+  - term: function
+    definition: >-
+      Code the platform starts on demand and stops when idle. The unit of
+      deployment is a handler rather than a machine, and the trade is a cold
+      start.
+  - term: cold start
+    definition: >-
+      The latency of the first request after a scale-from-zero, paid because
+      there was nothing running to receive it.
+  - term: the hypervisor flag
+    definition: >-
+      A CPU feature bit set by the hypervisor to tell a guest it is virtualised.
+      Present in `/proc/cpuinfo` on every VM and absent on bare metal.
+  - term: guest and host
+    definition: >-
+      The guest runs under the hypervisor; the host runs it. In nested setups a
+      guest is also a host, and the census in this topic finds four layers.
+  - term: the visible-versus-allowed gap
+    definition: >-
+      `/proc/cpuinfo`, `/proc/meminfo` and `/proc/uptime` describe the machine,
+      not your cgroup. Reading them in a container gives numbers that are true
+      about something else.
+  - term: cgroup-aware runtime
+    definition: >-
+      A runtime that reads its limits from `/sys/fs/cgroup` rather than from
+      `nproc`. Modern JVM and Go releases do this; a great deal of code does not.
+  - term: density
+    definition: >-
+      How many workloads fit on one machine. It is the commercial reason
+      containers displaced VMs for most workloads.
+  - term: microVM
+    definition: >-
+      A stripped-down VM — Firecracker, Cloud Hypervisor — booting in tens of
+      milliseconds, used to give container-like startup with hypervisor-grade
+      isolation.
+
+foreshadows:
+  - "C14's containers are this topic's third layer, with the tooling attached."
+  - "C15's Compose and E27's Kubernetes both schedule the layer chosen here."
+  - "D21's instance types are a purchase of a specific slice of these layers."
+  - "F34's resource dashboards are meaningless unless they read the allowed number rather than the visible one."
+
+tags: [virtualization, cloud, containers, hypervisor, cgroups, fundamentals]

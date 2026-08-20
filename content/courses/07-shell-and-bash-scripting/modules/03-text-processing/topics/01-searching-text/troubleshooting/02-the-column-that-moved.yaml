@@ -1,0 +1,275 @@
+id: troubleshooting.the-column-that-moved
+topic: topic.searching-text
+title: The capacity alert that went quiet after an upgrade
+level: L2
+objectives: [OBJ-B08.3.6, OBJ-B08.3.7]
+reveal_policy: progressive
+
+situation: >-
+  A disk-space alert has fired reliably for three years. After a routine agent
+  upgrade it stopped firing entirely — and two weeks later a node filled up and
+  took down a service.
+
+
+  The alert script runs every five minutes, exits 0 every time, and its log says
+  `checked 14 filesystems, 0 over threshold` on every run.
+
+
+  The node that filled up was at 97% for four days.
+
+
+  The only change was the monitoring agent's version, which altered the output
+  format of the wrapper command the script parses.
+
+
+  Work out why 97% was not over a threshold of 90.
+
+symptoms:
+  - "A three-year-old alert stopped firing after an agent upgrade"
+  - "The script exits 0 and reports 0 over threshold on every run"
+  - "A node sat at 97% for four days without alerting"
+  - "The filesystem count in the log is still correct"
+  - "The only change was the agent version"
+
+artifacts:
+  - type: config
+    label: The alert script
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      THRESHOLD=90
+      n=0; over=0
+
+      agentctl df | tail -n +2 | while read -r line; do
+        n=$((n + 1))
+        pct=$(echo "$line" | awk '{print $5}' | tr -d '%')
+        if [ "$pct" -ge "$THRESHOLD" ]; then
+          over=$((over + 1))
+          echo "ALERT: $(echo "$line" | awk '{print $6}') at ${pct}%"
+        fi
+      done
+
+      echo "checked $n filesystems, $over over threshold"
+
+  - type: command_output
+    label: agentctl df, before the upgrade
+    content: |
+      Filesystem      Size  Used Avail Use% Mounted
+      /dev/sda1       100G   40G   60G  40% /
+      /dev/sdb1       500G  485G   15G  97% /var/lib/data
+
+  - type: command_output
+    label: agentctl df, after the upgrade
+    content: |
+      Node       Filesystem      Size  Used Avail Use% Mounted
+      node-14    /dev/sda1       100G   40G   60G  40% /
+      node-14    /dev/sdb1       500G  485G   15G  97% /var/lib/data
+
+  - type: command_output
+    label: What field 5 is now
+    content: |
+      $ agentctl df | tail -n +2 | head -1 | awk '{print $5}'
+      60G
+
+      $ agentctl df | tail -n +2 | head -1 | awk '{print $6}'
+      40%
+
+  - type: log
+    label: The script's own output, every run
+    content: |
+      checked 0 filesystems, 0 over threshold
+
+  - type: log
+    label: A run with the shell's tracing enabled
+    content: |
+      + pct=60G
+      + '[' 60G -ge 90 ']'
+      ./alert.sh: line 12: [: 60G: integer expression expected
+
+diagnostic_questions:
+  - "What is field 5 in the new output, and what was it before?"
+  - "The log says '0 filesystems'. Why is n zero when the loop clearly ran?"
+  - "The trace shows an error on every line. Why did the script still exit 0?"
+  - "Why did `set -e` not stop it?"
+  - "Which of the script's two wrong numbers would you have noticed first?"
+
+hints:
+  - "Count the columns in the before and after output."
+  - "Which shell runs the body of `cmd | while read`?"
+  - "Read the trace: `[ 60G -ge 90 ]` produces an error. Where does that error go?"
+  - "What is the exit status of a pipeline?"
+
+root_cause: >-
+  **A column was added on the left, so every field number shifted by one — and
+  three separate mechanisms then hid the resulting failure.**
+
+
+  **The shift.** The upgraded agent prepends a `Node` column. `$5` was `Use%` and
+  is now `Avail`; `$6` was `Mounted` and is now `Use%`. So `pct` is set to `60G`
+  rather than `40%`.
+
+
+  **`[ 60G -ge 90 ]` is an error, not a false.** It prints `integer expression
+  expected` and returns 2. The comparison never succeeds, so nothing is ever over
+  threshold — including 97%.
+
+
+  **Why `set -e` did not stop it.** The `if` condition is one of `set -e`'s
+  exemptions: a command whose status is being *tested* does not trigger errexit.
+  So the failing comparison is treated as "false, carry on" and the loop
+  continues to the next line.
+
+
+  **Why the count is zero.** `agentctl df | tail -n +2 | while read ...` runs the
+  loop in a **subshell**, so `n` and `over` are incremented in a child process
+  that then exits. The parent's copies were never touched, and the final `echo`
+  reports `0` and `0`.
+
+
+  That is why the log line is doubly misleading: `0 filesystems` is not a
+  detection of nothing to check — it is the subshell fault — and `0 over
+  threshold` is the comparison fault. **Both numbers are wrong for different
+  reasons, and together they read as a healthy, quiet system.**
+
+
+  **And the error output went nowhere anybody looked.** The `integer expression
+  expected` message goes to stderr on every line of every run, five minutes
+  apart, for two weeks. Whether anybody saw it depends entirely on how the cron
+  entry or unit was configured — and a script that has been quiet for three years
+  is not one whose stderr anybody is watching.
+
+
+  **Why the script's exit status stayed 0.** The last command is `echo`, which
+  succeeds. Nothing anywhere asserted that the check had actually evaluated
+  anything.
+
+method: >-
+  **1. Diff the tool's output across the upgrade.** The two samples side by side
+  show a new first column immediately. When a parser breaks after an upgrade, the
+  format is the first thing to compare, not the parser.
+
+
+  **2. Print the field you are extracting, not the result of comparing it.**
+  `awk '{print $5}'` on one line answers it in seconds — `60G` where a percentage
+  was expected.
+
+
+  **3. Turn on tracing and read the failing comparison.** `bash -x` shows
+  `[ 60G -ge 90 ]` and the error it produces. That single line contains both the
+  wrong value and the fact that the test errored rather than returned false.
+
+
+  **4. Ask why `set -e` did not fire.** A command used as an `if` condition is
+  exempt — that is deliberate and necessary, and it means a *broken* condition
+  and a *false* condition are indistinguishable to errexit.
+
+
+  **5. Ask why the counter is zero.** `cmd | while read` runs the loop in a
+  subshell. Two wrong numbers with different causes in one line of output is
+  worth noticing as a signal in itself.
+
+
+  **6. Distrust a number that has not changed.** `0 over threshold` on every run
+  for two weeks is not evidence of health; it is evidence that the value is
+  constant, which a real measurement rarely is. A metric that never moves is a
+  metric worth testing.
+
+
+  The habit: **a check that has never fired is untested.** Three years of silence
+  proved only that nothing had exceeded the threshold *in a way this script could
+  detect*, and nobody had established that it could detect anything.
+
+resolution: >-
+  **Immediately:** find every node currently over threshold by hand, since the
+  alert has been blind for two weeks.
+
+
+  **Then stop parsing by position.** The root fix is to ask the tool for the
+  field:
+
+
+  ```bash
+  agentctl df --format '{{.UsePercent}} {{.Mounted}}'
+  ```
+
+
+  or, if it offers structured output:
+
+
+  ```bash
+  agentctl df --json | jq -r '.[] | "\(.use_percent) \(.mounted)"'
+  ```
+
+
+  A named field cannot be shifted by a new column. If neither exists, request it
+  — "our monitoring parses your table" is a reasonable feature request and the
+  incident is the justification.
+
+
+  **If position parsing is unavoidable, match the shape rather than the index:**
+
+
+  ```bash
+  pct=$(echo "$line" | awk '{for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+%$/) print $i}' | tr -d '%')
+  ```
+
+
+  A percentage is identifiable by its form. That survives columns being added on
+  either side.
+
+
+  **Fix the subshell and the counting:**
+
+
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+  THRESHOLD=90
+  n=0; over=0
+
+  while read -r pct mount; do
+    n=$((n + 1))
+    case "$pct" in
+      ''|*[!0-9]*) echo "unparseable usage: $pct" >&2; exit 1 ;;
+    esac
+    if [ "$pct" -ge "$THRESHOLD" ]; then
+      over=$((over + 1))
+      echo "ALERT: $mount at ${pct}%"
+    fi
+  done < <(agentctl df --format '{{.UsePercent}} {{.Mounted}}' | tr -d '%')
+
+  echo "checked $n filesystems, $over over threshold"
+  [ "$n" -gt 0 ] || { echo "no filesystems parsed — check the agent output" >&2; exit 1; }
+  ```
+
+
+  Four changes, each closing one of the failures: **process substitution** so the
+  counters survive; an explicit **numeric validation** so an unparseable value is
+  a loud failure instead of a false comparison; the **`$n` assertion** so
+  "checked nothing" can never look like "nothing wrong"; and named fields so a
+  new column cannot shift anything.
+
+
+  **Then monitor the monitor.** The deepest fix is that a check reporting zero
+  forever was indistinguishable from a check that was working:
+
+
+  - Alert if the script reports **0 filesystems** — that is impossible on a real
+    node.
+  - Alert if the alert has not evaluated anything in an hour, rather than only on
+    a threshold breach.
+  - Add a synthetic filesystem or a test mode that is deliberately over
+    threshold, so a run that fires nothing at all is itself a failure.
+
+
+  A check that only speaks when something is wrong cannot be distinguished from a
+  broken one, which is the general form of this incident.
+
+
+  **For the postmortem:** the agent upgrade was routine and correct, adding a
+  node identifier to output that had always been human-readable. The alert script
+  had three latent faults — positional parsing, a subshell counter, and no
+  assertion that it had evaluated anything — none of which mattered while the
+  format held still. **Nothing changed in the script, and nothing in the upgrade
+  was a mistake.**

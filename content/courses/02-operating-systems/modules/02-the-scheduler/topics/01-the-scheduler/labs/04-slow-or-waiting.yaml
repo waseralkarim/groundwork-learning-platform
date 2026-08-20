@@ -1,0 +1,304 @@
+id: lab.slow-or-waiting
+topic: topic.the-scheduler
+title: "Challenge: three services, one node at 44%"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A02.3.7, OBJ-A02.3.8]
+
+intro: >-
+  Three services on one 32-CPU node. All three have bad tail latency. The node
+  is at 44% CPU and the platform team have already said, twice, that there is no
+  capacity problem — which is true and has not helped anyone.
+
+
+  Under /tmp/workloads you have what was captured from each: per-thread
+  schedstat, the main thread's scheduler state, the cgroup's CPU files, and a
+  short note about the service. One of them is not a scheduling problem at all.
+
+
+  Work out which is which, and what single change fixes each.
+
+setup:
+  - /opt/lab/seed.sh
+  - /opt/lab/seed-scheduler.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before opening anything, write to /tmp/hypotheses at least three distinct
+      reasons a service can have bad tail latency on a node with spare CPU.
+    hint: >-
+      One of them involves no CPU at all. Another involves a limit that is not
+      the node's.
+    walkthrough: |
+      printf 'it is throttled by its own cgroup quota\nits threads have a low weight and lose every contest\nit is blocked on something external and never wanted a cpu\nit has more threads than quota so each request waits several rotations\n' > /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You recorded hypotheses before looking
+      - type: command_output
+        command: "wc -l < /tmp/hypotheses"
+        pattern: "[3-9]"
+        describe: At least three hypotheses
+
+  - id: s2
+    instruction: >-
+      Start with the measurement that separates waiting from working. For each
+      workload, total the per-thread schedstat columns and compute the
+      wait-to-run ratio.
+
+
+      Save it to /tmp/answer-ratios in the form `alpha 1.1`.
+    walkthrough: |
+      for w in alpha bravo charlie; do
+        awk -v w="$w" '!/^#/ && NF==4 { run+=$2; wait+=$3 } END { printf "%s %.1f\n", w, wait/run }' \
+          /tmp/workloads/$w/schedstat-per-thread.txt
+      done > /tmp/answer-ratios
+      cat /tmp/answer-ratios
+    verify:
+      - type: file_matches
+        path: /tmp/answer-ratios
+        pattern: '^alpha 1\.[0-9]$'
+        describe: Alpha waits about as long as it runs
+      - type: file_matches
+        path: /tmp/answer-ratios
+        pattern: '^bravo 0\.0$'
+        describe: Bravo barely waits at all — whatever is slow, it is not the run queue
+      - type: command_exit
+        command: "awk '/charlie/ {exit ($2 > 50) ? 0 : 1}' /tmp/answer-ratios"
+        exit_code: 0
+        describe: Charlie waits more than fifty times longer than it runs
+
+  - id: s3
+    instruction: >-
+      Bravo is already eliminated. Confirm it from a second angle and save the
+      evidence to /tmp/answer-bravo.
+
+
+      Its switch counters say what it was doing with all that time.
+    walkthrough: |
+      {
+        grep -E 'voluntary' /tmp/workloads/bravo/sched-main.txt
+        cat /tmp/workloads/bravo/notes.txt
+      } > /tmp/answer-bravo
+      cat /tmp/answer-bravo
+    verify:
+      - type: file_matches
+        path: /tmp/answer-bravo
+        pattern: 'nr_voluntary_switches\s+:\s+188[0-9]+'
+        describe: Nearly two million voluntary switches — it blocks, constantly
+      - type: file_matches
+        path: /tmp/answer-bravo
+        pattern: "db.query"
+        describe: And the traces already said where
+
+  - id: s4
+    instruction: >-
+      Now separate the two that are waiting. For alpha and charlie, compute the
+      throttled-period ratio from cpu.stat and save it to
+      /tmp/answer-throttle as a whole-number percentage.
+    walkthrough: |
+      for w in alpha charlie; do
+        awk -v w="$w" '/^nr_periods/ {p=$2} /^nr_throttled/ {t=$2} END { printf "%s %d\n", w, (t*100)/p }' \
+          /tmp/workloads/$w/cpu.stat
+      done > /tmp/answer-throttle
+      cat /tmp/answer-throttle
+    verify:
+      - type: file_matches
+        path: /tmp/answer-throttle
+        pattern: '^alpha 9[0-9]$'
+        describe: Alpha is throttled in almost every period — it is hitting its own quota
+      - type: file_matches
+        path: /tmp/answer-throttle
+        pattern: '^charlie 0$'
+        describe: Charlie is not throttled at all, and is still starving
+
+  - id: s5
+    instruction: >-
+      Charlie waits fifty times longer than it runs and is not throttled, so
+      something else is beating it to the CPU. Find the reason in its scheduler
+      state and save it to /tmp/answer-charlie-cause.
+    hint: >-
+      Compare charlie's `prio` and `se.load.weight` with the values you read for
+      yourself in the first lab of this topic.
+    walkthrough: |
+      {
+        grep -E '^prio|se.load.weight' /tmp/workloads/charlie/sched-main.txt
+        grep nice /tmp/workloads/charlie/notes.txt
+      } > /tmp/answer-charlie-cause
+      cat /tmp/answer-charlie-cause
+    verify:
+      - type: file_matches
+        path: /tmp/answer-charlie-cause
+        pattern: 'se.load.weight\s+:\s+15360'
+        describe: Weight 15360 — that is nice 19, one sixty-eighth of a normal task
+      - type: file_matches
+        path: /tmp/answer-charlie-cause
+        pattern: "nice -n 19"
+        describe: And the entrypoint says who did it
+
+  - id: s6
+    instruction: >-
+      Alpha is throttled, but there is a second defect making it worse. Compare
+      its thread count with its quota and save the finding to
+      /tmp/answer-alpha-second.
+    hint: >-
+      Count the threads in its schedstat listing, read `cpu.max`, and read the
+      startup line in its notes.
+    walkthrough: |
+      {
+        echo "threads=$(grep -c '^[0-9]' /tmp/workloads/alpha/schedstat-per-thread.txt)"
+        echo "cpu.max=$(cat /tmp/workloads/alpha/cpu.max)"
+        grep GOMAXPROCS /tmp/workloads/alpha/notes.txt
+      } > /tmp/answer-alpha-second
+      cat /tmp/answer-alpha-second
+    verify:
+      - type: file_matches
+        path: /tmp/answer-alpha-second
+        pattern: 'cpu.max=100000 100000'
+        describe: One CPU of quota
+      - type: file_matches
+        path: /tmp/answer-alpha-second
+        pattern: "GOMAXPROCS=32"
+        describe: And a runtime that sized itself from the node's 32 CPUs
+
+  - id: s7
+    instruction: >-
+      Write your three diagnoses to /tmp/answer-diagnosis — one line each,
+      naming the cause rather than the symptom.
+    walkthrough: |
+      {
+        echo "alpha: throttled by its own 1 CPU quota in 96 percent of periods, made worse by GOMAXPROCS=32 sizing itself from the node instead of the quota"
+        echo "bravo: not a scheduling problem at all; near-zero run-queue wait and 1.88 million voluntary switches mean it is blocked on the database"
+        echo "charlie: running at nice 19 because of a wrapper script, so under daytime contention it gets about one sixty-eighth of a normal task and starves without ever being throttled"
+      } > /tmp/answer-diagnosis
+      cat /tmp/answer-diagnosis
+    verify:
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "alpha:.*(quota|throttl)"
+        describe: You diagnosed alpha as quota throttling
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "bravo:.*(block|database|db|io|I/O)"
+        describe: You eliminated CPU for bravo
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "charlie:.*(nice|weight|19)"
+        describe: You diagnosed charlie as a weight problem
+
+  - id: s8
+    instruction: >-
+      Last one. Write to /tmp/answer-node the sentence you would put in the
+      incident channel about the node being at 44%.
+
+
+      All three teams were told there was no capacity problem, and all three
+      were still right that something was wrong.
+    hint: >-
+      Node utilisation is an average over CPUs, over time and over cgroups.
+      Which of those hid each of these three?
+    walkthrough: |
+      echo "node utilisation was never the relevant number: alpha was limited by its own cgroup quota rather than by the node, charlie was losing a weight contest rather than running out of capacity, and bravo was not waiting for cpu at all, so 44 percent was true and answered a question nobody had asked" > /tmp/answer-node
+    verify:
+      - type: file_matches
+        path: /tmp/answer-node
+        pattern: "quota|cgroup|weight|average"
+        describe: You explained why node utilisation could not have found any of these
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-node) -ge 20"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+solution: |
+  **The three verdicts.**
+
+  | | alpha | bravo | charlie |
+  |---|---|---|---|
+  | wait ÷ run | 1.1 | **0.0036** | **78.5** |
+  | throttled periods | **96%** | 0% | 0% |
+  | voluntary switches | 1140 | **1881044** | 1022 |
+  | involuntary switches | 917302 | 3177 | 87192 |
+  | weight | 1048576 | 1048576 | **15360** |
+  | quota | 1 CPU | 4 CPU | 2 CPU |
+
+  **The ratio in step 2 does most of the work.** Three numbers, and they
+  immediately sort the problem into three different investigations:
+
+  - **bravo at 0.0036** — it essentially never queued. Whatever is slow, the run
+    queue is not it, and the entire CPU story can be abandoned in one
+    measurement. Its 1.88 million voluntary switches say it spent its life
+    blocking on something external, and the trace already named the span.
+  - **alpha at 1.1** — waits about as long as it runs.
+  - **charlie at 78.5** — waits seventy-eight times longer than it runs. This is a
+    service that is barely running at all.
+
+  **alpha: its own quota, twice over.** 96% of periods end early against a
+  1-CPU limit, on a node at 44%. Node capacity was never the constraint.
+
+  The second defect is the one that makes it severe: `GOMAXPROCS=32` on a 1-CPU
+  quota. Thirty-two runnable threads share one CPU's worth of time, each switch
+  discarding the cache the previous thread had warmed, and a request may wait
+  through several rotations of the pool before its thread is picked. 917302
+  involuntary switches against 1140 voluntary is the signature — this process is
+  almost never blocking and almost always being stopped.
+
+  Raising the quota alone would help and would not fix it. Thirty-two threads on
+  two CPUs is still over-parallel.
+
+  **bravo: not a scheduling problem.** This is the most valuable of the three
+  findings, because it is the one that saves the most time. Near-zero queueing
+  plus overwhelmingly voluntary switches means the threads were asleep waiting
+  for something, not waiting for a turn. More CPU, more replicas and a bigger
+  node would all have changed nothing.
+
+  Being able to *eliminate* CPU with a measurement — rather than by argument —
+  is worth as much as diagnosing the other two.
+
+  **charlie: a weight problem, and an inherited one.** Not throttled at all, and
+  starving anyway. `se.load.weight 15360` is nice 19, and `prio 139` is
+  120 + 19. The entrypoint says who did it:
+
+  ```sh
+  exec nice -n 19 java -jar /srv/pricing.jar
+  ```
+
+  A wrapper script from the old VM fleet, where niceing a background service was
+  reasonable and where "background" meant something. On a shared node with a
+  container-per-service, it means this service gets about one sixty-eighth of a
+  normal task's CPU whenever anything else is runnable.
+
+  Which explains the symptom nobody could account for: **fine at night, terrible
+  during the working day.** A weight does nothing without contention, so on a
+  quiet node the nice value is invisible. It only bites when other work turns
+  up, and nothing about charlie changes at that moment — which is precisely why
+  its own metrics show no cause.
+
+  **The fixes.**
+
+  - **alpha** — set `GOMAXPROCS` from the quota (or import `automaxprocs`), then
+    size `limits.cpu` from the throttling ratio at target throughput. In that
+    order: the thread count is free to fix and changes what the right quota is.
+  - **bravo** — leave the resources alone entirely and go to the database. The
+    cgroup and scheduler files have told you everything they can, which is that
+    they are not involved.
+  - **charlie** — delete `nice -n 19` from the entrypoint. Then grep the whole
+    fleet for it, because a wrapper inherited from an old VM estate is never
+    inherited by one service.
+
+  **What to say about the node being at 44%.** It was true, and it was an
+  average over CPUs, over time and over cgroups — and each of those averages hid
+  one of these:
+
+  - alpha was limited by its own cgroup, not by the node. A throttled container
+    contributes its quota to node utilisation and no more, however desperate it
+    is.
+  - charlie was losing a weight contest, which is invisible in any aggregate
+    because the CPU it was denied was immediately used by somebody else.
+  - bravo was not waiting for CPU at all.
+
+  Node utilisation answered a question none of the three teams had asked. The
+  per-task counters answered the one they had, and they were sitting in `/proc`
+  the whole time.

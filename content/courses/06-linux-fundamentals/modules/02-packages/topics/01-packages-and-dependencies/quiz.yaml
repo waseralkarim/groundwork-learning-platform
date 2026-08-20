@@ -1,0 +1,506 @@
+id: quiz.packages-and-dependencies
+topic: topic.packages-and-dependencies
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.2.1]
+    stem: Which command tells you what package placed `/usr/sbin/sshd` on a Debian system?
+    options:
+      - id: a
+        text: "`dpkg -S /usr/sbin/sshd`"
+        correct: true
+      - id: b
+        text: "`dpkg -L /usr/sbin/sshd`"
+        note: >-
+          `-L` takes a package name and lists its files. It goes the other
+          direction and will error on a path.
+      - id: c
+        text: "`apt-cache show /usr/sbin/sshd`"
+        note: >-
+          `apt-cache` answers questions about packages in the archive, not about
+          paths on this machine — and needs archive lists a container usually
+          lacks.
+      - id: d
+        text: "`dpkg-query -W /usr/sbin/sshd`"
+        note: >-
+          `-W` takes a package name and prints its metadata. It does not search
+          by path.
+    explanation: >-
+      `dpkg -S` maps a path to the package that owns it, reading the local file
+      lists under `/var/lib/dpkg/info/`. It works offline and needs no archive
+      metadata, which is why it is reliable inside a stripped container image.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.2.1]
+    stem: >-
+      `dpkg -S /usr/bin/awk` reports no path found, but `awk` runs perfectly.
+      What is the most likely explanation?
+    options:
+      - id: a
+        text: >-
+          `/usr/bin/awk` is a symlink managed by the alternatives system; the
+          package owns the target, not the symlink
+        correct: true
+      - id: b
+        text: The package database is corrupt and should be rebuilt
+        note: >-
+          A working `awk` and a clean database are entirely consistent here.
+          Rebuilding would change nothing.
+      - id: c
+        text: "`awk` was installed outside the package system"
+        note: >-
+          Possible in principle, and wrong here — resolving the symlink finds a
+          package immediately.
+      - id: d
+        text: "`dpkg -S` cannot search paths under `/usr/bin`"
+        note: >-
+          It searches every path a package declares. `/usr/bin` is not special.
+    explanation: >-
+      `/usr/bin/awk` points at `/etc/alternatives/awk`, which points at
+      `/usr/bin/mawk`. Several packages can provide `awk`, so the symlink is
+      managed by a script rather than shipped by any one of them. The habit is
+      `dpkg -S "$(readlink -f <path>)"` — and if that still finds nothing, the
+      file really is unowned, which is a different and more serious answer.
+
+  - id: q3
+    type: multi_choice
+    level: L1
+    objectives: [OBJ-B06.2.2]
+    stem: Which of these does a Debian package carry in addition to its files?
+    options:
+      - id: a
+        text: A dependency declaration
+        correct: true
+      - id: b
+        text: Checksums for its configuration files
+        correct: true
+      - id: c
+        text: Scripts that run before and after installation
+        correct: true
+      - id: d
+        text: The source code it was built from
+        note: >-
+          A binary package does not contain its source. That is a separate
+          source package, published separately.
+      - id: e
+        text: A record of which machines it has been installed on
+        note: >-
+          Nothing central tracks that. The database on each machine describes
+          only that machine.
+    explanation: >-
+      The manifest is what makes a package a package rather than a tarball:
+      identity, dependencies in four strengths, a file list, conffile checksums,
+      and maintainer scripts. Nearly every useful property of a managed system —
+      queryable versions, upgrades, integrity checking, clean removal — comes
+      from that metadata rather than from the files.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.2.2]
+    stem: >-
+      In a container image whose build ran `rm -rf /var/lib/apt/lists/*`, which
+      question can still be answered?
+    options:
+      - id: a
+        text: "What is installed here, and at what version"
+        correct: true
+      - id: b
+        text: "What newer version of this package is available"
+        note: >-
+          That needs archive metadata, which is exactly what was deleted.
+      - id: c
+        text: "Which packages could be installed to provide a given command"
+        note: >-
+          Also an archive question. `apt-file`-style lookups need the lists.
+      - id: d
+        text: "None of them — deleting the lists breaks package management entirely"
+        note: >-
+          It breaks the *archive* half. The local database is untouched and
+          fully queryable.
+    explanation: >-
+      The distinction is worth internalising: `dpkg` reads `/var/lib/dpkg/`,
+      which describes **this machine**, and works offline. `apt` questions about
+      what is *available* read `/var/lib/apt/lists/`, which images routinely
+      delete to save space. Knowing which half a command needs saves you from
+      concluding a container is broken when it is only stripped.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.3]
+    stem: >-
+      A package declares `Recommends: psmisc`. What does that guarantee on a
+      machine where the package is installed?
+    options:
+      - id: a
+        text: Nothing — it is installed by default, and any build using `--no-install-recommends` skips it
+        correct: true
+      - id: b
+        text: That `psmisc` is installed, since Recommends are installed automatically
+        note: >-
+          They are installed by *default*, and the default is routinely
+          overridden — every container guide recommends overriding it.
+      - id: c
+        text: That `psmisc` will be installed before this package is configured
+        note: >-
+          That is what `Depends` promises. `Recommends` has no ordering
+          guarantee because it has no guarantee at all.
+      - id: d
+        text: That `psmisc` is suggested to the administrator but never installed
+        note: >-
+          That is `Suggests`. `Recommends` is stronger — installed by default,
+          just not required.
+    explanation: >-
+      `Recommends` means "works without it, in a way somebody would consider
+      broken". Because it installs by default, software relying on it works
+      everywhere the author looked — and then does not, in a minimal image, with
+      an error about something apparently unrelated. `--no-install-recommends`
+      is good advice and it is a contract with two halves: you have undertaken to
+      find and install the missing pieces yourself.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.3]
+    stem: What does `Pre-Depends` require that `Depends` does not?
+    options:
+      - id: a
+        text: The dependency must be fully installed and configured before this package is even unpacked
+        correct: true
+      - id: b
+        text: The dependency must be installed from the same repository
+        note: >-
+          Neither field says anything about where a package came from.
+      - id: c
+        text: The dependency cannot be removed for as long as this package exists
+        note: >-
+          True as a consequence, but it is not what the field states — it
+          follows from the ordering requirement.
+      - id: d
+        text: The dependency must carry the same epoch
+        note: >-
+          Version constraints are expressed in the relationship itself. Epochs
+          are unrelated to the field's strength.
+    explanation: >-
+      `Depends` must be satisfied before the package is *configured*;
+      `Pre-Depends` before it is *unpacked*. It exists for cases where unpacking
+      itself needs the dependency working. It is rare and it has a visible
+      consequence: `coreutils` pre-depends on `libssl3t64`, which makes removing
+      the TLS library impossible rather than merely inadvisable.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.3]
+    stem: >-
+      A package declares both `Provides: mail-transport-agent` and
+      `Conflicts: mail-transport-agent`. What is that idiom expressing?
+    options:
+      - id: a
+        text: "Exactly one package providing this virtual name may be installed at a time"
+        correct: true
+      - id: b
+        text: A packaging error — a package cannot conflict with something it provides
+        note: >-
+          It is deliberate and standard. Conflicting with the virtual name
+          excludes every other provider, including itself harmlessly.
+      - id: c
+        text: The package replaces any existing mail transport agent silently
+        note: >-
+          That would be `Replaces`, and it governs file ownership rather than
+          co-installation.
+      - id: d
+        text: The package can be installed only if no other mail software is present
+        note: >-
+          The constraint is specifically about other *providers* of that virtual
+          name, not about mail software generally.
+    explanation: >-
+      `Provides` declares a virtual name several packages can satisfy, so
+      something depending on `mail-transport-agent` accepts any of them.
+      Combining it with `Conflicts` on the same name is the standard way to say
+      "exactly one of us" — the system needs a mail transport agent, and having
+      two would be incoherent.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.4]
+    stem: >-
+      A Dockerfile names 16 packages and the resulting image has 162 installed.
+      What is the best reading of that?
+    options:
+      - id: a
+        text: >-
+          Normal — 146 arrived as the dependency closure, and the system records
+          which were requested and which were pulled in
+        correct: true
+      - id: b
+        text: The build is installing packages it does not need and should be tightened
+        note: >-
+          The extras are requirements, computed at install time. They can only
+          be reduced by asking for less, not by tidying.
+      - id: c
+        text: Recommends were installed and should have been suppressed
+        note: >-
+          Possible in general, and here the build already used
+          `--no-install-recommends` — every extra is a hard requirement.
+      - id: d
+        text: The database is counting removed packages that left configuration behind
+        note: >-
+          Those show as `deinstall ok config-files`, a distinguishable state,
+          and there are none here.
+    explanation: >-
+      The gap between requested and installed is the honest size of a decision,
+      and this ratio is normal. Two consequences follow: image size is a property
+      of the dependency graph rather than of discipline, so the route to a small
+      image is asking for less; and attack surface is the closure, not the
+      request — a CVE in a transitively-installed library you have never heard of
+      is still yours.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.4]
+    stem: Why does the package system record whether each package was requested or pulled in?
+    options:
+      - id: a
+        text: >-
+          So that packages nobody asked for can be removed automatically once
+          nothing depends on them
+        correct: true
+      - id: b
+        text: To decide which packages receive security updates
+        note: >-
+          Every installed package is updated the same way. The mark has no
+          bearing on updates.
+      - id: c
+        text: To order the dependency graph during installation
+        note: >-
+          Ordering comes from the relationship fields. The manual mark plays no
+          part in it.
+      - id: d
+        text: To let the archive report which packages are popular
+        note: >-
+          Popularity reporting is a separate, opt-in mechanism. The mark is
+          purely local.
+    explanation: >-
+      The mark is what makes `autoremove` possible: a package marked automatic
+      with nothing depending on it can go, because nobody ever asked for it. That
+      reasoning is sound and its premise decays — the moment a script starts
+      calling a transitively-installed tool directly, the record is wrong and
+      nothing updates it. `apt-mark manual <pkg>` is the one-word repair.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.5]
+    stem: >-
+      `apt-get -s remove libc6` exits 100 with "Unable to satisfy dependencies…
+      conflicting decisions". What does that tell you?
+    options:
+      - id: a
+        text: >-
+          Something pre-depends on it, so there is no valid end state — this is
+          not a policy refusal that can be overridden
+        correct: true
+      - id: b
+        text: You need root to run the simulation
+        note: >-
+          `-s` needs no privileges. A permission problem produces a different
+          and explicit message.
+      - id: c
+        text: The package is marked Essential, so removal needs an override flag
+        note: >-
+          Essential produces a loud warning and a *plan*, exiting 0. This is a
+          different mechanism.
+      - id: d
+        text: The archive lists are missing, so the solver cannot proceed
+        note: >-
+          Missing lists produce a message about unavailable packages, not a
+          contradiction between two decisions.
+    explanation: >-
+      "Cannot be removed" has two distinct meanings. `Essential` is a **policy**
+      flag — the solver produces a plan, shouts, and can be overridden with
+      `--allow-remove-essential`. A pre-depended-upon package is **arithmetically
+      impossible**: the solver reaches two contradictory conclusions and exits
+      100, and there is no override because there is no valid end state to reach.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.5]
+    stem: >-
+      Before removing a package on a production host, which single command tells
+      you what it would take with it, without changing anything?
+    options:
+      - id: a
+        text: "`apt-get -s remove <pkg>`"
+        correct: true
+      - id: b
+        text: "`dpkg --remove --dry-run <pkg>`"
+        note: >-
+          `dpkg` operates on one package and does not resolve the graph, so it
+          will not show the cascade. It also needs root.
+      - id: c
+        text: "`apt-cache depends <pkg>`"
+        note: >-
+          That shows what the package needs, not what needs it. It is the wrong
+          direction.
+      - id: d
+        text: "`dpkg -L <pkg>`"
+        note: >-
+          That lists the package's files. It says nothing about other packages.
+    explanation: >-
+      `-s` runs the full solver and prints the plan without touching the machine,
+      and it works as an unprivileged user — so there is no excuse for
+      discovering a cascade by performing it. `apt-cache rdepends --installed`
+      answers the complementary question of who depends on it, but the simulation
+      is the one that accounts for the whole graph.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.6]
+    stem: >-
+      An agent was installed by `curl -sSL … | sh` two years ago. What does the
+      package database say about it?
+    options:
+      - id: a
+        text: >-
+          Nothing at all — and the more serious consequence is that nothing
+          records the agent exists
+        correct: true
+      - id: b
+        text: It lists the files but has no version for them
+        note: >-
+          There is no partial record. A file placed outside the package system
+          appears in no list.
+      - id: c
+        text: It marks the files as unmanaged so they can be audited later
+        note: >-
+          Nothing marks them. The database can only describe what it installed.
+      - id: d
+        text: It records the installation because the script ran as root
+        note: >-
+          Privilege is irrelevant. Recording happens because dpkg performed the
+          installation, not because the writer was root.
+    explanation: >-
+      No version, no upgrades, no security fixes, no integrity checking, no file
+      list, no clean removal, and no line in any inventory. Every one of those
+      could in principle be recovered by looking hard enough — except that
+      **nothing records the file exists**, so there is nowhere to look. An SBOM
+      generated from `dpkg-query` is complete about the distribution and silent
+      about the agent running as root on every host.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.7]
+    stem: >-
+      After an unattended upgrade, `/etc/app/app.conf.dpkg-dist` appears next to
+      a config file you edited months ago. What happened?
+    options:
+      - id: a
+        text: >-
+          Both you and the package changed the file, nobody answered the prompt,
+          so your version was kept and the new one was saved alongside
+        correct: true
+      - id: b
+        text: The upgrade failed partway through and left a temporary file
+        note: >-
+          The upgrade succeeded. The suffix is a deliberate outcome, not
+          wreckage.
+      - id: c
+        text: Your edits were discarded and `.dpkg-dist` holds the backup of them
+        note: >-
+          Backwards. Your version was kept in place; `.dpkg-dist` is the
+          *maintainer's* version. `.dpkg-old` would hold yours.
+      - id: d
+        text: The package was reinstalled rather than upgraded
+        note: >-
+          Reinstallation follows the same conffile rules. The suffix indicates
+          the conflict, not the operation.
+    explanation: >-
+      dpkg compares three things: the checksum recorded at install, the file on
+      disk, and the file in the new package. Only "you changed it **and** the
+      package changed it" prompts, and on an unattended upgrade nobody answers,
+      so the default applies — your version is kept and the maintainer's is left
+      as `.dpkg-dist`. The upgrade exits zero. `find /etc -name '*.dpkg-*'`
+      finds upgrades that silently did not fully apply, and on an old fleet it is
+      rarely empty.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.7]
+    stem: >-
+      `dpkg -V` on a freshly built slim image reports 4,634 discrepancies, of
+      which 4,633 are missing documentation files. What is the correct response?
+    options:
+      - id: a
+        text: >-
+          Filter the deliberate exclusions narrowly, alert on the residue, and
+          alert if the suppressed count changes
+        correct: true
+      - id: b
+        text: Report all 4,634 to the compliance pipeline, since filtering hides findings
+        note: >-
+          A control producing thousands of criticals on a *healthy* machine gets
+          suppressed wholesale or ignored. Either way it stops working while the
+          paperwork says otherwise.
+      - id: c
+        text: Rebuild the image from a non-slim base so the check comes back clean
+        note: >-
+          That trades a tooling problem for hundreds of megabytes on every host,
+          and abandons a decision made for good reasons.
+      - id: d
+        text: Stop using `dpkg -V`, since it cannot distinguish deliberate exclusions
+        note: >-
+          It reports faithfully; it was simply never told about the exclusions.
+          The fix belongs in the pipeline.
+    explanation: >-
+      The missing files are the slim base image doing exactly what it was chosen
+      to do, so the database and the filesystem disagree by design. The one real
+      finding is buried at a ratio of 1 in 4,634. Alerting on the filter itself
+      is what makes it defensible in an audit: the suppression becomes a
+      monitored decision a reviewer can check, rather than a quiet `grep`.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.2.8]
+    stem: >-
+      Which choice about how software reaches a machine creates the largest
+      ongoing obligation?
+    options:
+      - id: a
+        text: A vendor install script, because nothing on the machine will ever record that it ran
+        correct: true
+      - id: b
+        text: A third-party apt repository, because the vendor controls the update schedule
+        note: >-
+          A real cost, and much smaller: the package is still owned, versioned,
+          upgradeable and visible to every inventory.
+      - id: c
+        text: The distribution archive, because versions lag upstream
+        note: >-
+          That is the trade a fixed release sells, and it comes with backported
+          security fixes and full visibility.
+      - id: d
+        text: A `.deb` downloaded and installed by hand, because upgrades are manual
+        note: >-
+          Genuinely an obligation — but the package is owned, so it has a
+          version, a file list and integrity checking.
+    explanation: >-
+      The routes differ mainly in whether the machine remains **answerable**. An
+      apt repository or a hand-installed `.deb` still gives you a version to
+      report, an upgrade path, integrity checking and a line in every inventory.
+      A vendor script gives none of it, and the knowledge that it ran lives only
+      in whoever ran it — which is why the "outside the archive" list has to be
+      written down somewhere other than the machine.

@@ -1,0 +1,381 @@
+id: lab.watch-two-runs-collide
+topic: topic.concurrency-and-locking
+title: Start two runs at once and watch them corrupt a file
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.8.1, OBJ-B08.8.2]
+
+intro: >-
+  A five-minute cron job that occasionally takes six minutes will run twice at
+  once, and neither run will fail.
+
+
+  You will produce the corruption, then guard the script three different ways and
+  find out what each one does when the lock is already held.
+
+setup:
+  - /opt/lab/seed-lock.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Run /tmp/lock/report.sh twice at once and save the interleaving, plus the
+      resulting file, to /tmp/answer-collide.
+    hint: >-
+      `report.sh A & report.sh B & wait` — and look at /tmp/lock/report.csv
+      afterwards.
+    walkthrough: |
+      rm -f /tmp/lock/report.csv
+      {
+        echo "two runs, started together:"
+        ( bash /tmp/lock/report.sh A & bash /tmp/lock/report.sh B & wait ) 2>&1
+        echo
+        echo "the file they both wrote:"
+        sed 's/^/    /' /tmp/lock/report.csv
+        echo
+        echo "    lines: $(wc -l < /tmp/lock/report.csv) (each run writes 5)"
+        echo "    exit status of both runs: 0"
+        echo
+        echo "NEITHER RUN FAILED. the rows of the two reports are interleaved in an"
+        echo "order that belongs to neither of them, and every downstream consumer will"
+        echo "read the file as a single report."
+      } > /tmp/answer-collide
+      cat /tmp/answer-collide
+    verify:
+      - type: command_exit
+        command: "awk 'END { exit (NR == 10) ? 0 : 1 }' /tmp/lock/report.csv"
+        exit_code: 0
+        describe: Ten rows where five were expected
+      - type: file_matches
+        path: /tmp/answer-collide
+        pattern: 'A,row-'
+        describe: Run A's rows are present
+      - type: file_matches
+        path: /tmp/answer-collide
+        pattern: 'B,row-'
+        describe: And run B's, in the same file
+      - type: file_matches
+        path: /tmp/answer-collide
+        pattern: '(?i)NEITHER RUN FAILED'
+        describe: And you noted nothing reported an error
+
+  - id: s2
+    instruction: >-
+      Guard it with `flock -n` so a second run skips. Write /tmp/skip.sh, prove
+      it, and save to /tmp/answer-skip.
+    hint: >-
+      `exec 9>LOCKFILE` then `flock -n 9`. The descriptor has to stay open.
+    walkthrough: |
+      cat > /tmp/skip.sh <<'S'
+      #!/bin/bash
+      set -uo pipefail
+      NAME=${1:-job}
+      exec 9>/tmp/lock/report.lock
+      if ! flock -n 9; then
+        echo "  [$NAME] another run holds the lock - skipping"
+        exit 0
+      fi
+      echo "  [$NAME] start"
+      sleep 0.5
+      echo "  [$NAME] finish"
+      S
+      chmod 0755 /tmp/skip.sh
+
+      {
+        echo "two runs, the second started 0.15s later:"
+        ( bash /tmp/skip.sh A & sleep 0.15; bash /tmp/skip.sh B & wait ) 2>&1
+        echo
+        echo "the second run did NO WORK and exited 0, which is right for anything on a"
+        echo "schedule: the previous run is already doing it, and this run has nothing"
+        echo "to add."
+        echo
+        echo "the two lines that do it:"
+        echo "    exec 9>/tmp/lock/report.lock     <- open, and KEEP it open"
+        echo "    flock -n 9 || exit 0             <- do not wait; rc 1 if held"
+        echo
+        echo "exec 9> is the part people drop. a plain redirect on one command closes"
+        echo "the descriptor when that command finishes, and the lock goes with it -"
+        echo "the lock lasts exactly as long as the descriptor is open."
+        echo
+        echo "and flock -n's status when it cannot acquire:"
+        ( exec 9>/tmp/lock/held.lock; flock 9
+          bash -c 'flock -n 9 || echo "    rc=$?"' 9>/tmp/lock/held.lock )
+      } > /tmp/answer-skip
+      cat /tmp/answer-skip
+    verify:
+      - type: file_exists
+        path: /tmp/skip.sh
+        describe: You wrote the guarded version
+      - type: file_matches
+        path: /tmp/answer-skip
+        pattern: '\[A\] start'
+        describe: The first run works
+      - type: file_matches
+        path: /tmp/answer-skip
+        pattern: '(?i)\[B\] another run holds the lock - skipping'
+        describe: And the second skips
+      - type: file_matches
+        path: /tmp/answer-skip
+        pattern: 'rc=1'
+        describe: flock -n returns 1 when it cannot acquire
+      - type: file_matches
+        path: /tmp/answer-skip
+        pattern: '(?i)as long as the descriptor is open'
+        describe: And you explained why exec is needed
+
+  - id: s3
+    instruction: >-
+      Now make the second run wait its turn instead, and then make it wait only
+      briefly. Save to /tmp/answer-wait.
+    hint: >-
+      `flock 9` blocks. `flock -w SECONDS 9` gives up.
+    walkthrough: |
+      cat > /tmp/queue.sh <<'Q'
+      #!/bin/bash
+      set -uo pipefail
+      NAME=${1:-job}
+      exec 9>/tmp/lock/queue.lock
+      flock 9
+      echo "  [$NAME] start"
+      sleep 0.4
+      echo "  [$NAME] finish"
+      Q
+      chmod 0755 /tmp/queue.sh
+
+      {
+        echo "BLOCKING - the second waits its turn:"
+        ( bash /tmp/queue.sh A & sleep 0.1; bash /tmp/queue.sh B & wait ) 2>&1
+        echo
+        echo "fully serialised: A finishes before B starts. both runs did their work."
+        echo
+        echo "WAIT, BUT NOT FOREVER:"
+        ( exec 9>/tmp/lock/w.lock; flock 9; sleep 1.5 ) &
+        sleep 0.2
+        bash -c 'exec 9>/tmp/lock/w.lock
+                 if flock -w 0.3 9; then echo "    acquired"
+                 else echo "    gave up after 0.3s, rc=$?"; fi'
+        wait
+        echo
+        echo "THREE BEHAVIOURS, THREE DIFFERENT RIGHT ANSWERS:"
+        echo
+        echo "  flock -n      SKIP. the work is periodic and the next run picks it up"
+        echo "                anyway - a scrape, a cache warm, a report of current"
+        echo "                state. the safest default."
+        echo
+        echo "  flock         QUEUE. every run must happen and order matters - a batch"
+        echo "                of migrations, a per-run input file. the hazard is a"
+        echo "                PILE-UP: if runs arrive faster than they finish the queue"
+        echo "                grows without limit and the machine falls over hours"
+        echo "                later for reasons that look unrelated."
+        echo
+        echo "  flock -w N    LATE IS FINE, MUCH LATER IS NOT. always with a message on"
+        echo "                stderr when it gives up, or a job that quietly never runs"
+        echo "                looks exactly like one that runs fine."
+        echo
+        echo "picking one by habit is the mistake. a scrape that queues turns a slow"
+        echo "morning into an outage; a deploy that skips silently reports success."
+      } > /tmp/answer-wait
+      cat /tmp/answer-wait
+    verify:
+      - type: file_matches
+        path: /tmp/answer-wait
+        pattern: '(?s)\[A\] start.*\[A\] finish.*\[B\] start.*\[B\] finish'
+        describe: Blocking serialises the two runs
+      - type: file_matches
+        path: /tmp/answer-wait
+        pattern: 'gave up after 0.3s, rc=1'
+        describe: And -w gives up with status 1
+      - type: file_matches
+        path: /tmp/answer-wait
+        pattern: '(?i)PILE-UP'
+        describe: You named the hazard of blocking
+      - type: file_matches
+        path: /tmp/answer-wait
+        pattern: '(?i)THREE DIFFERENT RIGHT ANSWERS'
+        describe: And that the choice is a design decision
+
+  - id: s4
+    instruction: >-
+      Guard the script from the crontab instead, without editing it at all. Save
+      to /tmp/answer-crontab.
+    hint: >-
+      `flock` can run a command directly.
+    walkthrough: |
+      rm -f /tmp/lock/report.csv
+      {
+        echo "flock can take the lock AND run the command:"
+        echo "    flock -n /var/lock/report.lock /opt/jobs/report.sh"
+        echo
+        echo "proving it against the UNMODIFIED report.sh:"
+        ( flock -n /tmp/lock/cron.lock bash /tmp/lock/report.sh A &
+          sleep 0.15
+          flock -n /tmp/lock/cron.lock bash /tmp/lock/report.sh B || echo "  [B] refused, rc=$?"
+          wait ) 2>&1
+        echo
+        echo "    lines in report.csv: $(wc -l < /tmp/lock/report.csv) (one run's worth)"
+        echo
+        echo "in a crontab:"
+        echo "    */5 * * * * flock -n /var/lock/report.lock /opt/jobs/report.sh"
+        echo
+        echo "this is the form to reach for FIRST. no change to the script, and the"
+        echo "guard is visible in the same place as the schedule - which is where"
+        echo "somebody debugging an overlap will actually look."
+        echo
+        echo "note the exit status when it refuses: flock exits 1, so a wrapper sees a"
+        echo "failure. for a skip-is-fine job that is noise, and the in-script form"
+        echo "with 'exit 0' is better. that is the trade: no edit, but you do not get"
+        echo "to choose what refusing MEANS."
+      } > /tmp/answer-crontab
+      cat /tmp/answer-crontab
+    verify:
+      - type: file_matches
+        path: /tmp/answer-crontab
+        pattern: '(?i)\[B\] refused, rc=1'
+        describe: The second invocation is refused
+      - type: command_exit
+        command: "awk 'END { exit (NR == 5) ? 0 : 1 }' /tmp/lock/report.csv"
+        exit_code: 0
+        describe: And only one run's rows reach the file
+      - type: file_matches
+        path: /tmp/answer-crontab
+        pattern: '\*/5 \* \* \* \* flock -n'
+        describe: You gave the crontab form
+      - type: file_matches
+        path: /tmp/answer-crontab
+        pattern: '(?i)what refusing MEANS'
+        describe: And named the trade-off
+
+  - id: s5
+    instruction: >-
+      Say where the lock file should live and what it should be named, and give
+      one case where locking per-resource beats locking per-script. Save to
+      /tmp/answer-placement.
+    walkthrough: |
+      {
+        echo "WHERE: /var/lock or /run/lock."
+        ls -ld /run/lock 2>/dev/null | sed 's/^/    /'
+        echo
+        echo "  both are cleared on reboot - which is safe precisely because no process"
+        echo "  can be holding a lock across a reboot."
+        echo
+        echo "  NOT /tmp: a predictable name there is a symlink-attack surface, and a"
+        echo "  tmpfiles cleaner may remove it WHILE IT IS HELD - which, as the next"
+        echo "  lab shows, silently ends mutual exclusion."
+        echo
+        echo "  NOT the working directory: two runs started from different paths hold"
+        echo "  'the same' lock at two different paths, which is two locks."
+        echo
+        echo "WHAT TO NAME IT: the RESOURCE, not the script."
+        echo
+        echo "  two scripts that both write /srv/reports/daily.csv must share ONE lock,"
+        echo "  even though they are different programs. name it for the file they"
+        echo "  contend over, not for either of them."
+        echo
+        echo "PER-RESOURCE LOCKING AS A THROUGHPUT WIN:"
+        echo
+        echo "  a script that writes one file per customer does not need a global lock"
+        echo "  at all - it needs one per customer:"
+        echo "      exec 9>/var/lock/export-\$customer.lock"
+        echo "  now twelve customers export in parallel and no two runs ever touch the"
+        echo "  same file. the lock choice BUYS throughput instead of costing it."
+        echo
+        echo "  the general rule: lock the narrowest thing that is actually contended."
+        echo "  a lock around the whole script when only one file is shared serialises"
+        echo "  work that had no reason to be serial."
+        echo
+        echo "and the rule this topic exists for: NEVER DELETE THE LOCK FILE. an empty"
+        echo "lock file costs one inode. a deleted one costs mutual exclusion."
+      } > /tmp/answer-placement
+      cat /tmp/answer-placement
+    verify:
+      - type: file_matches
+        path: /tmp/answer-placement
+        pattern: '(?i)cleared on reboot'
+        describe: You said why /var/lock is the right home
+      - type: file_matches
+        path: /tmp/answer-placement
+        pattern: '(?i)symlink-attack'
+        describe: And why not /tmp
+      - type: file_matches
+        path: /tmp/answer-placement
+        pattern: '(?i)the RESOURCE, not the script'
+        describe: And how to name it
+      - type: file_matches
+        path: /tmp/answer-placement
+        pattern: '(?i)narrowest thing that is actually contended'
+        describe: And gave the per-resource rule
+      - type: file_matches
+        path: /tmp/answer-placement
+        pattern: '(?i)NEVER DELETE THE LOCK FILE'
+        describe: And the rule the next lab is about
+
+solution: >-
+  **The collision.** Two runs of an unguarded `report.sh` produce ten rows where
+  five were expected, interleaved in an order belonging to neither run:
+
+
+  ```csv
+  B,row-1
+  A,row-1
+  B,row-2
+  A,row-2
+  ```
+
+
+  **Neither run failed.** Both exited 0, and every downstream consumer reads the
+  file as one report.
+
+
+  **The guard is two lines:**
+
+
+  ```bash
+  exec 9>/var/lock/report.lock      # open, and KEEP it open
+  flock -n 9 || exit 0              # rc 1 if another run holds it
+  ```
+
+
+  `exec 9>` is the part people drop. A plain redirection on one command closes
+  the descriptor when that command ends, and the lock lasts exactly as long as
+  the descriptor is open.
+
+
+  **Three behaviours, three different right answers:**
+
+
+  | | Meaning | Right for |
+  |---|---|---|
+  | `flock -n` | skip | periodic work the next run picks up — the safe default |
+  | `flock` | queue | every run must happen and order matters |
+  | `flock -w N` | wait, then give up | late is fine, much later is not |
+
+
+  Blocking's hazard is a **pile-up**: runs arriving faster than they complete
+  grow the queue without limit, and the machine falls over hours later for
+  reasons that look unrelated. `-w` always needs a message, or a job that quietly
+  never runs looks exactly like one that runs fine. Picking by habit is the
+  mistake — a scrape that queues turns a slow morning into an outage; a deploy
+  that skips silently reports success.
+
+
+  **And it can be done from the crontab, with no edit to the script:**
+
+
+  ```crontab
+  */5 * * * * flock -n /var/lock/report.lock /opt/jobs/report.sh
+  ```
+
+
+  Reach for this first: the guard is visible where the schedule is. The trade is
+  that `flock` exits **1** when it refuses, so you do not get to choose what
+  refusing *means*.
+
+
+  **Placement.** `/var/lock` or `/run/lock` — cleared on reboot, which is safe
+  because no process can hold a lock across one. Not `/tmp`, where a cleaner may
+  remove it while held. Name it for the **resource**, not the script: two
+  programs writing the same file need one lock. And lock the narrowest thing
+  actually contended — one lock per customer lets twelve exports run in parallel,
+  so the lock buys throughput rather than costing it.

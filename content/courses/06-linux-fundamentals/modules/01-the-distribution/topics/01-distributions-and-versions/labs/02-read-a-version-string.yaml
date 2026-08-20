@@ -1,0 +1,282 @@
+id: lab.read-a-version-string
+topic: topic.distributions-and-versions
+title: Decompose a real version string, and find the epochs
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B06.1.3, OBJ-B06.1.5]
+
+intro: >-
+  Every package on this system carries a version string that records more than a
+  number: what upstream released, what the distribution changed, and occasionally
+  a permanent override somebody applied years ago.
+
+
+  You will decompose real ones, find the packages here carrying an epoch, and
+  then work out why the software is older than upstream and what that buys.
+
+setup:
+  - /opt/lab/seed-distro.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read the exact versions of four packages on this system and save them to
+      /tmp/answer-versions. Use the precise query rather than the listing.
+    hint: >-
+      `dpkg-query -W -f='${Version}'` gives the exact string. `dpkg -l` truncates
+      long versions to fit its columns, which matters when the interesting part
+      is a suffix.
+    walkthrough: |
+      {
+        for p in openssl curl bash gcc; do
+          printf '%-10s %s\n' "$p" "$(dpkg-query -W -f='${Version}' $p 2>/dev/null || echo '(not installed)')"
+        done
+        echo
+        echo "note gcc. that leading '4:' is an epoch, and dpkg -l would have shown it but truncates other versions - the precise query is the one to use when the suffix is the point."
+      } > /tmp/answer-versions
+      cat /tmp/answer-versions
+    verify:
+      - type: file_matches
+        path: /tmp/answer-versions
+        pattern: "openssl +3\\."
+        describe: You read the exact OpenSSL version
+      - type: file_matches
+        path: /tmp/answer-versions
+        pattern: "gcc +[0-9]+:"
+        describe: And found that gcc carries an epoch
+
+  - id: s2
+    instruction: >-
+      Decompose the OpenSSL version into its parts, naming what each one records.
+      Save to /tmp/answer-anatomy.
+    hint: >-
+      Read /tmp/versions/anatomy.txt. The parts are separated by `:` and `-`, and
+      there is a suffix after the revision.
+    walkthrough: |
+      cat /tmp/versions/anatomy.txt
+      v=$(dpkg-query -W -f='${Version}' openssl)
+      {
+        echo "openssl = $v"
+        echo
+        echo "  upstream version:        ${v%%-*}"
+        echo "    what openssl's own authors released. the only part a CVE will usually mention."
+        echo "  distribution revision:   ${v#*-}"
+        echo "    what debian did to that same upstream release."
+        echo "  the ~deb13u suffix:      a debian 13 update - a security or point release."
+        echo "    the ~ matters: it sorts BEFORE nothing, so 1.0~rc1 < 1.0."
+        echo "  epoch:                   none on this package"
+        echo
+        echo "so the revision is where 'our version is old but not vulnerable' lives. a backport takes the fix from a newer upstream release, applies it to this one, and bumps the revision. the bug goes away and the upstream number does not move."
+      } > /tmp/answer-anatomy
+      cat /tmp/answer-anatomy
+    verify:
+      - type: file_matches
+        path: /tmp/answer-anatomy
+        pattern: "(?i)upstream version"
+        describe: You named the upstream component
+      - type: file_matches
+        path: /tmp/answer-anatomy
+        pattern: "(?i)revision"
+        describe: And the distribution revision
+      - type: file_matches
+        path: /tmp/answer-anatomy
+        pattern: "(?i)backport"
+        describe: And connected the revision to backporting
+
+  - id: s3
+    instruction: >-
+      Find every package on this system carrying an epoch, and explain why an
+      epoch exists. Save to /tmp/answer-epochs.
+    hint: >-
+      An epoch is a number before a colon. List all package versions and filter
+      for one.
+    walkthrough: |
+      {
+        echo "packages carrying an epoch:"
+        dpkg-query -W -f='${Package} ${Version}\n' | awk '$2 ~ /^[0-9]+:/ {print "  " $0}' | head -8
+        echo "count: $(dpkg-query -W -f='${Version}\n' | grep -c '^[0-9]*:')"
+        echo
+        echo "why an epoch exists: upstream versioning sometimes goes BACKWARDS. a project releases 2007.11, then renames its scheme and releases 1.0. normal comparison says the new release is older, so the upgrade never happens and every machine sits on the old version reporting itself up to date."
+        echo "bumping the epoch forces the ordering: 1:1.0 beats 2007.11, and beats anything without an epoch at all."
+        echo
+        echo "and an epoch can never be REMOVED. dropping it would make the next version compare as older and strand everyone again, so it is carried forever. gcc's 4: is a decision somebody made years ago that every future gcc package must keep."
+      } > /tmp/answer-epochs
+      cat /tmp/answer-epochs
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/^count: //p' /tmp/answer-epochs) -ge 3"
+        exit_code: 0
+        describe: You found several packages carrying an epoch
+      - type: file_matches
+        path: /tmp/answer-epochs
+        pattern: "(?i)backwards"
+        describe: And explained that epochs exist for backwards-going upstream versions
+      - type: file_matches
+        path: /tmp/answer-epochs
+        pattern: "(?i)never be removed|carried forever"
+        describe: And that an epoch is permanent
+
+  - id: s4
+    instruction: >-
+      Work out whether you could prove a backport on this system. Try to read a
+      package changelog, and save what you find to /tmp/answer-changelog.
+    hint: >-
+      Changelogs normally live under /usr/share/doc. Check whether they are
+      there, and if not, find out what removed them.
+    walkthrough: |
+      {
+        echo "looking for changelogs:"
+        ls /usr/share/doc/openssl/ 2>&1
+        echo
+        echo "changelog files anywhere on the system: $(find /usr/share/doc -name 'changelog*' 2>/dev/null | wc -l)"
+        echo
+        echo "what removed them:"
+        head -4 /etc/dpkg/dpkg.cfg.d/* 2>/dev/null
+        echo
+        echo "this is debian:13-slim. the slim variant excludes documentation deliberately, via a dpkg configuration fragment shipped in the image, and changelogs go with it."
+        echo "so the base image chosen for SIZE has removed the evidence i would use to prove a backport shipped. that is a real cost of a base image decision nobody makes deliberately."
+        echo "in a container the answer is the distribution's ONLINE security tracker - same data, not in my image. worth knowing before a triage rather than during one."
+      } > /tmp/answer-changelog
+      cat /tmp/answer-changelog
+    verify:
+      - type: file_matches
+        path: /tmp/answer-changelog
+        pattern: "changelog files anywhere on the system: 0"
+        describe: You established there are no changelogs in this image
+      - type: file_matches
+        path: /tmp/answer-changelog
+        pattern: "(?i)slim"
+        describe: And found what removed them
+      - type: file_matches
+        path: /tmp/answer-changelog
+        pattern: "(?i)security tracker|online"
+        describe: And what to use instead in a container
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-why-old why the software here is older than upstream,
+      what that policy buys, and what it costs.
+    hint: >-
+      It is a decision rather than neglect. Think about what stays the same and
+      what does not.
+    walkthrough: |
+      {
+        echo "why it is old: a fixed release freezes versions at release day and changes them only for security fixes and grave bugs. years pass and the versions do not move. that is the thing being sold, not neglect."
+        echo
+        echo "what it buys:"
+        echo "- the system i test on in january behaves identically in november"
+        echo "- security fixes arrive as BACKPORTS, so the bug goes away and the version number does not change"
+        echo "- upgrades are events i schedule rather than things that happen to me"
+        echo
+        echo "what it costs:"
+        echo "- software genuinely older than upstream"
+        echo "- features i cannot have without stepping outside the archive, which moves the patching work to me permanently"
+        echo "- an eventual upgrade that is large because it has been deferred"
+        echo
+        echo "and the practical consequence people miss: a scanner comparing my 3.5.6 against a CVE 'fixed in 3.5.9' reports me vulnerable when the fix has been backported into 3.5.6-1~deb13u2. version-based vulnerability reports against a stable distribution are WRONG BY DEFAULT, and knowing why is the difference between triaging findings and chasing them."
+      } > /tmp/answer-why-old
+      cat /tmp/answer-why-old
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-old
+        pattern: "(?i)not neglect|being sold"
+        describe: You identified the age as a deliberate policy
+      - type: file_matches
+        path: /tmp/answer-why-old
+        pattern: "(?i)backport"
+        describe: And how security fixes arrive without a version change
+      - type: file_matches
+        path: /tmp/answer-why-old
+        pattern: "(?i)wrong by default|scanner"
+        describe: And the consequence for version-based vulnerability scanning
+
+solution: >-
+  **The exact version, not the listing.**
+
+
+  `dpkg-query -W -f='${Version}'` gives the precise string. `dpkg -l` truncates
+  to fit its columns, which is a real trap when the interesting part is a suffix
+  — and the suffix is frequently the whole point.
+
+
+  **Decomposed:**
+
+
+  ```text
+  3.5.6 - 1~deb13u2
+  │       │  └── a Debian 13 update: a security or point release
+  │       └── distribution revision
+  └── upstream version
+  ```
+
+
+  The **upstream version** is what OpenSSL's own authors released, and it is the
+  only part a CVE will usually mention. The **revision** counts what Debian did
+  to that same release — and that is where "our version is old but not
+  vulnerable" lives.
+
+
+  **The epochs.**
+
+
+  Several packages here carry one: `gcc 4:14.2.0-1`, `bsdutils 1:2.41.5`,
+  `diffutils 1:3.10-4`, `file 1:5.46-5`.
+
+
+  An epoch exists because **upstream versioning sometimes goes backwards.** A
+  project ships `2007.11`, renames its scheme, and ships `1.0`. Normal comparison
+  says the new release is older, so the upgrade never happens and every machine
+  sits on the old version reporting itself up to date. Bumping the epoch forces
+  the ordering.
+
+
+  And **an epoch can never be removed** — dropping it would make the next version
+  compare as older and strand everyone again. So `gcc`'s `4:` is a decision made
+  years ago that every future gcc package must keep carrying.
+
+
+  **You cannot prove a backport on this system.**
+
+
+  ```bash
+  $ find /usr/share/doc -name 'changelog*' | wc -l
+  0
+  ```
+
+
+  `debian:13-slim` excludes documentation deliberately, through a dpkg
+  configuration fragment shipped in the image, and changelogs go with it.
+
+
+  So a base image chosen for **size** has removed the evidence you would use to
+  prove a fix shipped. That is a genuine cost of a decision nobody makes
+  deliberately, and the answer in a container is the distribution's **online**
+  security tracker — the same data, not in your image. Worth discovering now
+  rather than during a triage.
+
+
+  **Why it is old, and what that is worth.**
+
+
+  A fixed release freezes versions at release day and changes them only for
+  security fixes and grave bugs. That is the product, not neglect.
+
+
+  It buys a system that behaves in November as it did in January, security fixes
+  delivered as backports so the bug goes away while the version does not move,
+  and upgrades that are events you schedule.
+
+
+  It costs software genuinely behind upstream, features unavailable without
+  stepping outside the archive — which moves the patching work to you
+  permanently — and an eventual upgrade made large by deferral.
+
+
+  **And the consequence people miss:** a scanner comparing `3.5.6` against a CVE
+  "fixed in 3.5.9" reports you vulnerable when the fix has been backported into
+  `3.5.6-1~deb13u2`. **Version-based vulnerability scanning against a stable
+  distribution is wrong by default.** Knowing why is the difference between
+  triaging findings and chasing them — and a pipeline that cannot check the
+  distribution's security data produces a critical count nobody can act on.

@@ -1,0 +1,209 @@
+id: lab.three-numbers
+topic: topic.virtual-memory
+title: Watch VSZ, RSS and PSS disagree
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A01.4.3, OBJ-A01.4.4, OBJ-A01.4.7]
+
+intro: >-
+  Three numbers claim to answer "how much memory is this using". You are going
+  to make them disagree on purpose, on this machine, with real figures.
+
+
+  By the end you will have watched a program hold 300 MB of address space and
+  almost no memory, then four processes report using four times the memory that
+  actually exists. Both are normal. Both mislead anyone reading one column.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Start /opt/lab/eat-memory with 300 MB allocated and nothing touched, in
+      the background. Give it a second, then record its VSZ and RSS to
+      /tmp/answer-untouched in the form `vsz=<n> rss=<n>`.
+    hint: >-
+      `/opt/lab/eat-memory 300 0 &` then `ps -o vsz=,rss= -C eat-memory`. The
+      second argument is how many megabytes to touch — zero means none. With
+      one argument it touches everything, which is the opposite of what this
+      step wants.
+    walkthrough: |
+      /opt/lab/eat-memory 300 0 >/dev/null 2>&1 &
+      sleep 2
+      echo "vsz=$(ps -o vsz= -C eat-memory | tr -d ' ' | head -1) rss=$(ps -o rss= -C eat-memory | tr -d ' ' | head -1)" > /tmp/answer-untouched
+      cat /tmp/answer-untouched
+    verify:
+      - type: file_matches
+        path: /tmp/answer-untouched
+        pattern: 'vsz=\d{6,}'
+        describe: Virtual size is in the hundreds of megabytes
+      - type: file_matches
+        path: /tmp/answer-untouched
+        pattern: 'rss=\d{1,5}\b'
+        describe: Resident size is a small fraction of it
+
+  - id: s2
+    instruction: >-
+      Now make the memory real. Kill that process and start another that
+      allocates 300 MB and touches 200 of them. Record VSZ and RSS the same way
+      to /tmp/answer-touched.
+    hint: "`/opt/lab/eat-memory 300 200 &` — the second argument is how much to touch."
+    walkthrough: |
+      pkill -f eat-memory || true
+      sleep 1
+      /opt/lab/eat-memory 300 200 >/dev/null 2>&1 &
+      sleep 3
+      echo "vsz=$(ps -o vsz= -C eat-memory | tr -d ' ' | head -1) rss=$(ps -o rss= -C eat-memory | tr -d ' ' | head -1)" > /tmp/answer-touched
+      cat /tmp/answer-touched
+    verify:
+      - type: file_matches
+        path: /tmp/answer-touched
+        pattern: 'rss=\d{6,}'
+        describe: Resident size is now hundreds of megabytes
+
+  - id: s3
+    instruction: >-
+      Write one word to /tmp/answer-what-makes-it-real: what has to happen to an
+      allocation before it occupies physical memory?
+    hint: "The difference between the two runs was one argument, and one verb."
+    walkthrough: |
+      echo touched > /tmp/answer-what-makes-it-real
+    verify:
+      - type: file_matches
+        path: /tmp/answer-what-makes-it-real
+        pattern: '^(touch|touched|touching|written|write)$'
+        describe: You identified that memory becomes real when it is touched
+
+  - id: s4
+    instruction: >-
+      Now the sharing problem. Stop the previous process and run
+      /opt/lab/share-pages with 40 MB and 3 children: it touches the memory,
+      then forks children that share it.
+
+
+      Wait a moment, then record every share-pages process's RSS to
+      /tmp/answer-rss-each, and their total to /tmp/answer-rss-sum.
+    hint: >-
+      `/opt/lab/share-pages 40 3 &`, then `ps -eo comm,rss | grep share-page`
+      and sum the second column with awk.
+    walkthrough: |
+      pkill -f eat-memory || true
+      /opt/lab/share-pages 40 3 >/dev/null 2>&1 &
+      sleep 3
+      ps -eo comm,rss | grep share-page > /tmp/answer-rss-each
+      awk '/share-page/ {s+=$2} END {print s}' /tmp/answer-rss-each > /tmp/answer-rss-sum
+      cat /tmp/answer-rss-sum
+    verify:
+      - type: command_output
+        command: "wc -l < /tmp/answer-rss-each"
+        pattern: "[3-9]"
+        describe: Several processes are sharing the memory
+      - type: file_matches
+        path: /tmp/answer-rss-sum
+        pattern: '^1[0-9]{5}$|^[2-9][0-9]{5}$'
+        describe: The RSS total is far larger than the 40 MB actually allocated
+
+  - id: s5
+    instruction: >-
+      Those processes are not using that much memory between them. Sum their
+      PSS instead — the figure that divides each shared page between the
+      processes sharing it — and write the total in kilobytes to
+      /tmp/answer-pss-sum.
+
+
+      Compare it with the previous number before moving on.
+    hint: >-
+      `/proc/<pid>/smaps_rollup` has a `Pss:` line. Loop over the PIDs from
+      `pgrep -f '[s]hare-pages'` and add them up.
+    walkthrough: |
+      for p in $(pgrep -f '[s]hare-pages'); do awk '/^Pss:/ {print $2}' /proc/$p/smaps_rollup 2>/dev/null; done | awk '{s+=$1} END {print s}' > /tmp/answer-pss-sum
+      echo "rss_sum=$(cat /tmp/answer-rss-sum) pss_sum=$(cat /tmp/answer-pss-sum)"
+    verify:
+      - type: file_matches
+        path: /tmp/answer-pss-sum
+        pattern: '^\d{4,6}$'
+        describe: The PSS total was recorded
+      - type: command_exit
+        command: "test $(cat /tmp/answer-pss-sum) -lt $(cat /tmp/answer-rss-sum)"
+        exit_code: 0
+        describe: PSS totals far less than RSS across sharing processes
+
+  - id: s6
+    instruction: >-
+      Last one, and it is about promises. Ask for more memory than this
+      container is allowed — 4000 MB, untouched — and record whether the
+      allocation succeeded, as `succeeded` or `failed`, in
+      /tmp/answer-overcommit.
+
+
+      Check the container's limit first if you want to be sure it really is more.
+    hint: >-
+      `cat /sys/fs/cgroup/memory.max` for the limit. Then
+      `/opt/lab/eat-memory 4000 0 &` — allocate without touching — and see
+      whether it is still running a second later.
+    walkthrough: |
+      pkill -f share-pages || true
+      cat /sys/fs/cgroup/memory.max
+      /opt/lab/eat-memory 4000 0 >/dev/null 2>&1 &
+      sleep 2
+      if pgrep -f '[e]at-memory' >/dev/null; then echo succeeded > /tmp/answer-overcommit; else echo failed > /tmp/answer-overcommit; fi
+      pkill -f eat-memory || true
+    verify:
+      - type: file_matches
+        path: /tmp/answer-overcommit
+        pattern: '^succeeded$'
+        describe: The allocation succeeded despite exceeding the limit
+
+solution: |
+  ```bash
+  /opt/lab/eat-memory 300 0 &               # allocate only, touch nothing
+  ps -o vsz=,rss= -C eat-memory             # vsz huge, rss tiny
+
+  pkill -f eat-memory
+  /opt/lab/eat-memory 300 200 &             # allocate and touch 200 MB
+  ps -o vsz=,rss= -C eat-memory             # rss now ~200 MB
+
+  pkill -f eat-memory
+  /opt/lab/share-pages 40 3 &
+  ps -eo comm,rss | grep share-page         # four processes, ~42 MB each
+  for p in $(pgrep -f '[s]hare-pages'); do
+    awk '/^Pss:/ {print $2}' /proc/$p/smaps_rollup
+  done | awk '{s+=$1} END {print s}'        # ~43 MB in total
+
+  cat /sys/fs/cgroup/memory.max
+  /opt/lab/eat-memory 4000 0 &              # succeeds anyway
+  ```
+
+  **The three numbers, with your own figures.**
+
+  **VSZ is address space, not memory.** 300 MB mapped, a few hundred kilobytes
+  resident. Nothing was taken from RAM because nothing was touched. Any alert on
+  virtual size is an alert on how an allocator likes to reserve.
+
+  **RSS became real when pages were written.** The second run touched 200 MB and
+  RSS followed. That is the page-fault path: first touch, trap, allocate, zero,
+  carry on.
+
+  **RSS double-counts shared pages.** Four processes reported roughly 42 MB each
+  — about 169 MB in total — for 40 MB that exists once. The children share the
+  parent's pages copy-on-write, and each one counts every shared page in full.
+
+  **PSS is the one that adds up.** Around 43 MB in total, which is the truth. If
+  you take one operational habit from this lab, make it this: **never sum RSS
+  across processes.** A dashboard that does is reporting a number the machine
+  could not reach.
+
+  **Overcommit means yes is not a promise.** You asked for eight times the
+  container's limit and the kernel agreed instantly, because agreeing costs
+  nothing until the pages are touched. The failure, when it comes, does not
+  arrive at the allocation — it arrives as a SIGKILL, much later, in a process
+  that may not even be the one that asked.
+
+  **Where this goes.** Ten containers from one image share their page cache the
+  same way these children shared their heap: one physical copy of the layer,
+  mapped into each. It is also why "sum the memory of my pods" and "how much
+  memory does this node need" are different questions with different answers
+  (**E29**).

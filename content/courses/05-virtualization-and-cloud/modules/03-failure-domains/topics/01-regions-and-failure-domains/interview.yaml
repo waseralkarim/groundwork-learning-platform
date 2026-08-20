@@ -1,0 +1,237 @@
+topic: topic.regions-and-failure-domains
+
+questions:
+  - id: i1
+    level: L1
+    question: What is the difference between an availability zone and a region?
+    model_answer: >-
+      A **zone** is one or more datacentres with independent power, cooling and
+      network, within a region. It is the boundary against a facility-level
+      failure — a power event, a cooling failure, a fibre cut into one building.
+
+
+      A **region** is a set of zones in a geographic area, and it is the boundary
+      against a regional disaster and against a regional control-plane failure —
+      which is by far the more common of the two.
+
+
+      The operational difference is distance. Zones are single-digit milliseconds
+      apart, so you can run one system across them synchronously — a quorum, a
+      synchronous database replica. Regions are tens to hundreds of milliseconds
+      apart, so multi-region forces asynchronous replication or conflict
+      resolution. It is a different design, not more of the same.
+
+
+      The consequence I would flag in any review: **most cloud services are
+      regional.** Load balancers, managed databases, Kubernetes clusters — each
+      lives in one region and spans zones within it. So a region is usually your
+      largest single failure domain, and it is the one nearly every deployment has
+      exactly one of.
+    signal: >-
+      The distance-and-therefore-synchronous point is the discriminator — it
+      explains why multi-zone and multi-region are qualitatively different rather
+      than one being a bigger version of the other. Noting that a regional
+      control-plane failure is more common than a datacentre disaster shows
+      operational rather than textbook knowledge.
+    follow_ups:
+      - "What does a regional control-plane failure actually cost you?"
+      - "Why can you not run a quorum across regions the way you do across zones?"
+      - "Which of your dependencies are above the region?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A team says they are highly available because they run three replicas. What
+      do you ask?
+    model_answer: >-
+      How many failure domains those three replicas span, because the replica
+      count does not say.
+
+
+      Schedulers pack by default, so three replicas with no topology constraint
+      routinely land on one node — three processes in one domain. The first
+      command is `kubectl get pods -o wide`, and if the node column shows one
+      value they have one replica with extra cost.
+
+
+      Then I would work outward: node, rack, zone, region — and for each ask what
+      shares it. And then the question that actually finds things: **which
+      dependencies are in series with all three?** A vault, a config service, a
+      certificate authority, the registry every node pulls from. If any of those
+      is single-instance, the composite availability is approximately *its*
+      availability, and adding replicas does not move the number at all.
+
+
+      I have seen this exactly: nine replicas across three zones, all fetching
+      secrets from a vault pinned to one zone. Nine copies of a single-zone
+      system.
+
+
+      The specific one I always check now is **the health check path**. A
+      readiness probe that calls a remote service puts that service in series
+      with yours, and when it fails, every replica in every zone reports itself
+      unhealthy simultaneously and the load balancer removes all of them. That is
+      a total outage caused by a component being unavailable in a zone you may
+      not even run in.
+
+
+      So: count domains, not replicas — and enumerate what everything shares.
+    signal: >-
+      Going straight from "three replicas" to "how many domains" is the reframe.
+      The strongest signal is the shared-dependency point with the arithmetic
+      behind it — one component in series with a parallel group sets the
+      composite. Naming the health check path specifically is uncommon and is
+      what catches the worst version.
+    follow_ups:
+      - "How would you verify the placement rather than trust it?"
+      - "What belongs in a readiness probe, then?"
+      - "How would you find every shared dependency?"
+
+  - id: i3
+    level: L2
+    question: >-
+      Three etcd nodes across two availability zones. What does that survive?
+    model_answer: >-
+      Half of the zone failures, which is usually not what people expect.
+
+
+      Quorum for three is two. Two zones means one holds two nodes and the other
+      holds one. Lose the zone with two and one node remains against a quorum of
+      two — quorum lost, and the cluster stops accepting writes. Lose the zone
+      with one and two remain, so it holds.
+
+
+      So a random zone loss is survived **50% of the time**, and "redundant across
+      two availability zones" is true of the node count and false of the fault
+      tolerance.
+
+
+      The correction people reach for makes it worse. Add a fourth node, two per
+      zone, and quorum becomes three — so losing *either* zone leaves two, and now
+      it survives neither. Three nodes over two zones survives one of two; four
+      survives zero. That is also why quorum systems are always deployed in odd
+      numbers.
+
+
+      **The number of zones decides zone fault tolerance, not the number of
+      nodes.** Five nodes over two zones is exactly as tolerant as three over
+      two, because one zone still holds a majority. For a majority quorum you need
+      at least three zones, and that is why every distributed system's
+      documentation says three.
+
+
+      The other thing I would check in the same breath is whether the database
+      primary sits in the zone holding the etcd majority. If it does, one facility
+      failure takes quorum and the primary together — and the failover needs a
+      control plane that has just lost quorum.
+    signal: >-
+      Working the arithmetic rather than recalling "use three zones" is the
+      discriminator, and the four-node result — that adding a node makes it
+      strictly worse — is the part almost nobody knows. Checking whether critical
+      roles cluster in the same zone is a step beyond the quorum question itself.
+    follow_ups:
+      - "What placement would you use for five nodes?"
+      - "Why are quorum systems always odd-numbered?"
+      - "What else would you check about that zone?"
+
+  - id: i4
+    level: L2
+    question: >-
+      How do you work out what availability you can actually promise?
+    model_answer: >-
+      Compose every required dependency and multiply, then convert to time — and
+      the number is always lower than people expect.
+
+
+      Four managed services at 99.95%, 99.95%, 99.99% and 99.99% compose to
+      **99.88%**, about 52 minutes a month. Worse than any individual component,
+      because in series availability can only fall. Vendors publish per-service
+      figures; nobody publishes the product, and the product is what users get.
+
+
+      Two consequences I would raise in design reviews. **Adding a dependency
+      always lowers availability** — a feature that needs one more service has
+      made the system less available, and that cost is almost never counted. I
+      have used this concretely: adding one 99.9% dependency to a stack already at
+      99.87% cost about 43 more minutes of expected downtime a month, roughly
+      doubling it.
+
+
+      And **the calculation is only as good as the list**, which is always short.
+      Secrets, DNS, the container registry, identity — all required to serve or to
+      deploy, and none of them on the architecture diagram.
+
+
+      For redundancy, unavailabilities multiply, so nines arrive fast: two
+      components at 99% give 99.99%. But that assumes **independence**, and the
+      ordinary things that break it are a shared node, a shared dependency, a
+      shared deployment and correlated load. So the parallel figure is an upper
+      bound, usually a distant one.
+
+
+      And I would keep it in proportion. This arithmetic models the failures
+      redundancy addresses, and most outages are **changes** — deployments,
+      config edits, expiring certificates. Redundancy protects against none of
+      those, and progressive rollout appears in no availability calculation while
+      being the largest real term.
+    signal: >-
+      Doing the composition and converting to minutes is the baseline. The
+      discriminator is the independence caveat with concrete examples, and then
+      the honesty about proportion — someone who says "and this is not the biggest
+      term" understands what the model is for rather than treating the number as
+      the answer.
+    follow_ups:
+      - "What is not in your dependency list?"
+      - "Where does that number come from for a component you cannot measure?"
+      - "So what would you actually do to improve availability?"
+
+  - id: i5
+    level: L2
+    question: >-
+      When would you fail over to another region, and when would you not?
+    model_answer: >-
+      When there is user-facing impact that is not recovering — not when there is
+      a provider incident.
+
+
+      The distinction matters because failover is a procedure with its own
+      failure modes, and executing an untested one during an event that is not yet
+      an outage is how a short incident becomes a long one.
+
+
+      A control-plane outage with a healthy data plane is the clearest case for
+      **not** failing over. Pods keep running and keep serving; you are frozen
+      rather than down — no deploys, no scaling, no rescheduling. That is
+      survivable for a period usually shorter than a failover takes, and the
+      correct action is to wait while preparing.
+
+
+      Before failing over I would want to know four things, all of which should be
+      known in advance rather than discovered: **the secondary's actual capacity**
+      relative to production traffic; **the DNS TTL**, because it governs both
+      directions and an hour-long TTL means an hour to change your mind;
+      **whether the old primary can be fenced**, since promoting a secondary while
+      the old one still accepts writes creates split brain; and **when the
+      failover was last tested**.
+
+
+      That last one is the real question. A secondary that has reported healthy
+      for two years has established that it exists and can answer one request. It
+      has not established that it can carry production traffic, which is the only
+      property anyone cares about. **An untested failover is a plan, not a
+      capability.**
+
+
+      And for most organisations I would argue the effort goes elsewhere first:
+      progressive rollout and fast rollback address the most likely cause of
+      downtime, cost far less, and a second region does nothing for them.
+    signal: >-
+      "User impact, not provider incident" is the decision rule and it is the
+      thing people get wrong under pressure. Knowing the four pre-conditions —
+      capacity, TTL, fencing, last tested — shows they have thought about failover
+      as a procedure that fails. Recognising a control-plane outage as frozen
+      rather than down is the specific judgement that avoids the worst outcome.
+    follow_ups:
+      - "What does 'frozen rather than down' cost you?"
+      - "How would you test a failover safely?"
+      - "What would make you build multi-region in the first place?"

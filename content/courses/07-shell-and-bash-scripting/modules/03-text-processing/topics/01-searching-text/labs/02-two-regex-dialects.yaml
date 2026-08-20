@@ -1,0 +1,320 @@
+id: lab.two-regex-dialects
+topic: topic.searching-text
+title: One pattern, four meanings
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.3.2, OBJ-B08.3.3, OBJ-B08.3.5]
+
+intro: >-
+  The same pattern means different things to `grep`, `grep -E` and `grep -F`,
+  and the escaping is inverted between the first two — so a pattern copied
+  between tools changes meaning without erroring.
+
+
+  You will measure that, then take eight strings from a config file and find out
+  what each one matches when treated as a regex. One of them matches every line
+  in the file.
+
+setup:
+  - /opt/lab/seed-text.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Take one pattern and run it through the basic and extended dialects, with
+      and without escaping. Save the four results to /tmp/answer-dialects.
+    hint: >-
+      Use a file containing `aa` and the pattern `a+`, escaped and not.
+    walkthrough: |
+      cd /tmp/text
+      printf 'aa\n' > aa.txt
+      {
+        echo "file contains: aa    (no plus sign anywhere in it)"
+        echo
+        printf "  grep    'a+'   -> %s matches\n" "$(grep -c 'a+' aa.txt || true)"
+        printf "  grep    'a\\\\+'  -> %s matches\n" "$(grep -c 'a\+' aa.txt || true)"
+        printf "  grep -E 'a+'   -> %s matches\n" "$(grep -cE 'a+' aa.txt || true)"
+        printf "  grep -E 'a\\\\+'  -> %s matches\n" "$(grep -cE 'a\+' aa.txt || true)"
+        echo
+        echo "grep and sed default to BASIC regular expressions, where + ? | ( ) { } are LITERAL characters. so 'a+' looks for the text a-plus, which is not in the file."
+        echo
+        echo "grep -E, sed -E and awk use EXTENDED ones, where those are operators."
+        echo
+        echo "and the escaping is INVERTED. in BRE a backslash TURNS ON the operator; in ERE it turns it OFF. so a pattern moved between the two silently changes meaning rather than erroring."
+        echo
+        echo "sed behaves the same way, which is at least consistent:"
+        echo "  echo aaa | sed 's/a+/X/'    -> $(echo aaa | sed 's/a+/X/')"
+        echo "  echo aaa | sed 's/a\\+/X/'   -> $(echo aaa | sed 's/a\+/X/')"
+        echo "  echo aaa | sed -E 's/a+/X/' -> $(echo aaa | sed -E 's/a+/X/')"
+      } > /tmp/answer-dialects
+      cat /tmp/answer-dialects
+    verify:
+      - type: file_matches
+        path: /tmp/answer-dialects
+        pattern: "grep    'a\\+'   -> 0 matches"
+        describe: Unescaped + does not match in BRE
+      - type: file_matches
+        path: /tmp/answer-dialects
+        pattern: "grep -E 'a\\+'   -> 1 matches"
+        describe: And does match in ERE
+      - type: file_matches
+        path: /tmp/answer-dialects
+        pattern: "(?i)INVERTED"
+        describe: And you identified the inverted escaping
+      - type: file_matches
+        path: /tmp/answer-dialects
+        pattern: "sed -E 's/a\\+/X/' -> X"
+        describe: And confirmed sed follows the same split
+
+  - id: s2
+    instruction: >-
+      Read /tmp/text/patterns.txt. For each pattern, count matches in
+      haystack.txt as a regex and as a fixed string. Save to /tmp/answer-literal.
+    hint: >-
+      `grep -c` for the regex reading, `grep -cF` for the literal one. The
+      haystack has a decoy line for each pattern.
+    walkthrough: |
+      cd /tmp/text
+      cat patterns.txt
+      {
+        printf '  %-24s %-8s %s\n' PATTERN "REGEX" "LITERAL"
+        while IFS= read -r p; do
+          case "$p" in ''|'#'*) continue ;; esac
+          p="${p#"${p%%[![:space:]]*}"}"
+          [ -n "$p" ] || continue
+          printf '  %-24s %-8s %s\n' "$p" \
+            "$(grep -c "$p" haystack.txt 2>/dev/null || true)" \
+            "$(grep -cF "$p" haystack.txt || true)"
+        done < patterns.txt
+        echo
+        echo "the file has $(grep -c '' haystack.txt) lines."
+      } > /tmp/answer-literal
+      cat /tmp/answer-literal
+    verify:
+      - type: file_matches
+        path: /tmp/answer-literal
+        pattern: "1.2.3.4 +2 +1"
+        describe: A dotted version matched a decoy as a regex
+      - type: file_matches
+        path: /tmp/answer-literal
+        pattern: "\\[warn\\] +16 +1"
+        describe: And a bracketed word matched every line in the file
+      - type: file_matches
+        path: /tmp/answer-literal
+        pattern: "lines"
+        describe: And you recorded the file's total line count
+
+  - id: s3
+    instruction: >-
+      Explain the worst result — the pattern that matched everything — and say
+      what rule follows. Save to /tmp/answer-worst.
+    walkthrough: |
+      cd /tmp/text
+      {
+        echo "the pattern [warn] matched all 16 lines."
+        echo
+        echo "why: square brackets are a CHARACTER CLASS. [warn] means 'any one of w, a, r, n'. almost every line of English text contains one of those four letters, so it matched everything."
+        echo
+        echo "there was no error. grep did exactly what it was asked; the question it answered was simply not the question that was meant."
+        echo
+        echo "the other metacharacters that arrive from real data:"
+        echo "  1.2.3.4    the dots match ANY character, so it also matched 1x2y3z4"
+        echo "  v1.0.0     same"
+        echo "  cost: \$5.00  \$ is an end-of-line anchor"
+        echo "  ...?id=1   ? makes the previous character optional in ERE"
+        echo "  C:\\Users   backslash starts an escape sequence"
+        echo "  (deprecated) parentheses group in ERE"
+        echo
+        echo "the rule: IF THE PATTERN CAME FROM A VARIABLE, A CONFIG FILE, A FILENAME OR A USER, USE grep -F."
+        echo
+        echo "and if part of it genuinely needs to be a pattern, build it deliberately and escape the literal half. hoping that a version string contains no metacharacters is not a plan - version strings are DOTS, which is the most common metacharacter there is."
+      } > /tmp/answer-worst
+      cat /tmp/answer-worst
+    verify:
+      - type: file_matches
+        path: /tmp/answer-worst
+        pattern: "(?i)character class"
+        describe: You explained why brackets matched everything
+      - type: file_matches
+        path: /tmp/answer-worst
+        pattern: "(?i)no error"
+        describe: And that it failed silently
+      - type: file_matches
+        path: /tmp/answer-worst
+        pattern: "grep -F"
+        describe: And gave the rule
+      - type: file_matches
+        path: /tmp/answer-worst
+        pattern: "(?i)version strings are DOTS|not a plan"
+        describe: And why hoping is not sufficient
+
+  - id: s4
+    instruction: >-
+      Show how anchors and word matching narrow a search, using a short string
+      that appears inside longer ones. Save to /tmp/answer-anchors.
+    hint: >-
+      Search access.log for `200` and see where else it appears.
+    walkthrough: |
+      cd /tmp/text
+      {
+        echo "searching access.log for 200:"
+        echo "  grep -c '200'      -> $(grep -c '200' access.log || true)"
+        echo "  grep -cw '200'     -> $(grep -cw '200' access.log || true)"
+        echo "  grep -cE ' 200 '   -> $(grep -cE ' 200 ' access.log || true)"
+        echo
+        echo "the bare search also matched lines where 200 appears inside a duration or a path, because grep matches ANYWHERE in the line unless told otherwise."
+        echo
+        echo "the three ways to narrow it:"
+        echo "  -w      whole words only - 200 but not 1200 or 2001"
+        echo "  -x      the whole line must match exactly"
+        echo "  ^ and \$ anchor to the start and end of the LINE"
+        echo
+        echo "demonstrating the difference between a word and a substring:"
+        printf 'dev\ndevice\ndevops\nsandbox-dev2\n' > words.txt
+        echo "  grep    dev  -> $(grep -c dev words.txt) lines"
+        echo "  grep -w dev  -> $(grep -cw dev words.txt) lines"
+        echo "  grep -x dev  -> $(grep -cx dev words.txt) lines"
+        echo
+        echo "half the 'why is this matching that' questions are answered by -w or by an anchor, and anchoring is usually cheaper than making the pattern cleverer."
+      } > /tmp/answer-anchors
+      cat /tmp/answer-anchors
+    verify:
+      - type: file_matches
+        path: /tmp/answer-anchors
+        pattern: "grep    dev  -> 4 lines"
+        describe: A bare search matched every substring
+      - type: file_matches
+        path: /tmp/answer-anchors
+        pattern: "grep -w dev  -> 1 lines"
+        describe: And -w narrowed it to whole words
+      - type: file_matches
+        path: /tmp/answer-anchors
+        pattern: "grep -x dev  -> 1 lines"
+        describe: And -x to whole lines
+      - type: file_matches
+        path: /tmp/answer-anchors
+        pattern: "(?i)cheaper than making the pattern cleverer"
+        describe: And you drew the practical conclusion
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-choosing the rule you would follow for choosing a
+      dialect, including what you would never do.
+    walkthrough: |
+      {
+        echo "use -E by default."
+        echo
+        echo "its dialect is the one already in my head from every other language, and the patterns are readable without a backslash before every operator. the only argument for BRE is portability to something ancient, and -E has been in POSIX since 2001."
+        echo
+        echo "use -F whenever the pattern came from data. a variable, a config value, a filename, a version string, anything a user typed. this is not a hardening measure - it is correctness, because [warn] as a regex matched every line of a 16-line file."
+        echo
+        echo "what i would never do:"
+        echo "  - interpolate a variable into a pattern and hope. that is the same"
+        echo "    class of problem as an unquoted expansion, and it fails silently"
+        echo "    rather than erroring."
+        echo "  - copy a pattern between grep and grep -E without re-reading it."
+        echo "    the escaping is inverted, so it changes meaning quietly."
+        echo "  - reach for \\d or lookaround. neither is in BRE or ERE. grep -P has"
+        echo "    them where it is compiled in, which is not everywhere - it is not"
+        echo "    available in this image. the portable spellings are [0-9] and"
+        echo "    [[:digit:]]."
+        echo
+        echo "and the reviewable signal: a pattern containing a variable, without -F, is a question worth asking in review every time."
+      } > /tmp/answer-choosing
+      cat /tmp/answer-choosing
+    verify:
+      - type: file_matches
+        path: /tmp/answer-choosing
+        pattern: "(?i)use -E by default"
+        describe: You chose a default dialect
+      - type: file_matches
+        path: /tmp/answer-choosing
+        pattern: "(?i)came from data"
+        describe: And when to use -F
+      - type: file_matches
+        path: /tmp/answer-choosing
+        pattern: "(?i)inverted"
+        describe: And why copying patterns between tools is risky
+      - type: file_matches
+        path: /tmp/answer-choosing
+        pattern: "\\[\\[:digit:\\]\\]"
+        describe: And the portable alternative to Perl classes
+
+solution: >-
+  **One pattern, four results.**
+
+
+  Against a file containing `aa`, with no `+` anywhere in it:
+
+
+  ```text
+  grep    'a+'   -> 0 matches      + is literal in BRE
+  grep    'a\+'  -> 1 match        escaped, so it IS the operator
+  grep -E 'a+'   -> 1 match        operator
+  grep -E 'a\+'  -> 0 matches      escaped, so it is literal
+  ```
+
+
+  **The escaping is inverted.** In BRE a backslash *turns on* the operator; in
+  ERE it turns it off. So a pattern moved between tools silently changes meaning
+  rather than erroring. `sed` splits the same way — `sed 's/a+/X/'` leaves `aaa`
+  untouched, `sed -E 's/a+/X/'` gives `X`.
+
+
+  **And a pattern from data is not a pattern.**
+
+
+  ```text
+  PATTERN                  REGEX    LITERAL
+  1.2.3.4                  2        1
+  [warn]                   16       1
+  ```
+
+
+  Sixteen out of sixteen lines. `[warn]` is a **character class** — any one of
+  `w`, `a`, `r`, `n` — and almost every English line contains one. There was no
+  error; grep answered a different question from the one intended.
+
+
+  The rest of the set behaves the same way: `1.2.3.4` matched `1x2y3z4` because
+  `.` is any character, `$5.00` contains an anchor, `?id=1` makes a character
+  optional, `C:\Users` starts an escape.
+
+
+  **So: if the pattern came from a variable, a config file, a filename or a
+  user, use `grep -F`.** Version strings are the common case, and they are made
+  of dots.
+
+
+  **Anchors narrow what patterns cannot.**
+
+
+  ```text
+  grep    dev  -> 4 lines     dev, device, devops, sandbox-dev2
+  grep -w dev  -> 1 line      whole words
+  grep -x dev  -> 1 line      whole lines
+  ```
+
+
+  grep matches **anywhere in a line** unless told otherwise, which is why a short
+  string finds itself inside timestamps, paths and IDs. Half the "why is this
+  matching that" questions are answered by `-w` or an anchor, and anchoring is
+  cheaper than making the pattern cleverer.
+
+
+  **The rule.**
+
+
+  Use **`-E` by default** — that dialect is the one you already know, and it has
+  been in POSIX since 2001. Use **`-F` whenever the pattern came from data**;
+  that is correctness, not hardening.
+
+
+  Never interpolate a variable into a pattern and hope — it is the same class of
+  problem as an unquoted expansion and it fails silently. Never copy a pattern
+  between `grep` and `grep -E` without re-reading it. And do not reach for `\d`
+  or lookaround: neither exists in BRE or ERE, `grep -P` is not available
+  everywhere (including this image), and the portable spellings are `[0-9]` and
+  `[[:digit:]]`.

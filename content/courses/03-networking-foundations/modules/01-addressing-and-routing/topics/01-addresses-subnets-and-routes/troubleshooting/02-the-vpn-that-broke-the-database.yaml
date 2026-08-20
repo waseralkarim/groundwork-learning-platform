@@ -1,0 +1,226 @@
+id: troubleshooting.the-vpn-that-broke-the-database
+topic: topic.addresses-subnets-and-routes
+title: Connecting to the VPN kills the database connection
+level: L2
+objectives: [OBJ-A03.1.8, OBJ-A03.1.6]
+reveal_policy: progressive
+
+situation: >-
+  Developers run an application locally against a shared staging database at
+  `10.24.3.10`, in a cloud VPC reached over a peering link from the office
+  network.
+
+
+  Since Monday, connecting to the corporate VPN breaks it. The application times
+  out within seconds and recovers the moment the VPN is disconnected. Everything
+  else works while the VPN is up — internal wikis, the ticket system, the
+  internet.
+
+
+  The database team have confirmed the database is healthy and accepting
+  connections from everywhere else. The VPN team say nothing changed on Monday,
+  and the VPN has been in use for two years.
+
+
+  A workaround is circulating in the team chat: disconnect the VPN before
+  running tests. Several people have adopted it.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "Database connection times out while the VPN is connected"
+  - "It recovers instantly when the VPN is disconnected"
+  - "Everything else works normally while the VPN is up"
+  - "The database is healthy and reachable from CI and from other offices"
+  - "Started on Monday; the VPN itself has been unchanged for two years"
+  - "It affects every developer, not one machine"
+
+artifacts:
+  - type: command_output
+    label: Routing table with the VPN disconnected
+    content: |
+      $ ip route
+      default via 192.168.1.1 dev wlan0 proto dhcp metric 600
+      192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.87 metric 600
+
+      $ ip route get 10.24.3.10
+      10.24.3.10 via 192.168.1.1 dev wlan0 src 192.168.1.87 uid 1000
+
+  - type: command_output
+    label: Routing table with the VPN connected
+    content: |
+      $ ip route
+      default via 192.168.1.1 dev wlan0 proto dhcp metric 600
+      10.0.0.0/8 via 10.8.0.1 dev wg0
+      10.8.0.0/24 dev wg0 proto kernel scope link src 10.8.0.42
+      192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.87 metric 600
+
+      $ ip route get 10.24.3.10
+      10.24.3.10 via 10.8.0.1 dev wg0 src 10.8.0.42 uid 1000
+
+  - type: log
+    label: The VPN server's change log
+    content: |
+      2026-08-10 09:14  routes pushed to clients updated:
+                          was: 10.16.0.0/16, 10.17.0.0/16, 10.18.0.0/16
+                          now: 10.0.0.0/8
+                        reason: "simplify config, stop adding a /16 per new office"
+
+  - type: config
+    label: Where the database actually lives
+    content: |
+      # staging VPC, cloud provider, reached by VPC peering from the office network
+      vpc_cidr:      10.24.0.0/16
+      database_addr: 10.24.3.10
+      # the corporate VPN does not serve this range and has no route to it
+
+  - type: command_output
+    label: What a developer sees
+    content: |
+      $ psql -h 10.24.3.10 -U app staging
+      psql: error: connection to server at "10.24.3.10", port 5432 failed:
+              Connection timed out
+              Is the server running on that host and accepting TCP/IP connections?
+
+diagnostic_questions:
+  - "What is the longest prefix matching 10.24.3.10 with the VPN down? And with it up?"
+  - "What changed on Monday, and where?"
+  - "Why does everything except the database still work over the VPN?"
+  - "Why is the failure a timeout rather than 'network unreachable'?"
+  - "Whose fault is the workaround masking?"
+
+hints:
+  - "Run `ip route get` twice and compare. The two answers are different interfaces."
+  - "Read the VPN server's change log against the database's address."
+  - "10.24.3.10 is inside one of the ranges in that log and not the others."
+  - "The packets are leaving. Ask where they are going and who is dropping them."
+
+root_cause: >-
+  On Monday the VPN server changed the routes it pushes to clients from three
+  specific /16s to a single `10.0.0.0/8`. The database at `10.24.3.10` is inside
+  that /8, and the corporate VPN has no route to it.
+
+
+  Before the change, the only route matching `10.24.3.10` was the default, so
+  packets went out `wlan0` to the local gateway and reached the staging VPC over
+  the peering link. `ip route get` confirms it: `via 192.168.1.1 dev wlan0`.
+
+
+  After the change, `10.0.0.0/8` matches with a prefix length of 8 against the
+  default route's 0, so it wins. Every `10.x` address now goes down the tunnel.
+  The corporate network has never heard of `10.24.3.10`, so the packets are
+  dropped somewhere on the far side and nothing comes back — which is why the
+  symptom is a timeout rather than an immediate error. The packets are leaving
+  perfectly well; they are simply going to the wrong place.
+
+
+  Everything else keeps working because everything else is either inside the
+  corporate ranges the VPN really does serve, or is a public address matched only
+  by the default route, which is untouched.
+
+
+  Both teams' statements are true. The database is healthy. The VPN was not
+  changed in a way anyone thought was significant — "simplify config" is a
+  reasonable-sounding entry, and its effect was to claim ten million addresses
+  the VPN cannot deliver to.
+
+method: >-
+  **1. Run `ip route get` on both sides of the change.** This is a two-command
+  diagnosis and it should be the first thing tried, not the last:
+
+
+  ```text
+  VPN down:  10.24.3.10 via 192.168.1.1 dev wlan0
+  VPN up:    10.24.3.10 via 10.8.0.1   dev wg0
+  ```
+
+
+  Different interface, different gateway. Nothing about the database, the
+  firewall or the application needs to be considered until that difference is
+  explained.
+
+
+  **2. Diff the routing tables rather than reading one.** The VPN adds three
+  lines and the significant one is `10.0.0.0/8`. Prefix 8 against the default's
+  0 means it wins for every `10.x` destination, which is ten million addresses
+  claimed by one line.
+
+
+  **3. Check the address against the ranges the VPN actually serves.** The change
+  log says it used to push `10.16/16`, `10.17/16` and `10.18/16`. The database is
+  at `10.24.3.10`, which is in none of them — and is in the new `/8`. The change
+  did not add a route to the database; it added a route to everything, including
+  destinations the VPN cannot reach.
+
+
+  **4. Read the timeout as evidence.** "Connection timed out" means packets left
+  and nothing came back. Had there been no route, the error would have been
+  "Network is unreachable", immediately. The distinction says the local machine
+  did its job and something downstream discarded the traffic.
+
+
+  **5. Notice that both teams are right.** The database is healthy and the VPN
+  works. The fault is in the interaction, and finding it needs somebody willing
+  to look at the routing table rather than at either component — which is
+  usually the person who owns neither.
+
+
+  The habit: **"X broke when I connected to the VPN" is almost always a route
+  that now matches more specifically than the one X used to use.** `ip route get`
+  before and after settles it in ten seconds.
+
+resolution: >-
+  **The real fix belongs to the VPN configuration.** Push the ranges the VPN
+  actually serves, not the whole of `10.0.0.0/8`:
+
+
+  ```text
+  routes: 10.16.0.0/16, 10.17.0.0/16, 10.18.0.0/16
+  ```
+
+
+  The change was made to avoid adding a /16 per office, which is a fair goal —
+  but the correct way to get it is a range that covers the offices and nothing
+  else, such as a `10.16.0.0/12` if the offices are allocated inside one. Pushing
+  a /8 claims every private address anyone might use, including cloud VPCs,
+  container networks and partner links, and the VPN cannot deliver to any of
+  them.
+
+
+  **The immediate unblock, while that is agreed:** add a more specific route on
+  the developer machines. A longer prefix beats the VPN's /8.
+
+
+  ```bash
+  sudo ip route add 10.24.0.0/16 via 192.168.1.1 dev wlan0
+  ```
+
+
+  This is a workaround and should be labelled as one — it needs re-adding after
+  every reconnection unless it goes into the VPN client's own hooks, and it
+  spreads by copy-paste to machines nobody is tracking.
+
+
+  **Reject the circulating workaround explicitly.** "Disconnect the VPN before
+  running tests" trains a team to work without the control that exists for
+  security reasons, and it will outlive this incident by years. Saying so in the
+  same message as the real fix is the part that makes it stop.
+
+
+  **Then check what else the /8 captured.** The database was noticed because
+  developers use it hourly. Anything else in `10.0.0.0/8` reached from the office
+  — a partner API, a monitoring endpoint, another VPC, a lab network — has been
+  broken since Monday and may not have been reported yet:
+
+
+  ```bash
+  # on a connected machine, for each address that matters
+  ip route get <address>     # does it go via wg0 when it should not?
+  ```
+
+
+  **And record the general rule for whoever configures the VPN next.** Pushing a
+  broad route is not a simplification; it is a claim that the VPN can reach
+  everything in that range. When it cannot, the failure lands on someone else's
+  service, days later, with no obvious connection to the change that caused it.

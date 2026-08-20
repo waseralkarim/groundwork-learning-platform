@@ -1,0 +1,227 @@
+id: troubleshooting.the-outage-nobody-owned
+topic: topic.service-models-and-responsibility
+title: The backups ran every night for two years
+level: L2
+objectives: [OBJ-A05.2.5, OBJ-A05.2.7]
+reveal_policy: progressive
+
+situation: >-
+  A managed PostgreSQL instance was corrupted during a storage incident at the
+  provider. The provider restored the underlying volume and confirmed the
+  hardware fault was resolved, but the database itself would not start —
+  corruption had been written before the fault was detected.
+
+
+  The team went to restore from backup. Automated backups had run nightly for
+  two years and every one reported success. Retention was 35 days, so there were
+  35 candidates.
+
+
+  The restore has now been running for four hours. The first two attempts failed
+  with errors nobody recognised. The third is in progress and nobody knows how
+  long it will take or whether it will work.
+
+
+  The business has been down for six hours. Someone has asked whether the
+  provider is liable.
+
+
+  Work out what went wrong, and when.
+
+symptoms:
+  - "Managed database unrecoverable after a provider storage incident"
+  - "Two years of nightly backups, all reported successful"
+  - "Two restore attempts failed with unfamiliar errors"
+  - "Nobody knows how long a restore takes"
+  - "No documented RPO or RTO for this database"
+  - "The provider has fixed their fault and considers the incident closed"
+
+artifacts:
+  - type: log
+    label: The backup history
+    content: |
+      $ list-backups --db prod-main --limit 5
+      2026-08-16 02:00:04  SUCCESS  412 GB  duration 51m
+      2026-08-15 02:00:03  SUCCESS  411 GB  duration 49m
+      2026-08-14 02:00:05  SUCCESS  410 GB  duration 52m
+      ...
+      (730 consecutive successes, 0 failures)
+
+  - type: command_output
+    label: Restore attempts
+    content: |
+      attempt 1  restored to new instance, sizes matched, application failed to start
+                 error: relation "orders_2026_08" does not exist
+      attempt 2  restored 2026-08-15 backup, same error
+      attempt 3  in progress, 4h elapsed, ~60% complete
+
+  - type: config
+    label: The database's configuration
+    content: |
+      automated_backups:     enabled
+      backup_window:         02:00-03:00
+      retention_days:        35
+      point_in_time_recovery: DISABLED     # default; never changed
+      maintenance_window:    any           # default; never changed
+
+  - type: log
+    label: A migration from three weeks ago
+    content: |
+      2026-07-24  migration 0142: partition orders by month
+                  creates orders_YYYY_MM partitions via a scheduled job
+                  job runs monthly on the 1st, creates next month's partition
+                  job owner: (unset)
+
+  - type: config
+    label: What the runbook says about backups
+    content: |
+      "Backups are handled automatically by the managed database service.
+       Retention is 35 days."
+      (last edited 2 years ago, at migration to the managed service)
+
+diagnostic_questions:
+  - "What does 'backup SUCCESS' actually assert?"
+  - "When did anyone last restore one of these backups?"
+  - "What is the RPO, given nightly backups and no point-in-time recovery?"
+  - "Why did the restore fail with a missing relation, when the sizes matched?"
+  - "Which of these failures is the provider's?"
+
+hints:
+  - "There are 730 successes and zero restores. Which number matters?"
+  - "Read the migration from three weeks ago, and the owner field on the job."
+  - "point_in_time_recovery is DISABLED. What does that make the worst-case data loss?"
+  - "The runbook says backups are 'handled automatically'. Handled through to what?"
+
+root_cause: >-
+  **The backups were never restored, so nothing about them was ever true beyond
+  "a file was written".**
+
+
+  Three distinct failures compound, and only one belongs to the provider.
+
+
+  *The provider's:* a storage fault that corrupted the database. That is theirs,
+  it is what an SLA covers, and it is the smallest of the three.
+
+
+  *The untested restore.* Seven hundred and thirty consecutive successes and zero
+  restores. "SUCCESS" asserts that a backup job completed and a file of the
+  expected size was written. It asserts nothing about whether the file can be
+  restored, how long that takes, or whether the result is usable. All three were
+  unknown at the moment they were needed, which is the worst possible moment to
+  discover them.
+
+
+  The four-hour restore is the RTO nobody had measured. Nobody chose four hours;
+  it was simply how long it takes, and it was never going to be discovered any
+  other way.
+
+
+  *The missing partition.* Migration 0142 partitioned `orders` by month and
+  relies on a scheduled job to create each next partition — and the job's owner
+  field is unset. The restore is faithful: it reproduces the database as it was,
+  including the absence of the partition the job failed to create. The error
+  `relation "orders_2026_08" does not exist` is the restore working correctly and
+  revealing a fault that had been latent for three weeks.
+
+
+  *And the RPO nobody set.* Point-in-time recovery is disabled — the default,
+  never changed. With nightly backups that makes worst-case data loss **24
+  hours**, which nobody has agreed to and nobody has written down.
+
+
+  The runbook says backups are "handled automatically by the managed database
+  service". That is true and it is the sentence that caused this: it describes a
+  **shared** layer as though it were the provider's. They take the backups. What
+  they are worth was always yours to establish.
+
+method: >-
+  **1. Ask what "success" asserts.** A backup job reporting success means a file
+  was written. It does not mean the file restores, that the restore completes in
+  a useful time, or that the result is usable. Those are three separate claims
+  and each needs its own test.
+
+
+  **2. Count restores, not backups.** 730 successes and 0 restores is the whole
+  finding in one ratio. The number people watch is the one that cannot tell them
+  anything.
+
+
+  **3. Read the configuration defaults as decisions.** `point_in_time_recovery:
+  DISABLED` and `maintenance_window: any` are both defaults nobody changed, and
+  both are choices. PITR being off sets the RPO at 24 hours by omission.
+
+
+  **4. Treat the restore error as information, not as a broken backup.**
+  `relation "orders_2026_08" does not exist` means the restore worked and
+  reproduced a database that was already missing a partition. The backup is fine;
+  the database had a latent fault for three weeks. A restore test would have
+  found that within a day.
+
+
+  **5. Separate the three failures before assigning any of them.** Provider
+  storage fault, untested restores, unowned partition job. Only the first is
+  theirs, and it is the one that will get all the attention because it is the one
+  with a counterparty.
+
+
+  **6. Ask when the runbook was last edited.** Two years, at migration. A runbook
+  written at the moment of a change and never revisited is a record of what
+  somebody assumed, and this one encoded the assumption that caused the incident.
+
+
+  The habit: **a backup is a claim and a restore is a test.** Until the test has
+  run, you have a file.
+
+resolution: >-
+  **During the incident:** let attempt 3 finish and record how long it takes —
+  that number is your actual RTO and it has never been known. If the partition is
+  the only obstacle, creating it manually on the restored instance is likely to
+  get the application up faster than another restore cycle.
+
+
+  **Then, in order of what it prevents.**
+
+
+  *A scheduled restore test.* Weekly or monthly, into a scratch instance,
+  asserting that the application starts and that a known row is present. This is
+  the single change that turns 730 unverified claims into a verified capability,
+  and it would have found the partition fault within days. The platform's own
+  `db:verify-restore` task exists for exactly this reason.
+
+
+  *Enable point-in-time recovery* and write down the resulting RPO. Then check
+  whether anyone has agreed to it. 24 hours of potential data loss is a business
+  decision that has been made by a default.
+
+
+  *Measure and publish the RTO.* Four-plus hours for a 412 GB database is not
+  unreasonable; not knowing it is. It changes what you promise and whether a
+  read replica or a warm standby is worth its cost.
+
+
+  *Give the partition job an owner and an alert.* An unset owner field is the
+  same failure as an unowned shared layer — the job ran until it did not, and
+  nothing noticed for three weeks. Alert on the next partition's existence rather
+  than on the job's success, for exactly the reason the backups failed: success
+  of a job is not the property you care about.
+
+
+  *Rewrite the runbook entry.* Replace "backups are handled automatically" with
+  what is actually true:
+
+
+  > Backups are taken nightly by the provider, retained 35 days. PITR is
+  > [enabled/disabled], making our RPO [X]. Our measured RTO is [Y]. A restore is
+  > tested [cadence] by [owner]; last verified [date].
+
+
+  **On liability.** The provider's fault was the storage incident, and their SLA
+  will cover what SLAs cover — a credit. The six hours came from an untested
+  restore path and a latent schema fault, and no provider commitment covers
+  either. Pursuing the credit is reasonable; treating it as the finding is how
+  the same outage happens again.
+
+
+  **The sentence for the postmortem:** we monitored the thing that was easy to
+  measure for two years, and it was not the thing we needed to be true.

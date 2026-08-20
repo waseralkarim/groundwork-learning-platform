@@ -1,0 +1,10 @@
+graph LR
+    A["A cgroup wants memory"] --> B{"Below memory.min?"}
+    B -->|"yes"| C["Never reclaimed.<br/>The OOM killer looks elsewhere"]
+    B -->|"no"| D{"Below memory.low?"}
+    D -->|"yes"| E["Reclaimed only as a last resort"]
+    D -->|"no"| F{"Above memory.high?"}
+    F -->|"yes"| G["Reclaim hard and throttle the cgroup.<br/>Slow, not dead"]
+    F -->|"no"| H{"Above memory.max?"}
+    H -->|"yes"| I["Reclaim, then OOM-kill.<br/>Dead"]
+    H -->|"no"| J["Nothing happens"]

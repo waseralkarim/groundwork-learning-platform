@@ -1,0 +1,293 @@
+id: lab.compose-the-numbers
+topic: topic.regions-and-failure-domains
+title: Compose real SLAs and find out what you actually promise
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A05.3.3, OBJ-A05.3.4]
+
+intro: >-
+  /tmp/slas.txt holds the figures a provider publishes for the services this
+  platform depends on. Every one of them is 99.9% or better.
+
+
+  Compose them and find out what your system promises. Then compute what
+  redundancy buys, and find the assumption the second calculation depends on —
+  which is the one that makes calculated availability differ from observed
+  availability.
+
+setup:
+  - /opt/lab/seed-domains.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/slas.txt. Compose the availability of a stack needing managed
+      Kubernetes, multi-AZ PostgreSQL, a load balancer and a secrets manager —
+      all required. Save the result and its downtime to /tmp/answer-series.
+    hint: >-
+      `/tmp/avail series a b c ...` multiplies them. `/tmp/avail downtime <a>`
+      converts a fraction to time.
+    walkthrough: |
+      cat /tmp/slas.txt
+      {
+        echo "components, all required:"
+        echo "  managed kubernetes control  0.9995"
+        echo "  managed postgres multi-AZ   0.9995"
+        echo "  managed load balancer       0.9999"
+        echo "  secrets manager             0.9999"
+        echo
+        echo -n "composed: "
+        /tmp/avail series 0.9995 0.9995 0.9999 0.9999
+        echo
+        /tmp/avail downtime 0.99880046
+        echo
+        echo "every component promises 99.95% or better and the system promises 99.88%, which is worse than any of them individually."
+        echo "components in series multiply, so availability can only fall. adding a dependency always makes the system less available, and that cost is almost never counted."
+      } > /tmp/answer-series
+      cat /tmp/answer-series
+    verify:
+      - type: file_matches
+        path: /tmp/answer-series
+        pattern: "99\\.88"
+        describe: You composed the four services in series
+      - type: file_matches
+        path: /tmp/answer-series
+        pattern: "per month: 0h 5[0-9]m"
+        describe: And converted it to about 52 minutes a month
+      - type: file_matches
+        path: /tmp/answer-series
+        pattern: "(?i)worse than any of them|can only fall"
+        describe: And noted that series composition only ever lowers availability
+
+  - id: s2
+    instruction: >-
+      Now compute what redundancy buys. Compose two, then three, components at
+      99% in parallel, and save the progression to /tmp/answer-parallel.
+    hint: >-
+      `/tmp/avail parallel` multiplies the *un*availabilities. Compare each
+      result against the single-component figure.
+    walkthrough: |
+      {
+        echo "one component at 99%:      99.000000%"
+        echo -n "two in parallel:           "; /tmp/avail parallel 0.99 0.99
+        echo -n "three in parallel:         "; /tmp/avail parallel 0.99 0.99 0.99
+        echo
+        echo "downtime for each:"
+        /tmp/avail downtime 0.99   | sed 's/^/  1x: /'
+        /tmp/avail downtime 0.9999 | sed 's/^/  2x: /'
+        echo
+        echo "two mediocre components in parallel beat one excellent one, and three beat almost anything purchasable. parallel composition multiplies the unavailabilities, so each addition removes an order of magnitude of downtime."
+      } > /tmp/answer-parallel
+      cat /tmp/answer-parallel
+    verify:
+      - type: file_matches
+        path: /tmp/answer-parallel
+        pattern: "99\\.99"
+        describe: Two components in parallel reached four nines
+      - type: file_matches
+        path: /tmp/answer-parallel
+        pattern: "99\\.9999"
+        describe: And three reached six
+      - type: file_matches
+        path: /tmp/answer-parallel
+        pattern: "(?i)unavailabilit"
+        describe: And you identified what parallel composition multiplies
+
+  - id: s3
+    instruction: >-
+      The parallel calculation depends on an assumption. Name it, then list at
+      least four ordinary ways it fails. Save to /tmp/answer-independence.
+    hint: >-
+      Ask what has to be true for `(1-a1)(1-a2)` to be the right formula for two
+      components failing.
+    walkthrough: |
+      {
+        echo "the assumption is INDEPENDENCE: that the two components do not fail for the same reason at the same time. multiplying unavailabilities is only valid when the failures have nothing in common."
+        echo
+        echo "ordinary ways it breaks:"
+        echo "1. shared infrastructure - replicas on the same node, rack, power feed or switch. schedulers pack by default, so this is what happens unless something prevents it."
+        echo "2. a shared dependency every replica needs - a vault, a config service, dns, a certificate authority, the registry every node pulls from. if it is single-instance, it is in series with all of them."
+        echo "3. shared change - a bad deployment reaches every replica within minutes. redundancy gives zero protection against this, which is why progressive rollout and fast rollback are availability controls."
+        echo "4. correlated load - one replica fails, its traffic goes to the others, they fail for the same reason. redundancy makes the cascade faster rather than slower."
+        echo
+        echo "so calculated parallel availability is an UPPER BOUND, usually a distant one. two replicas that might be on one node are not parallel at all - they are one component with a slightly different failure rate."
+      } > /tmp/answer-independence
+      cat /tmp/answer-independence
+    verify:
+      - type: file_matches
+        path: /tmp/answer-independence
+        pattern: "(?i)independen"
+        describe: You named the assumption
+      - type: command_exit
+        command: "test $(grep -cE '^[1-4]\\.' /tmp/answer-independence) -ge 4"
+        exit_code: 0
+        describe: And listed at least four ways it fails
+      - type: file_matches
+        path: /tmp/answer-independence
+        pattern: "(?i)upper bound"
+        describe: And concluded what that makes the calculated figure
+
+  - id: s4
+    instruction: >-
+      Compose the stack again, this time including the dependencies people leave
+      off the diagram. Save the honest number to /tmp/answer-honest.
+    hint: >-
+      Look at the full list in /tmp/slas.txt. Which of those does a request
+      actually touch that was not in step 1?
+    walkthrough: |
+      {
+        echo "step 1 counted four services. a request also touches:"
+        echo "  object storage      0.99999   (assets, uploads)"
+        echo "  managed DNS         1.0       (published as 100%)"
+        echo "  compute per instance across 2+ AZs  0.9999"
+        echo
+        echo -n "all seven in series: "
+        /tmp/avail series 0.9995 0.9995 0.9999 0.9999 0.99999 1.0 0.9999
+        echo
+        /tmp/avail downtime 0.99870
+        echo
+        echo "the honest number is lower again, and the exercise is the point: the series composition is only as good as the list, and the list is always short. secrets, dns, registry and identity are dependencies that rarely appear on an architecture diagram and are all required to serve a request."
+        echo
+        echo "the 100% dns figure is worth treating carefully. it describes the service's design, not a promise that name resolution never fails for me - resolver caches, my registrar and my own zone config are all outside it."
+      } > /tmp/answer-honest
+      cat /tmp/answer-honest
+    verify:
+      - type: file_matches
+        path: /tmp/answer-honest
+        pattern: "99\\.8[0-9]"
+        describe: You composed the fuller dependency list
+      - type: file_matches
+        path: /tmp/answer-honest
+        pattern: "(?i)only as good as the list"
+        describe: And noted that the calculation depends on enumerating everything
+      - type: file_matches
+        path: /tmp/answer-honest
+        pattern: "(?i)100%|dns"
+        describe: And treated the 100% claim with appropriate caution
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-conclusion what these numbers are good for, what they
+      are not, and what actually causes most downtime.
+    hint: >-
+      Think about which failures the arithmetic models, and which common causes
+      of outage it says nothing about.
+    walkthrough: |
+      {
+        echo "what the arithmetic is good for:"
+        echo "- setting a target you can actually meet. promising 99.95% when the composed stack is 99.88% is promising something undeliverable."
+        echo "- showing that every added dependency lowers availability, which makes the cost of a new integration visible."
+        echo "- showing where redundancy is worth buying, and where the component is already not the limiting factor."
+        echo
+        echo "what it is not good for:"
+        echo "- predicting real availability. it assumes independence, which is usually false, so it is an upper bound."
+        echo "- anything caused by change."
+        echo
+        echo "what actually causes most downtime: CHANGES. deployments, configuration edits, certificates expiring, dependencies deprecated on schedule. zone failures are real and uncommon; region failures rarer still."
+        echo "redundancy protects against none of those. a bad release reaches all nine replicas in minutes, and a second region runs the same bad release."
+        echo
+        echo "so the controls that reduce real downtime most - progressive rollout, canaries, fast rollback, change freezes - appear nowhere in an availability calculation. the arithmetic is for the failures redundancy does address. it is worth doing precisely and it is not the largest term."
+      } > /tmp/answer-conclusion
+      cat /tmp/answer-conclusion
+    verify:
+      - type: file_matches
+        path: /tmp/answer-conclusion
+        pattern: "(?i)change"
+        describe: You identified changes as the largest real cause of downtime
+      - type: file_matches
+        path: /tmp/answer-conclusion
+        pattern: "(?i)rollback|canar|progressive"
+        describe: And named controls that address it
+      - type: file_matches
+        path: /tmp/answer-conclusion
+        pattern: "(?i)not the largest term|upper bound"
+        describe: And kept the arithmetic in proportion
+
+solution: >-
+  **The composed number.**
+
+
+  ```text
+  managed kubernetes   0.9995
+  managed postgres     0.9995
+  load balancer        0.9999
+  secrets manager      0.9999
+                       ─────────
+  composed             99.880046%   →  about 52 minutes a month
+  ```
+
+
+  Four services, each promising 99.95% or better, composing to **worse than any
+  of them individually**. That is what series composition does: availability
+  multiplies, so it can only fall.
+
+
+  Two consequences worth saying in a design review. **Adding a dependency always
+  lowers availability** — there is no exception, and a feature that adds one more
+  required service has made the system less available. And **your number is never
+  the best number on the vendor's page**; nobody publishes the product, and the
+  product is what your users get.
+
+
+  **What redundancy buys.**
+
+
+  ```text
+  one at 99%              99.000000%     ~7h 12m/month
+  two in parallel         99.990000%     ~4m 19s/month
+  three in parallel       99.999900%
+  ```
+
+
+  Parallel composition multiplies the *un*availabilities, so each addition
+  removes roughly an order of magnitude of downtime. Two mediocre components beat
+  one excellent one.
+
+
+  **And the assumption everything rests on is independence.**
+
+
+  `(1−a₁)(1−a₂)` is only the right model when the two failures have nothing in
+  common. Four ordinary ways that fails:
+
+
+  - **Shared infrastructure** — same node, rack, power feed, switch. Schedulers
+    pack by default, so this is the outcome unless something prevents it.
+
+  - **A shared dependency** — vault, DNS, certificate authority, registry. If it
+    is single-instance it is in *series* with every replica.
+
+  - **Shared change** — a bad deployment reaches every replica in minutes.
+    Redundancy gives zero protection, which is why progressive rollout and fast
+    rollback are availability controls rather than release conveniences.
+
+  - **Correlated load** — one failure redistributes traffic and the others fail
+    the same way. Redundancy makes the cascade faster.
+
+
+  So calculated parallel availability is an **upper bound**, usually a distant
+  one. Two replicas that might be on one node are not parallel; they are one
+  component with a slightly different failure rate.
+
+
+  **The list is always short.** Recomposing with object storage, DNS and compute
+  lowers the number again — and secrets, DNS, registry and identity are exactly
+  the dependencies that never appear on an architecture diagram and are all
+  required to serve a request.
+
+
+  **Keep it in proportion.** This arithmetic models the failures redundancy
+  addresses, and those are not what causes most downtime. **Changes are** —
+  deployments, config edits, expiring certificates, scheduled deprecations. Zone
+  failures are real and uncommon; region failures rarer still.
+
+
+  Redundancy protects against none of that. A bad release reaches all nine
+  replicas in minutes, and a second region runs the same bad release. The
+  controls that reduce real downtime most — progressive rollout, canaries, fast
+  rollback — appear nowhere in this calculation.
+
+
+  Do the arithmetic precisely, and know it is not the largest term.

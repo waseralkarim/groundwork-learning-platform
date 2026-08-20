@@ -1,0 +1,185 @@
+topic: topic.namespaces
+
+questions:
+  - id: i1
+    level: L2
+    question: What is a container, at the kernel level?
+    model_answer: >-
+      There is no container object in the kernel. A container is an ordinary
+      process that has been given its own view of a few global resources —
+      namespaces — plus a root filesystem to run in and cgroup limits on what it
+      can consume.
+
+
+      There are eight namespace types: pid, mnt, net, user, uts, ipc, cgroup and
+      time. They are independent, which is why a workload can have its own
+      network namespace and share everything else, or the reverse. "Container"
+      is the name of a conventional bundle of those parts, assembled by a
+      runtime, not a thing the kernel names.
+
+
+      The part worth adding is what is *not* namespaced: the kernel itself. Every
+      container makes syscalls into the same kernel as the host, which is the
+      whole security argument for and against containers — and it is why a
+      container is not a VM.
+    signal: >-
+      A strong answer names namespaces and cgroups as separate mechanisms doing
+      separate jobs, and says the kernel is shared without being asked. A weaker
+      one describes a container as a lightweight VM, or treats "namespaces" as a
+      single feature rather than eight independent ones.
+    follow_ups:
+      - "Which namespace do your containers most likely not have their own of?"
+      - "How would you check whether two processes share a network namespace?"
+      - "What does the runtime do between cloning and exec'ing the entrypoint?"
+
+  - id: i2
+    level: L3
+    question: >-
+      Is root inside a container the same as root on the host? Explain your
+      answer precisely.
+    model_answer: >-
+      By default, yes — the same uid, with no translation. Docker and Kubernetes
+      do not give containers their own user namespace, so every container shares
+      the host's initial one and `/proc/<pid>/uid_map` reads `0 0 4294967295`,
+      the identity mapping. Container uid 0 is host uid 0 as far as the kernel is
+      concerned.
+
+
+      What differs is the authority, not the identity. A default Docker container
+      running as root holds about fourteen capabilities out of forty, and a
+      hardened one holds none — so it is root that cannot mount, cannot load
+      modules, cannot set the clock. Add seccomp, `no_new_privs` and a read-only
+      rootfs and you have root that can do very little. That is a real defence.
+
+
+      It is also a brittle one, because every part of it is a policy that can be
+      turned off. `--privileged` restores the lot. The structural fix is a user
+      namespace: uid 0 inside maps to an ordinary unprivileged uid outside, so
+      even a complete escape lands as nobody in particular. That is what rootless
+      containers do, and it is the difference between reducing the likelihood of
+      an escape and reducing what an escape is worth.
+    signal: >-
+      The distinction to listen for is identity versus authority. Candidates who
+      say "no, it's isolated" have absorbed marketing; candidates who say "yes,
+      and here's why it's survivable anyway" have read a uid_map. Reaching
+      user namespaces unprompted, and framing them as changing consequence
+      rather than likelihood, is a senior answer.
+    follow_ups:
+      - "Which single file would you read to confirm it on a running container?"
+      - "Why don't Docker and Kubernetes enable user namespaces by default?"
+      - "What does --privileged actually change, item by item?"
+
+  - id: i3
+    level: L3
+    question: >-
+      A pod spec asks for `hostNetwork: true`. What do you want to know before
+      approving it?
+    model_answer: >-
+      First, what it is for. There are legitimate uses — a CNI plugin, a node
+      exporter, anything that must see the node's real interfaces — and the
+      option is load-bearing for those. The commonest illegitimate use is
+      reaching a service that a normal `Service`, a `hostPort` or a route would
+      have reached, and that is worth asking about directly.
+
+
+      Then what it gives up, which is more than people expect. The obvious part
+      is network isolation: the pod is on the node's interfaces, in the node's
+      port space, so it can bind node ports and see node traffic, and two such
+      pods cannot share a node if they want the same port.
+
+
+      The part that catches people is NetworkPolicy. Policies select pods by pod
+      IP, and a host-networked pod does not have one — it has the node's address.
+      So every ingress and egress rule anyone believed applied to that workload
+      silently does not, and nothing anywhere reports that. For anything holding
+      data I would treat that alone as disqualifying.
+
+
+      Operationally I would also check `dnsPolicy`, which needs to be
+      `ClusterFirstWithHostNet` or cluster DNS stops resolving.
+    signal: >-
+      Everyone names the port space. The NetworkPolicy consequence separates
+      people who have run a cluster from people who have read the documentation,
+      and asking what it is *for* before listing objections is the mark of
+      someone who reviews rather than gatekeeps.
+    follow_ups:
+      - "How would you detect host-networked pods across a cluster you inherited?"
+      - "What would you propose instead, for a pod that needs to reach a node-local service?"
+      - "How do you make this a property of the cluster rather than of code review?"
+
+  - id: i4
+    level: L3
+    question: >-
+      You need to packet-capture a distroless container that has no shell and no
+      tcpdump. How?
+    model_answer: >-
+      Start a container that has the tools in the target's network namespace.
+      With Docker that is `docker run --rm -it --net=container:<name>
+      nicolaka/netshoot tcpdump -i eth0`; in Kubernetes it is `kubectl debug
+      --image=nicolaka/netshoot --target=<container>`. Nothing is installed in
+      the target and nothing restarts.
+
+
+      The mechanism is `setns`: namespaces can be joined as well as created, and
+      they are joined independently. Joining only the network namespace gets the
+      traffic without the target's filesystem, which is what you want — the
+      target has no `/bin/sh` for netshoot to run.
+
+
+      Worth knowing for the same situation: `kubectl debug --target` joins pid,
+      net and uts but not mnt, so the target's files are not at their usual
+      paths. They are reachable through `/proc/1/root/...`, which the kernel
+      resolves into the target's mount namespace for you. That single fact
+      prevents the usual conclusion, which is that the production image needs a
+      shell adding to it.
+    signal: >-
+      Naming `--net=container:` or `kubectl debug --target` is the expected
+      answer. Explaining it as joining namespaces rather than "getting into the
+      container" shows the model is right. The `/proc/1/root` detail, and the
+      instinct to protect the distroless image from being enlarged for
+      debugging, are both strong signals.
+    follow_ups:
+      - "Why can the debug container see the process but not its config file?"
+      - "What would you need to add to also see the target's filesystem, and why is that not the default?"
+      - "How do you do the same thing when the pod has already crashed?"
+
+  - id: i5
+    level: L3
+    question: >-
+      Your CI runners need to build container images. The team has asked for
+      `privileged: true`. What do you do?
+    model_answer: >-
+      The request is not unreasonable, and I would say so first. Building an
+      image means creating namespaces and mounts, which requires `CAP_SYS_ADMIN`
+      under a conventional runtime — so under the constraints they are working
+      with, `privileged` really is what it takes.
+
+
+      But it is a bad trade on a shared cluster. A privileged container holds all
+      capabilities with seccomp and `no_new_privs` off, and it still shares the
+      host's user namespace — so its root is the node's root, and it can mount
+      the node's filesystem. CI runners execute code from pull requests, which
+      makes this the worst possible workload to grant it to.
+
+
+      The alternatives all exist to break that trade. Rootless builders —
+      Buildah, Kaniko, BuildKit in rootless mode — do the build without needing
+      privileged namespace creation. Sysbox gives the container a real user
+      namespace, so it can hold `CAP_SYS_ADMIN` that means nothing on the node,
+      and Docker-in-Docker works normally inside it. Either way the inner build
+      gets its capabilities in a namespace where they are harmless.
+
+
+      So: reject as written, propose a specific replacement, and offer to do the
+      migration. A "no" without an alternative gets overruled the next time a
+      release is blocked.
+    signal: >-
+      Look for the trade being named rather than the request being refused.
+      Strong candidates explain *why* it takes CAP_SYS_ADMIN, name at least one
+      rootless builder or Sysbox, and connect it back to the shared user
+      namespace. Treating "privileged" as merely a bit permissive, rather than as
+      removing the confinement entirely, is the weak answer.
+    follow_ups:
+      - "What exactly does Sysbox give the inner container that Docker does not?"
+      - "Why is CI a worse place for this than a build server nobody else shares?"
+      - "How would you stop the flag reappearing after you have removed it?"

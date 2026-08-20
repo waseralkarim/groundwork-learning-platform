@@ -1,0 +1,250 @@
+topic: topic.tcp-and-udp
+
+exercises:
+  - id: e1
+    title: Name the cost of each guarantee
+    level: L1
+    objectives: [OBJ-A03.3.2]
+    kind: short_answer
+    prompt: >-
+      TCP provides a connection, ordering, retransmission, flow control and
+      congestion control.
+
+
+      For each, state what it costs — not "it is slower", but the specific
+      mechanism that costs something and when that cost matters.
+    answer: >-
+      Connection: a full round trip before any data, plus state on both ends —
+      50ms wasted on a 50ms path, which is why connection reuse matters.
+      Ordering: head-of-line blocking, where one lost segment stalls everything
+      behind it even though it has already arrived. Retransmission: loss becomes
+      latency rather than failure, so a lossy link makes TCP slow instead of
+      broken. Flow control: throughput is bounded by window over round-trip
+      time, which is why long-distance high-bandwidth transfers need window
+      scaling. Congestion control: loss is interpreted as congestion, so a link
+      that drops packets for other reasons — a poor wireless signal — makes TCP
+      back off when it should not.
+    explanation: >-
+      The point of the exercise is that none of these are free, and each cost
+      identifies a workload where UDP is the better answer.
+
+
+      **Head-of-line blocking is the one with the widest consequences.** It is
+      why HTTP/2, which multiplexes many streams over one TCP connection, is
+      hurt more by a single lost packet than HTTP/1.1 was — every stream waits
+      for the retransmission, including streams whose data had already arrived.
+      HTTP/3 moved to QUIC over UDP specifically to order per stream instead of
+      per connection.
+
+
+      **The handshake cost is the one you can act on today.** It is why keep-alive
+      and connection pooling matter so much, and why `ActiveOpens` rising while
+      `CurrEstab` stays flat is a signal worth watching: it means connections are
+      being created and destroyed rather than reused.
+
+
+      **The congestion control cost is the subtlest.** TCP assumes loss means a
+      queue filled somewhere. On a wireless link that drops packets for radio
+      reasons the assumption is wrong, and the sender slows down in response to
+      something backing off will not fix.
+
+  - id: e2
+    title: Read the counters
+    level: L2
+    objectives: [OBJ-A03.3.5]
+    kind: interpretation
+    prompt: >-
+      Deltas over five minutes on a busy server:
+
+
+      ```text
+      Tcp: ActiveOpens 12  PassiveOpens 48210  AttemptFails 9
+           EstabResets 3102  CurrEstab 812  RetransSegs 41  OutSegs 2104882
+           OutRsts 8840
+      Udp: InDatagrams 1204  NoPorts 0  RcvbufErrors 0
+      ```
+
+
+      Say what this machine is, which numbers are healthy, and which two are
+      worth investigating.
+    answer: >-
+      It is a server: 48210 accepted connections against 12 initiated. The
+      retransmission ratio is 41/2104882, about 0.002%, which is a healthy
+      network. UDP is fine — no drops, nothing arriving at unbound ports. The two
+      worth investigating are `OutRsts` at 8840, meaning this machine is sending
+      a great many resets, and `EstabResets` at 3102, meaning established
+      connections are being torn down abruptly.
+    explanation: >-
+      **The shape identifies the role first.** `PassiveOpens` hugely exceeding
+      `ActiveOpens` means this machine accepts connections and rarely makes them
+      — a server rather than a proxy or a client. A proxy would show both
+      numbers high.
+
+
+      **`RetransSegs` over `OutSegs` is the network-quality signal** and 0.002%
+      is excellent. That single ratio takes "the network is bad" off the table.
+
+
+      **8840 `OutRsts` is the first thing to investigate.** Resets sent usually
+      mean connection attempts to ports with nothing bound — a scanner, or a
+      client population with stale configuration pointing at a service that
+      moved. Checking which port they are for tells you which.
+
+
+      **3102 `EstabResets` is the second**, and it is a different problem:
+      connections that were established and then torn down abruptly rather than
+      closed. That is the application crashing mid-connection, a proxy timing out
+      idle connections, or a middlebox intervening. It correlates with clients
+      reporting "connection reset by peer" and is worth matching against their
+      timings.
+
+  - id: e3
+    title: Where did the datagram go?
+    level: L2
+    objectives: [OBJ-A03.3.6]
+    kind: interpretation
+    prompt: >-
+      A sender reports 100% success and a receiver reports 60% of expected
+      messages. For each of the following observations on the receiver, say what
+      it proves:
+
+
+      **A** — `ss -uln` shows no socket on the port
+
+
+      **B** — `ss -uan` shows the socket as `ESTAB` with a peer
+
+
+      **C** — `Udp: RcvbufErrors` rising steadily, roughly in proportion to load
+
+
+      **D** — all of the above are clean, and `Udp: InDatagrams` matches what the
+      senders claim to have sent
+    answer: >-
+      A: nothing is bound, so every datagram is discarded on arrival and counted
+      in NoPorts — the receiver is down or on a different port. B: the socket is
+      connected to one peer and the kernel is discarding everyone else before the
+      application sees them. C: the datagrams arrive correctly and are dropped
+      because the application is not reading fast enough — the loss is inside the
+      receiving machine. D: the datagrams are arriving and being delivered, so
+      the loss is in the application after `recvfrom()` — a parsing failure, a
+      full internal queue, or messages being discarded by the code itself.
+    explanation: >-
+      The four observations correspond to the four places a datagram can die, and
+      only one of them is the network.
+
+
+      **A would usually produce total loss rather than 60%**, since the port is
+      either bound or not — unless the receiver has been restarting, in which
+      case the loss is proportional to downtime.
+
+
+      **B is the hardest to find without knowing to look**, because it is counted
+      nowhere. `ss -uan` is the only evidence.
+
+
+      **C is the commonest in production** and its signature is exactly what is
+      described: proportional to load, steady, worse in bursts. Genuine network
+      loss is rarely so neatly correlated with your own traffic.
+
+
+      **D is the case people forget exists.** If `InDatagrams` matches the send
+      count, the kernel delivered everything and the loss is above the socket —
+      in the application's own parsing, queueing or discarding. At that point the
+      network and the kernel are both exonerated and the investigation moves into
+      the code.
+
+  - id: e4
+    title: Choose a protocol
+    level: L2
+    objectives: [OBJ-A03.3.7]
+    kind: short_answer
+    prompt: >-
+      Choose TCP or UDP for each, and name what the choice gives up:
+
+
+      **A** — A service discovery heartbeat, sent by 5000 agents every 10
+      seconds.
+
+
+      **B** — A financial transaction API.
+
+
+      **C** — A live video conference stream.
+
+
+      **D** — Log shipping from 200 nodes to a central store, where losing lines
+      is unacceptable.
+    answer: >-
+      A: UDP — small, repeatable, and a missed heartbeat is corrected ten seconds
+      later; it gives up any certainty that a given heartbeat arrived, and 5000
+      TCP connections would be far more expensive than the information is worth.
+      B: TCP — correctness is the whole point; it gives up a round trip per
+      connection, which connection reuse mitigates. C: UDP — a retransmitted
+      20ms audio sample arrives too late to play; it gives up quality under loss
+      in exchange for latency. D: TCP — lines must not be lost, so it gives up
+      the guarantee that shipping never blocks the producer, which then needs a
+      bounded local buffer and an explicit policy for what happens when it fills.
+    explanation: >-
+      The pattern is: **UDP when messages are small, independent, and better lost
+      than late.** TCP when they are large, ordered, or must not be lost.
+
+
+      **A and C are the clear UDP cases** for different reasons. A is about cost
+      at scale — 5000 persistent connections to carry a few bytes every ten
+      seconds is a poor trade, and the next heartbeat repairs any loss. C is
+      about latency — a late packet is worse than a missing one, because the
+      moment it was needed has passed.
+
+
+      **D is the interesting one**, because "losing lines is unacceptable" is a
+      requirement that changes the failure mode rather than removing it. TCP
+      stops the loss and introduces backpressure: if the central store slows
+      down, something has to give. Naming what — a bounded disk-backed buffer,
+      and a documented decision about whether the producer blocks or drops when
+      it fills — is the actual design work, and skipping it is how a log pipeline
+      takes down an application.
+
+  - id: e5
+    title: Explain a UDP service that works for one client
+    level: L2
+    objectives: [OBJ-A03.3.4]
+    kind: short_answer
+    prompt: >-
+      A UDP service passes every test in development and, in production, serves
+      exactly one client correctly while ignoring the rest. Its logs are clean
+      and every client reports success.
+
+
+      Explain the mechanism, the one command that proves it, and why development
+      testing could never have caught it.
+    answer: >-
+      The server called `connect()` on its receiving socket after the first
+      datagram, which fixes the peer locally and makes the kernel discard
+      datagrams from every other address and port before the application sees
+      them. `ss -uan` proves it: the socket shows `ESTAB` with a specific peer
+      rather than `UNCONN` with a wildcard. Development testing could not catch
+      it because a single test client is exactly the case that works — the bug
+      only appears with a second concurrent sender.
+    explanation: >-
+      The mechanism is worth stating precisely because it sounds impossible:
+      `connect()` on a UDP socket sends no packets at all. It is a local record
+      of a peer address, and it has two effects — `send()` becomes usable, and
+      incoming datagrams are filtered to that peer.
+
+
+      Servers do it for convenience, so that replies can be written without
+      carrying the client address around. It is correct for a client and wrong
+      for a server.
+
+
+      **Neither end can log it.** The senders called `sendto()`, the kernel
+      accepted the datagram, and `sendto()` returned success — which is all it
+      has ever meant. The receiver never sees the discarded datagrams, so there
+      is nothing for it to write down.
+
+
+      **And the testing gap is structural, not sloppiness.** One client is the
+      passing case. Catching it requires a test with two concurrent senders,
+      which is not an obvious thing to write unless you already know this failure
+      exists — which is the argument for having produced it once deliberately.

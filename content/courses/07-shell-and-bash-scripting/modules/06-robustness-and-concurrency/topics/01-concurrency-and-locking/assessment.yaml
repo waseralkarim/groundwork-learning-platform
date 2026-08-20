@@ -1,0 +1,226 @@
+id: assessment.concurrency-and-locking
+topic: topic.concurrency-and-locking
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a correct lock that let two runs through
+    kind: explain
+    objectives: [OBJ-B08.8.3, OBJ-B08.8.7]
+    prompt: >-
+      Invoices are generated twice on about one night in twelve — always the
+      whole batch. Two runs start minutes apart and neither reports the lock as
+      held. Testing two simultaneous runs by hand always behaves correctly.
+
+
+      ```bash
+      LOCK=/var/lock/invoices.lock
+      exec 9>"$LOCK"
+      flock -n 9 || { echo "another run holds the lock - exiting"; exit 0; }
+
+      cleanup() {
+        rm -f "$LOCK"          # tidy up after ourselves
+        rm -rf "$WORKDIR"
+      }
+      trap cleanup EXIT
+      ```
+
+
+      The schedule runs the job at 02:00, 02:08, 02:16 and 02:24.
+
+
+      In about 250 words: explain it, and say what you would change.
+    rubric:
+      - "States that a flock is held on an open file description / inode, not a path"
+      - "Identifies rm -f \"$LOCK\" in the cleanup as the cause"
+      - "Notes it fires on the SUCCESS path, so reliability increases the collision rate"
+      - "Explains that the second run acquires a NEW inode, so neither is refused"
+      - "Connects the eight-minute schedule to a run overrunning it"
+      - "Explains why simultaneous testing never reproduces it"
+      - "Fix is to delete the rm; the lock file must outlive every run"
+      - "Proposes an invariant test rather than a timing-based one"
+    model_answer: >-
+      **A `flock` is held on an open file description, which points at an inode —
+      not at a path.** `rm` unlinks a name; it releases nothing.
+
+
+      On a normal night the job finishes inside eight minutes, only one run
+      exists at a time, and the removal is harmless. On a slow night the 02:00
+      run is still going when 02:08 starts. That run opens the lock file, and if
+      the first run's `cleanup` fires in the window between that open and its
+      `flock` call, the first run's descriptor closes, `rm` unlinks the path, and
+      the second run's `flock` succeeds on the now-nameless inode. The 02:16 run
+      then opens the path, **creating a new inode**, and locks that.
+
+
+      Two runs, two inodes, no mutual exclusion — and neither prints "already
+      running", because neither was ever refused. Both publish the full batch
+      because both did the whole job.
+
+
+      **Testing never reproduces it** because two simultaneous runs contend on the
+      *same* inode and the kernel arbitrates correctly. The defect needs a run
+      that has **already finished** to have removed the file, which only happens
+      when a run overruns its schedule.
+
+
+      **The fix is to delete one line:** `cleanup` removes `$WORKDIR` and never
+      the lock file. Create the lock file once and leave it forever — it costs an
+      inode, and `/var/lock` is cleared on reboot, when nothing can hold one.
+
+
+      **Do not test the race.** The window is two instructions wide, so a
+      sleep-based test would pass almost always and fail in CI once a month.
+      Assert the invariant instead: the lock file must still exist after a run
+      that held it has finished. One line, deterministic.
+
+
+      The tell, incidentally, is the lock file's mtime — it tracks job
+      *completions* rather than being old and untouched.
+
+  - id: B
+    title: Diagnose a watchdog that reported a termination that did not happen
+    kind: diagnose
+    objectives: [OBJ-B08.8.5, OBJ-B08.8.7]
+    prompt: >-
+      A watchdog reports `importer did not finish in 1800s - terminated
+      (rc=124)` on about a third of nights, and the runbook says to re-run the
+      import the next morning. Records from those nights are now duplicated.
+
+
+      ```bash
+      timeout "$LIMIT" /opt/jobs/importer
+      status=$?
+      [ "$status" -eq 0 ] && echo "finished cleanly" \
+                          || echo "did not finish in ${LIMIT}s - terminated (rc=$status)"
+      ```
+
+
+      The importer contains, added two years ago after a deploy corrupted a
+      table:
+
+
+      ```bash
+      trap 'log "ignoring TERM, batch in progress"' TERM
+      ```
+
+
+      Its own log shows the import completing on the affected nights.
+
+
+      Give the diagnosis, the fix, and what you would change beyond the code.
+    rubric:
+      - "States that timeout sends SIGTERM, which is catchable, and 124 means the limit was reached"
+      - "Distinguishes 'the limit was reached' from 'the process stopped'"
+      - "Notes both components behave correctly and as intended"
+      - "Identifies the runbook as the mechanism that produced the duplicates"
+      - "Proposes timeout -k, and explains what the grace period buys"
+      - "Notes a trap handler returns, so the handler must exit"
+      - "Proposes distinct exit statuses (143 vs 137 vs 124) and reporting on the outcome"
+      - "Proposes making the re-run idempotent as worth more than the watchdog fix"
+    model_answer: >-
+      **`timeout` sends `SIGTERM`, which is a request.** Status **124** means the
+      time limit was reached — not that the process stopped. The importer caught
+      `TERM`, logged that it was ignoring it, and wrote every remaining batch. The
+      import **succeeded**, late, and the watchdog reported a termination that
+      never happened.
+
+
+      **Both components are correct.** `timeout` sent the signal it documents and
+      returned the status it documents; the `TERM` handler was added deliberately
+      to stop a mid-batch kill corrupting a table. The combination reports the
+      opposite of what occurred.
+
+
+      **The duplicates come from the runbook**, which reads the watchdog's status
+      as fact and instructs a re-run. The operator did exactly what the
+      documentation said, about a third of nights, for six weeks. Nobody read the
+      importer's own log because the watchdog had already said what happened.
+
+
+      **The fixes.** `timeout -k 60 "$LIMIT"` follows `TERM` with `SIGKILL`, which
+      cannot be caught — status **137**, and a well-behaved process still gets 60
+      seconds to finish cleanly. Make the handler *exit* rather than return: a
+      trap handler returns and execution resumes, which is why the importer
+      continued. Set a flag, finish the current batch, then `exit 143` so the
+      watchdog can distinguish "asked to stop and did" from "had to be killed"
+      (137) from "ignored us and ran out of time" (124).
+
+
+      And report on the **outcome**, not the wrapper's status. The watchdog cannot
+      observe whether the import completed, so it must not claim to — it should
+      say "exceeded the limit, state unknown, check its log", and something must
+      separately assert completion.
+
+
+      **Beyond the code:** change the runbook first, today. Then make the import
+      **idempotent** — keyed by batch identifier, skipping what is already
+      loaded — so an unnecessary re-run is harmless. That is worth more than any
+      improvement to the watchdog, because it removes the consequence rather than
+      one of its causes.
+
+  - id: C
+    title: Design the concurrency strategy for a scheduled job
+    kind: reason
+    objectives: [OBJ-B08.8.4, OBJ-B08.8.8]
+    prompt: >-
+      You own a job that syncs a dataset to three application hosts. It runs from
+      cron every ten minutes on a single scheduler host, usually takes ninety
+      seconds, and occasionally takes twenty minutes when a host is slow.
+
+
+      Design its concurrency strategy. Say what should happen when a run is
+      already going and why; which exclusion mechanism you would use; what you
+      would monitor; and what your design still does not protect against.
+    rubric:
+      - "Chooses skip (flock -n) and justifies it from the nature of the work"
+      - "Rejects blocking with the pile-up argument, given 10-minute schedule vs 20-minute runs"
+      - "Uses flock and says why it beats a PID file — the kernel keeps the record"
+      - "Places the lock file in /var/lock and forbids deleting it"
+      - "Bounds the run with timeout -k so a hang cannot hold the lock forever"
+      - "Monitors consecutive skips and time since last SUCCESSFUL completion"
+      - "Notes the lock is per-machine and advisory"
+      - "Notes the lock does not make the work safe to interrupt — idempotency is separate"
+    model_answer: >-
+      **What should happen: skip.** The sync reflects current state, so a run that
+      is late is worth less than a run that is skipped — the next one carries the
+      same data ten minutes later. `flock -n 9 || { echo "sync: already running,
+      skipping" >&2; exit 0; }`.
+
+
+      **Blocking would be actively dangerous here.** Runs arrive every ten minutes
+      and a bad one takes twenty, so queued runs accumulate faster than they
+      drain. That is a pile-up: the machine falls over some hours later, for
+      reasons that look unrelated to a sync job. Exit 0 rather than non-zero,
+      because a skip is expected behaviour and should not page.
+
+
+      **Mechanism: `flock`.** The kernel keeps the record, so the lock is released
+      when the holder dies however it dies — `SIGKILL`, OOM, reboot. A PID file
+      cannot do that: its trap does not run on `SIGKILL`, its `kill -0` check is a
+      guess because PIDs are reused, and check-then-write is TOCTOU. Lock file in
+      `/var/lock/sync.lock`, created once, **never deleted** — not by a cleanup
+      trap, not by a tidy-up job. `exec 9>` so the descriptor stays open for the
+      whole run.
+
+
+      **Bound it:** `timeout -k 60 900 rsync …` per host. Without this, one
+      unreachable host holds the lock indefinitely and every later run skips —
+      which is the failure mode the lock *creates*.
+
+
+      **Monitor:** consecutive skips (one is normal, three means the holder is
+      stuck); **time since the last successful completion**, not since the last
+      invocation — the gap between those two numbers is exactly this bug; and the
+      per-host duration, since the twenty-minute runs are a signal in themselves.
+      A guard that makes failure quiet needs its own monitoring.
+
+
+      **What it does not protect against.** The lock is **per-machine**: if the
+      cron entry is ever added to a second scheduler host, two runs proceed and
+      neither is aware. It is **advisory** — a colleague's manual `rsync` at 2am
+      is not excluded. It does not make the work **safe to interrupt**: a run
+      killed halfway leaves a partially synced host, which is why `rsync -a
+      --delete` matters, since it converges rather than appending. And it does not
+      bound *correctness* — it guarantees one run at a time, not that the run did
+      the right thing, so the sync still needs its outcome asserted.

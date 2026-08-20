@@ -1,0 +1,183 @@
+id: troubleshooting.container-cannot-write
+topic: topic.files-and-filesystems
+title: The container that worked in staging and cannot write in production
+level: L3
+objectives: [OBJ-A01.5.8]
+reveal_policy: progressive
+
+situation: >-
+  A report-generation service was hardened last sprint: read-only root
+  filesystem, non-root user, all capabilities dropped. It passed review, it
+  passed staging, and it fails in production within a minute of every deploy.
+
+
+  The team's theory is that the production image is different. It is not — the
+  digest matches. Their proposed fix is to remove `readOnlyRootFilesystem`,
+  which will work, and which the platform team has pushed back on.
+
+
+  You have the evidence below. Work out what is actually failing, and find a fix
+  that keeps the hardening.
+
+symptoms:
+  - "Crashes about 50 seconds after start, every time, in production only"
+  - "Staging runs the same image digest with the same securityContext"
+  - "The application log ends mid-request with no error"
+  - "Exit code 1, not 137 — this is not an OOM kill"
+  - "Removing readOnlyRootFilesystem makes it work"
+
+artifacts:
+  - type: log
+    label: The last lines before the crash
+    content: |
+      09:14:02 INFO  report worker started
+      09:14:38 INFO  generating report 4471 (est. 180 MB)
+      09:14:51 ERROR failed to write scratch file: open /var/tmp/report-4471.tmp: read-only file system
+      09:14:51 FATAL unrecoverable, exiting
+
+  - type: config
+    label: The production pod spec
+    content: |
+      securityContext:
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10001
+        capabilities: { drop: ["ALL"] }
+      volumeMounts:
+        - { name: out, mountPath: /var/lib/reports }
+        - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: out
+          persistentVolumeClaim: { claimName: reports }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 64Mi }
+      resources:
+        limits: { memory: 512Mi }
+
+  - type: config
+    label: The staging pod spec, for comparison
+    content: |
+      securityContext:
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10001
+      volumeMounts:
+        - { name: out, mountPath: /var/lib/reports }
+        - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: out
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}          # disk-backed, no size limit
+      # no memory limit set
+
+  - type: command_output
+    label: Where the application writes scratch data
+    content: |
+      $ grep -rn 'TMPDIR\|/var/tmp\|os.CreateTemp' cmd/ internal/
+      internal/render/pdf.go:88:  f, err := os.CreateTemp("/var/tmp", "report-*.tmp")
+
+diagnostic_questions:
+  - "Which path failed, and is it covered by any of the mounts?"
+  - "Why does staging pass with the same securityContext?"
+  - "If the scratch path were /tmp instead, would production succeed?"
+  - "What is different about the production tmp volume beyond its size?"
+  - "Would removing readOnlyRootFilesystem fix the cause or hide it?"
+
+hints:
+  - "Read the failing path character by character and compare it with the mount list."
+  - "/tmp and /var/tmp are different directories."
+  - "Compare the two tmp volumes: one is disk-backed and unbounded, the other is memory and capped."
+  - "A 180 MB report and a 64Mi memory-backed volume are worth thinking about together."
+
+root_cause: >-
+  The application writes scratch files to `/var/tmp`, and nothing is mounted
+  there. Under a read-only root filesystem that path is not writable, so the
+  first large report fails with `EROFS`.
+
+
+  Staging passes because its tmp volume is disk-backed and unbounded and — more
+  importantly — because staging never generated a report large enough to reach
+  this path in the same way; the real difference is that nobody noticed
+  `/var/tmp` was unmounted in either environment. Production hits it because
+  production has the traffic.
+
+
+  There is a second failure waiting behind the first. Even mounting `/var/tmp`
+  as the production `tmp` volume is configured — `emptyDir` with `medium: Memory`
+  and a 64Mi limit — would fail for a 180 MB report: a memory-backed emptyDir is
+  a tmpfs, so it is bounded by its size limit and charged against the pod's
+  512Mi memory limit. Fixing only the mount would convert an `EROFS` into an
+  `ENOSPC`, or an OOM kill.
+
+method: >-
+  **1. Read the errno, not the sentence.** "read-only file system" is `EROFS`,
+  which is a property of the mount and has nothing to do with permissions,
+  ownership or capabilities. That immediately rules out three of the four things
+  the hardening changed.
+
+
+  **2. Compare the failing path against the mount list.** `/var/tmp` is not
+  `/tmp`, and it is not `/var/lib/reports`. Nothing is mounted there, so it is
+  part of the read-only root. This is the entire first-order cause and it is
+  visible in ten seconds once the errno is read correctly.
+
+
+  **3. Ask why staging differs, and be suspicious of the answer.** The
+  securityContext is the same. The difference is the workload, not the
+  configuration — which is why "it works in staging" was never evidence that the
+  configuration was right.
+
+
+  **4. Look at what the fix would land on.** Before mounting something at
+  `/var/tmp`, check what a 180 MB write would do there. The production tmp volume
+  is memory-backed with a 64Mi limit inside a 512Mi pod: too small, and charged
+  against memory rather than disk. Mounting it there swaps one failure for
+  another.
+
+
+  **5. Reject the proposed fix on the evidence.** Removing
+  `readOnlyRootFilesystem` makes the scratch write land in the container's
+  writable overlay layer. It works, it is slower for large files because of
+  copy-up, it is discarded on restart, and it removes hardening to solve a
+  missing mount. The cause and the proposed fix are unrelated.
+
+resolution: >-
+  Mount a volume at the path the application actually uses, sized for the work:
+
+
+  ```yaml
+  securityContext:
+    readOnlyRootFilesystem: true      # kept
+    runAsNonRoot: true
+    runAsUser: 10001
+    capabilities: { drop: ["ALL"] }
+  volumeMounts:
+    - { name: out,     mountPath: /var/lib/reports }
+    - { name: tmp,     mountPath: /tmp }
+    - { name: scratch, mountPath: /var/tmp }
+  volumes:
+    - name: scratch
+      emptyDir: { sizeLimit: 2Gi }    # disk-backed, not medium: Memory
+  ```
+
+
+  Note the deliberate absence of `medium: Memory` on the scratch volume. Report
+  rendering writes hundreds of megabytes; on a memory-backed volume that competes
+  with the heap for the pod's 512Mi limit and gets the pod OOM-killed. Disk is
+  the right medium for large scratch data, and memory is right only for small,
+  hot, short-lived files.
+
+
+  **Two follow-ups worth doing while the context is fresh:**
+
+
+  Set `TMPDIR` explicitly rather than relying on a hard-coded `/var/tmp` in one
+  source file — then the writable path is configuration rather than something
+  discovered during an incident.
+
+
+  Make staging representative in the way that matters: same volume media, same
+  size limits, same memory limit. Staging passed because it differed in exactly
+  the dimensions the failure depended on, which is the least useful way for two
+  environments to differ.

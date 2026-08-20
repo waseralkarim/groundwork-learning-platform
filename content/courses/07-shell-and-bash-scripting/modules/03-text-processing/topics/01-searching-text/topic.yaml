@@ -1,0 +1,140 @@
+id: topic.searching-text
+slug: searching-text
+title: "Searching Text: Exit Codes, Regex Dialects and Fields"
+summary: >-
+  `grep` returns 1 when it finds nothing, which under `set -e` ends your script
+  on a successful search. Its `+` means one thing and `grep -E`'s means another.
+  And `cut -d' '` silently returns empty fields on the spacing that every real
+  command produces. Three tools you have used for six courses, and the rules
+  nobody stated.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 115
+status: published
+
+prerequisites:
+  - topic: topic.where-output-goes
+    hardness: required
+  - topic: topic.how-a-line-becomes-a-command
+    hardness: required
+
+objectives:
+  - id: OBJ-B08.3.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify what grep's exit status 0, 1 and 2 each mean.
+    assessed_by: [quiz.q1, quiz.q2, lab.the-search-that-killed-the-script, exercise.e1]
+
+  - id: OBJ-B08.3.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe which regex dialect a given tool and flag combination uses.
+    assessed_by: [quiz.q3, quiz.q4, lab.two-regex-dialects]
+
+  - id: OBJ-B08.3.3
+    level: L2
+    verb: predict
+    statement: >-
+      Predict whether a pattern matches, given the dialect it will be
+      interpreted in.
+    assessed_by: [quiz.q5, quiz.q6, quiz.q7, lab.two-regex-dialects, exercise.e2]
+
+  - id: OBJ-B08.3.4
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a script that stops on a search which correctly found nothing.
+    assessed_by: [quiz.q8, quiz.q9, lab.the-search-that-killed-the-script, troubleshooting.the-healthcheck-that-passed-by-not-matching]
+
+  - id: OBJ-B08.3.5
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why a pattern taken from data must be matched literally, and how
+      to do it.
+    assessed_by: [quiz.q10, quiz.q11, lab.two-regex-dialects, exercise.e3]
+
+  - id: OBJ-B08.3.6
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish delimiter-based from whitespace-based field splitting, and say
+      which real command output requires which.
+    assessed_by: [quiz.q12, quiz.q13, lab.fields-and-columns, exercise.e4, troubleshooting.the-column-that-moved]
+
+  - id: OBJ-B08.3.7
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret an awk program using NR, NF and a field separator against real
+      command output.
+    assessed_by: [quiz.q14, lab.fields-and-columns, lab.build-the-report]
+
+  - id: OBJ-B08.3.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a tool choice for a text task, naming what the alternatives would
+      cost.
+    assessed_by: [quiz.q15, lab.build-the-report, exercise.e5, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: exit status 1
+    definition: >-
+      For grep, "no lines matched". A normal, informative result — and
+      indistinguishable from failure to `set -e`, which is why it ends scripts.
+  - term: exit status 2
+    definition: >-
+      For grep, an actual error — unreadable file, bad pattern. The status that
+      deserves attention, and the one people forget exists.
+  - term: BRE
+    definition: >-
+      Basic regular expressions — the default for `grep` and `sed`. `+`, `?`,
+      `|`, `(` and `{` are **literal** unless backslash-escaped.
+  - term: ERE
+    definition: >-
+      Extended regular expressions — `grep -E`, `sed -E`, `awk`. The
+      metacharacters work without backslashes, which is the dialect most people
+      already have in their heads.
+  - term: fixed string
+    definition: >-
+      `grep -F` — treat the pattern as literal text with no metacharacters. The
+      correct choice whenever the pattern came from data.
+  - term: anchor
+    definition: >-
+      `^` and `$` — the start and end of a line. The difference between matching
+      a name and matching every line containing it.
+  - term: greedy
+    definition: >-
+      A quantifier matches as much as it can. `s/".*"/X/` on a line with two
+      quoted strings replaces everything between the first and last quote.
+  - term: field separator
+    definition: >-
+      What splits a line into fields. `cut -d` takes exactly one character;
+      awk's default splits on **runs** of whitespace, which is why they disagree
+      on real output.
+  - term: NR
+    definition: >-
+      awk's record number — the line being processed. `NR == 1` skips a header.
+  - term: NF
+    definition: >-
+      awk's field count for the current line. `$NF` is the last field, which
+      survives columns being added on the left.
+  - term: "-print0"
+    definition: >-
+      Separate results with NUL rather than newline. NUL is the only byte a
+      filename cannot contain, so it is the only safe separator.
+  - term: word boundary
+    definition: >-
+      `grep -w`, or `\b` in some dialects. The difference between finding `dev`
+      and finding it inside `device`.
+
+foreshadows:
+  - "B08.4's find and xargs act on the results these tools produce."
+  - "B12's log analysis is this topic applied to volume."
+  - "F34's structured logging exists partly because field extraction from text is this fragile."
+  - "G43's scanners parse tool output, and inherit every problem in this topic."
+
+tags: [shell, grep, awk, regex, text-processing, fundamentals]

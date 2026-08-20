@@ -1,0 +1,339 @@
+id: lab.predicates-and-time
+topic: topic.finding-files
+title: The predicate that keeps a file it was told to delete
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.4.1, OBJ-B08.4.3, OBJ-B08.4.4]
+
+intro: >-
+  `/tmp/find/archive` contains files at known ages — 3 days, 6, 7, 8, 10, 30.
+  A retention policy says "delete anything older than seven days".
+
+
+  You will predict which files four time predicates select, measure it, and find
+  the one that keeps a file it was meant to remove. Then you will find out what
+  `-prune` does that filtering afterwards does not.
+
+setup:
+  - /opt/lab/seed-find.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/find/age-task.txt, then measure each file's actual age in whole
+      days before predicting anything. Save to /tmp/answer-ages.
+    hint: >-
+      `find -printf '%T@'` gives the modification time as a Unix timestamp.
+      Whole days is that difference divided by 86400.
+    walkthrough: |
+      cd /tmp/find
+      cat age-task.txt
+      {
+        echo "measured ages, in whole 24-hour periods:"
+        now=$(date +%s)
+        find archive -name '*.log' -printf '%T@ %f\n' | while read -r ts name; do
+          printf '  %-16s %s\n' "$name" "$(( (now - ${ts%.*}) / 86400 ))"
+        done | sort -k2 -n
+      } > /tmp/answer-ages
+      cat /tmp/answer-ages
+    verify:
+      - type: file_matches
+        path: /tmp/answer-ages
+        pattern: "age-8d.log +8"
+        describe: You measured the eight-day file
+      - type: file_matches
+        path: /tmp/answer-ages
+        pattern: "age-7d.log +7"
+        describe: And the seven-day file
+      - type: file_matches
+        path: /tmp/answer-ages
+        pattern: "current.log +0"
+        describe: And the current one
+
+  - id: s2
+    instruction: >-
+      Run the four predicates and record exactly which files each selects. Save
+      to /tmp/answer-predicates.
+    hint: >-
+      `-printf '%f '` prints just the filename, which makes the sets easy to
+      compare.
+    walkthrough: |
+      cd /tmp/find
+      {
+        for m in +6 +7 7 -7; do
+          printf '  -mtime %-3s -> %s\n' "$m" "$(find archive -name '*.log' -mtime $m -printf '%f ' | tr ' ' '\n' | sort | tr '\n' ' ')"
+        done
+        echo
+        echo
+        printf '  does +7 include age-7d.log? %s\n' "$(find archive -name '*.log' -mtime +7 -printf '%f\n' | grep -cx 'age-7d.log')"
+        printf '  does +6 include age-7d.log? %s\n' "$(find archive -name '*.log' -mtime +6 -printf '%f\n' | grep -cx 'age-7d.log')"
+        printf '  does +7 include age-8d.log? %s\n' "$(find archive -name '*.log' -mtime +7 -printf '%f\n' | grep -cx 'age-8d.log')"
+        echo
+        echo "the finding: age-7d.log is selected by -mtime +6 and NOT by -mtime +7."
+      } > /tmp/answer-predicates
+      cat /tmp/answer-predicates
+    verify:
+      - type: file_matches
+        path: /tmp/answer-predicates
+        pattern: "does \\+7 include age-7d.log\\? 0"
+        describe: "-mtime +7 excludes the seven-day file"
+      - type: file_matches
+        path: /tmp/answer-predicates
+        pattern: "does \\+6 include age-7d.log\\? 1"
+        describe: While -mtime +6 selects it
+      - type: file_matches
+        path: /tmp/answer-predicates
+        pattern: "does \\+7 include age-8d.log\\? 1"
+        describe: And +7 does select the eight-day file
+      - type: file_matches
+        path: /tmp/answer-predicates
+        pattern: "(?i)NOT by -mtime \\+7"
+        describe: And you stated the finding
+
+  - id: s3
+    instruction: >-
+      Explain the rule that produces that result, and give the predicate you
+      would actually write for a seven-day retention policy. Save to
+      /tmp/answer-rule.
+    walkthrough: |
+      cd /tmp/find
+      {
+        echo "the rule: -mtime n compares WHOLE 24-HOUR PERIODS, TRUNCATED."
+        echo
+        echo "  -mtime +7   strictly MORE than 7 whole periods  -> 8 or more"
+        echo "  -mtime 7    exactly 7 whole periods             -> 7 up to 8"
+        echo "  -mtime -7   fewer than 7                        -> 0 to 6"
+        echo
+        echo "a file that is 7 days old has completed exactly 7 periods, so 'more than 7' is false. it takes another full day to be selected by +7."
+        echo
+        echo "so 'delete anything older than seven days' written as -mtime +7 actually keeps everything for EIGHT days. the retention window is 14% longer than the policy says, the job reports success, and nothing indicates the discrepancy."
+        echo
+        echo "what i would write instead:"
+        echo "  find archive -name '*.log' ! -newermt '-7 days'"
+        echo
+        echo "-newermt compares against a real moment in time with no truncation, so the boundary means what it says. checking it selects the right set:"
+        printf '    ! -newermt -7 days -> %s\n' "$(find archive -name '*.log' ! -newermt '-7 days' -printf '%f ' | tr ' ' '\n' | sort | tr '\n' ' ')"
+        echo
+        echo "and -mmin is the other escape: -mmin +10080 is seven days in minutes, and truncating to whole minutes never matters."
+        echo
+        echo "one more trap worth knowing: -mtime is MODIFICATION time. -atime may be meaningless on a relatime or noatime mount, and -ctime is bumped by chmod and chown - so a permissions fix can make an old file look new to a retention job."
+      } > /tmp/answer-rule
+      cat /tmp/answer-rule
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)TRUNCATED"
+        describe: You stated the truncation rule
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)EIGHT days"
+        describe: And what the obvious predicate actually implements
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "newermt"
+        describe: And gave a predicate without the rounding
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)ctime is bumped"
+        describe: And noted which time each predicate tests
+
+  - id: s4
+    instruction: >-
+      Compare `-prune` against excluding a path afterwards, on the project tree.
+      Measure both. Save to /tmp/answer-prune.
+    hint: >-
+      Time each of them several times and take the best. The excluded subtree is
+      much larger than the rest of the tree.
+    walkthrough: |
+      cd /tmp/find
+      {
+        echo "the tree has $(find project | wc -l) paths, most of them in node_modules."
+        echo
+        for a in notpath prune; do
+          best=999999
+          for r in 1 2 3 4 5; do
+            s=$(date +%s%N)
+            case $a in
+              notpath) find project -not -path '*/node_modules/*' -name '*.log' >/dev/null ;;
+              prune)   find project -path '*/node_modules' -prune -o -name '*.log' -print >/dev/null ;;
+            esac
+            e=$(date +%s%N); ms=$(( (e-s)/1000000 )); [ $ms -lt $best ] && best=$ms
+          done
+          printf '  %-9s best of 5: %sms\n' "$a" "$best"
+        done
+        echo
+        echo "both produce the same files. the difference is that -not -path WALKS the entire excluded tree and discards each path, while -prune never opens those directories at all."
+        echo
+        echo "on this small tree that is a few milliseconds. a real node_modules, .git or vendor directory holds tens or hundreds of thousands of entries, and the difference scales with it - which is why a find over a source tree can take minutes without pruning and be instant with it."
+        echo
+        echo "the syntax needs reading carefully:"
+        echo "  find . -path '*/node_modules' -prune -o -name '*.log' -print"
+        echo "         if it is node_modules, prune (and stop)"
+        echo "                                otherwise, if it matches, print"
+        echo
+        echo "the explicit -print is REQUIRED. supplying any action removes the implicit one, and without it find also prints the pruned directories themselves:"
+        printf '    with -print:    %s\n' "$(find project -path '*/node_modules' -prune -o -name '*.log' -print | wc -l) paths"
+        printf '    without -print: %s\n' "$(find project -path '*/node_modules' -prune -o -name '*.log' | wc -l) paths"
+      } > /tmp/answer-prune
+      cat /tmp/answer-prune
+    verify:
+      - type: file_matches
+        path: /tmp/answer-prune
+        pattern: "prune +best of 5"
+        describe: You timed both approaches
+      - type: file_matches
+        path: /tmp/answer-prune
+        pattern: "(?i)never opens those directories"
+        describe: And explained the structural difference
+      - type: file_matches
+        path: /tmp/answer-prune
+        pattern: "(?i)REQUIRED"
+        describe: And that the explicit -print is needed
+      - type: file_matches
+        path: /tmp/answer-prune
+        pattern: "without -print: [0-9]+ paths"
+        describe: And showed what happens without it
+
+  - id: s5
+    instruction: >-
+      Find two more ways a predicate can select the wrong set — one about
+      quoting and one about operator precedence. Save to /tmp/answer-traps.
+    walkthrough: |
+      cd /tmp && rm -rf ptrap && mkdir ptrap && cd ptrap
+      : > a.log; : > b.txt; : > c.log
+      {
+        echo "trap 1 - an unquoted -name pattern is globbed by the SHELL first."
+        echo "  in a directory containing a.log and c.log:"
+        echo -n "    find . -name *.log  -> "; find . -name *.log 2>&1 | head -2 | tr '\n' ' '; echo
+        echo -n "    find . -name '*.log' -> "; find . -name '*.log' | tr '\n' ' '; echo
+        echo "  unquoted, the shell expanded *.log against the working directory BEFORE find ran. with two matches find gets two patterns and errors; with one it silently searches for that filename; with none it works by accident - which is why the bug only appears when somebody runs the script from a different directory."
+        echo
+        echo "trap 2 - -o binds more loosely than the implicit AND."
+        rm -rf t; mkdir t; : > t/a.log; : > t/b.txt
+        find t -name '*.log' -o -name '*.txt' -delete 2>/dev/null
+        echo "    after: find t -name '*.log' -o -name '*.txt' -delete"
+        echo "      remaining: $(ls t | tr '\n' ' ')"
+        rm -rf t; mkdir t; : > t/a.log; : > t/b.txt
+        find t \( -name '*.log' -o -name '*.txt' \) -delete 2>/dev/null
+        echo "    after: find t \\( -name '*.log' -o -name '*.txt' \\) -delete"
+        echo "      remaining: [$(ls t | tr '\n' ' ')]"
+        echo
+        echo "the first parsed as (-name '*.log') OR (-name '*.txt' AND -delete). the .log files were matched and nothing was done to them; only the .txt files were deleted."
+        echo
+        echo "so: ALWAYS PARENTHESISE an -o that is followed by an action. and always quote a -name pattern."
+      } > /tmp/answer-traps
+      cat /tmp/answer-traps
+    verify:
+      - type: file_matches
+        path: /tmp/answer-traps
+        pattern: "(?i)globbed by the SHELL first"
+        describe: You found the quoting trap
+      - type: file_matches
+        path: /tmp/answer-traps
+        pattern: "remaining: a.log"
+        describe: And showed -o precedence deleting the wrong set
+      - type: file_matches
+        path: /tmp/answer-traps
+        pattern: "remaining: \\[\\]"
+        describe: While the parenthesised form deleted both
+      - type: file_matches
+        path: /tmp/answer-traps
+        pattern: "(?i)ALWAYS PARENTHESISE"
+        describe: And stated both rules
+
+solution: >-
+  **Measure the ages first.**
+
+
+  ```text
+  current.log     0 whole days
+  age-3d.log      3
+  age-6d.log      6
+  age-7d.log      7
+  age-7d2h.log    7
+  age-8d.log      8
+  age-10d.log    10
+  age-30d.log    30
+  ```
+
+
+  **Then the predicates.**
+
+
+  ```text
+  -mtime +6  -> age-7d age-7d2h age-8d age-10d age-30d
+  -mtime +7  -> age-8d age-10d age-30d
+  -mtime 7   -> age-7d age-7d2h
+  -mtime -7  -> current age-3d age-6d
+  ```
+
+
+  **`age-7d.log` is selected by `+6` and not by `+7`.**
+
+
+  **The rule:** `-mtime n` compares **whole 24-hour periods, truncated**. `+7`
+  means *strictly more than* seven of them, and a seven-day-old file has
+  completed exactly seven — so it takes another full day to qualify.
+
+
+  Which means "delete anything older than seven days" written as `-mtime +7`
+  keeps everything for **eight**. The retention window is 14% longer than the
+  policy says, the job reports success, and nothing indicates the discrepancy.
+
+
+  Write it without the rounding instead:
+
+
+  ```bash
+  find archive -name '*.log' ! -newermt '-7 days'
+  ```
+
+
+  `-newermt` compares against a real moment with no truncation. `-mmin +10080`
+  is the other escape. And note which clock each predicate reads: `-atime` may be
+  meaningless on a `relatime` mount, and **`-ctime` is bumped by `chmod` and
+  `chown`**, so a permissions fix can make an old file look new.
+
+
+  **`-prune` versus filtering afterwards.**
+
+
+  ```text
+  -not -path : 4ms
+  -prune     : 1ms
+  ```
+
+
+  Both produce the same files. `-not -path` **walks the entire excluded tree**
+  and discards each path; `-prune` never opens those directories. On a real
+  `node_modules` or `.git` the difference is minutes against instant.
+
+
+  The explicit `-print` is required — supplying any action removes the implicit
+  one, and without it find also prints the pruned directories themselves.
+
+
+  **Two more ways to select the wrong set.**
+
+
+  **An unquoted `-name` pattern is globbed by the shell first.** With one match
+  find silently searches for that filename; with several it errors; with none it
+  works by accident — which is why the bug appears only when the script is run
+  from a different directory.
+
+
+  **`-o` binds more loosely than the implicit AND.**
+
+
+  ```console
+  $ find t -name '*.log' -o -name '*.txt' -delete
+  $ ls t
+  a.log
+  ```
+
+
+  It parsed as `(-name '*.log')` OR `(-name '*.txt' AND -delete)`, so only the
+  `.txt` files were deleted. **Always parenthesise an `-o` followed by an
+  action**, and always quote a `-name` pattern.

@@ -1,0 +1,282 @@
+topic: topic.set-euo-pipefail
+
+questions:
+  - id: i1
+    level: L1
+    question: "You put `set -euo pipefail` at the top of a script. What does it not do?"
+    model_answer: >-
+      Quite a lot, and I would rather say it out loud than have somebody
+      discover it during an incident.
+
+
+      **`-e` is suppressed wherever the shell is already examining the status** —
+      `if` and `while` conditions, `&&` and `||` operands, anything after `!`,
+      every pipeline stage but the last, **and everything called from those
+      positions**. A helper function that stops the script when called plainly
+      will run straight past its own failures when called as an `if` condition,
+      and nothing at the call site tells you which you are looking at.
+
+
+      **It cannot see a status that was masked before it got there.**
+      `local x=$(cmd)` is the common one: `local` is a command, its status is its
+      own success, so the failure is discarded. Adding one word to a working line
+      silently removes its error checking.
+
+
+      **`-u` catches unset, not wrong.** `VAR=` passes. A variable set to the
+      staging hostname in production passes.
+
+
+      **And it catches unhandled failures, not wrong behaviour.** A `curl` that
+      received a 404 page with status 200, an `rm` on a path built from the wrong
+      variable, a migration applied to the wrong database — every command exits
+      0.
+
+
+      So I treat it as a **floor**: it converts a class of silent failure into a
+      loud one. The rest of the work is asserting the outcome — that the backup
+      is a plausible size, that the count is non-zero, that the version now
+      running is the one I deployed. The exit status is the command's opinion of
+      itself; the resulting state is evidence.
+    signal: >-
+      Everybody can recite the three options. The discriminator is naming a
+      concrete exemption — `local x=$(cmd)`, or the fact that the suppression
+      extends through a function's whole body — rather than answering "it makes
+      the script strict". Saying the preamble is a floor and that outcomes must
+      be asserted separately is the senior half.
+    follow_ups:
+      - "How would you find every masked status in an existing repository?"
+      - "Would you put `set -x` in a preamble?"
+  - id: i2
+    level: L2
+    question: >-
+      A migration script has `set -euo pipefail` and reports success while a
+      migration fails and prints its error. Walk me through the diagnosis.
+    model_answer: >-
+      First I would confirm the failure is real rather than a spurious message —
+      run the failing migration through the client directly and check the exit
+      status. If it returns non-zero, the status exists and is being lost between
+      the client returning and errexit deciding, which narrows it to the script.
+
+
+      Then I would look at how the status travels. In the case I have in mind it
+      was one line:
+
+
+      ```bash
+      apply_migration() {
+        local file=$1
+        # capture the output so we can log it on failure
+        local output=$(psql < "$file")
+        echo "applied $(basename "$file")"
+      }
+      ```
+
+
+      **`local` is a command in its own right**, so the line reports whether the
+      declaration succeeded, not whether `psql` did. Somebody added error
+      handling and removed it in the same line — the comment says exactly what
+      they intended.
+
+
+      There was a **second mask** behind it: even with the status propagated,
+      errexit would abort the *function*, and the function's last command is a
+      successful `echo`, so it returns 0 either way. Both had to be fixed.
+
+
+      I would ship the version that reports rather than the minimal one:
+
+
+      ```bash
+      local output status=0
+      output=$(psql < "$file" 2>&1) || status=$?
+      if [ "$status" -ne 0 ]; then
+        echo "FAILED $(basename "$file") (rc=$status): $output" >&2
+        return "$status"
+      fi
+      ```
+
+
+      Four lines instead of one, and it names the file, the status and the
+      database's own words. At 3am that is the difference between an alert and a
+      diagnosis.
+
+
+      The broader finding is that the script also printed `applied 2 migrations`
+      having applied one. **The preamble was present and correct and caught
+      nothing**, because the failure never reached it. What would have caught it
+      is an assertion that the applied count matches the migration count — and
+      that is what I would add across the rest of the repository, along with
+      `shellcheck` in CI to find every other SC2155.
+    signal: >-
+      Confirming the failure is real before reading the script is the instinct
+      that solves it quickly. The discriminator is finding the *second* mask —
+      the function's trailing `echo` — rather than stopping at `local`. Choosing
+      the reporting fix over the minimal one, and adding the count assertion,
+      shows they are fixing the class rather than the instance.
+    follow_ups:
+      - "The minimal fix is one line. When would you ship that instead?"
+      - "What would you add to CI so this cannot recur?"
+  - id: i3
+    level: L2
+    question: >-
+      How do you clean up after a script, and what goes wrong with the obvious
+      version?
+    model_answer: >-
+      The pattern is three lines:
+
+
+      ```bash
+      WORKDIR=$(mktemp -d)
+      cleanup() { rm -rf "$WORKDIR"; }
+      trap cleanup EXIT
+      ```
+
+
+      `mktemp -d` rather than a fixed path, because a predictable name in `/tmp`
+      is both a collision and a symlink-attack surface. And **the EXIT trap runs
+      on an errexit abort as well as on a normal end and an explicit `exit`** —
+      that is the property that makes three lines sufficient.
+
+
+      The obvious improvement is what goes wrong. `trap cleanup EXIT INT TERM`
+      looks more thorough and introduces two bugs:
+
+
+      ```
+      deploying into /tmp/tmp.yCW
+      cleanup: removing /tmp/tmp.yCW      <- the TERM handler
+      deploy complete                      <- the script RESUMED
+      cleanup: removing /tmp/tmp.yCW      <- the EXIT handler
+      exit status: 0
+      ```
+
+
+      **The handler ran twice**, which is harmless for `rm -rf` and not harmless
+      for one that releases a lock, posts a notification or decrements a counter.
+
+
+      **And the script continued** — a trap handler *returns*, so execution
+      resumes at the point of interruption. The deploy printed `deploy complete`
+      after its working directory had been deleted, and exited **0**. A CI job
+      would record a successful deploy of a killed process, which is a far worse
+      outcome than a missing temporary directory.
+
+
+      So: a signal handler must `exit`, and the cleanup itself must be idempotent
+      because EXIT still fires after it.
+
+
+      ```bash
+      cleanup() { [ -n "${WORKDIR:-}" ] || return 0; rm -rf "$WORKDIR"; WORKDIR=; }
+      trap cleanup EXIT
+      trap 'cleanup; exit 143' TERM     # 128 + 15
+      trap 'cleanup; exit 130' INT      # 128 + 2
+      ```
+
+
+      128+signal tells a supervisor the process was signalled rather than that it
+      failed, which is what decides whether a retry is appropriate.
+
+
+      If I am also using an ERR trap for diagnostics, the preamble becomes
+      `set -eEuo pipefail` — without `-E` an ERR trap is not inherited by
+      functions, so it is silent in exactly the places failures are hardest to
+      see.
+    signal: >-
+      `trap cleanup EXIT` plus `mktemp -d` is the expected answer. The
+      discriminator is knowing a handler *returns* — most people know about the
+      double run and stop there, and the resumption is the part that causes
+      outages. 128+signal statuses and an idempotent handler are the details that
+      separate someone who has debugged this from someone who has read about it.
+    follow_ups:
+      - "Why 143 rather than 1?"
+      - "What breaks if the cleanup is not idempotent?"
+  - id: i4
+    level: L2
+    question: >-
+      Why might a script exit at a line that succeeded?
+    model_answer: >-
+      The one I have actually hit is arithmetic. `((...))` reports the
+      expression's truth value in the C sense, so it returns **non-zero when the
+      value is zero**:
+
+
+      ```console
+      $ bash -c 'set -e; count=0; ((count++)); echo reached'   # never prints
+      ```
+
+
+      `count++` is a post-increment whose value is the **old** count, which on
+      the first iteration is 0. So a counter kills the script the first time
+      round the loop, and the symptom is a script that processes nothing and
+      exits 1 with no message — the worst combination, because there is no
+      failing command to look for.
+
+
+      `((count+=1))` survives, because it evaluates to the new value, 1 — until
+      something legitimately decrements to zero, at which point the same bug
+      appears months later. I standardise on `count=$((count + 1))`, which is an
+      assignment rather than a command, so there is no status to trip over.
+      `: $((count++))` also works, because `:` swallows it.
+
+
+      The other cases in the same family: `let n=0`, and a bare `[ "$x" = "$y" ]`
+      used as a statement rather than in a condition, which exits 1 on a
+      non-match and takes the script with it.
+
+
+      All of them share a shape worth recognising — **a command whose exit status
+      encodes an answer rather than a failure.** `grep` is the one people meet
+      first: exit 1 means "no match", which under errexit means "stop".
+    signal: >-
+      Reaching the arithmetic case at all is the discriminator; most people
+      answer with a general shrug about `set -e` being unpredictable. Explaining
+      *why* — that the status encodes the expression's truth value — and
+      generalising to "a command whose exit status encodes an answer rather than
+      a failure" shows a model rather than a memorised gotcha.
+    follow_ups:
+      - "Why does `((count+=1))` survive where `((count++))` does not?"
+      - "Where else does a status mean an answer rather than a failure?"
+  - id: i5
+    level: L2
+    question: >-
+      When do you stop writing shell?
+    model_answer: >-
+      I look for the point where most of the lines are handling errors and
+      manipulating strings rather than running programs. Shell is excellent at
+      gluing commands together and poor at everything else, and the transition is
+      usually visible in a diff before it is visible in an incident.
+
+
+      The concrete tells: more than a few functions, or data structures beyond a
+      flat list; parsing JSON or YAML with text tools; needing retries with
+      backoff, partial rollback, or four distinguishable failure modes; tests
+      that are harder to write than the code they cover; and several people
+      editing it with quoting bugs recurring.
+
+
+      I would rather rewrite it in Python than add a fifth layer of quoting,
+      because the failure mode of over-grown shell is silent and specific — a
+      variable that expanded to nothing, a word that split, a status that was
+      masked — and those are exactly the bugs that survive review.
+
+
+      The related judgement is **idempotency**, and it matters more than the
+      preamble. A script that is safe to run twice converts "it failed halfway,
+      now what" into "run it again", and that is worth more at 3am than any set
+      of shell options. `mkdir -p` rather than `mkdir`, `ln -sfn`,
+      `rsync -a --delete` rather than an append, `grep -qxF || >>`. All of them
+      describe the **desired state** rather than a change — which is also the
+      entire argument for configuration management over scripts, and the point at
+      which the answer to "should this be shell" becomes "no, it should be a
+      module".
+    signal: >-
+      Concrete tells beat "when it gets complicated". The discriminator is
+      pivoting to idempotency unprompted — the judgement that a re-runnable
+      script matters more at 3am than any set of options — and connecting that to
+      why configuration management exists rather than treating it as a separate
+      topic.
+    follow_ups:
+      - "What would you rewrite this one in, and why that?"
+      - "How do you make a step that genuinely cannot be repeated safe?"

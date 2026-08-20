@@ -1,0 +1,197 @@
+id: assessment.identity-and-least-privilege
+topic: topic.identity-and-least-privilege
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain what an empty capability set does not prove
+    kind: explain
+    objectives: [OBJ-A04.4.4]
+    prompt: >-
+      A security review passes a container because it runs as uid 10001 and its
+      effective capability set is all zeros. The reviewer concludes it is
+      unprivileged and cannot escalate.
+
+
+      In about 200 words: explain what has and has not been established, name the
+      measurement that is missing, and give the two settings that would make the
+      conclusion true.
+    rubric:
+      - "States that CapEff is what is held now, and is genuinely empty"
+      - "Identifies CapBnd — the bounding set — as the missing measurement"
+      - "Explains that a setuid binary can raise the effective set up to the bounding set"
+      - "Names capabilities.drop ALL and allowPrivilegeEscalation false as separate controls"
+      - "Distinguishes lowering the floor from lowering the ceiling"
+    model_answer: >-
+      The review established the floor and drew a conclusion about the ceiling.
+
+
+      `CapEff: 0000000000000000` is real: the process holds no capabilities right
+      now, and running as a non-root uid is genuinely good. What it does not
+      establish is that the process **cannot become** privileged, which is the
+      property that constrains an attacker.
+
+
+      The missing measurement is `CapBnd`, the **bounding set** — the ceiling on
+      what could ever be regained, including across an `execve`. On a default
+      image it holds around fourteen capabilities, typically including
+      `cap_setuid` and `cap_dac_override`, and there are usually eight or nine
+      setuid binaries on the filesystem to reach them through. An attacker with a
+      shell works within the bounding set, not the effective one.
+
+
+      Two settings, and they are separate controls doing different jobs:
+
+
+      - `capabilities.drop: ["ALL"]` empties the effective set — **lowers the
+        floor**.
+
+      - `allowPrivilegeEscalation: false` stops a setuid binary refilling it —
+        **lowers the ceiling**.
+
+
+      Only the second makes "cannot escalate" true, and most tooling reports only
+      the first.
+
+
+      I would also run `getcap -r /`, since a binary can hold capabilities
+      without being setuid and appears in no mode-based search — and verify all
+      of it on the running pod rather than the manifest.
+    common_failures:
+      - "Accepting an empty effective set as proof that escalation is impossible"
+      - "Naming only drop: ALL, which addresses the floor and not the ceiling"
+      - "Treating non-root as sufficient, when the bounding set is independent of the uid"
+      - "Auditing the manifest rather than the running process"
+
+  - id: B
+    title: Reason about key authentication
+    kind: reason
+    objectives: [OBJ-A04.4.6]
+    prompt: >-
+      A colleague proposes replacing SSH keys with a strong shared password,
+      arguing that a 32-character random password has more entropy than anyone
+      can brute force, so keys add complexity for no benefit.
+
+
+      In about 200 words: address the entropy argument on its own terms, then
+      give the properties that make keys different in kind, and name the
+      operational problem keys introduce.
+    rubric:
+      - "Concedes the entropy point — brute force is not the relevant threat"
+      - "States that the password must be transmitted and received on every use"
+      - "Explains challenge-response: a signature over a nonce, private key never leaves"
+      - "Notes that a compromised server learns a password but only ever holds a public key"
+      - "Identifies authorized_keys accumulation as the operational cost, with expiry as the fix"
+    model_answer: >-
+      The entropy argument is correct and answers a question nobody is asking.
+      Nobody brute-forces a 32-character random password; they obtain it.
+
+
+      The difference is structural. A password must be **transmitted by the
+      client and received by the server on every use**. So it exists in transit,
+      in the server's memory, in whatever the server logs on a bad day, and in
+      the client's config file or password manager. Any compromise of the server
+      yields the password itself — and because it is *shared*, it yields access
+      for everyone who uses it, with no way to tell who used it when.
+
+
+      Key authentication is challenge-response: the server sends a challenge
+      containing a session nonce, the client signs it with the private key, and
+      the server verifies against the public key it already holds. **No secret
+      crosses the wire in either direction.** Nothing to intercept, nothing to
+      replay because the challenge differs each session, and a fully compromised
+      server learns only a public key — which is not a secret.
+
+
+      The operational cost is real: `authorized_keys` has no expiry, no
+      revocation beyond deleting a line, and no verified identity — the comment
+      is free text. So it accumulates entries nobody can account for.
+
+
+      That is an argument for **SSH certificates**, where a CA issues short-lived
+      credentials and access expires by default, not for going back to a shared
+      password.
+    common_failures:
+      - "Arguing purely on entropy, which concedes the wrong ground"
+      - "Missing that the password is exposed to the server on every authentication"
+      - "Omitting that a shared credential destroys attribution"
+      - "Presenting keys as flawless, when the accumulation problem is real"
+
+  - id: C
+    title: Audit a workload and defend the findings
+    kind: diagnose
+    objectives: [OBJ-A04.4.8, OBJ-A04.4.5]
+    prompt: >-
+      A metrics-scraping sidecar:
+
+
+      ```yaml
+      serviceAccountName: monitoring
+      securityContext:
+        runAsUser: 0
+        capabilities:
+          add: ["CAP_DAC_READ_SEARCH"]
+      volumeMounts:
+        - name: cloud-creds        # mounted "for cloud metrics"
+        - name: shared-deploy-key  # mounted "for the git exporter"
+      ```
+
+
+      `kubectl auth can-i --list --as=system:serviceaccount:mon:monitoring` ends
+      with `*.* [*]`.
+
+
+      In about 250 words: state the blast radius, rank the faults, and give the
+      remediation in priority order.
+    rubric:
+      - "States the blast radius concretely: cluster-admin, cloud account, deploy access, host files"
+      - "Ranks the wildcard RBAC binding and the shared deploy key above running as root"
+      - "Identifies that CAP_DAC_READ_SEARCH already covers the stated need, so uid 0 adds only risk"
+      - "Notes that the shared key means the blast radius includes everything that key opens"
+      - "Gives an ordered remediation, with rotation after copies are removed"
+    model_answer: >-
+      **Blast radius.** Compromising this sidecar yields: **cluster-admin**, via
+      the wildcard binding — so every secret in the cluster, every workload, every
+      namespace. The **cloud account**, via the mounted credentials. **Deploy
+      access to everything the shared key opens**, which is by definition wider
+      than this workload. And read access to any file on the node the mounts
+      expose, via `CAP_DAC_READ_SEARCH` plus uid 0.
+
+
+      **Ranking.** The `*.* [*]` binding is worst: it is unbounded and reaches
+      everything else in the cluster, including the credentials of workloads that
+      *are* correctly scoped. The **shared deploy key** is second, because its
+      reach extends outside this cluster and it is the fault that is invisible in
+      any single manifest — you only see it by asking what else mounts it.
+
+
+      **`runAsUser: 0` is third**, and it is the one people would name first. It
+      is a real fault, and it is bounded by the node — and notably it is
+      *redundant*: `CAP_DAC_READ_SEARCH` already grants the read-any-file access
+      the scrape needs, so root contributes nothing to the function and only
+      widens the radius. This is the common half-migration where the narrow
+      capability that was meant to replace root was added alongside it.
+
+
+      **Remediation, in order:**
+
+
+      1. Remove the wildcard binding; scope to `get`/`list` on the resources it
+         scrapes.
+
+      2. Remove the shared deploy key; if the git exporter is real, give it its
+         own scoped credential.
+
+      3. Set `runAsUser: 10001`, keeping `CAP_DAC_READ_SEARCH`, and add
+         `allowPrivilegeEscalation: false`.
+
+      4. Scope or remove the cloud credentials — "for cloud metrics" needs a
+         read-only role, not general credentials.
+
+      5. **Then rotate** both credentials — rotation before removing the other
+         copies just redistributes a shared secret.
+    common_failures:
+      - "Leading with runAsUser: 0, which is the most visible and not the widest fault"
+      - "Missing that CAP_DAC_READ_SEARCH makes root redundant for the stated purpose"
+      - "Treating the shared key as one workload's problem rather than a fleet-wide radius"
+      - "Rotating credentials first, while copies remain in other workloads"

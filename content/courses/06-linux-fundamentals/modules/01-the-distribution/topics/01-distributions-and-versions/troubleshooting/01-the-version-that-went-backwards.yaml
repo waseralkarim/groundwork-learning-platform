@@ -1,0 +1,237 @@
+id: troubleshooting.the-version-that-went-backwards
+topic: topic.distributions-and-versions
+title: The rollback reports nothing to do
+level: L2
+objectives: [OBJ-B06.1.7, OBJ-B06.1.4]
+reveal_policy: progressive
+
+situation: >-
+  A release of an internal agent went out at 09:40 and started consuming memory
+  until nodes were evicted. At 10:05 the on-call engineer ran the rollback,
+  which pins the previous version and reinstalls.
+
+
+  The rollback reported success. The agent is still the new version on every
+  machine.
+
+
+  Running it again produces the same result: exit code 0, no error, and the
+  package manager saying the requested package is already at the newest version.
+
+
+  The engineer has now uninstalled and reinstalled the agent on one node, which
+  installed the new version again.
+
+
+  The internal agent is packaged by a team who renumbered its versions three
+  months ago, from a date-based scheme to semantic versioning.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "Rollback exits 0 and changes nothing, on every machine"
+  - "The package manager reports the package is already at the newest version"
+  - "Uninstall and reinstall produces the new version again"
+  - "The agent was renumbered from date-based to semantic versioning three months ago"
+  - "No error is produced at any point"
+
+artifacts:
+  - type: command_output
+    label: What is installed, and what was requested
+    content: |
+      $ dpkg-query -W -f='${Version}\n' internal-agent
+      1:2.1.0-1
+
+      $ grep agent /etc/ansible/roles/agent/vars/main.yml
+      agent_version: "2024.11.3-1"      # the version we are rolling back to
+
+  - type: command_output
+    label: The rollback, run manually
+    content: |
+      $ apt-get install -y --allow-downgrades internal-agent=2024.11.3-1
+      Reading package lists... Done
+      internal-agent is already the newest version (1:2.1.0-1).
+      0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+
+  - type: command_output
+    label: What the archive has
+    content: |
+      $ apt-cache madison internal-agent
+      internal-agent | 1:2.1.0-1     | https://apt.internal trixie/main amd64
+      internal-agent | 1:2.0.4-1     | https://apt.internal trixie/main amd64
+      internal-agent | 2024.11.3-1   | https://apt.internal trixie/main amd64
+      internal-agent | 2024.10.1-1   | https://apt.internal trixie/main amd64
+
+  - type: log
+    label: The packaging change, from the agent team's notes
+    content: |
+      2026-05-14  "Moved to semver. First semver release is 2.0.0.
+                   Added an epoch so upgrades from the 2024.x line work."
+
+  - type: config
+    label: The rollback role
+    content: |
+      - name: pin and install the rollback version
+        apt:
+          name: "internal-agent={{ agent_version }}"
+          state: present
+          allow_downgrade: true
+        # no failed_when; a no-op is indistinguishable from a downgrade
+
+diagnostic_questions:
+  - "What is the installed version, exactly, and how does it differ in shape from the requested one?"
+  - "What does the epoch do to a comparison?"
+  - "Why does the package manager say 'already the newest' rather than 'not found'?"
+  - "Why did uninstall and reinstall produce the new version?"
+  - "Why did none of this produce an error?"
+
+hints:
+  - "Compare `1:2.1.0-1` and `2024.11.3-1` character by character. One has something the other does not."
+  - "Read the agent team's note about why they added an epoch."
+  - "Try `dpkg --compare-versions '1:2.1.0-1' gt '2024.11.3-1'`."
+  - "The rollback role has no assertion that anything changed."
+
+root_cause: >-
+  **The epoch makes the old version compare as older, so the "downgrade" is not
+  a downgrade — the package manager correctly concludes there is nothing to do.**
+
+
+  The installed version is `1:2.1.0-1`. The requested one is `2024.11.3-1`, with
+  no epoch, which is treated as epoch 0. An epoch is compared before anything
+  else and decisively, so:
+
+
+  ```text
+  1:2.1.0-1  >  2024.11.3-1
+  ```
+
+
+  Nothing else in either string is ever examined. `apt` is asked to install a
+  version that is older than what is present, sees no work to do, and says so
+  accurately: *already the newest version*.
+
+
+  The agent team's note explains why the epoch exists, and they were right to add
+  it. Moving from `2024.11.3` to `2.0.0` is upstream versioning going backwards —
+  without an epoch, every machine would have stayed on the 2024 line and reported
+  itself up to date. The epoch made the *upgrade* work. It also made rollback
+  across that boundary impossible by the normal route, and nobody noticed because
+  nobody had rolled back across it.
+
+
+  **Why reinstall produced the new version:** `apt-get install internal-agent`
+  with no version resolves to the highest available, which by the same comparison
+  is `1:2.1.0-1`. Removing the package does not change which version is highest.
+
+
+  **Why nothing errored:** every component behaved correctly. `apt` did what it
+  was asked and reported the outcome truthfully. The Ansible task requested a
+  state and the state was reached — the package is present. **A no-op is
+  indistinguishable from a downgrade** to a task that only checks `state:
+  present`, and the role has no assertion that the version changed.
+
+
+  So an incident-time rollback silently did nothing on every machine in the
+  fleet, twice, while reporting success.
+
+method: >-
+  **1. Read the installed version exactly, and compare its shape to the
+  requested one.** `dpkg-query -W`, not `dpkg -l`, which truncates. `1:2.1.0-1`
+  against `2024.11.3-1` — one has an epoch and the other does not, and that is
+  the entire fault.
+
+
+  **2. Ask the tool rather than reasoning about it.** `dpkg --compare-versions
+  '1:2.1.0-1' gt '2024.11.3-1'` exits 0. Ten seconds, and it converts a mystery
+  into a fact.
+
+
+  **3. Read "already the newest version" as information, not as noise.** It is
+  not a failure message and it is not boilerplate — it is the package manager
+  stating precisely what it concluded. The word "newest" is the answer.
+
+
+  **4. Check what the archive actually offers.** `apt-cache madison` shows both
+  numbering schemes side by side, which makes the epoch boundary visible and
+  shows that the old version is still there — so this is not a missing-package
+  problem.
+
+
+  **5. Find out why the epoch exists before removing it.** The agent team's note
+  explains it, and they were right. An epoch cannot be dropped: doing so would
+  make the next release compare as older and strand every machine again. The fix
+  is on the rollback side, not the packaging side.
+
+
+  **6. Ask what would have made this fail loudly.** The role checks `state:
+  present` and the package is present, so the task succeeds. Nothing anywhere
+  asserted that the running version changed.
+
+
+  The habit: **an operation that cannot fail cannot be trusted to have
+  happened.** A rollback that reports success without verifying the outcome is a
+  rollback you find out about during the next incident.
+
+resolution: >-
+  **Immediately:** roll back to a version on the *same side* of the epoch
+  boundary.
+
+
+  ```bash
+  apt-get install -y --allow-downgrades internal-agent=1:2.0.4-1
+  ```
+
+
+  `1:2.0.4-1` carries the epoch and is genuinely older than `1:2.1.0-1`, so the
+  downgrade proceeds. If the fault was introduced before 2.0.0 and the target
+  really is a 2024 build, it must be requested with the epoch — `1:2024.11.3-1`
+  — which only works if a package was published with that version, and here none
+  was. In that case the route is to publish a new build with a higher version
+  containing the old behaviour, which is slower and is the honest answer.
+
+
+  **Then make the rollback verify itself**, because this is the finding that
+  generalises:
+
+
+  ```yaml
+  - name: pin and install the rollback version
+    apt:
+      name: "internal-agent={{ agent_version }}"
+      state: present
+      allow_downgrade: true
+
+  - name: assert the installed version is what we asked for
+    command: dpkg-query -W -f='${Version}' internal-agent
+    register: installed
+    changed_when: false
+    failed_when: installed.stdout != agent_version
+  ```
+
+
+  Four lines, and they turn a silent no-op into a failed play. Any rollback,
+  deploy or pin that does not assert its own outcome has the same defect.
+
+
+  **Fix the version list.** The rollback target is written as `2024.11.3-1`
+  without the epoch, which no longer matches anything installable. Wherever
+  versions are pinned, they must carry the epoch — and the way to generate that
+  list is from `dpkg-query` output on a machine, never by hand.
+
+
+  **Do not remove the epoch.** It is doing its job and it cannot be withdrawn:
+  dropping it makes the next release compare as older and reproduces the original
+  problem for every machine.
+
+
+  **And add the boundary to the runbook.** Somewhere in the agent's rollback
+  procedure there should be a line saying that versions before 2026-05-14 are on
+  the other side of an epoch and cannot be reached by a normal downgrade. That
+  fact is currently in one team's release notes and was needed at 10:05 by
+  somebody else.
+
+
+  **For the postmortem:** the packaging change was correct, the package manager
+  was correct, and the rollback reported success while doing nothing — twice, on
+  every machine, during an active incident.

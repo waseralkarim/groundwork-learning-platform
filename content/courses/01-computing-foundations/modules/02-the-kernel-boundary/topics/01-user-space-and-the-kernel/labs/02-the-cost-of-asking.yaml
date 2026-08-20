@@ -1,0 +1,212 @@
+id: lab.the-cost-of-asking
+topic: topic.user-space-and-the-kernel
+title: Measure what crossing the boundary costs
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A01.3.4, OBJ-A01.3.5]
+
+intro: >-
+  You are going to write the same quarter of a megabyte to disk twice, with
+  identical results, and have one take roughly a hundred times the CPU of the
+  other.
+
+
+  The difference is entirely the number of times the program crossed into the
+  kernel. Once you have measured it on this machine, every buffered writer you
+  have ever used stops being a detail and becomes the obvious design.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Write 256 KiB to /tmp/slow.bin one byte per write, and capture the timing
+      to /tmp/answer-slow.
+
+
+      Use `dd` with a block size of 1 and a count of 262144, and wrap it so the
+      shell's timing output is saved rather than printed.
+    hint: >-
+      `{ time dd if=/dev/zero of=/tmp/slow.bin bs=1 count=262144 ; } 2>
+      /tmp/answer-slow` — the braces group the command so `time` output can be
+      redirected.
+    walkthrough: |
+      { time dd if=/dev/zero of=/tmp/slow.bin bs=1 count=262144 ; } 2> /tmp/answer-slow
+    verify:
+      - type: file_exists
+        path: /tmp/slow.bin
+        describe: The file was written
+      - type: file_matches
+        path: /tmp/answer-slow
+        pattern: "sys"
+        describe: The timing breakdown was captured
+      - type: command_output
+        command: "stat -c %s /tmp/slow.bin"
+        equals: "262144"
+        describe: It is exactly 256 KiB
+
+  - id: s2
+    instruction: >-
+      Now write the same 256 KiB in 64 KiB blocks to /tmp/fast.bin, capturing
+      the timing to /tmp/answer-fast.
+
+
+      Same total bytes, four writes instead of 262,144.
+    hint: "`{ time dd if=/dev/zero of=/tmp/fast.bin bs=64k count=4 ; } 2> /tmp/answer-fast`"
+    walkthrough: |
+      { time dd if=/dev/zero of=/tmp/fast.bin bs=64k count=4 ; } 2> /tmp/answer-fast
+    verify:
+      - type: command_output
+        command: "stat -c %s /tmp/fast.bin"
+        equals: "262144"
+        describe: The same number of bytes was written
+      - type: command_exit
+        command: "cmp /tmp/slow.bin /tmp/fast.bin"
+        exit_code: 0
+        describe: Both files are byte-for-byte identical
+
+  - id: s3
+    instruction: >-
+      Read both timing files and compare the `sys` lines. Then record which of
+      the three lines — the literal word `real`, `user` or `sys` — grew the most
+      between the two runs, in /tmp/answer-which.
+    hint: >-
+      `cat /tmp/answer-slow /tmp/answer-fast`. The program's own logic was
+      identical, so its own CPU time should not have moved.
+    walkthrough: |
+      cat /tmp/answer-slow /tmp/answer-fast
+      echo sys > /tmp/answer-which
+    verify:
+      - type: file_matches
+        path: /tmp/answer-which
+        pattern: '^sys$'
+        describe: You identified system time as the cost that grew
+
+  - id: s4
+    instruction: >-
+      Prove the cause rather than inferring it. Count the write system calls in
+      each approach and save both counts to /tmp/answer-writes.
+
+
+      Use strace's counting mode on a smaller run so it finishes quickly — 20000
+      bytes is plenty to make the point.
+    hint: >-
+      `strace -c -e trace=write -o /tmp/w1.txt dd if=/dev/zero of=/tmp/a.bin
+      bs=1 count=20000` and the same with `bs=20k count=1`, then combine the
+      two summaries into one file.
+    walkthrough: |
+      strace -c -e trace=write -o /tmp/w1.txt dd if=/dev/zero of=/tmp/a.bin bs=1 count=20000 2>/dev/null
+      strace -c -e trace=write -o /tmp/w2.txt dd if=/dev/zero of=/tmp/b.bin bs=20k count=1 2>/dev/null
+      cat /tmp/w1.txt /tmp/w2.txt > /tmp/answer-writes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-writes
+        pattern: '2000[0-9]'
+        describe: The byte-at-a-time run made about 20,000 write calls
+      - type: file_matches
+        path: /tmp/answer-writes
+        pattern: "write"
+        describe: Both summaries were captured
+
+  - id: s5
+    instruction: >-
+      The same mistake in shell form. Append 3000 lines to a file by redirecting
+      inside the loop, timing it into /tmp/answer-loop-slow.
+
+
+      Each iteration opens the file, writes, and closes it — three crossings per
+      line.
+    hint: |
+      ```bash
+      { time { for i in $(seq 3000); do echo "line $i" >> /tmp/log-slow.txt; done ; } ; } 2> /tmp/answer-loop-slow
+      ```
+    walkthrough: |
+      { time { for i in $(seq 3000); do echo "line $i" >> /tmp/log-slow.txt; done ; } ; } 2> /tmp/answer-loop-slow
+    verify:
+      - type: command_output
+        command: "wc -l < /tmp/log-slow.txt"
+        pattern: "3000"
+        describe: All 3000 lines were written
+      - type: file_matches
+        path: /tmp/answer-loop-slow
+        pattern: "sys"
+        describe: The timing was captured
+
+  - id: s6
+    instruction: >-
+      Now the same 3000 lines with the redirect outside the loop, timed into
+      /tmp/answer-loop-fast. The file is opened once.
+
+
+      Then write the ratio you observed — just the faster form's name, the
+      literal word `outside` — to /tmp/answer-better.
+    hint: |
+      ```bash
+      { time { for i in $(seq 3000); do echo "line $i"; done > /tmp/log-fast.txt ; } ; } 2> /tmp/answer-loop-fast
+      ```
+    walkthrough: |
+      { time { for i in $(seq 3000); do echo "line $i"; done > /tmp/log-fast.txt ; } ; } 2> /tmp/answer-loop-fast
+      echo outside > /tmp/answer-better
+      cmp /tmp/log-slow.txt /tmp/log-fast.txt
+    verify:
+      - type: command_exit
+        command: "cmp /tmp/log-slow.txt /tmp/log-fast.txt"
+        exit_code: 0
+        describe: Both loops produced identical files
+      - type: file_matches
+        path: /tmp/answer-better
+        pattern: '^outside$'
+        describe: You identified which form makes fewer crossings
+
+solution: |
+  ```bash
+  { time dd if=/dev/zero of=/tmp/slow.bin bs=1   count=262144 ; } 2> /tmp/answer-slow
+  { time dd if=/dev/zero of=/tmp/fast.bin bs=64k count=4      ; } 2> /tmp/answer-fast
+  cmp /tmp/slow.bin /tmp/fast.bin        # identical
+  echo sys > /tmp/answer-which
+
+  strace -c -e trace=write -o /tmp/w1.txt dd if=/dev/zero of=/tmp/a.bin bs=1   count=20000
+  strace -c -e trace=write -o /tmp/w2.txt dd if=/dev/zero of=/tmp/b.bin bs=20k count=1
+  cat /tmp/w1.txt /tmp/w2.txt > /tmp/answer-writes
+
+  { time { for i in $(seq 3000); do echo "line $i" >> /tmp/log-slow.txt; done ; } ; } 2> /tmp/answer-loop-slow
+  { time { for i in $(seq 3000); do echo "line $i"; done > /tmp/log-fast.txt ; } ; } 2> /tmp/answer-loop-fast
+  echo outside > /tmp/answer-better
+  ```
+
+  **What the numbers mean.**
+
+  Identical output, identical bytes on disk, wildly different cost. The only
+  variable was how many times the process crossed into the kernel: 262,144
+  versus 4.
+
+  **The cost landed in `sys`, not `user`.** `dd`'s own logic did the same work
+  in both runs, so its user time barely moved. What grew was time spent inside
+  the kernel — mode switch, file descriptor lookup, permission check, copy from
+  user memory, return — repeated a quarter of a million times.
+
+  That is the signature to recognise. **High system time with low user time is a
+  program asking too often, not computing too much.** No faster CPU and no
+  faster disk fixes it, because neither is the constraint.
+
+  **The disk was never the bottleneck.** Both runs wrote to the page cache, and
+  the kernel flushes that in large batches on its own schedule. The 262,144
+  writes were expensive before the storage was involved at all.
+
+  **The shell loop is the same bug.** `>>` inside a loop opens, writes and
+  closes once per iteration — three crossings per line rather than one shared
+  open. Moving the redirect outside the loop is the shell's version of a
+  buffered writer.
+
+  **This is why buffering exists.** Every `BufferedWriter`, every `bufio.Writer`,
+  every `fwrite` in C is doing exactly what you just did by hand: accumulating
+  in user-space memory so the boundary is crossed once per block instead of once
+  per item.
+
+  **Where this goes.** In **C14** you will meet container logging drivers, which
+  are another layer of this trade-off: a container writing unbuffered log lines
+  makes one crossing per line, and the runtime then makes more on top. The
+  service at 90% system time in the next lesson is this lab at production scale.

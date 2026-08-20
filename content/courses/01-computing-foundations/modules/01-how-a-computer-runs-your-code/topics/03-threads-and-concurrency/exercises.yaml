@@ -1,0 +1,169 @@
+topic: topic.threads-and-concurrency
+
+exercises:
+  - id: e1
+    title: Read a thread list
+    level: L2
+    objectives: [OBJ-A01.6.2]
+    kind: interpretation
+    prompt: >-
+      A container limited to 1.0 CPU shows this. Say what each thread is doing
+      and whether the service is CPU-bound:
+
+
+      ```text
+          PID     TID %CPU STAT COMMAND
+         1        1  0.1 S    app
+         1       14 24.8 R    app
+         1       15 24.9 R    app
+         1       16 25.1 R    app
+         1       17 24.7 R    app
+         1       31  0.0 D    app
+      ```
+    answer: >-
+      Four workers are runnable and busy, summing to about 99% — the whole limit,
+      so the service is CPU-bound and almost certainly throttled. The main thread
+      is idle waiting. TID 31 is in uninterruptible sleep, so it is blocked on
+      I/O and consuming no CPU.
+    explanation: >-
+      The total is the tell. Four threads at ~25% on a 1.0 CPU limit is not four
+      threads running slowly — it is four threads sharing one CPU's worth of
+      quota, which is what "CPU-bound at the limit" looks like from inside.
+
+
+      The `D` thread is worth noticing separately. It is not competing for CPU at
+      all; it is waiting for a device, and no amount of CPU will speed it up. A
+      service with several of those and a low CPU figure is I/O-bound, and the
+      fix is somewhere else entirely.
+
+
+      The next command is `cpu.stat`: if `throttled_usec` is climbing, more
+      workers will make this worse rather than better.
+
+  - id: e2
+    title: Concurrency or parallelism
+    level: L2
+    objectives: [OBJ-A01.6.3]
+    kind: short_answer
+    prompt: >-
+      For each, say whether it needs concurrency, parallelism, or neither:
+
+
+      **A** — A web server handling 500 connections, most of them waiting on a
+      database.
+
+
+      **B** — Resizing 10,000 images as fast as the hardware allows.
+
+
+      **C** — A batch job that reads a file, transforms it, and writes it back.
+
+
+      **D** — A service with a 0.5 CPU limit that wants to serve more requests
+      per second.
+    answer: >-
+      A — concurrency; the threads are mostly waiting, so one CPU can serve
+      them all. B — parallelism; the work is CPU-bound and more cores genuinely
+      finish it sooner. C — neither; it is sequential and one thread is fine.
+      D — concurrency at best, since parallelism is impossible below one CPU;
+      the real answer is to raise the limit or reduce the CPU per request.
+    explanation: >-
+      **A** is the case most people over-engineer. Threads blocked on a database
+      cost almost no CPU, so a single core can hold hundreds of connections — and
+      this is exactly what event loops exploit.
+
+
+      **B** is the genuine case for parallelism, and the only one here where more
+      cores directly buys throughput.
+
+
+      **D** is the trap this topic exists for. Below one CPU there is no
+      parallelism to be had, so adding workers cannot add throughput — it can
+      only add contention for a fixed quota.
+
+  - id: e3
+    title: Explain three counter implementations
+    level: L3
+    objectives: [OBJ-A01.6.7]
+    kind: short_answer
+    prompt: >-
+      Four threads increment a shared request counter. Rank these by correctness
+      and by cost, and say when each is the right choice:
+
+
+      **A** — `counter = counter + 1`
+
+
+      **B** — the same, inside a mutex
+
+
+      **C** — an atomic increment
+
+
+      **D** — a per-thread counter, summed when the value is read
+    answer: >-
+      A is incorrect — updates are lost. B and C are both correct; C is cheaper
+      for a single value because it needs no lock and cannot be forgotten. D is
+      correct and fastest under heavy contention, at the cost of a slightly stale
+      read and more memory.
+    explanation: >-
+      **A** is the lost-update bug, and it is silent: no error, just a number
+      that is too small.
+
+
+      **B** works but pays for a lock on every increment, and under contention
+      the threads queue on it — a lock can become the bottleneck while every CPU
+      sits idle.
+
+
+      **C** is the right default for a counter. The hardware performs
+      read-modify-write indivisibly, so there is no window and no lock to
+      contend on.
+
+
+      **D** is what high-throughput metrics libraries actually do. Each thread
+      owns its own counter and nothing is shared until a read, which removes
+      contention entirely — the read is a sum taken at slightly different
+      instants, which for a metric is a fine trade.
+
+  - id: e4
+    title: Diagnose four stuck services
+    level: L3
+    objectives: [OBJ-A01.6.8]
+    kind: interpretation
+    prompt: >-
+      Each service is not responding. Say what is happening and what you would
+      run next:
+
+
+      **A** — CPU near zero, threads in `futex_wait`, no errors, restart fixes it.
+
+
+      **B** — CPU at the limit, `throttled_usec` climbing fast.
+
+
+      **C** — CPU near zero, threads in state `D`, load average 90.
+
+
+      **D** — CPU moderate, `throttled_usec` flat, one thread at 100%, others
+      idle.
+    answer: >-
+      A — deadlock; take a thread dump and look at lock acquisition order. B —
+      CPU saturation against the quota; size workers from the limit or raise it.
+      C — blocked on I/O; investigate the storage or the remote dependency, not
+      the CPU. D — a serialised section or a single-threaded bottleneck; profile
+      that thread.
+    explanation: >-
+      Three of these look identical from outside — the service is not responding
+      — and the CPU figure separates them immediately.
+
+
+      **A and C** both show near-zero CPU and are completely different: `futex`
+      is a lock the process holds against itself, `D` is the kernel waiting for a
+      device. `wchan` tells them apart in one command.
+
+
+      **D** is the one people miss. Nothing is throttled and there is CPU
+      available, but the work is passing through one thread — a global lock, a
+      single consumer, or a runtime pinned to one core. Adding workers does
+      nothing; the profile of that one thread is the whole investigation.

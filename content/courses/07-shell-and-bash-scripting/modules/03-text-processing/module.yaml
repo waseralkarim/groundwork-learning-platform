@@ -1,0 +1,9 @@
+id: module.text-processing
+slug: text-processing
+title: Text Processing
+summary: >-
+  The tools you have already been using for six courses without being taught
+  them — grep, sed, awk, find and xargs. Their regex dialects differ, their exit
+  statuses mean things, and the difference between two ways of splitting a line
+  is the difference between a working script and an empty field.
+order: 3

@@ -1,0 +1,177 @@
+id: assessment.http
+topic: topic.http
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a hang that is not a network problem
+    kind: explain
+    objectives: [OBJ-A03.4.4]
+    prompt: >-
+      A colleague reports that requests to one endpoint "hang and then time
+      out", and has raised the client timeout from 30 seconds to 120. The hang
+      is now 120 seconds. They believe the network is dropping packets.
+
+
+      Given `curl -w` output of `code=200 size=48 ttfb=0.164 total=120.001`, in
+      about 200 words: explain what is happening, why the timeout change proved
+      something, what the network evidence actually shows, and what you would
+      change.
+    rubric:
+      - "Identifies broken framing: a declared body length larger than what was sent"
+      - "Uses `size_download` greater than zero with a timeout as the evidence"
+      - "Uses `ttfb` of 0.164 to show the server responded immediately and is not slow"
+      - "Explains that a hang equal to the timeout means something that never ends, not something slow"
+      - "Recommends setting Content-Length from the actual body or using chunked encoding, and reverting the timeout"
+    model_answer: >-
+      It is not the network, and their own timeout experiment proves it.
+
+
+      `ttfb=0.164` means the server produced the first byte in 164 milliseconds.
+      Everything before that — DNS, TCP, TLS, routing — worked, and the
+      application was not slow. `size=48` means 48 bytes of body arrived. So the
+      response started, delivered part of a body, and stopped.
+
+
+      That is broken framing: the response declared a `Content-Length` larger
+      than what it sent, and the client is doing exactly what it was told — read
+      that many bytes. It is not an error from its point of view; it simply has
+      bytes outstanding and waits for them.
+
+
+      Raising the timeout is the confirming experiment. Something *slow*
+      produces variable durations; something that never completes produces
+      exactly the timeout, every time. The hang tracking the setting is proof it
+      is the second kind.
+
+
+      The fix is in the response, not the network. Either set `Content-Length`
+      from the actual rendered bytes, or omit it and use chunked encoding, which
+      exists so a response can begin before its length is known. Improving the
+      length *estimate* is not a fix — a length that is too small is worse,
+      because the client stops early and the leftover bytes corrupt the next
+      response on a keep-alive connection.
+
+
+      And revert the timeout: 120 seconds now hides real slowness everywhere
+      else.
+    common_failures:
+      - "Accepting the packet-loss theory, which `ttfb` and the partial body both contradict"
+      - "Missing that the hang equalling the timeout is itself evidence"
+      - "Proposing a better size estimate rather than a correct one"
+      - "Leaving the raised timeout in place, which degrades every other endpoint's failure detection"
+
+  - id: B
+    title: Reason about connection reuse
+    kind: reason
+    objectives: [OBJ-A03.4.7]
+    prompt: >-
+      A service makes 200 HTTPS requests per second to one internal API, each
+      carrying a small JSON body. Round-trip time is 40ms. Its client library has
+      keep-alive disabled.
+
+
+      In about 200 words: compute the latency cost per request, describe what
+      else this causes at the socket level, name the counters that would show it,
+      and give the fix.
+    rubric:
+      - "Computes the per-request setup cost: one RTT for TCP plus one or two for TLS — roughly 80–120ms"
+      - "Notes that this dominates a small request, where the useful work is milliseconds"
+      - "Identifies TIME-WAIT accumulation and ephemeral port pressure against a single destination"
+      - "Names `ActiveOpens` rising with `CurrEstab` flat, and TIME-WAIT counts, as the evidence"
+      - "Gives keep-alive or a connection pool as the fix, rather than tuning ports or timeouts"
+    model_answer: >-
+      Every request pays a fresh TCP handshake — one round trip, 40ms — plus a
+      TLS handshake of one or two more, so 80 to 120ms before a single request
+      byte moves. For a small JSON call whose actual work is a few milliseconds,
+      that is the overwhelming majority of the latency, repeated 200 times a
+      second.
+
+
+      At the socket level it is worse than the latency alone. Each closed
+      connection leaves a TIME-WAIT socket holding its four-tuple for about 60
+      seconds. At 200 per second that is roughly 12000 tuples held at any moment,
+      all against the *same* destination address and port — and the ephemeral
+      port range is only about 28000. That is uncomfortably close to exhaustion,
+      after which connections start failing for reasons that look nothing like a
+      client configuration problem.
+
+
+      The evidence: `ActiveOpens` rising steeply while `CurrEstab` stays low —
+      connections created and destroyed rather than reused — plus
+      `ss -tan state time-wait | wc -l` in the thousands against one peer.
+
+
+      The fix is keep-alive, or a connection pool sized to the concurrency. It
+      removes 80–120ms per request, the TIME-WAIT accumulation and the port
+      pressure at once. Widening the ephemeral range or shortening TIME-WAIT
+      treats the symptom and leaves the latency.
+    common_failures:
+      - "Computing only the TCP handshake and omitting TLS, which is most of the cost"
+      - "Missing the TIME-WAIT and ephemeral-port consequence entirely"
+      - "Proposing `tcp_tw_recycle`, which was removed from Linux for breaking clients behind NAT"
+      - "Treating it purely as a latency problem, when it is also a reliability cliff"
+
+  - id: C
+    title: Diagnose four exchanges
+    kind: diagnose
+    objectives: [OBJ-A03.4.8, OBJ-A03.4.5]
+    prompt: >-
+      Four probes, same client, same command:
+
+
+      ```text
+      A  code=200 size=4  ttfb=0.002  total=3.001   exit=28
+      B  code=200 size=0  ttfb=0.003  total=3.001   exit=28
+      C  code=000 size=0  ttfb=0.000  total=0.001   exit=7
+      D  code=404 size=162 ttfb=0.004 total=0.005   exit=0
+      ```
+
+
+      D was requested by pod IP against a service behind a name-based virtual
+      host, and its response carried `Server: nginx` while the application is
+      written in Go.
+
+
+      Diagnose each, and say for each whether the network is implicated.
+    rubric:
+      - "A: framing — a declared length larger than the body sent; network fine"
+      - "B: headers never terminated by a blank line, so the body never began; network fine"
+      - "C: connection refused, instantly — nothing listening; network fine, and this is the most informative failure"
+      - "D: a 404 from the sidecar, not the application, because the Host header matched no server block"
+      - "States explicitly that none of the four is a network fault"
+    model_answer: >-
+      **A — broken framing.** A status line and four body bytes arrived in two
+      milliseconds, then the client waited for more that had been declared and
+      never sent. Bytes received plus a timeout is the signature. The network is
+      not implicated at all; everything up to the stall was instantaneous.
+
+
+      **B — headers never terminated.** A status line was parsed, so curl
+      reports 200, and then zero body bytes, because with no blank line the
+      headers never end and the body never begins. `size=0` with a status code is
+      what distinguishes it from A. Network fine.
+
+
+      **C — connection refused.** Exit 7, returned instantly, with no status at
+      all. The packet reached the machine and the kernel answered with a reset
+      because nothing was bound. This is the most informative of the four: it
+      eliminates routing, firewalls and host availability in one observation, and
+      the fault is a missing process or a wrong port.
+
+
+      **D — the wrong thing answered.** `Server: nginx` on a service written in
+      Go means the sidecar replied, not the application. Requesting by pod IP
+      sends `Host: 10.244.7.19:8080`, which matches no `server_name`, so nginx
+      returned its default 404 and the application never saw the request — which
+      is why its logs are empty. The fix is `-H 'Host: …'`, or `--resolve` over
+      HTTPS.
+
+
+      **None of the four is a network fault**, and three of them reported
+      something that sounds like one.
+    common_failures:
+      - "Conflating A and B, which differ only in `size_download`"
+      - "Reading C's instant exit as a timeout, which reverses the diagnosis"
+      - "Attributing D's 404 to the application, when the `Server` header says otherwise"
+      - "Failing to state the conclusion — that none of them implicates the network — which is the point of the set"

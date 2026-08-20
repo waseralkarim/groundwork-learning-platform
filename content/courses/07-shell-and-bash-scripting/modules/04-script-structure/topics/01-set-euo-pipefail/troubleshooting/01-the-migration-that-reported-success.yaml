@@ -1,0 +1,269 @@
+id: troubleshooting.the-migration-that-reported-success
+topic: topic.set-euo-pipefail
+title: The migration that reported success while failing
+level: L2
+objectives: [OBJ-B08.5.4, OBJ-B08.5.7]
+reveal_policy: progressive
+
+situation: >-
+  A query starts timing out in production. The index it needs does not exist.
+
+
+  The migration that creates it was written eleven weeks ago and has run on every
+  deploy since — 34 deploys. Every one of them is green. The deploy log for each
+  contains the line `applied 002-add-orders-index.sql`, and the line before it
+  contains a database error.
+
+
+  The migration script has `set -euo pipefail` on line 3. The engineer who wrote
+  it points out that this is precisely the case strict mode exists for, and asks
+  whether the CI runner is discarding the exit status.
+
+
+  Work out why a script with `set -e` ran a failing command 34 times, printed the
+  error each time, and exited 0 each time.
+
+symptoms:
+  - "A required index is absent in production"
+  - "The migration creating it has run 34 times and reported success every time"
+  - "The database's error message appears in every deploy log"
+  - "The line after the error says the migration was applied"
+  - "The script has set -euo pipefail at the top"
+  - "The summary line reports a migration count higher than the number applied"
+
+artifacts:
+  - type: config
+    label: The migration runner
+    content: |
+      #!/bin/bash
+      # Apply pending migrations, then record the new schema version.
+      set -euo pipefail
+
+      SCHEMA_DIR=${1:-/srv/app/schema}
+
+      apply_migration() {
+        local file=$1
+        # capture the output so we can log it on failure
+        local output=$(psql -v ON_ERROR_STOP=1 -f "$file")
+        echo "applied $(basename "$file")"
+      }
+
+      count=0
+      for f in "$SCHEMA_DIR"/*.sql; do
+        apply_migration "$f"
+        count=$((count + 1))
+      done
+
+      echo "applied $count migrations"
+
+  - type: log
+    label: A deploy log, unedited
+    content: |
+      + bash /srv/app/bin/migrate.sh
+      applied 001-create-orders.sql
+      ERROR:  relation "orders_customer_id_idx" already exists
+      applied 002-add-orders-index.sql
+      applied 2 migrations
+      + echo "migrations ok"
+      migrations ok
+
+  - type: command_output
+    label: The client's behaviour, checked by hand
+    content: |
+      $ psql -v ON_ERROR_STOP=1 -f 002-add-orders-index.sql; echo "rc=$?"
+      ERROR:  relation "orders_customer_id_idx" already exists
+      rc=1
+
+  - type: command_output
+    label: The same shape, reduced
+    content: |
+      $ bash -c 'set -e; x=$(false); echo reached'; echo "rc=$?"
+      rc=1
+
+      $ bash -c 'set -e; f(){ local x=$(false); }; f; echo reached'; echo "rc=$?"
+      reached
+      rc=0
+
+  - type: command_output
+    label: The index, in production
+    content: |
+      $ psql -c '\di orders_customer_id_idx'
+      Did not find any relation named "orders_customer_id_idx".
+
+diagnostic_questions:
+  - "The client exits 1 when run by hand. Where between there and errexit is that status lost?"
+  - "How many commands are on the line that captures the output, and which one's status is reported?"
+  - "If the status did propagate, would errexit stop the loop? What is the function's last command?"
+  - "The summary says 2 migrations. How many were actually applied?"
+  - "The error names an index that already exists, but production has no such index. What does that tell you?"
+
+hints:
+  - "Compare the two reduced cases in the artifacts. They differ by one word."
+  - "`local` is not syntax. It is a command, with an exit status of its own."
+  - "Count the masks. Fixing one of them may not be enough."
+  - "Read the comment above the guilty line — it says what the author intended."
+
+root_cause: >-
+  **`local output=$(psql ...)` reports `local`'s exit status, not `psql`'s.**
+
+
+  A plain assignment takes the exit status of the command substitution that
+  produced its value — which is why `x=$(false)` fires under errexit. But
+  `local` is **a command in its own right**, and the exit status of the line is
+  whether the declaration succeeded. It did. `psql`'s 1 is discarded before
+  errexit ever sees it.
+
+
+  The same applies to `declare`, `export`, `readonly` and `typeset`. `shellcheck`
+  reports it as **SC2155**.
+
+
+  **There is a second mask behind the first.** Even if the status propagated,
+  errexit would abort the *function* — and the function's last command is a
+  successful `echo`, so `apply_migration` returns 0 regardless. Fixing only the
+  `local` would not, on its own, have been enough to stop the loop; both had to
+  change.
+
+
+  **So every layer behaved as documented.** `psql` failed and said so.
+  `ON_ERROR_STOP=1` did its job. `set -euo pipefail` was present, correct, and
+  had nothing to act on, because the failure never reached it.
+
+
+  **`applied 2 migrations` is a false statement, not just a wrong number.** The
+  counter increments per loop iteration, not per confirmed apply — so the summary
+  line has been asserting something nobody checked, in 34 green builds.
+
+
+  **And the error message was the second clue nobody read.** `relation
+  "orders_customer_id_idx" already exists` in an environment where the index does
+  *not* exist means the migration is failing against something other than the
+  intended database — a leftover object, a different schema in the search path, a
+  stale template. The masked status hid a second defect underneath it.
+
+
+  The comment above the guilty line is the whole story in one sentence: *capture
+  the output so we can log it on failure.* Somebody set out to add error handling
+  and removed the existing error handling in the same line.
+
+method: >-
+  **1. Establish the failure is real before looking at the script.** Run the
+  failing migration through the client by hand and check `$?`. It exits 1. That
+  narrows the question from "is something failing" to "where is a known non-zero
+  status being lost", which is a much smaller search.
+
+
+  **2. Do not accept "the runner must be swallowing it".** That was the first
+  hypothesis, and it is testable in one command:
+  `bash /srv/app/bin/migrate.sh; echo $?`. The script itself exits 0, so the
+  runner is not involved and the CI configuration does not need investigating.
+
+
+  **3. Reduce the script to the smallest thing that reproduces it.** Two
+  one-liners, differing by one word:
+
+
+  ```console
+  $ bash -c 'set -e; x=$(false); echo reached'                    # rc=1
+  $ bash -c 'set -e; f(){ local x=$(false); }; f; echo reached'   # rc=0
+  ```
+
+
+  That is the entire diagnosis, and it takes ten seconds. Reducing beats reading:
+  the full script has three plausible-looking suspects and only one of them is
+  guilty.
+
+
+  **4. Keep counting masks after you find the first one.** The instinct on
+  finding `local` is to fix it and move on. Ask what the function returns with
+  the status propagated — the trailing `echo` is a second mask, and a fix that
+  only addresses the first would have produced another 34 green builds.
+
+
+  **5. Read the summary line as a claim to be checked.** `applied 2 migrations`
+  is generated by the script, not observed from the database. Any number a script
+  prints about its own work is an assertion until something verifies it.
+
+
+  **6. Read the error message itself, not just its presence.** `already exists`
+  against a database where it does not exist is a second, independent problem —
+  and it would have been found eleven weeks earlier if anything had been looking
+  at the log rather than the exit status.
+
+
+  The general habit: **a green build is an opinion; the state of the system is
+  evidence.** This one had 34 opinions and no evidence.
+
+resolution: >-
+  **Immediately:** create the index by hand, confirm the query recovers, and
+  check every other environment — the same script has been reporting success
+  everywhere.
+
+
+  **Fix the script.** The minimal change is one line:
+
+
+  ```bash
+  local output
+  output=$(psql -v ON_ERROR_STOP=1 -f "$file")
+  ```
+
+
+  Ship the version that also reports, though:
+
+
+  ```bash
+  apply_migration() {
+    local file=$1
+    local output status=0
+    output=$(psql -v ON_ERROR_STOP=1 -f "$file" 2>&1) || status=$?
+    if [ "$status" -ne 0 ]; then
+      echo "FAILED $(basename "$file") (rc=$status): $output" >&2
+      return "$status"
+    fi
+    echo "applied $(basename "$file")"
+  }
+  ```
+
+
+  Four lines instead of one, and the failure now names the file, the status and
+  the database's own words. The minimal fix is right for the incident; this is
+  right for the next one.
+
+
+  **Then add the assertion, because it is what would actually have caught this:**
+
+
+  ```bash
+  total=$(find "$SCHEMA_DIR" -maxdepth 1 -name '*.sql' | wc -l)
+  ...
+  [ "$count" -eq "$total" ] || { echo "applied $count of $total" >&2; exit 1; }
+  ```
+
+
+  A count the script increments is a claim. A count compared against the files it
+  was asked to apply is a check.
+
+
+  **And verify the outcome, not the run.** After migrating, assert the schema is
+  what the migration was supposed to produce:
+
+
+  ```bash
+  psql -tAc "select to_regclass('orders_customer_id_idx')" | grep -q . \
+    || { echo "index missing after migration" >&2; exit 1; }
+  ```
+
+
+  **Repository-wide:** add `shellcheck -S warning` to CI. SC2155 is the single
+  highest-value check it performs on a shell codebase, and this class of defect
+  is invisible to review precisely because the line looks ordinary. Run it across
+  all scripts before turning the gate on — this will not be the only instance.
+
+
+  **For the postmortem:** nothing failed. `psql` reported the error correctly,
+  `ON_ERROR_STOP` worked, `set -euo pipefail` was present and correct, and the
+  script's own log contained the error 34 times. The defect is that a
+  well-intentioned edit — capturing output in order to log it — silently removed
+  the error checking it was meant to improve, and nothing in CI compared what the
+  script claimed against what the database contained.

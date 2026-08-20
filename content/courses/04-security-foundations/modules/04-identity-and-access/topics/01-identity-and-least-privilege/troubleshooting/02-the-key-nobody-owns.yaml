@@ -1,0 +1,257 @@
+id: troubleshooting.the-key-nobody-owns
+topic: topic.identity-and-least-privilege
+title: Someone deployed to production at 03:40 and nobody was working
+level: L2
+objectives: [OBJ-A04.4.8, OBJ-A04.4.6]
+reveal_policy: progressive
+
+situation: >-
+  A deployment to production ran at 03:41 on Sunday. It rolled out a
+  three-week-old image tag, which caused a partial outage until it was reverted
+  at 04:15.
+
+
+  Nobody was working. The four engineers with production access have all
+  confirmed they were asleep, and their accounts show no VPN sessions.
+
+
+  The CI system shows no pipeline run at that time. The deployment was performed
+  directly against the cluster API using a service account token, from a source
+  address inside the estate.
+
+
+  The security team's initial position is that a laptop was compromised. The
+  platform team's position is that CI must have misfired.
+
+
+  Both are guessing. Work out what happened before reading on.
+
+symptoms:
+  - "A production deployment at 03:41 with no corresponding CI pipeline run"
+  - "All four humans with access confirmed absent, with no VPN sessions"
+  - "The source address is inside the estate"
+  - "The image deployed was an old tag, not the current one"
+  - "The token used is a long-lived service account token"
+  - "No alert fired; the outage was noticed by customers"
+
+artifacts:
+  - type: log
+    label: Cluster audit log for the event
+    content: |
+      2026-08-16T03:41:07Z  verb=patch  resource=deployments/checkout
+      user=system:serviceaccount:ci:deployer
+      sourceIPs=["10.42.7.19"]
+      userAgent="kubectl/v1.28.3"
+
+  - type: command_output
+    label: What 10.42.7.19 is
+    content: |
+      $ kubectl get pods -A -o wide | grep 10.42.7.19
+      tooling   backup-agent-4f8d2   1/1   Running   10.42.7.19   node-3
+
+      $ kubectl get pod backup-agent-4f8d2 -n tooling -o jsonpath='{.spec.serviceAccountName}'
+      deployer
+
+  - type: config
+    label: The backup agent's manifest
+    content: |
+      spec:
+        serviceAccountName: deployer          # copied from the deploy job manifest
+        containers:
+          - name: backup-agent
+            image: internal/backup-agent:1.4
+            volumeMounts:
+              - name: ssh
+                mountPath: /keys
+        volumes:
+          - name: ssh
+            secret:
+              secretName: shared-deploy-key   # same key CI uses
+
+  - type: command_output
+    label: What that service account can do
+    content: |
+      $ kubectl auth can-i --list --as=system:serviceaccount:ci:deployer
+      Resources                       Verbs
+      deployments                     [get list watch create update patch delete]
+      secrets                         [get list]
+      pods                            [get list watch create delete]
+      *.*                             [*]        # via clusterrolebinding "deployer-admin"
+
+  - type: log
+    label: The backup agent's own logs, 03:38–03:42
+    content: |
+      03:38:02  fetching backup manifest from https://updates.internal/agent/manifest
+      03:38:04  manifest signature: not verified (verification disabled 2025-02-11)
+      03:39:51  applying update task set
+      03:41:07  task 'redeploy-checkout' completed
+      03:42:00  idle
+
+diagnostic_questions:
+  - "Which identity performed the deployment, and which workload holds it?"
+  - "Why does a backup agent have that service account?"
+  - "What did the agent do at 03:38 that preceded the deployment?"
+  - "Is this a compromise, and how would you tell from what is here?"
+  - "What would have limited the damage even if everything else stayed the same?"
+
+hints:
+  - "The source address is a pod. Find out which one, and what identity it runs as."
+  - "Read the backup agent's manifest and ask what a backup agent needs a deploy identity for."
+  - "Look at the line in the agent's log about signature verification."
+  - "`kubectl auth can-i --list` shows the last line matters more than the first three."
+
+root_cause: >-
+  **The backup agent performed the deployment, using a `deployer` service account
+  it was given by copying another manifest, after fetching and applying an
+  unverified remote task set.**
+
+
+  The chain, in order:
+
+
+  *The identity.* The audit log names
+  `system:serviceaccount:ci:deployer` from `10.42.7.19`, which is the
+  `backup-agent` pod. Its manifest sets `serviceAccountName: deployer` with the
+  comment *copied from the deploy job manifest*. A backup agent has no reason to
+  hold a deploy identity; it holds one because a working manifest was copied.
+
+
+  *The privilege.* `kubectl auth can-i --list` shows three plausible-looking
+  lines and then `*.* [*]` via a ClusterRoleBinding named `deployer-admin`. The
+  service account is cluster-admin. The first three lines are what somebody
+  intended; the last is what exists.
+
+
+  *The trigger.* At 03:38 the agent fetched a task manifest over HTTPS and logged
+  `manifest signature: not verified (verification disabled 2025-02-11)`. It then
+  applied a task called `redeploy-checkout`. Signature verification was turned
+  off eighteen months ago and never turned back on.
+
+
+  **Is it a compromise?** The evidence here does not settle it, and that is
+  itself the finding. Either the update endpoint served a malicious task set — in
+  which case this is an intrusion — or a stale task was served by mistake and the
+  agent did exactly as instructed. Both produce identical logs, because nothing
+  verified where the instruction came from.
+
+
+  Neither team's theory survives. No laptop was involved and CI did not run. A
+  workload inside the estate did precisely what it was configured to be able to
+  do.
+
+
+  **The three faults are independent**, and each alone would have prevented this:
+
+
+  1. A backup agent holding a deploy identity — a copied manifest.
+
+  2. That identity being cluster-admin — a ClusterRoleBinding nobody reviews.
+
+  3. Unverified remote instructions — a control disabled for convenience and left
+     off.
+
+
+  And a fourth that turned it into an outage rather than an alert: **no alerting
+  on writes by a non-CI identity.** The audit log recorded everything correctly
+  and nobody was watching it.
+
+method: >-
+  **1. Start from the identity in the audit log, not from the humans.** The log
+  named a service account, and the investigation went straight to laptops and CI
+  because those are the actors people imagine. `system:serviceaccount:...` is the
+  answer to "who", and the next question is which workload holds it.
+
+
+  **2. Resolve the source address to a workload.** `sourceIPs` is a pod IP. One
+  `kubectl get pods -o wide` turns "inside the estate" into a named pod, and from
+  there the manifest tells you why it had that identity.
+
+
+  **3. Read `kubectl auth can-i --list` to the end.** The first lines look
+  reasonable and the wildcard at the bottom is what matters. A summary that stops
+  at the plausible entries — which is what a human skimming does — misses the
+  binding that grants everything.
+
+
+  **4. Read the workload's own logs around the event, not just the audit log.**
+  The audit log says what was done; the agent's log says *why*, and the line
+  about disabled signature verification is the trigger. Cross-referencing the two
+  timelines is what turns "a deployment happened" into a sequence.
+
+
+  **5. Distinguish what the evidence establishes from what it does not.** Whether
+  this was malicious is genuinely unresolved, because nothing authenticated the
+  instruction. Saying so plainly is more useful than picking the theory that
+  fits your team's priors — and "we cannot tell" is itself the finding that
+  justifies the fix.
+
+
+  **6. Ask what each control would have prevented, independently.** Three faults
+  here, and any one removed stops the incident. That framing produces a
+  remediation list rather than a debate about which was the real cause.
+
+
+  The habit: **when an identity does something surprising, ask what else holds
+  that identity.** A copied manifest is invisible in review of either manifest
+  alone.
+
+resolution: >-
+  **Immediately.**
+
+
+  Revoke the `deployer-admin` ClusterRoleBinding, and remove
+  `serviceAccountName: deployer` from the backup agent. Rotate the service
+  account token and the shared deploy key — both must be assumed exposed, since
+  you cannot establish whether the task set was hostile.
+
+
+  Re-enable signature verification on the agent's update channel, and treat the
+  eighteen months it was off as a period you cannot make assertions about. Check
+  what else that agent applied in that window.
+
+
+  **Then fix each of the three faults, because each is independently sufficient.**
+
+
+  *Give the backup agent its own identity*, with permission to do backups and
+  nothing else. The copied manifest is the root of this: a `serviceAccountName`
+  is not boilerplate, and copying a working manifest carries its identity with
+  it.
+
+
+  *Remove the wildcard binding.* `deployer` needs `patch` on the deployments it
+  deploys, in the namespaces it deploys to. `*.* [*]` was almost certainly a
+  temporary measure to unblock something. Scope it, and audit every other
+  ClusterRoleBinding while you are in there — this one was not the only shortcut
+  ever taken.
+
+
+  *Verify remote instructions*, and make the verification impossible to disable
+  silently. A control turned off with a comment and a date is a control that
+  stays off; it needs an alert, or a startup failure, rather than a log line.
+
+
+  *Stop sharing the deploy key.* The agent, CI and the cleanup jobs each need
+  their own scoped credential. The reach of a shared credential is the union of
+  everything it opens, granted to every workload that mounts it.
+
+
+  **And add the detection that was missing.** The audit log recorded this
+  perfectly and nobody was watching:
+
+
+  - alert on any write to production `deployments` by an identity other than the
+    CI pipeline's
+  - alert on any use of a cluster-admin binding
+  - alert on deployments outside change windows
+
+
+  Any one of those pages someone at 03:41 instead of customers noticing at 04:00.
+
+
+  **For the writeup, the sentence worth keeping:** nobody granted a backup agent
+  the ability to deploy to production. It was assembled from a copied manifest, a
+  binding created to unblock something, and a verification step disabled for
+  convenience — three reasonable-looking decisions, none of which is wrong on its
+  own, and which together made an unattended workload the most powerful identity
+  in the cluster.

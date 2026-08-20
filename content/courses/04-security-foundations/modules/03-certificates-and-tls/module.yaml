@@ -1,0 +1,8 @@
+id: module.certificates-and-tls
+slug: certificates-and-tls
+title: Certificates and TLS
+summary: >-
+  How a client decides that the thing answering on the other end is who it
+  claims to be — a signed statement, a chain to something already trusted, and
+  the six distinct ways that check fails, each with a different fix.
+order: 3

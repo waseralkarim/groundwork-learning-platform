@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph L4["Your process — a container"]
+        P["nproc says 16<br/>cpu.max says 1.5<br/><i>/.dockerenv exists</i>"]
+    end
+    subgraph L3["A kernel it did not boot"]
+        K["uname -r:<br/>6.6.87.2-microsoft-standard-WSL2<br/><i>shared, not owned</i>"]
+    end
+    subgraph L2["A hypervisor"]
+        H["hypervisor flag set in /proc/cpuinfo<br/>Hypervisor vendor: Microsoft<br/><i>presents virtual hardware</i>"]
+    end
+    subgraph L1["Physical silicon"]
+        S["Model name:<br/>Intel Core i7-10700 @ 2.90GHz<br/><i>the real thing, passed through</i>"]
+    end
+
+    L4 --> L3 --> L2 --> L1
+
+    N1["Namespaces decide what it SEES.<br/>cgroups decide what it USES.<br/>Neither rewrites /proc/cpuinfo."]
+    L4 -.-> N1
+
+    N2["A VM would sit here instead,<br/>with its OWN kernel —<br/>hundreds of MB, seconds to boot,<br/>and a hardware boundary."]
+    L3 -.-> N2

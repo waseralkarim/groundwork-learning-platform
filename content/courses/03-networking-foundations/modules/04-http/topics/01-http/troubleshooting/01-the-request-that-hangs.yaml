@@ -1,0 +1,210 @@
+id: troubleshooting.the-request-that-hangs
+topic: topic.http
+title: One endpoint in ten hangs for exactly sixty seconds
+level: L2
+objectives: [OBJ-A03.4.8, OBJ-A03.4.4]
+reveal_policy: progressive
+
+situation: >-
+  An internal reporting API has one endpoint that intermittently hangs.
+  Roughly one request in ten to `/reports/export` never completes; the client
+  eventually times out at sixty seconds. Every other endpoint is fine, and the
+  same endpoint usually works.
+
+
+  The application team have checked their handler: it returns in under 200ms
+  every time, and their own request logs confirm it — every request is logged
+  with a duration and a 200.
+
+
+  The platform team have checked the network, the load balancer and the pod's
+  resource usage. All normal.
+
+
+  Somebody has raised the client timeout to 120 seconds, which changed the
+  symptom to "hangs for exactly 120 seconds".
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "About one request in ten to /reports/export never completes"
+  - "The hang lasts exactly as long as the client timeout, whatever it is set to"
+  - "The application logs every one of those requests as a 200 in under 200ms"
+  - "Every other endpoint is fine"
+  - "It correlates with reports that have few rows rather than many"
+  - "No errors anywhere — not in the app, the proxy or the client"
+
+artifacts:
+  - type: command_output
+    label: A failing request, measured
+    content: |
+      $ curl -s -m 10 -o /dev/null \
+          -w 'code=%{http_code} size=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n' \
+          https://reports.internal/reports/export?range=1d
+      code=200 size=48 ttfb=0.164 total=10.001
+      # curl exit status: 28
+
+  - type: command_output
+    label: A successful request to the same endpoint
+    content: |
+      $ curl -s -m 10 -o /dev/null \
+          -w 'code=%{http_code} size=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n' \
+          https://reports.internal/reports/export?range=30d
+      code=200 size=284419 ttfb=0.203 total=0.402
+
+  - type: command_output
+    label: Response headers, failing case
+    content: |
+      $ curl -sI -m 10 https://reports.internal/reports/export?range=1d
+      HTTP/1.1 200 OK
+      Content-Type: application/json
+      Content-Length: 1024
+
+  - type: config
+    label: The handler, abridged
+    content: |
+      # the size is computed from an estimate before rendering
+      est = row_count * AVG_ROW_BYTES        # AVG_ROW_BYTES = 256
+      resp.headers["Content-Length"] = str(max(est, 1024))
+      resp.write(render(rows))               # actual bytes, however many that is
+
+  - type: log
+    label: The application's own request log, failing case
+    content: |
+      {"path":"/reports/export","status":200,"duration_ms":164,"rows":3,"bytes":48}
+
+diagnostic_questions:
+  - "What does `size_download=48` with a timeout tell you?"
+  - "What is `Content-Length` on the failing response, and how many bytes were actually sent?"
+  - "Why does the hang always last exactly as long as the client timeout?"
+  - "Why do reports with *few* rows fail and large ones succeed?"
+  - "Why does the application log a 200 in 164ms for a request the client says hung?"
+
+hints:
+  - "Compare `Content-Length` with `size_download`."
+  - "Read the handler's `max(est, 1024)` against a report with three rows."
+  - "The application finished. Ask what the client was still waiting for."
+  - "A hang that always equals the timeout is not a slow thing — it is a thing that never ends."
+
+root_cause: >-
+  The handler declares a `Content-Length` it does not send. It estimates the size
+  from a row count with a floor of 1024 bytes, then writes the real rendered
+  output — and for small reports the real output is far smaller than the floor.
+
+
+  The failing request declares `Content-Length: 1024` and sends 48 bytes. The
+  client reads 48, has 976 outstanding, and waits. Nothing is wrong from its
+  point of view: it was told the body is 1024 bytes and it is doing exactly what
+  it was told.
+
+
+  That is why the hang always lasts exactly as long as the client's own timeout,
+  and why raising the timeout only made the hang longer. Nothing is slow —
+  something never ends.
+
+
+  It explains the inverted correlation too. Large reports exceed the 1024-byte
+  floor, so `est` is used, and while that estimate is also approximate it is
+  computed from the same rows that are rendered and happens to be close enough
+  or too small — a *short* declared length terminates the read early rather than
+  hanging. Only small reports hit the floor and over-declare.
+
+
+  And it explains the application's log. The handler genuinely finished in 164ms
+  with a 200 and 48 bytes, and logged that truthfully. The failure is in the
+  header it set, not in the work it did, so no amount of reading its logs would
+  ever have shown it.
+
+
+  `ttfb=0.164` against `total=10.001` is the whole diagnosis in one line: the
+  response *started* in 164 milliseconds and never finished.
+
+method: >-
+  **1. Read `size_download` alongside the timeout.** 48 bytes received and then a
+  timeout means the response started and stalled. That immediately excludes
+  everything before the response — DNS, connection, TLS, routing, and the
+  server's own processing, all of which evidently worked.
+
+
+  **2. Compare `ttfb` with `total`.** 0.164 versus 10.001. The server produced
+  the first byte in 164 milliseconds. Whatever is slow is not the application
+  thinking.
+
+
+  **3. Compare `Content-Length` with what arrived.** 1024 declared, 48 received.
+  That is the entire fault, and it is visible in `curl -I` plus one arithmetic
+  comparison.
+
+
+  **4. Take "the hang equals the timeout" as a structural clue.** Something that
+  takes a variable long time produces variable durations. Something that never
+  completes produces exactly the timeout, every time — and raising the timeout
+  changing nothing but the number is confirmation.
+
+
+  **5. Invert the correlation.** Small reports failing and large ones succeeding
+  is backwards for anything load-related, and points at a threshold. `max(est,
+  1024)` is that threshold, and reading the handler with a three-row report in
+  mind makes it obvious.
+
+
+  **6. Trust the application's log and look elsewhere in the application.** The
+  log is accurate: the handler did return a 200 in 164ms. It is the response
+  *framing* that is wrong, and framing is not something a request log records.
+
+
+  The rule this teaches: **a timeout with bytes received is a framing bug, not a
+  network problem** — and the application's own logs are structurally unable to
+  show it.
+
+resolution: >-
+  **Stop declaring a length you have not produced.** Two correct fixes, and the
+  choice depends on the response.
+
+
+  If the body is rendered in memory anyway, set the header from the actual
+  bytes:
+
+
+  ```python
+  body = render(rows)
+  resp.headers["Content-Length"] = str(len(body))
+  resp.write(body)
+  ```
+
+
+  If the report is large and should stream, do not set `Content-Length` at all —
+  use chunked encoding, which exists precisely so a response can start before its
+  length is known. Most frameworks do this automatically when the header is
+  absent.
+
+
+  What is *not* a fix: improving the estimate. `AVG_ROW_BYTES` tuned better still
+  guesses, and a length that is too small is worse than one that is too large —
+  the client stops early, and on a keep-alive connection the leftover bytes are
+  read as the beginning of the next response, so the damage lands on a different
+  request.
+
+
+  **Revert the timeout change.** 120 seconds hides real slowness for every other
+  endpoint and did nothing for this one. Timeouts should be set from what a
+  healthy request costs, not from what a broken one needs.
+
+
+  **Then add the check that would have caught it.** A response whose body length
+  disagrees with its declared `Content-Length` is always a bug, and it is cheap
+  to assert in an integration test:
+
+
+  ```bash
+  curl -sI URL | awk -F': ' '/[Cc]ontent-[Ll]ength/{print $2}'
+  curl -s URL | wc -c
+  # these must be equal
+  ```
+
+
+  **And put `size_download` in the runbook.** The general rule is worth one line
+  where the next person will find it: *when a request times out, check whether
+  any bytes arrived. If they did, the network is fine and the framing is
+  wrong.*

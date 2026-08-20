@@ -1,0 +1,8 @@
+id: module.the-service-models
+slug: the-service-models
+title: The Service Models
+summary: >-
+  IaaS, PaaS and SaaS are not product categories — they are positions of a
+  boundary. This module computes where that boundary sits for one application
+  deployed four ways, and finds the three responsibilities that never move.
+order: 2

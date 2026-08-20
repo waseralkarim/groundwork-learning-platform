@@ -1,0 +1,273 @@
+topic: topic.certificates-and-tls
+
+questions:
+  - id: i1
+    level: L1
+    question: What is a certificate, and what does it prove?
+    model_answer: >-
+      A public key, a set of names, a validity window and some constraints —
+      signed by an issuer. The signature is the whole value of it; strip that and
+      it is a text file anyone could write.
+
+
+      What it proves is narrow: that an issuer vouched for **this name being
+      bound to this public key**. Combined with the handshake signature, which
+      proves the server holds the matching private key, you get "I am talking to
+      something that controls this name".
+
+
+      What it does not prove is everything people assume. Not that the operator
+      is honest, not that the site is safe, not that it is the company you meant.
+      Most certificates are domain-validated — proof of control over a hostname,
+      free, in minutes, with no check on the organisation — so phishing sites
+      have valid certificates as a matter of course. The padlock means nobody
+      else is reading the connection; it says nothing about who is at the other
+      end.
+
+
+      The part I find most useful to say out loud is where the trust actually
+      comes from. A root is trusted because it is **in the client's trust
+      store** — a list shipped with the operating system — not because of any
+      signature. It is a distribution decision, not a mathematical one. You can
+      build a structurally identical root CA in one command, and it is worth
+      nothing until somebody adds it to a trust store.
+    signal: >-
+      Separating "vouched for a name/key binding" from "this site is
+      trustworthy" is the baseline. The discriminator is naming the trust store
+      as the actual source of authority — most people describe the chain as
+      though the mathematics produces trust, and someone who has built a CA knows
+      the last step is a list.
+    follow_ups:
+      - "What would you say to someone who thinks the padlock means a site is safe?"
+      - "How many CAs does a typical trust store have, and why does that matter?"
+      - "What stops someone presenting a copy of your certificate?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A partner says our API's certificate is invalid. It works in our browsers
+      and in curl on our laptops. Where do you start?
+    model_answer: >-
+      I would assume the partner is right, because the three things we have
+      checked are the three least reliable ways to check this.
+
+
+      First command: `openssl s_client -connect host:443 -servername host` and
+      **count the `depth=` lines**. One line means the server sent one
+      certificate and the chain cannot be walked — error 20, reported to the
+      client as 21. A complete chain reaches depth 2 in a normal hierarchy. That
+      is usually the whole diagnosis and it takes a second.
+
+
+      Why our checks missed it: **browsers cache intermediates** from other sites
+      and some fetch a missing one via the Authority Information Access
+      extension, so a broken chain works for anyone who has recently visited
+      another site using the same CA — which is nearly everyone. Developer
+      laptops accumulate the same thing. So "it works in my browser" is not
+      evidence about a chain; it is evidence that the browser has been somewhere
+      else. I would reproduce in a fresh container with a clean trust store.
+
+
+      I would also translate their error rather than dismissing it. `PKIX path
+      building failed` is Java for exactly the same fault. Different runtimes
+      phrase the same six faults very differently, and treating unfamiliar
+      wording as an unfamiliar problem is how partners get told it is their side.
+
+
+      The likely cause, if a renewal ran recently: nginx pointed at `cert.pem`
+      rather than `fullchain.pem`. ACME clients write both, and the file whose
+      name sounds right is the leaf alone.
+
+
+      The fix is server-side. A client can carry the intermediate in its own
+      bundle and that works, but it is a workaround applied to every client
+      forever, including ones belonging to other companies.
+    signal: >-
+      "Assume the partner is right" plus counting depth lines is the senior
+      answer. Knowing *why* browsers hide this — intermediate caching — rather
+      than just that they do is the discriminator, and so is recognising Java's
+      wording for the same error. Naming the cert.pem/fullchain.pem trap suggests
+      they have actually shipped this.
+    follow_ups:
+      - "How would you reproduce it reliably?"
+      - "Why is fixing it on the client wrong?"
+      - "What would you add to monitoring so this is caught next time?"
+
+  - id: i3
+    level: L2
+    question: >-
+      Monitoring is green and users report certificate warnings. Same server.
+      Explain.
+    model_answer: >-
+      Two clients with different **policies**, and both reporting accurately. The
+      signature check is mathematics and identical everywhere; what counts as an
+      acceptable name, lifetime or algorithm is a decision each verifier makes.
+
+
+      The most likely cause is a **missing Subject Alternative Name**. OpenSSL —
+      and therefore curl, and therefore most monitoring — falls back to the
+      Common Name when no SAN is present. Browsers have required a SAN since
+      2017 and reject it outright. So the certificate is genuinely valid to every
+      tool we own and genuinely invalid to every user, and nothing in a curl
+      result or an `openssl verify` result would ever tell us.
+
+
+      One command settles it:
+
+
+      ```bash
+      openssl s_client -connect host:443 -servername host </dev/null 2>/dev/null \
+        | openssl x509 -noout -ext subjectAltName
+      ```
+
+
+      `No extensions in certificate` is the answer. The root cause is usually
+      signing without `-extfile`, because `openssl x509 -req` copies no
+      extensions from the CSR — they are requests, and the issuer decides.
+
+
+      Other candidates with the same shape: a certificate exceeding the maximum
+      lifetime browsers now accept, SHA-1 somewhere in the chain, or a missing
+      Certificate Transparency proof. All are lenient-verifier-passes,
+      strict-verifier-fails.
+
+
+      The gap this exposes is worth fixing regardless: **monitoring that uses a
+      more permissive verifier than your users will never catch this class of
+      fault.** Asserting that a SAN exists and contains the hostname served is one
+      line, and almost nobody has it.
+
+
+      And the reverse case exists too — a missing intermediate is invisible to
+      browsers and obvious to tooling. I have seen both faults on one service at
+      once, which produces a report that sounds self-contradictory and is not.
+    signal: >-
+      "Verification is policy, not arithmetic" is the idea that makes this
+      tractable, and the CN-fallback asymmetry is the concrete knowledge that
+      proves it is not just a slogan. Recognising that the two failure modes run
+      in opposite directions — and that monitoring is structurally blind to one —
+      is a strong signal.
+    follow_ups:
+      - "Why does openssl accept it when browsers do not?"
+      - "How does a certificate end up with no SAN?"
+      - "What is the inverse failure, and which client hides that one?"
+
+  - id: i4
+    level: L2
+    question: >-
+      A certificate was renewed on schedule and the site still went down at
+      expiry. How?
+    model_answer: >-
+      The renewal wrote a file and nothing reloaded the process. The server has
+      been serving the old certificate from memory ever since, and that one
+      expired.
+
+
+      The check that settles it in seconds is comparing **what is served against
+      what is on disk** — serial number and dates from both:
+
+
+      ```bash
+      openssl s_client -connect host:443 -servername host </dev/null 2>/dev/null \
+        | openssl x509 -noout -serial -dates
+      openssl x509 -in /path/fullchain.pem -noout -serial -dates
+      ```
+
+
+      Different serials means you are finished. I would confirm with the process
+      start time — `ps -o lstart=` — because a process older than its certificate
+      file is serving something it read earlier.
+
+
+      Re-running renewal does not help, and people try it first: the file
+      genuinely is not due for renewal, so the ACME client correctly does
+      nothing. Renewal was never the problem; **loading** was.
+
+
+      The reason it goes undetected is that monitoring usually watches the
+      **file**. That check is green, accurately, and would stay green through
+      any version of this failure — there is no state of the world where it
+      fires. Monitoring the artefact tells you nothing about whether anything
+      consumed it.
+
+
+      The fixes: a deploy hook that reloads **and verifies** the served serial
+      matches the file, so a renewal that does not take effect fails loudly; and
+      monitoring that connects to the live endpoint from outside rather than
+      stat-ing a file.
+
+
+      The general shape recurs well beyond TLS — config written and never
+      reloaded, secrets rotated in a store and never re-read, DNS updated while a
+      resolver caches. **Automation that produces an artefact is not finished
+      until something consumes it.**
+    signal: >-
+      Going straight to the serial-number comparison is the practical
+      discriminator. Recognising that the file-based check *cannot* catch it —
+      rather than saying monitoring "missed" it — shows they can evaluate an
+      instrument rather than just read it. Generalising to config reloads and
+      secret rotation is a senior move.
+    follow_ups:
+      - "What would you put in the deploy hook?"
+      - "Why does re-running the renewal not fix it?"
+      - "Where else does this pattern appear?"
+
+  - id: i5
+    level: L2
+    question: >-
+      When is `--insecure` acceptable, and what does it actually do?
+    model_answer: >-
+      It accepts any certificate from anyone, permanently, on that connection.
+      Not the certificate in front of you — **any** certificate, including one
+      presented by somebody sitting between you and the server.
+
+
+      The traffic stays encrypted, which is the part that makes it feel safe. It
+      is encrypted to whoever answered, and knowing who answered was the
+      assurance actually doing the work.
+
+
+      It is fine for about sixty seconds, while confirming a hypothesis in a
+      terminal. It is a disaster the moment it survives into a manifest, a client
+      library or a health check, because it fails silently forever: everything
+      works, nothing alerts, and the connection is unauthenticated for as long as
+      the code lives.
+
+
+      What makes it genuinely dangerous is that it resolves every certificate
+      fault at once — expired, self-signed, incomplete chain, wrong hostname —
+      so it looks like a general fix rather than the removal of a control.
+      Whereas the six faults have six different fixes, and four of the five
+      common ones are server-side and take about as long as typing `-k`:
+
+
+      - expired → renew, and automate it
+
+      - self-signed internal → add **that** CA to the client's trust store
+
+      - incomplete chain → serve the intermediate
+
+      - wrong name → reissue, or connect by a name in the SAN
+
+
+      The middle one is the important distinction. Adding a specific CA to a
+      trust store is a real, bounded decision — you are choosing to trust that
+      issuer. `--insecure` is not a narrower version of that; it is trusting
+      everyone.
+
+
+      In review I would treat `insecureSkipTLSVerify: true` in a manifest, or
+      `verify=False` in application code, as a finding to block on, and I would
+      also alert on any monitoring check with verification disabled — I have seen
+      one hide a real fault for a week, and it would equally have hidden an
+      active interception.
+    signal: >-
+      "Any certificate from anyone" rather than "it skips the check" is the
+      precise framing. The strongest signal is distinguishing it from adding a CA
+      to a trust store — many people treat those as the same act of "trusting an
+      internal cert", and they are opposites in scope. Blocking on it in review
+      shows they have had the argument.
+    follow_ups:
+      - "How would you handle an internal service with a self-signed certificate?"
+      - "How would you find every place it is already set?"
+      - "What does it leave working, and why is that misleading?"

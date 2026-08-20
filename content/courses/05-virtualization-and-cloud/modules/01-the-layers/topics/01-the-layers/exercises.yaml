@@ -1,0 +1,238 @@
+topic: topic.the-layers
+
+exercises:
+  - id: e1
+    title: Identify four systems from their evidence
+    level: L1
+    objectives: [OBJ-A05.1.1]
+    kind: interpretation
+    prompt: >-
+      For each, say what layer the process is on:
+
+
+      1. hypervisor flag absent; `/sys/class/dmi/id/sys_vendor` = `Dell Inc.`;
+         `cpu.max` = `max 100000`
+
+      2. hypervisor flag present; `sys_vendor` = `Amazon EC2`; own kernel
+         `6.5.0-1018-aws`
+
+      3. hypervisor flag present; `/sys/class/dmi` does not exist;
+         `cpu.max` = `50000 100000`
+
+      4. hypervisor flag absent; `/sys/class/dmi` does not exist;
+         `/.dockerenv` present
+    answer: >-
+      1. **Bare metal.** No hypervisor flag is conclusive — a hypervisor sets it
+         to tell its guest. The real vendor and an unlimited quota confirm a whole
+         physical machine.
+
+
+      2. **A virtual machine.** Flag present, firmware identifying the platform,
+         and a kernel it booted itself. No cgroup limit, because a whole VM is
+         not constrained by one.
+
+
+      3. **A container, inside a VM.** The flag says something above is
+         virtualising; the missing DMI says `/sys` is restricted, which is a
+         container; the real quota confirms it. This is the nesting the first lab
+         finds.
+
+
+      4. **A container on bare metal.** No flag means no hypervisor anywhere in
+         the stack, and the missing DMI plus `/.dockerenv` place it in a
+         container. Increasingly common as people move back to owned hardware.
+    explanation: >-
+      The trick in the set is that **absence is evidence**. A missing hypervisor
+      flag is conclusive rather than inconclusive, and a missing `/sys/class/dmi`
+      is a positive signal of containerisation rather than a failed check.
+
+
+      Item 4 is the one people get wrong, because "no hypervisor flag" gets read
+      as "bare metal" and stops there. The two signals are independent and the
+      combination is what identifies the layer.
+
+  - id: e2
+    title: Predict what four interfaces report
+    level: L2
+    objectives: [OBJ-A05.1.3]
+    kind: calculation
+    prompt: >-
+      A container runs on a 32-core host with 128 GB RAM, up for 40 days. Its
+      limits are `cpu.max = 200000 100000` and `memory.max = 2147483648`. It
+      started 90 seconds ago.
+
+
+      What does each report, and which is the number to act on?
+
+
+      `nproc` · `MemTotal` · `/proc/uptime` · `/proc/loadavg`
+    answer: >-
+      - **`nproc`** → **32**. The machine's count. The number to act on is
+        `cpu.max`: 200000 ÷ 100000 = **2 cores**.
+
+      - **`MemTotal`** → **128 GB**. The number to act on is `memory.max`:
+        2147483648 bytes = **2 GiB**. A 64× difference.
+
+      - **`/proc/uptime`** → about **40 days**, not 90 seconds. Use the process's
+        own start time from `/proc/self/stat`.
+
+      - **`/proc/loadavg`** → the whole machine's, including every neighbouring
+        container. Meaningless for judging whether *this* cgroup is starved; use
+        `cpu.pressure`.
+
+
+      All four are accurate about the machine and none is answering the question
+      asked. The pattern: **anything describing "the system" describes the host.**
+    explanation: >-
+      The arithmetic is worth doing rather than skimming. A 32× gap on CPU and a
+      64× gap on memory is not an edge case — it is the ordinary situation for a
+      small container on a large host, and it is exactly where a default-sized
+      thread pool or JVM heap does the most damage.
+
+
+      Load average is the one most often left in dashboards after the others are
+      fixed, because it looks like a per-workload metric and is not. On a busy
+      host it will alarm when your container is idle, and stay quiet when your
+      container is throttled flat.
+
+  - id: e3
+    title: Rank four layers for one workload
+    level: L2
+    objectives: [OBJ-A05.1.6]
+    kind: ordering
+    prompt: >-
+      A batch job runs for 20 minutes, four times a day, needs 8 GB of memory,
+      and is your own trusted code.
+
+
+      Rank bare metal, VM, container and function from best to worst, and give
+      the one line that decides each position.
+    answer: >-
+      1. **Container.** Right size of job for the layer, starts fast enough that
+         the 20 minutes is all work, and the machine it runs on is shared with
+         everything else when the job is not running.
+
+
+      2. **VM, provisioned per run.** Works, and the tens of seconds of startup
+         is negligible against 20 minutes. Loses only on density and on the
+         operational weight of creating and destroying a machine four times a
+         day.
+
+
+      3. **Function.** Ruled out by execution time limits on most platforms — 20
+         minutes exceeds several — and 8 GB is near or past common memory
+         ceilings. Not wrong in principle, blocked in practice.
+
+
+      4. **Bare metal.** A dedicated machine used 80 minutes a day. It works and
+         wastes almost all of it, and the capacity cannot be lent to anything
+         else.
+
+
+      The line that decides most of it: **the job is long enough that startup
+      does not matter and short enough that dedicating hardware is waste.** That
+      places it squarely in the middle of the range.
+    explanation: >-
+      Worth noticing what does *not* decide it: 8 GB. A large memory requirement
+      narrows which instance you buy, not which layer you use — the same trap as
+      the challenge lab's charlie.
+
+
+      And function being third rather than fourth is the honest ranking. It is
+      excluded by platform limits rather than by being conceptually wrong, and
+      those limits change; a serverless container platform without a 15-minute
+      ceiling would move it up.
+
+  - id: e4
+    title: Explain a startup measurement that disagrees with the docs
+    level: L2
+    objectives: [OBJ-A05.1.7]
+    kind: short_answer
+    prompt: >-
+      A colleague reads that containers start in milliseconds, times `docker run
+      --rm alpine true` in a loop, and gets a consistent 760 ms. They conclude
+      the environment is broken.
+
+
+      Explain the gap and say what you would measure to confirm it.
+    answer: >-
+      Neither figure is wrong; they measure different things.
+
+
+      The **5–50 ms** describes the container runtime creating a process from an
+      already-present image — `runc` setting up namespaces and cgroups and
+      calling `execve`. It is a real number and nobody waits for it in isolation.
+
+
+      The **760 ms** is end to end and additionally includes the CLI starting, the
+      round trip to the daemon, image and snapshot setup, network namespace
+      creation and attachment, and — on this host — Docker Desktop's own
+      indirection through a VM.
+
+
+      To confirm rather than assume: time the same loop on a Linux host running
+      containerd directly, which removes the desktop layer; compare `docker run`
+      against `docker exec` into an already-running container, which isolates
+      creation from the rest and came out around 245 ms; and pull the image first
+      so image fetch is definitely not in the measurement.
+
+
+      The practical value: **this is where "why does my pod take eight seconds to
+      become ready" is answered.** It is measurable rather than mysterious, and it
+      is mostly not the container runtime.
+    explanation: >-
+      The instinct to declare the environment broken when a measurement
+      contradicts documentation is worth resisting, and so is the opposite
+      instinct of assuming the documentation must be describing your case.
+
+
+      The general habit: when a quoted figure and a measured one disagree by an
+      order of magnitude, they are usually measuring different boundaries. Find
+      the boundary each one is drawn around before deciding either is wrong —
+      and prefer the one you measured for capacity planning, because it is the
+      one your users experience.
+
+  - id: e5
+    title: Justify a layer against its runner-up
+    level: L2
+    objectives: [OBJ-A05.1.8]
+    kind: short_answer
+    prompt: >-
+      You have chosen containers for a customer-facing API. Write the paragraph
+      you would put in the design document justifying it — including what the
+      runner-up would have cost, and what would change your mind.
+    answer: >-
+      *We are running the API in containers. Nothing about this workload forces
+      the choice: the code is our own, so there is no hostile-tenancy
+      requirement; it needs no specific kernel version, module or non-namespaced
+      sysctl; and it needs no hardware the runtime will not provide. So this is a
+      trade rather than a constraint, and the deciding factor is deployment
+      frequency — we deploy 20+ times a day, and a container is replaced in about
+      a second where a VM takes tens of seconds, which changes both rollout and
+      rollback time materially.*
+
+
+      *VMs were the runner-up and would work. They would cost us that startup
+      time on every deploy, and roughly an order of magnitude in density. Functions
+      were considered and rejected because this service is never idle — at a
+      steady 400 req/s, per-execution billing is more expensive than an always-on
+      container, and cold starts would land on real user requests during scale-up.*
+
+
+      *What would change our mind: a requirement to run customer-supplied code,
+      which would need a hypervisor boundary; a kernel-level dependency; or a
+      traffic profile that became genuinely bursty with long idle periods, which
+      would make functions cheaper.*
+    explanation: >-
+      Two things make this version defensible rather than decorative.
+
+
+      **It states there is no constraint.** Most design documents present a layer
+      choice as forced, and reviewers cannot argue with a constraint that does not
+      exist. Saying "this is a trade" invites the right conversation.
+
+
+      **It names what would change the decision.** That converts a choice into
+      something reviewable later, when the traffic profile or the tenancy model
+      has changed and nobody remembers why containers were picked. A justification
+      with no reversal conditions is a justification nobody can revisit.

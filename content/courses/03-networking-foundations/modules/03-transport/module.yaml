@@ -1,0 +1,7 @@
+id: module.transport
+slug: transport
+title: The Transport Layer
+summary: >-
+  What TCP does for you that UDP does not, what that costs, and how to see the
+  difference in a socket table and in the kernel's own counters.
+order: 3

@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "Level": {
+      "description": "The difficulty ladder. See docs/architecture/01-vision-and-principles.md.",
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5"
+      ],
+      "title": "Level",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "slug": {
+      "maxLength": 80,
+      "minLength": 2,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "title": "Slug",
+      "type": "string"
+    },
+    "code": {
+      "pattern": "^[A-H]\\d{2}$",
+      "title": "Code",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 140,
+      "minLength": 4,
+      "title": "Title",
+      "type": "string"
+    },
+    "summary": {
+      "maxLength": 600,
+      "minLength": 20,
+      "title": "Summary",
+      "type": "string"
+    },
+    "track": {
+      "maxLength": 60,
+      "minLength": 2,
+      "title": "Track",
+      "type": "string"
+    },
+    "levels": {
+      "items": {
+        "$ref": "#/$defs/Level"
+      },
+      "minItems": 1,
+      "title": "Levels",
+      "type": "array"
+    },
+    "estimated_hours": {
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Estimated Hours",
+      "type": "integer"
+    },
+    "order": {
+      "minimum": 1,
+      "title": "Order",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "slug",
+    "code",
+    "title",
+    "summary",
+    "track",
+    "levels",
+    "estimated_hours",
+    "order"
+  ],
+  "title": "Course",
+  "type": "object"
+}

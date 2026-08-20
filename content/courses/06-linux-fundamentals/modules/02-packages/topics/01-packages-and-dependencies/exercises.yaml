@@ -1,0 +1,233 @@
+topic: topic.packages-and-dependencies
+
+exercises:
+  - id: e1
+    title: Read four ownership answers
+    level: L1
+    objectives: [OBJ-B06.2.1]
+    kind: interpretation
+    prompt: >-
+      For each, say what the answer means and what you would do next:
+
+
+      1. `dpkg -S /usr/bin/curl` → `curl: /usr/bin/curl`
+
+      2. `dpkg -S /usr/bin/awk` → `dpkg-query: no path found matching pattern /usr/bin/awk`
+
+      3. `dpkg -S /usr/local/bin/node` → `dpkg-query: no path found matching pattern /usr/local/bin/node`
+
+      4. `dpkg -S /usr/bin/python3` → `python3-minimal: /usr/bin/python3`
+    answer: >-
+      1. **Owned.** The package is `curl`; `dpkg-query -W -f='${Version}' curl`
+         gives the version, and it is patched by the distribution. Nothing to do.
+
+
+      2. **Owned, one resolution away.** `/usr/bin/awk` is an alternatives
+         symlink. Next step is `dpkg -S "$(readlink -f /usr/bin/awk)"`, which
+         names `mawk`. Not a finding.
+
+
+      3. **Genuinely unowned.** Nothing installed it through the package system,
+         so it receives no upgrades and appears in no inventory. Next step is to
+         find out how it got there and who is responsible for patching it —
+         that answer is not on the machine.
+
+
+      4. **Owned, but read the package name.** The owner is `python3-minimal`,
+         not `python3`. Worth noticing before writing a dependency: on many
+         images the interpreter is present and the standard library is not.
+    explanation: >-
+      Items 2 and 3 produce **identical output** and mean completely different
+      things, which is why "no path found" is never the end of an investigation.
+      Resolve the symlink first; if it still finds nothing, you have found
+      something.
+
+
+      Item 4 is the quieter trap. The name that owns a path is often not the name
+      you would have guessed, and depending on the guess produces a Dockerfile
+      that works until the base image changes.
+
+  - id: e2
+    title: Rank four relationships by what they guarantee
+    level: L2
+    objectives: [OBJ-B06.2.3]
+    kind: ordering
+    prompt: >-
+      Order `Depends`, `Pre-Depends`, `Recommends` and `Suggests` from strongest
+      guarantee to weakest, and for each say what would have to be true for
+      software to break because of it.
+    answer: >-
+      - **`Pre-Depends`** — present and configured *before unpacking begins*.
+        Nothing breaks from relying on it; it also makes the dependency
+        effectively unremovable.
+
+
+      - **`Depends`** — present and configured before this package is configured.
+        Also safe to rely on.
+
+
+      - **`Recommends`** — installed by default, guarantees nothing. Software
+        breaks the moment the machine was built with `--no-install-recommends`,
+        which is standard practice for container images.
+
+
+      - **`Suggests`** — never installed automatically. Anything relying on it
+        breaks by default rather than by exception.
+
+
+      The dividing line is between the second and third: **only the top two are
+      guarantees.**
+    explanation: >-
+      The ordering is easy and the failure modes are the exercise. `Suggests` is
+      harmless in practice precisely *because* it never installs — nobody
+      accidentally builds on it, because it is never there to build on.
+
+
+      `Recommends` is dangerous for the opposite reason. It is present on every
+      machine anyone develops on, so code written against it works everywhere the
+      author looked, and the failure appears later on a machine built by
+      somebody following good advice.
+
+  - id: e3
+    title: Explain a 16-to-162 ratio to a sceptical reviewer
+    level: L2
+    objectives: [OBJ-B06.2.4]
+    kind: short_answer
+    prompt: >-
+      A reviewer sees that your image installs 16 packages and contains 162, and
+      asks you to remove the 146 that were not requested. What do you say, and
+      what would you actually do to make the image smaller?
+    answer: >-
+      *They cannot be removed, because they are requirements rather than extras.
+      The 146 are the dependency closure of the 16 — computed at install time,
+      not added by accident. `apt-get -s remove` on any of them shows what would
+      go with it, and in most cases the answer includes something we asked for.*
+
+
+      *The way to a smaller image is to ask for less.* `gcc` alone pulls in about
+      38 packages, so if the compiler is only needed to build the application,
+      the fix is a multi-stage build that leaves it behind. `apt-mark showmanual`
+      is the list to argue about; the other 146 follow from it arithmetically.
+
+
+      *And it is worth separating the two concerns:* if the reviewer's real
+      worry is attack surface rather than size, they are right to raise it — but
+      the answer is the same. The closure is the surface, and it only shrinks by
+      requesting less.
+    explanation: >-
+      The reviewer's instinct is sound and their proposed action is impossible,
+      which is a common shape and worth handling without dismissing them.
+
+
+      The useful move is redirecting attention to the manual list, because that
+      is the only part anybody controls. Everything else is a consequence, and
+      arguing about consequences instead of decisions is how image-size work
+      turns into months of no progress.
+
+  - id: e4
+    title: Predict four removals
+    level: L2
+    objectives: [OBJ-B06.2.5]
+    kind: interpretation
+    prompt: >-
+      On a Debian system, predict the outcome of each and give the mechanism:
+
+
+      1. `apt-get -s remove openssh-client`
+
+      2. `apt-get -s remove binutils` (with `gcc` installed)
+
+      3. `apt-get -s remove bash`
+
+      4. `apt-get -s remove libc6`
+    answer: >-
+      1. **One package, exit 0.** A leaf — things it needs, nothing needs it.
+
+
+      2. **Three packages, exit 0.** A cascade: `binutils` is the assembler and
+         linker, so `gcc` and `gcc-14` go with it. A compiler that cannot
+         assemble or link is not a compiler, and the packaging says so.
+
+
+      3. **One package, exit 0, with a loud warning.** `bash` is `Essential`, so
+         the solver produces a plan and shouts; performing it needs
+         `--allow-remove-essential`. It is a **policy** flag, and policy can be
+         overridden.
+
+
+      4. **Refused, exit 100.** Things `Pre-Depend` on `libc6`, so the solver
+         reaches two contradictory conclusions. This is not policy — there is no
+         valid end state, and no flag reaches one.
+    explanation: >-
+      Cases 3 and 4 look the same from a distance and are different mechanisms,
+      which is the point of the exercise. **A rule you are allowed to break is
+      not the same as a graph with no solution**, and confusing them leads people
+      to go looking for a force flag that does not exist.
+
+
+      Case 2 is the reminder that cascades are not predictable from names. You
+      would not guess that removing the linker removes the compiler until you
+      simulate it — which costs nothing, needs no root, and is therefore the
+      habit worth building.
+
+  - id: e5
+    title: Write the outside-the-archive register
+    level: L2
+    objectives: [OBJ-B06.2.8]
+    kind: short_answer
+    prompt: >-
+      You have inherited a fleet with no documentation. Produce the list of
+      software the distribution is not patching, and say what each entry needs
+      beside it.
+    answer: >-
+      **How to produce it**, since it cannot be read from any single place:
+
+
+      ```bash
+      # binaries no package owns
+      for f in /usr/local/bin/* /usr/local/sbin/* /opt/*/bin/*; do
+        [ -e "$f" ] || continue
+        dpkg -S "$(readlink -f "$f")" >/dev/null 2>&1 || echo "unowned: $f"
+      done
+
+      # packages from outside the distribution archive
+      apt-cache policy $(dpkg-query -W -f='${Package}\n') 2>/dev/null |
+        grep -B2 -v 'debian.org'
+
+      # language package managers, each its own inventory
+      pip list --format=freeze; npm ls -g --depth=0
+      ```
+
+
+      **What each entry needs beside it:**
+
+
+      ```text
+      what           acme-agent 4.2.1
+      how it arrived curl | sh, from the 2023 fleet build runbook
+      owner          <a named person, not a team alias>
+      how to patch   re-run the vendor installer; no package upgrade path
+      how we would   vendor mailing list — nothing on the machine will tell us
+        find out
+      what it can    runs as root, reads /etc/acme/key, egress to the vendor
+        reach
+      ```
+    explanation: >-
+      The generation is mechanical and the columns are the exercise. Three of
+      them are the ones people omit.
+
+
+      **"How we would find out"** matters because an unowned package sends no
+      signal — there is no `apt-get upgrade` that surfaces it, so somebody has to
+      be subscribed to something. If that answer is blank, the entry is unpatched
+      by default rather than by decision.
+
+
+      **"What it can reach"** turns an inventory into a risk assessment. An
+      unpatched agent running as root with credentials and network egress is a
+      different item from an unpatched CLI tool somebody uses interactively.
+
+
+      And **the owner must be a person**, because the failure this register exists
+      to prevent is precisely the one where the responsible party left and nobody
+      inherited the obligation.

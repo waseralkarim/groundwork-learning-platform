@@ -1,0 +1,241 @@
+topic: topic.certificates-and-tls
+
+exercises:
+  - id: e1
+    title: What the padlock does and does not say
+    level: L1
+    objectives: [OBJ-A04.3.1]
+    kind: short_answer
+    prompt: >-
+      A colleague says a site is safe because it has a valid certificate and a
+      padlock. List what the certificate actually establishes and what it does
+      not, and give the single sentence you would use to correct them.
+    answer: >-
+      **Establishes:** that a CA the browser trusts vouched for this hostname
+      being bound to this public key; that the server holds the matching private
+      key, proved by signing the handshake; and that the traffic to it is
+      encrypted and tamper-evident.
+
+
+      **Does not establish:** that the operator is honest, that the site is not
+      phishing, that the company is the one you meant, that the data is handled
+      well, or that the software behind it is secure. Most certificates are
+      domain-validated — proof of control over a hostname, obtainable free in
+      minutes, with no check on the organisation at all.
+
+
+      **The sentence:** *the padlock means nobody else is reading this
+      connection; it says nothing about who is at the other end of it.*
+    explanation: >-
+      Phishing sites overwhelmingly have valid certificates now, because
+      certificates became free and automatic — which was the right change, and it
+      removed whatever weak signal the padlock once carried.
+
+
+      The distinction is worth being able to state crisply, because it comes up
+      with non-engineers, and the useful version is short. Confidentiality of the
+      channel and trustworthiness of the destination are different questions, and
+      TLS only answers the first.
+
+  - id: e2
+    title: Read four certificates from their fields
+    level: L1
+    objectives: [OBJ-A04.3.2]
+    kind: interpretation
+    prompt: >-
+      Say what is wrong with each, if anything, for a server at
+      `api.example.com`:
+
+
+      1. `Subject: CN=api.example.com`, SAN: `DNS:api.example.com`,
+         `CA:FALSE`, valid 2026-01-01 to 2027-01-01
+
+      2. `Subject: CN=api.example.com`, no SAN extension, `CA:FALSE`, in date
+
+      3. `Subject: CN=api.example.com`, SAN: `DNS:*.example.com`, `CA:FALSE`,
+         in date
+
+      4. `Subject: CN=api.example.com`, SAN: `DNS:api.example.com`,
+         `CA:TRUE`, in date
+    answer: >-
+      1. **Correct.** Nothing wrong.
+
+
+      2. **No SAN.** OpenSSL and curl accept it by falling back to the CN;
+         browsers reject it. Green monitoring, complaining users. Reissue with a
+         SAN.
+
+
+      3. **Works, and worth questioning.** `*.example.com` matches
+         `api.example.com` — one level only. It does **not** match
+         `example.com` itself, nor `a.b.example.com`. A wildcard also means one
+         private key serves every subdomain, so compromising the least important
+         service compromises all of them.
+
+
+      4. **`CA:TRUE` on a leaf is a serious finding.** Whoever holds that private
+         key can issue certificates for *any* name, and clients trusting the
+         chain would accept them. Revoke and reissue with `CA:FALSE`.
+    explanation: >-
+      Item 4 is the one that should stop a review. It is not a hypothetical
+      misconfiguration — it is issued by signing without `-extfile`, or with a
+      CA-profile template applied to a server certificate, and it converts a
+      single service into a certificate authority inside your trust boundary.
+
+
+      Item 3 is the judgement call. Wildcards are convenient and concentrate
+      risk, and the matching rules surprise people: the bare domain is not
+      covered, which is why so many sites carry both `example.com` and
+      `*.example.com` in one SAN list.
+
+  - id: e3
+    title: Decide what each fix actually fixes
+    level: L2
+    objectives: [OBJ-A04.3.5]
+    kind: ordering
+    prompt: >-
+      Match each fault to the one remediation that addresses it, and say what the
+      other remediations would do instead:
+
+
+      Faults: (a) code 10, (b) code 18 on an internal service, (c) code 20,
+      (d) code 62, (e) no SAN.
+
+
+      Remediations: renew; add the CA to the client trust store; serve the
+      intermediate; reissue with the right names; `--insecure`.
+    answer: >-
+      - **(a) code 10 → renew.** And automate it; a certificate a human renews is
+        one that eventually is not renewed.
+
+      - **(b) code 18 internal → add the CA to the client trust store.** This is
+        the correct answer for internal services, and it trusts *that* CA rather
+        than abandoning verification.
+
+      - **(c) code 20 → serve the intermediate.** Leaf first, then intermediate.
+        The client can carry it instead, but that is a workaround applied to
+        every client forever.
+
+      - **(d) code 62 → reissue with the right names,** or connect by a name
+        already in the SAN.
+
+      - **(e) no SAN → reissue.** Nothing else touches it, and no verification
+        you run with OpenSSL or curl will even report it.
+
+
+      **`--insecure` fixes none of them.** It makes all five disappear by
+      accepting any certificate from anyone on that connection, permanently. The
+      traffic stays encrypted — to whoever answered, which is precisely the
+      assurance that was doing the work.
+    explanation: >-
+      The point of the exercise is how little the five fixes have in common.
+      Renewing a hostname mismatch achieves nothing; adding an intermediate does
+      not help an expired certificate. Because the symptom is always some version
+      of "certificate error", the temptation is to reach for the one action that
+      resolves every symptom — and that action removes the control rather than
+      repairing it.
+
+
+      Note also that four of the five are server-side and take roughly as long as
+      typing `-k`.
+
+  - id: e4
+    title: Explain a contradictory report
+    level: L2
+    objectives: [OBJ-A04.3.6]
+    kind: interpretation
+    prompt: >-
+      Two reports arrive the same morning about `shop.example.com`:
+
+
+      - The synthetic monitor: `HTTP 200, TLS OK` every minute for a week.
+
+      - Support: users on Chrome and Safari see "Your connection is not private".
+
+
+      Neither team can reproduce the other's result. Give the two most likely
+      causes and the single command that distinguishes them.
+    answer: >-
+      **Most likely: no Subject Alternative Name.** The monitor almost certainly
+      uses curl or an OpenSSL-based client, which falls back to the Common Name.
+      Browsers have required a SAN since 2017 and reject it outright. Both
+      observations are correct.
+
+
+      **Second: a policy the monitor does not enforce** — a certificate exceeding
+      the maximum lifetime browsers now accept, a SHA-1 signature somewhere in
+      the chain, or a missing Certificate Transparency proof. Same shape: the
+      lenient verifier passes, the strict one fails.
+
+
+      **The command:**
+
+
+      ```bash
+      openssl s_client -connect shop.example.com:443 -servername shop.example.com \
+        </dev/null 2>/dev/null | openssl x509 -noout -ext subjectAltName
+      ```
+
+
+      `No extensions in certificate` is the answer. If a SAN is present and
+      correct, move to the second cause and check the chain's signature
+      algorithms and validity length.
+    explanation: >-
+      The transferable habit is to stop treating one of the two reports as
+      mistaken. When a strict client and a lenient client disagree, both are
+      usually reporting accurately and the difference is **policy** — the
+      signature mathematics is identical everywhere; what counts as an acceptable
+      name, lifetime or algorithm is a decision each verifier makes.
+
+
+      It also exposes a gap worth fixing regardless of the outcome: monitoring
+      that uses a more permissive verifier than your users will never catch this
+      class of fault. Asserting that a SAN exists and contains the hostname is a
+      one-line check that almost nobody has.
+
+  - id: e5
+    title: Specify the monitoring you would actually want
+    level: L2
+    objectives: [OBJ-A04.3.8]
+    kind: short_answer
+    prompt: >-
+      Write the certificate monitoring for a service, as five assertions. For
+      each, say which specific failure it catches that the others would miss.
+    answer: >-
+      1. **Connect to the live endpoint from outside and read the served
+         certificate's Not After.** Catches renewal that wrote a new file while
+         the process kept serving the old certificate from memory — which every
+         file-based check passes.
+
+
+      2. **Assert the chain reaches a trust anchor**, by depth or by verifying
+         against a known root bundle. Catches the missing intermediate, which
+         browsers hide and which therefore reaches you as a partner complaint.
+
+
+      3. **Assert a SAN exists and contains the hostname served.** Catches the
+         CN-only certificate, which nothing else here reports — curl and OpenSSL
+         both accept it.
+
+
+      4. **Check the whole chain's dates, not just the leaf.** Catches an
+         expiring intermediate, where the leaf looks perfectly healthy.
+
+
+      5. **Record the failure message, not only the exit status.** Catches the
+         loss of diagnosis: curl returns 60 for expiry, self-signed, unknown
+         issuer *and* hostname mismatch, so an exit status alone tells you
+         something is wrong and nothing about what.
+
+
+      Thresholds at **30 and 14 days**, because renewal frequently needs a change
+      window and a two-day warning during a freeze is an incident.
+    explanation: >-
+      Most real certificate monitoring is assertion 1 alone, often against a file
+      rather than a connection, and it catches roughly half of what goes wrong.
+
+
+      Assertions 3 and 5 are the ones almost nobody has, and they are each a
+      single line. 3 is the only thing in the list that catches a fault your
+      tooling is structurally blind to; 5 costs nothing and is the difference
+      between an alert that names the fix and one that starts an investigation.

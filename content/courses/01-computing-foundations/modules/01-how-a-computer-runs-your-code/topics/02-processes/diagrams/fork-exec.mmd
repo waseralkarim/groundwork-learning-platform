@@ -1,0 +1,8 @@
+graph TD
+    S["Shell · PID 8835"] -->|"fork()"| S2["Shell · PID 8835<br/>(parent, unchanged)"]
+    S -->|"fork()"| C["Copy of shell · PID 9012<br/>(child · returns 0)"]
+    C -->|"set up: redirect fds,<br/>change dir, drop privileges"| C2["Copy of shell · PID 9012<br/>still a shell"]
+    C2 -->|"execve('/usr/bin/ls')"| L["ls · PID 9012<br/>same PID, new program"]
+    S2 -->|"wait()"| W["blocked until<br/>the child exits"]
+    L -->|"exit(0)"| Z["exit code delivered<br/>to the waiting parent"]
+    Z --> W

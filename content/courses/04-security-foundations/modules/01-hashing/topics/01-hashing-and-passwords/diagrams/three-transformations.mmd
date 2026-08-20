@@ -1,0 +1,22 @@
+flowchart LR
+    subgraph ENC["Encoding — reversible, no secret"]
+        direction LR
+        E1["hello"] -->|base64| E2["aGVsbG8="]
+        E2 -->|base64 -d| E1
+    end
+
+    subgraph CRY["Encryption — reversible, needs the key"]
+        direction LR
+        C1["hello"] -->|"encrypt(key)"| C2["8f2a1c…"]
+        C2 -->|"decrypt(key)"| C1
+    end
+
+    subgraph HSH["Hashing — not reversible, no key"]
+        direction LR
+        H1["hello"] -->|sha256| H2["2cf24dba…"]
+        H2 -.->|"no procedure exists"| H1
+    end
+
+    ENC --> Q1["Anyone can undo it.<br/>Protects nothing."]
+    CRY --> Q2["Key holders can undo it.<br/>Protects confidentiality."]
+    HSH --> Q3["Nobody can undo it.<br/>Protects nothing —<br/>it identifies."]

@@ -1,0 +1,308 @@
+id: lab.count-the-domains
+topic: topic.regions-and-failure-domains
+title: Census the failure domains, not the replicas
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A05.3.1, OBJ-A05.3.2]
+
+intro: >-
+  Topology alpha in /tmp/topologies is described by its owners as "three
+  replicas, three database nodes, fully redundant". It has three of everything
+  and one of what matters.
+
+
+  You will take a census of its failure domains — the same "what shares a fate"
+  question as A04.4's blast radius, asked about infrastructure — and then read a
+  real incident where a service went down during an outage in a zone it was not
+  running in.
+
+setup:
+  - /opt/lab/seed-domains.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/topologies/alpha.txt. List every failure domain it spans and what
+      shares each one, then name the single event that takes it down. Save to
+      /tmp/answer-alpha.
+    hint: >-
+      Work outward: process, node, zone, region. For each, ask what goes with it.
+      The replica count is a distraction.
+    walkthrough: |
+      cat /tmp/topologies/alpha.txt
+      {
+        echo "census of alpha:"
+        echo "  process  1 container each - 3 of them"
+        echo "  node     ALL 3 replicas are on node-7. one node."
+        echo "  zone     all 3 database nodes in AZ-a, and the load balancer in AZ-a"
+        echo "  region   everything in eu-west-1"
+        echo
+        echo "so the claim 'three replicas, three database nodes' counts processes and not domains."
+        echo "  3 replicas on 1 node  = 1 node-level failure domain"
+        echo "  3 db nodes in 1 zone  = 1 zone-level failure domain"
+        echo "  1 load balancer       = 1 instance, in the same zone"
+        echo
+        echo "single event that takes it down: LOSING AZ-a. that removes the load balancer, all three database nodes and their quorum. node-7 failing also takes all three application replicas at once, which is a second single event."
+        echo
+        echo "counting replicas told me nothing. counting domains gave two single points of failure that the replica count actively concealed."
+      } > /tmp/answer-alpha
+      cat /tmp/answer-alpha
+    verify:
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "(?i)node-7"
+        describe: You found that all replicas share one node
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "(?i)AZ-a"
+        describe: And that the database and load balancer share one zone
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "(?i)counting replicas|not domains"
+        describe: And that the replica count concealed both
+
+  - id: s2
+    instruction: >-
+      Write the domain table for the general case to /tmp/answer-domains — every
+      level from process to global, what shares each, and which two levels are
+      usually left off.
+    hint: >-
+      There are levels above region. Think about what you depend on that is not
+      scoped to a region at all.
+    walkthrough: |
+      {
+        printf '%-10s %-42s %s\n' DOMAIN "WHAT SHARES IT" "BLIND SPOT"
+        printf '%-10s %-42s %s\n' process "one container" "-"
+        printf '%-10s %-42s %s\n' node "every pod scheduled there" "no anti-affinity set"
+        printf '%-10s %-42s %s\n' rack "nodes sharing power and a switch" "invisible from the API"
+        printf '%-10s %-42s %s\n' zone "everything in that facility" "a single-zone dependency"
+        printf '%-10s %-42s %s\n' region "every zonal service + the control plane" "the whole account"
+        printf '%-10s %-42s %s\n' provider "everything you run" "one console, one identity"
+        printf '%-10s %-42s %s\n' global "DNS, certificate authorities, registries" "never enumerated"
+        echo
+        echo "the two usually left off are PROVIDER and GLOBAL. nobody lists their dns registrar, their certificate authority or their container registry as dependencies, and all three are required to serve or to deploy."
+        echo "RACK is the other one worth knowing about: it is invisible from the api, which makes 'different nodes' less independent than it looks. part of what a zone abstraction is buying is not having to reason about it."
+      } > /tmp/answer-domains
+      cat /tmp/answer-domains
+    verify:
+      - type: file_matches
+        path: /tmp/answer-domains
+        pattern: "(?i)rack"
+        describe: Your table includes the rack level
+      - type: file_matches
+        path: /tmp/answer-domains
+        pattern: "(?i)global"
+        describe: And the levels above region
+      - type: file_matches
+        path: /tmp/answer-domains
+        pattern: "(?i)never enumerated|left off"
+        describe: And you identified which are routinely missed
+
+  - id: s3
+    instruction: >-
+      Read /tmp/az-incident.txt. Explain how a service with replicas in two
+      healthy zones served no traffic, and save to /tmp/answer-incident.
+    hint: >-
+      Follow the timeline. The replicas were healthy — something else decided
+      they were not.
+    walkthrough: |
+      cat /tmp/az-incident.txt
+      {
+        echo "the replicas in 1a and 1c were healthy and serving nothing, because the LOAD BALANCER had marked every target unhealthy."
+        echo
+        echo "the health check calls an endpoint that reads from the vault cluster, and the vault cluster is single-AZ in 1b - the zone that failed."
+        echo "so every replica, in every zone, failed its readiness check simultaneously. the load balancer did exactly what it is supposed to do with unhealthy targets and removed all of them."
+        echo
+        echo "the shape: N replicas each depending on ONE instance of something else. the composite availability is not the replicas' - it is the vault's, because the vault is in series with all of them."
+        echo "replicas across three zones with a single-zone dependency is a single-zone system wearing three copies."
+        echo
+        echo "and the specific rule this teaches: ANYTHING ON A HEALTH CHECK PATH IS A HARD DEPENDENCY OF THE WHOLE SERVICE. health checks get written casually and they have the power to remove every replica at once."
+        echo
+        echo "60 minutes of total user-facing impact from a facility we did not run in."
+      } > /tmp/answer-incident
+      cat /tmp/answer-incident
+    verify:
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: "(?i)health check"
+        describe: You identified the health check as the mechanism
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: "(?i)vault"
+        describe: And the single-zone dependency behind it
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: "(?i)in series"
+        describe: And that a shared dependency is in series with every replica
+
+  - id: s4
+    instruction: >-
+      Compute the point directly. Compare the availability of three replicas
+      treated as parallel, against the same three with one shared single-zone
+      dependency. Save to /tmp/answer-shared-math.
+    hint: >-
+      Model the replicas as parallel at 0.995 each, then put a single 0.99
+      dependency in series with the result.
+    walkthrough: |
+      {
+        echo -n "three replicas in parallel, 0.995 each:          "
+        /tmp/avail parallel 0.995 0.995 0.995
+        echo
+        echo -n "the same three, plus one shared dependency at 0.99: "
+        /tmp/avail series 0.999999875 0.99
+        echo
+        echo "the redundancy produced better than five nines and the shared dependency threw it away. the composite is essentially the dependency's own availability, because one component in series with a very good parallel group dominates completely."
+        echo
+        echo "that is why 'how many replicas' is the wrong question. the answer is decided by the least available thing that all of them need, and adding replicas does not move it at all."
+      } > /tmp/answer-shared-math
+      cat /tmp/answer-shared-math
+    verify:
+      - type: file_matches
+        path: /tmp/answer-shared-math
+        pattern: "99\\.99"
+        describe: You computed the parallel group's availability
+      - type: file_matches
+        path: /tmp/answer-shared-math
+        pattern: "98\\.99"
+        describe: And that the shared dependency dominates the result
+      - type: file_matches
+        path: /tmp/answer-shared-math
+        pattern: "(?i)least available|dominates|threw it away"
+        describe: And drew the conclusion about which component decides
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-fix what you would change about the incident's
+      architecture, in priority order, and which change is cheapest.
+    hint: >-
+      There are two independent problems: where the vault is, and what the health
+      check does.
+    walkthrough: |
+      {
+        echo "1. MAKE THE HEALTH CHECK LOCAL. a readiness probe should answer 'can this replica serve' and nothing else - no remote calls, no vault, no database. this is the cheapest change by a wide margin, it is a few lines, and on its own it converts a total outage into a partial one where only the replicas in 1b are lost."
+        echo
+        echo "2. spread the vault across three zones. it is a dependency of every replica, so it needs at least the availability of the thing depending on it. a single-zone dependency of a three-zone service sets the whole service's availability."
+        echo
+        echo "3. enumerate every dependency on a request or health path and check each one's failure domain. the vault was found at 10:05, 53 minutes in, because nobody had a list."
+        echo
+        echo "4. test it: cordon every node in one zone and see what happens. this exact fault would have been found in a half day of work, in business hours, with nobody paged."
+        echo
+        echo "the cheapest is first and would have had the largest effect, which is the usual shape - the expensive architectural change is not where the value is."
+      } > /tmp/answer-fix
+      cat /tmp/answer-fix
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?i)local"
+        describe: You proposed making the health check local
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?i)three zones|spread the vault"
+        describe: And spreading the single-zone dependency
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?i)cordon|test"
+        describe: And a test that would have found it beforehand
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?i)cheapest"
+        describe: And identified which change gives the most for the least
+
+solution: >-
+  **Alpha's census.**
+
+
+  ```text
+  process  3 containers
+  node     ALL 3 replicas on node-7          ← one domain
+  zone     all 3 DB nodes + the LB in AZ-a   ← one domain
+  region   everything in eu-west-1
+  ```
+
+
+  "Three replicas, three database nodes, fully redundant" counts *processes*.
+  Counting *domains* gives one node and one zone, and therefore two separate
+  single events that take the whole thing down: node-7 failing, or AZ-a failing.
+
+
+  The replica count did not merely fail to reveal that — it actively concealed
+  it, by supplying a number that sounds like redundancy.
+
+
+  **The domain table**, with the levels people miss:
+
+
+  ```text
+  process   one container
+  node      every pod scheduled there        blind spot: no anti-affinity
+  rack      nodes sharing power and a switch blind spot: invisible from the API
+  zone      everything in that facility      blind spot: a single-zone dependency
+  region    every zonal service + control plane
+  provider  everything you run
+  global    DNS, certificate authorities, registries   ← never enumerated
+  ```
+
+
+  **Provider** and **global** are routinely left off entirely — nobody lists a
+  DNS registrar, a certificate authority or a container registry as a
+  dependency, and all three are required to serve or to deploy. **Rack** is worth
+  knowing about because it is invisible to you, which makes "different nodes"
+  less independent than it looks; not having to reason about it is part of what
+  a zone abstraction buys.
+
+
+  **The incident.**
+
+
+  Replicas in two healthy zones served nothing because the load balancer had
+  marked **every** target unhealthy. The health check called an endpoint that
+  read from the vault cluster, and the vault was single-AZ in the zone that
+  failed.
+
+
+  So every replica in every zone failed its readiness check simultaneously, and
+  the load balancer did exactly what it should with unhealthy targets.
+
+
+  The shape is the one to recognise: **N replicas each depending on one instance
+  of something else.** The composite is not the replicas' availability — it is
+  the vault's, because the vault is in series with all of them. Replicas across
+  three zones with a single-zone dependency is a single-zone system wearing three
+  copies.
+
+
+  The arithmetic makes it stark:
+
+
+  ```text
+  three replicas in parallel at 0.995        99.999988%
+  the same three + one shared dep at 0.99    98.999988%
+  ```
+
+
+  Five nines of redundancy, discarded entirely by one component in series. Adding
+  replicas moves that number not at all.
+
+
+  **And the rule worth carrying:** *anything on a health check path is a hard
+  dependency of the whole service.* Health checks are written casually and they
+  have the power to remove every replica at once.
+
+
+  **The fixes, cheapest first** — which is also most-effective first, as it
+  usually is:
+
+
+  1. **Make the readiness probe local.** A few lines. On its own it turns a total
+     outage into losing only the replicas in the failed zone.
+
+  2. **Spread the vault across three zones.** A dependency of everything needs at
+     least the availability of the thing depending on it.
+
+  3. **Enumerate every dependency on a request or health path**, with its failure
+     domain. The vault was found 53 minutes in because nobody had the list.
+
+  4. **Cordon every node in one zone and watch.** Half a day, in business hours,
+     nobody paged — and it finds this exact fault.

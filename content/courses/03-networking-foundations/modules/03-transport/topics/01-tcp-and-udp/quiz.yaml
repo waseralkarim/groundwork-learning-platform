@@ -1,0 +1,481 @@
+id: quiz.tcp-and-udp
+topic: topic.tcp-and-udp
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.3.1]
+    stem: What does IP alone promise about a packet?
+    options:
+      - id: a
+        text: That it will be attempted — it may be lost, duplicated or reordered, and nobody is told
+        correct: true
+      - id: b
+        text: That it will arrive, eventually, possibly out of order
+        note: >-
+          Arrival is not promised at all. A queue filling anywhere along the
+          path discards it silently.
+      - id: c
+        text: That it will arrive intact or an error will be returned to the sender
+        note: >-
+          There is no error path. ICMP messages exist and are advisory,
+          frequently filtered, and not delivered to the application.
+      - id: d
+        text: That packets sent together will arrive together
+        note: >-
+          Two packets may take different paths and arrive in either order, or
+          only one may arrive.
+    explanation: >-
+      IP is best-effort: it will try. Everything above it exists to deal with the
+      consequences. UDP adds ports and a checksum and nothing else; TCP adds
+      connections, ordering, retransmission, flow control and congestion control
+      — and each of those costs something, which is why UDP still exists.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.3.1]
+    stem: What is the minimum a transport protocol adds above IP?
+    options:
+      - id: a
+        text: Ports, so a packet reaches a socket rather than just a machine
+        correct: true
+      - id: b
+        text: Reliability, since that is the point of a transport protocol
+        note: >-
+          UDP is a transport protocol and provides none. Reliability is optional
+          above the minimum.
+      - id: c
+        text: Encryption of the payload
+        note: >-
+          Neither TCP nor UDP encrypts anything. That is TLS or DTLS, a layer
+          above.
+      - id: d
+        text: Fragmentation of large messages
+        note: >-
+          IP handles fragmentation. TCP avoids it by segmenting to the path MTU;
+          UDP mostly leaves it to IP.
+    explanation: >-
+      An IP address identifies a machine, and a machine runs many processes.
+      Ports are what make delivery to a particular socket possible, and they are
+      the one thing both transport protocols provide. Everything else TCP does is
+      optional in the sense that UDP demonstrates a working protocol without it.
+
+  - id: q3
+    type: multi_choice
+    level: L1
+    objectives: [OBJ-A03.3.2]
+    stem: Which of these does TCP provide and UDP does not? Select all that apply.
+    options:
+      - id: a
+        text: Retransmission of lost data
+        correct: true
+      - id: b
+        text: Delivery in the order sent
+        correct: true
+      - id: c
+        text: Flow control, so a fast sender cannot overwhelm a slow receiver
+        correct: true
+      - id: d
+        text: Preservation of message boundaries
+        note: >-
+          The opposite: TCP is a byte stream with no boundaries, and UDP
+          preserves them. One sendto becomes one recvfrom.
+    explanation: >-
+      The three correct answers are TCP's guarantees, and each costs something —
+      retransmission turns loss into latency, ordering causes head-of-line
+      blocking, flow control bounds throughput by window over round-trip time.
+      Message boundaries are the one thing UDP has and TCP does not, which is why
+      every TCP protocol has to define its own framing.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.3.2]
+    stem: >-
+      An application writes "HELLO" then "WORLD" on a TCP connection. What may
+      the receiver read?
+    options:
+      - id: a
+        text: Any grouping of those ten bytes in order — one read, two, or five
+        correct: true
+      - id: b
+        text: Exactly two reads, matching the two writes
+        note: >-
+          That is UDP's behaviour. TCP has no concept of a message boundary at
+          all.
+      - id: c
+        text: One read of ten bytes, always, because TCP buffers
+        note: >-
+          Often what happens and not guaranteed. Segmentation depends on timing,
+          MTU and the sender's buffering.
+      - id: d
+        text: The bytes may also arrive out of order under load
+        note: >-
+          Order is one thing TCP does guarantee. Grouping is what it does not.
+    explanation: >-
+      TCP promises the bytes and their order, and nothing about how they are
+      grouped. This is why every protocol built on TCP must define its own
+      framing — a length prefix, a delimiter, or a terminator. HTTP uses
+      `Content-Length` or chunked encoding for exactly this reason, and "it
+      worked in testing" bugs often come from assuming one write equals one read.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.3]
+    stem: Why does `ss` show UNCONN for a bound UDP socket rather than LISTEN?
+    options:
+      - id: a
+        text: LISTEN means waiting for a connection to be established, and UDP has none to establish
+        correct: true
+      - id: b
+        text: Because the socket has not received any datagrams yet
+        note: >-
+          It stays UNCONN after receiving datagrams. Receiving creates no state
+          at all.
+      - id: c
+        text: Because UDP sockets are not really bound until traffic arrives
+        note: >-
+          The bind happens immediately and is what makes the port unavailable to
+          anything else on that protocol.
+      - id: d
+        text: It is a display convention; the two states mean the same thing
+        note: >-
+          They describe genuinely different situations, and the difference
+          determines what a server can know about its clients.
+    explanation: >-
+      LISTEN describes a socket waiting for a connection. UDP has no connections,
+      so a bound socket is simply unconnected — a local address and port, no
+      peer, no history. The practical consequence is that a TCP server knows how
+      many clients it has and when each arrived, and a UDP server knows only that
+      datagrams keep turning up.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.3]
+    stem: >-
+      Can a TCP socket and a UDP socket both bind port 9400 on the same address?
+    options:
+      - id: a
+        text: Yes — the protocol is part of the socket's identity, so they do not conflict
+        correct: true
+      - id: b
+        text: No — a port may be bound only once per machine
+        note: >-
+          Uniqueness is per protocol and per address, not per machine. DNS relies
+          on binding both.
+      - id: c
+        text: Only if the same process owns both
+        note: >-
+          Different processes may hold TCP 9400 and UDP 9400 independently.
+      - id: d
+        text: Only for ports above 1024
+        note: >-
+          The privileged range affects who may bind, not whether the two
+          protocols conflict.
+    explanation: >-
+      A socket is identified by protocol, address and port together, so TCP 9400
+      and UDP 9400 are different sockets entirely. DNS uses both for the same
+      service — UDP for ordinary queries and TCP for responses too large for a
+      datagram, or for zone transfers.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.4]
+    stem: What does `connect()` on a UDP socket do?
+    options:
+      - id: a
+        text: Records a peer locally, sends no packets, and makes the kernel discard datagrams from anyone else
+        correct: true
+      - id: b
+        text: Performs a handshake with the peer to establish a session
+        note: >-
+          There is no UDP handshake. Not one byte leaves the machine.
+      - id: c
+        text: Nothing — it is accepted for API compatibility and has no effect
+        note: >-
+          It has two real effects: send() becomes usable, and incoming datagrams
+          are filtered by peer.
+      - id: d
+        text: Reserves the peer's port so no other process can talk to it
+        note: >-
+          Nothing on the peer is affected in any way. It has no idea.
+    explanation: >-
+      It is a purely local operation. Two things change: the socket may use
+      `send()` since the destination is fixed, and — the consequential one — the
+      kernel delivers only datagrams from that peer, discarding everything else
+      before the application sees it. A server that connects to its first client
+      silently ignores every other client from then on.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.4]
+    stem: >-
+      A UDP server receives from one client and nothing from any other, though
+      all senders report success. What do you check?
+    options:
+      - id: a
+        text: '`ss -uan` — a socket in ESTAB with a specific peer is connected and filtering'
+        correct: true
+      - id: b
+        text: The senders' logs, since they must be misconfigured
+        note: >-
+          They report success because sendto succeeded, which it does regardless
+          of what happens at the far end.
+      - id: c
+        text: The firewall, since it is selectively blocking sources
+        note: >-
+          Possible in principle, and the socket state distinguishes the two in
+          one command — so check that first.
+      - id: d
+        text: '`ss -uln`, to confirm the socket is still bound'
+        note: >-
+          Worth doing and it will look fine: the socket is bound and receiving.
+          `-l` hides the peer, which is the field that matters.
+    explanation: >-
+      `ss -uan` shows the peer. `UNCONN` with a wildcard peer accepts from
+      anyone; `ESTAB` with a specific address and port is connected and
+      discarding the rest. Neither end can log the problem — the senders
+      succeeded, and the receiver never saw the discarded datagrams — so the
+      socket state is the only evidence there is.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.5]
+    stem: >-
+      A machine makes four outbound TCP connections; one is to a port with
+      nothing bound. What do the counters show?
+    options:
+      - id: a
+        text: ActiveOpens 4, AttemptFails 1
+        correct: true
+      - id: b
+        text: ActiveOpens 3, AttemptFails 1
+        note: >-
+          `ActiveOpens` counts every attempt, including the one that failed —
+          which is what makes the subtraction meaningful.
+      - id: c
+        text: ActiveOpens 4, PassiveOpens 4
+        note: >-
+          `PassiveOpens` counts accepted connections. Only three were accepted,
+          and only if the listener was on this same machine.
+      - id: d
+        text: ActiveOpens 4, EstabResets 1
+        note: >-
+          `EstabResets` counts established connections later reset. This one
+          never became established.
+    explanation: >-
+      `ActiveOpens` counts connections this machine initiated, all four.
+      `AttemptFails` counts those that failed, one. If the listener is on the
+      same machine, `PassiveOpens` is three and
+      `ActiveOpens − AttemptFails = PassiveOpens` holds exactly — which is a
+      useful check that you are reading the fields correctly.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.5]
+    stem: >-
+      Which counter best distinguishes "the network is losing packets" from "the
+      application is slow"?
+    options:
+      - id: a
+        text: '`RetransSegs` as a proportion of `OutSegs`'
+        correct: true
+      - id: b
+        text: '`CurrEstab`, the number of connections open right now'
+        note: >-
+          A capacity and concurrency signal. It says nothing about whether
+          packets are being lost.
+      - id: c
+        text: '`PassiveOpens`, the rate of accepted connections'
+        note: >-
+          Throughput of new connections, which tracks demand rather than
+          quality.
+      - id: d
+        text: '`OutRsts`, the resets this machine sent'
+        note: >-
+          Usually connections to ports with nothing bound — a configuration or
+          scanning signal rather than a loss one.
+    explanation: >-
+      Retransmissions happen because data was not acknowledged, which means it
+      was lost. As a proportion of segments sent it is one of the very few
+      metrics that separates a network problem from an application one — a
+      rising ratio means the path is dropping packets, and a flat one means it is
+      not, whatever anyone is asserting in the incident channel.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.6]
+    stem: >-
+      You send a UDP datagram to a port with nothing bound. What does the sender
+      see?
+    options:
+      - id: a
+        text: Success — `sendto()` returns normally and nothing reports the failure
+        correct: true
+      - id: b
+        text: An immediate error, as with TCP connection refused
+        note: >-
+          That is TCP's behaviour, delivered by a reset on an established
+          handshake. UDP has no handshake to fail.
+      - id: c
+        text: A timeout after several seconds
+        note: >-
+          Nothing is being waited for. `sendto()` returns as soon as the kernel
+          accepts the datagram.
+      - id: d
+        text: An ICMP error delivered to the application
+        note: >-
+          An ICMP port-unreachable may be sent, and an unconnected socket
+          generally never sees it — and `sendto()` has already returned.
+    explanation: >-
+      The receiving kernel notices and counts it in `Udp: NoPorts`, and may emit
+      an ICMP port-unreachable message. But `sendto()` returned when the kernel
+      accepted the datagram for sending, long before delivery, and there is no
+      connection on which to report a later failure. A successful UDP send proves
+      the kernel accepted the datagram and nothing else.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.6]
+    stem: Why can a readiness probe not meaningfully test a UDP service?
+    options:
+      - id: a
+        text: A UDP send succeeds whether or not anything is listening, so there is nothing to check
+        correct: true
+      - id: b
+        text: Kubernetes probes do not support UDP as a protocol
+        note: >-
+          True of the httpGet and tcpSocket probe types, and it is a consequence
+          of this rather than the reason.
+      - id: c
+        text: UDP is too unreliable to give a consistent answer
+        note: >-
+          Reliability is not the issue. The issue is that failure produces no
+          signal at all.
+      - id: d
+        text: Probes require a connection, and UDP is connectionless
+        note: >-
+          Closer, and the deeper reason is that even a datagram exchange gives
+          the sender no feedback unless the application replies.
+    explanation: >-
+      There is no transport-layer evidence to gather: `nc -u -z` almost always
+      succeeds regardless of what is on the far side. So a UDP service must be
+      checked at the application layer — send something the service is required
+      to answer and wait for the answer. DNS is checkable because a query has a
+      reply; StatsD is not, because nothing ever replies, which is why UDP
+      metrics pipelines are so often broken for weeks unnoticed.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.7]
+    stem: >-
+      A team switches a metrics pipeline from UDP to TCP to stop losing
+      datagrams. What is the main risk?
+    options:
+      - id: a
+        text: Backpressure — a slow collector can now block or OOM the application
+        correct: true
+      - id: b
+        text: TCP will be slower, so metrics will arrive late
+        note: >-
+          Latency rises somewhat, and it is not the risk that turns a monitoring
+          problem into an outage.
+      - id: c
+        text: TCP cannot carry the message volume a metrics pipeline produces
+        note: >-
+          TCP handles far higher volumes routinely. Throughput is not the
+          concern.
+      - id: d
+        text: Nothing significant; TCP is strictly better for this
+        note: >-
+          The loss was a deliberate design property. Removing it without adding
+          a bound moves the failure into the application.
+    explanation: >-
+      UDP's defining property is that it never blocks the sender — losing
+      datagrams *is* the chosen failure mode, and it keeps a monitoring problem
+      from becoming a production one. TCP replaces loss with backpressure: a slow
+      collector shrinks its window, the sender's buffer fills, and then `write()`
+      blocks or the queue grows until the process is OOM-killed. If loss matters,
+      fix the buffer overflow causing it, aggregate at the source, or use TCP
+      with a bounded queue and an explicit drop policy.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.8]
+    stem: >-
+      A collector is losing about 3% of incoming datagrams. The network shows no
+      loss. Where should you look first?
+    options:
+      - id: a
+        text: '`Udp: RcvbufErrors` — datagrams dropped because the receive buffer was full'
+        correct: true
+      - id: b
+        text: '`Udp: NoPorts` — datagrams arriving at an unbound port'
+        note: >-
+          Worth checking and it would usually produce total loss rather than 3%,
+          since the port is either bound or not.
+      - id: c
+        text: '`Udp: InErrors` — malformed datagrams'
+        note: >-
+          Real and rare. Checksum failures at 3% would indicate a serious
+          hardware or path problem the network monitoring would also see.
+      - id: d
+        text: The senders, which must be failing to transmit
+        note: >-
+          They would report success either way, so their view cannot
+          distinguish anything.
+    explanation: >-
+      A steady percentage that scales with load is the signature of the receiver
+      being unable to keep up: datagrams arrive correctly and are dropped because
+      the application had not read the previous ones. The loss is entirely inside
+      the receiving machine, invisible to the sender, and recorded only in
+      `RcvbufErrors`. Raising `SO_RCVBUF` — and `net.core.rmem_max` to permit it
+      — buys burst tolerance; a persistently slow reader needs to be made faster.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.3.8]
+    stem: >-
+      A metrics collector is restarted during a rolling deploy. What happens to
+      datagrams sent during the restart?
+    options:
+      - id: a
+        text: They are discarded on arrival — there is no queue and no retry
+        correct: true
+      - id: b
+        text: They are queued by the kernel and delivered when the socket reopens
+        note: >-
+          A buffer exists only while a socket is bound. With no socket there is
+          nowhere to queue anything.
+      - id: c
+        text: The senders retransmit them once the collector is back
+        note: >-
+          UDP has no retransmission, and the senders were never told anything
+          failed.
+      - id: d
+        text: They are returned to the sender as ICMP errors and retried
+        note: >-
+          An ICMP port-unreachable may be generated, is advisory, and triggers no
+          retry.
+    explanation: >-
+      A datagram arriving at a port with no socket is discarded immediately and
+      counted in `NoPorts`. There is no queue to hold it and no mechanism to
+      retry, so every collector restart loses whatever was in flight — and a slow
+      rolling restart across a collector fleet loses a proportional slice of
+      everything. It is the expected behaviour of the protocol rather than a
+      fault, and it is worth knowing before somebody reads a dip in a graph as an
+      outage.

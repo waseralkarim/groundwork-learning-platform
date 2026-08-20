@@ -1,0 +1,279 @@
+id: lab.the-handshake-in-the-open
+topic: topic.certificates-and-tls
+title: Watch a TLS handshake and name every primitive in it
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A04.3.7, OBJ-A04.3.3]
+
+intro: >-
+  TLS is usually described with a diagram nobody can check. Here you will run
+  both ends of one and read what actually happened — the chain the server sent,
+  how far the client walked it, the key exchange group, and the cipher.
+
+
+  Everything in it is a primitive you have already built. The point of the lab is
+  to name each one in the output.
+
+setup:
+  - /opt/lab/seed-tls.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Start a server with the good certificate and its intermediate, connect to
+      it verifying properly, and save the handshake summary to
+      /tmp/answer-handshake.
+    hint: >-
+      `/tmp/serve-tls <port> <cert> <key> <chain>`, then `openssl s_client
+      -connect 127.0.0.1:<port> -CAfile root.crt -verify_hostname lab.internal
+      </dev/null`. Keep the depth lines, the protocol, the cipher and the verdict.
+    walkthrough: |
+      cd /tmp/broken
+      /tmp/serve-tls 4471 good.crt good.key int.crt >/dev/null
+      openssl s_client -connect 127.0.0.1:4471 -CAfile root.crt -verify_hostname lab.internal </dev/null 2>&1 \
+        | grep -E "^depth=|Protocol *:|Cipher *:|Negotiated TLS1.3 group|Peer signature type|Verify return code" \
+        | head -10 > /tmp/answer-handshake
+      cat /tmp/answer-handshake
+    verify:
+      - type: file_matches
+        path: /tmp/answer-handshake
+        pattern: "Verify return code: 0"
+        describe: The handshake verified cleanly
+      - type: file_matches
+        path: /tmp/answer-handshake
+        pattern: "depth=2"
+        describe: And the client walked the chain to depth 2 — leaf, intermediate, root
+      - type: file_matches
+        path: /tmp/answer-handshake
+        pattern: "TLSv1\\.3"
+        describe: And negotiated TLS 1.3
+
+  - id: s2
+    instruction: >-
+      Name the primitives. For each of the four things in that output — the
+      cipher, the key exchange group, the peer signature type, and the chain —
+      write to /tmp/answer-primitives which earlier topic built it.
+    hint: >-
+      One is an AEAD mode from the encryption topic. One is Diffie–Hellman. One
+      is a signature over a digest. One is a sequence of those signatures.
+    walkthrough: |
+      {
+        grep -E "Cipher *:|Negotiated|Peer signature" /tmp/answer-handshake
+        echo
+        echo "cipher TLS_AES_256_GCM_SHA384: aes-256 in gcm, an aead mode - authenticated encryption from the encryption topic. it is what protects every byte after the handshake, and it is why a tampered tls record fails rather than decrypting to something else."
+        echo
+        echo "negotiated group X25519MLKEM768: an ephemeral key exchange - diffie-hellman, also from the encryption topic. both ends derive the same secret without transmitting it. ephemeral means the private halves are discarded afterwards, which is forward secrecy. the MLKEM768 half is a post-quantum algorithm run alongside x25519, so the exchange is safe if either one holds."
+        echo
+        echo "peer signature type: the server signed the handshake transcript with the private key matching its certificate. that is a signature over a digest, from the hashing topic. it is the step that proves the server holds the key its certificate names - certificates are public and copyable, so presenting one proves nothing without this."
+        echo
+        echo "the depth lines: the chain walk. each depth is one signature verified with the issuer public key from the level above, ending at a root already in the trust store."
+        echo
+        echo "nothing in tls is a new primitive. it is hashing, signatures, key exchange and authenticated encryption, arranged."
+      } > /tmp/answer-primitives
+      cat /tmp/answer-primitives
+    verify:
+      - type: file_matches
+        path: /tmp/answer-primitives
+        pattern: "(?i)aead|authenticated encryption"
+        describe: You identified the cipher as an authenticated mode
+      - type: file_matches
+        path: /tmp/answer-primitives
+        pattern: "(?i)diffie"
+        describe: And the group as a Diffie-Hellman key exchange
+      - type: file_matches
+        path: /tmp/answer-primitives
+        pattern: "(?i)forward secrecy"
+        describe: And named what ephemeral keys buy
+      - type: file_matches
+        path: /tmp/answer-primitives
+        pattern: "(?i)holds the key|private key matching"
+        describe: And explained what the transcript signature proves
+
+  - id: s3
+    instruction: >-
+      Break the chain and watch the verdict change. Start the same certificate on
+      a new port without its intermediate, connect, and save the comparison to
+      /tmp/answer-nochain.
+    hint: >-
+      Omit the fourth argument to `/tmp/serve-tls`. Compare the depth lines
+      against the previous run — that is where the diagnosis is.
+    walkthrough: |
+      cd /tmp/broken
+      /tmp/serve-tls 4472 good.crt good.key >/dev/null
+      {
+        echo "server sending leaf only:"
+        openssl s_client -connect 127.0.0.1:4472 -CAfile root.crt </dev/null 2>&1 \
+          | grep -E "^depth=|verify error|Verify return code" | head -6
+        echo
+        echo "same certificate, same key, same client. the only difference is that the server did not send the intermediate, so the client has a leaf whose issuer it cannot find."
+        echo "the diagnosis is in the depth lines: only depth=0 appeared, where the working handshake reached depth=2. one line of output names the fault."
+      } > /tmp/answer-nochain
+      cat /tmp/answer-nochain
+    verify:
+      - type: file_matches
+        path: /tmp/answer-nochain
+        pattern: "Verify return code: 21"
+        describe: The incomplete chain produced code 21
+      - type: file_matches
+        path: /tmp/answer-nochain
+        pattern: "num=20"
+        describe: With the underlying code 20 reported alongside it
+      - type: file_matches
+        path: /tmp/answer-nochain
+        pattern: "depth"
+        describe: And you used the depth lines as the diagnosis
+
+  - id: s4
+    instruction: >-
+      Show that the client can work around it and that this is not the fix. Add
+      the intermediate to a client bundle, reconnect to the broken server, and
+      save both outcomes with `curl` results to /tmp/answer-workaround.
+    hint: >-
+      `cat root.crt int.crt > bundle.crt` and use that as `-CAfile`. Then try
+      curl both ways, using `--resolve` so the hostname matches.
+    walkthrough: |
+      cd /tmp/broken
+      cat root.crt int.crt > bundle.crt
+      {
+        echo "openssl, client trusting root only:"
+        openssl s_client -connect 127.0.0.1:4472 -CAfile root.crt </dev/null 2>&1 | grep -m1 "Verify return code"
+        echo "openssl, client bundle including the intermediate:"
+        openssl s_client -connect 127.0.0.1:4472 -CAfile bundle.crt </dev/null 2>&1 | grep -m1 "Verify return code"
+        echo
+        echo "curl, root only:"
+        curl -sS --cacert root.crt --resolve lab.internal:4472:127.0.0.1 https://lab.internal:4472/ -o /dev/null 2>&1 | head -1
+        echo "curl rc=$?"
+        echo "curl, bundle:"
+        curl -sS --cacert bundle.crt --resolve lab.internal:4472:127.0.0.1 https://lab.internal:4472/ -o /dev/null 2>&1 | head -1
+        echo "curl rc=$?"
+        echo
+        echo "the client can compensate by carrying the intermediate itself, and that is a workaround applied per client, forever, on every client that ever talks to this server. the server sending its chain fixes it once, for everyone."
+      } > /tmp/answer-workaround
+      cat /tmp/answer-workaround
+    verify:
+      - type: file_matches
+        path: /tmp/answer-workaround
+        pattern: "Verify return code: 0"
+        describe: The client bundle containing the intermediate verified successfully
+      - type: file_matches
+        path: /tmp/answer-workaround
+        pattern: "(?i)per client|every client"
+        describe: And you identified why that is a workaround rather than a fix
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-why-browser why this fault is usually reported as
+      "works in the browser, fails everywhere else", and what that means for
+      using a browser as evidence.
+    hint: >-
+      Think about what a browser has seen before, and what a fresh curl process
+      has seen.
+    walkthrough: |
+      {
+        echo "browsers cache intermediates they have seen on other sites, and some will fetch a missing one using the authority information access extension in the leaf. so a broken chain works in the browser of anyone who has recently visited another site using the same certificate authority - which is most people, most of the time."
+        echo
+        echo "curl, health checks, java clients and language runtimes do neither. they verify exactly what the server sent, which is why this fault shows up first in a monitoring check or a partner integration rather than in anyone's browser."
+        echo
+        echo "so 'it works in my browser' is worth nothing as evidence about a chain. it is evidence that the browser has been somewhere else. the check that means something is a fresh client with a known trust store - openssl s_client or curl - and the depth lines tell you immediately."
+      } > /tmp/answer-why-browser
+      cat /tmp/answer-why-browser
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-browser
+        pattern: "(?i)cache"
+        describe: You identified intermediate caching as the reason browsers succeed
+      - type: file_matches
+        path: /tmp/answer-why-browser
+        pattern: "(?i)worth nothing|not evidence|evidence that the browser"
+        describe: And concluded what a browser test is worth here
+
+solution: >-
+  **The handshake, and every primitive named.**
+
+
+  ```text
+  depth=2 CN=Groundwork Root CA
+  depth=1 CN=Groundwork Issuing CA
+  depth=0 CN=lab.internal
+  Negotiated TLS1.3 group: X25519MLKEM768
+  Peer signature type: rsa_pss_rsae_sha256
+  Protocol: TLSv1.3
+  Cipher: TLS_AES_256_GCM_SHA384
+  Verify return code: 0 (ok)
+  ```
+
+
+  Four things, and you built three of them in the last two topics:
+
+
+  **`TLS_AES_256_GCM_SHA384`** — AES-256 in GCM, an AEAD mode. Exactly what the
+  encryption topic said to use, and for the reason it gave: a tampered record
+  fails to decrypt rather than decrypting into something else. TLS 1.3 removed
+  every unauthenticated mode from the protocol, so the choice is no longer
+  available to get wrong.
+
+
+  **`X25519MLKEM768`** — an ephemeral key exchange. X25519 is the Diffie–Hellman
+  you ran by hand; MLKEM768 is a post-quantum algorithm run alongside it, so the
+  exchange holds if either survives. Ephemeral means the private halves are
+  discarded after the session, which is forward secrecy — traffic recorded today
+  cannot be decrypted by stealing the server's key next year.
+
+
+  **`Peer signature type`** — the server signed the handshake transcript with the
+  private key matching its certificate. A signature over a digest, from A04.1.
+  This is the step that matters most and is the least discussed: certificates are
+  **public** and anyone can copy one, so presenting a certificate proves nothing.
+  Signing the transcript proves possession of the private key, which never leaves
+  the server. The certificate says "this name uses this key"; the signature says
+  "I hold it". Neither alone is sufficient.
+
+
+  **The `depth=` lines** — the chain walk, outward from the leaf, each level's
+  signature verified with the public key from the level above, terminating at a
+  root that was in the trust store before the connection began.
+
+
+  Nothing in TLS is a new primitive.
+
+
+  **Then the same certificate, one line of configuration different.**
+
+
+  Serving without the intermediate produced `num=20` then `Verify return code:
+  21`, and — the useful part — **only `depth=0` appeared**. The working handshake
+  reached `depth=2`. Counting depth lines diagnoses this fault in about a second,
+  before reading any error text.
+
+
+  **The workaround, and why it is not the fix.**
+
+
+  Putting the intermediate into the client's own bundle turned code 21 into code
+  0, and made `curl` succeed. That works, and it is a workaround applied per
+  client, on every client, forever — including clients belonging to other
+  organisations, which you cannot configure.
+
+
+  Serving the chain fixes it once. In nginx that is leaf then intermediate
+  concatenated into the file named by `ssl_certificate`; ACME clients write
+  exactly that as `fullchain.pem`, and pointing at `cert.pem` instead is how this
+  mistake usually arrives.
+
+
+  **And why it gets reported so strangely.**
+
+
+  Browsers cache intermediates across sites and some fetch missing ones via the
+  Authority Information Access extension. So the chain looks fine to anybody who
+  has recently visited another site from the same CA — most people — and breaks
+  for `curl`, health checks, Java clients and language runtimes, which verify
+  exactly what arrived.
+
+
+  Hence the shape of the ticket: *works in the browser, fails in the pipeline*.
+  It is not intermittent and it is not a client bug. **A browser test is not
+  evidence about a chain**; a fresh `s_client` with a known trust store is, and
+  the depth lines answer it immediately.

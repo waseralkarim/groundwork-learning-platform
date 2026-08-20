@@ -1,0 +1,357 @@
+id: lab.which-files-run
+topic: topic.environment-and-shell-startup
+title: Build the experiment that shows which startup files run
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B06.4.1, OBJ-B06.4.2]
+
+intro: >-
+  Your home directory here is a tmpfs that dies with the session, which makes it
+  the ideal place to be reckless with dotfiles.
+
+
+  You will create your own `~/.bashrc` and `~/.profile`, run bash four ways, and
+  determine by experiment exactly which files each mode reads. One of the four
+  results contradicts the summary in most documentation, and finding it yourself
+  is the point.
+
+setup:
+  - /opt/lab/seed-environment.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Find out which startup files exist on this machine before you add any, and
+      save the inventory to /tmp/answer-inventory.
+    hint: >-
+      Check the system ones under /etc and the user ones in your home directory.
+      The absence of some of them is itself informative.
+    walkthrough: |
+      {
+        echo "system startup files:"
+        for f in /etc/profile /etc/bash.bashrc /etc/environment; do
+          printf '  %-22s %s\n' "$f" "$([ -e "$f" ] && echo "present ($(wc -c < "$f") bytes)" || echo ABSENT)"
+        done
+        echo "  /etc/profile.d/        $(ls /etc/profile.d 2>/dev/null | wc -l) files"
+        echo
+        echo "user startup files in $HOME:"
+        for f in .bash_profile .bash_login .profile .bashrc; do
+          printf '  %-22s %s\n' "~/$f" "$([ -e "$HOME/$f" ] && echo present || echo ABSENT)"
+        done
+        echo
+        echo "two findings before i have run anything."
+        echo
+        echo "1. i have NO user dotfiles at all. my home is a tmpfs mounted over whatever the image had, so anything baked in there is masked. that is also why this image puts its prompt and history settings in /etc/bash.bashrc instead of ~/.bashrc - a per-user dotfile would be invisible."
+        echo
+        echo "2. /etc/environment exists and is EMPTY. it is read by PAM during login, not by any shell, and a container usually has no PAM at all - so variables put there would have no effect whatsoever. it is a popular place to configure nothing."
+      } > /tmp/answer-inventory
+      cat /tmp/answer-inventory
+    verify:
+      - type: file_matches
+        path: /tmp/answer-inventory
+        pattern: "/etc/bash.bashrc +present"
+        describe: You inventoried the system startup files
+      - type: file_matches
+        path: /tmp/answer-inventory
+        pattern: "~/.bashrc +ABSENT"
+        describe: And found you have no user dotfiles
+      - type: file_matches
+        path: /tmp/answer-inventory
+        pattern: "(?i)tmpfs|masked"
+        describe: And explained why
+      - type: file_matches
+        path: /tmp/answer-inventory
+        pattern: "(?i)PAM"
+        describe: And that /etc/environment is read by PAM rather than by shells
+
+  - id: s2
+    instruction: >-
+      Create a ~/.bashrc and a ~/.profile that each set a distinctive variable,
+      then run bash in all four modes and record which variables survive. Save
+      to /tmp/answer-matrix.
+    hint: >-
+      The four modes are login+interactive, login only, interactive only, and
+      neither — `-lic`, `-lc`, `-ic`, `-c`. Also check HISTFILE, which
+      /etc/bash.bashrc sets.
+    walkthrough: |
+      echo 'export FROM_BASHRC=yes' > ~/.bashrc
+      echo 'export FROM_PROFILE=yes' > ~/.profile
+      {
+        echo "created ~/.bashrc (sets FROM_BASHRC) and ~/.profile (sets FROM_PROFILE)"
+        echo
+        printf '%-8s %-14s %-14s %s\n' MODE ~/.profile ~/.bashrc /etc/bash.bashrc
+        for m in "-lic" "-lc" "-ic" "-c"; do
+          printf '%-8s %-14s %-14s %s\n' "$m" \
+            "$(bash $m 'echo ${FROM_PROFILE:-no}' 2>/dev/null)" \
+            "$(bash $m 'echo ${FROM_BASHRC:-no}'  2>/dev/null)" \
+            "$(bash $m 'if [ -n "${HISTFILE:-}" ]; then echo yes; else echo no; fi' 2>/dev/null)"
+        done
+        echo
+        echo "the surprise is the top-right cell. bash -lic is a LOGIN and INTERACTIVE shell, and it did NOT read ~/.bashrc."
+        echo
+        echo "so the usual summary - 'login shells read profiles, interactive shells read bashrc' - is wrong in exactly one corner. bash reads ~/.bashrc only for NON-LOGIN interactive shells."
+        echo
+        echo "and bash -c read nothing at all. no profile, no bashrc, no /etc/bash.bashrc. that is the shell every script, cron job, systemd unit and CI step runs in."
+      } > /tmp/answer-matrix
+      cat /tmp/answer-matrix
+    verify:
+      - type: file_matches
+        path: /tmp/answer-matrix
+        pattern: "-lic +yes +no"
+        describe: You found that a login interactive shell skips ~/.bashrc
+      - type: file_matches
+        path: /tmp/answer-matrix
+        pattern: "-c +no +no +no"
+        describe: And that a script's shell reads nothing at all
+      - type: file_matches
+        path: /tmp/answer-matrix
+        pattern: "(?i)non-login interactive"
+        describe: And stated the correct rule for ~/.bashrc
+
+  - id: s3
+    instruction: >-
+      If a login shell does not read ~/.bashrc, explain why your aliases normally
+      work after logging in. Find the mechanism and save it to /tmp/answer-why.
+    hint: >-
+      Something must be sourcing it. Look at what a default ~/.profile contains —
+      /etc/skel holds the templates new accounts get.
+    walkthrough: |
+      {
+        echo "if a login shell does not read ~/.bashrc, something else must."
+        echo
+        echo "the templates new accounts are given live in /etc/skel:"
+        ls -a /etc/skel/ 2>/dev/null | sed 's/^/  /'
+        echo
+        echo "and the default ~/.profile sources it explicitly:"
+        grep -A2 -B1 'bashrc' /etc/skel/.profile 2>/dev/null | sed 's/^/  /'
+        echo
+        echo "so ~/.bashrc reaching a login shell is a CONVENTION implemented in a file i can overwrite - not a rule bash enforces. proving it by adding the same line to mine:"
+        cat > ~/.profile <<'P'
+      export FROM_PROFILE=yes
+      if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi
+      P
+        echo "  bash -lic now sees FROM_BASHRC: $(bash -lic 'echo ${FROM_BASHRC:-no}' 2>/dev/null)"
+        echo
+        echo "and /etc/bash.bashrc arrives by the same trick - /etc/profile sources it, but only when the shell is interactive:"
+        sed -n '11,17p' /etc/profile | sed 's/^/  /'
+        echo
+        echo "that PS1 test is /etc/profile asking 'am i interactive?'. which is why a LOGIN NON-INTERACTIVE shell - ssh host 'cmd' - gets /etc/profile and not /etc/bash.bashrc."
+        echo
+        echo "the practical consequence: people overwrite ~/.profile all the time, usually to add a PATH entry, and silently disconnect their own ~/.bashrc from every login session. the symptom is aliases that work in a new terminal tab and not after ssh."
+      } > /tmp/answer-why
+      cat /tmp/answer-why
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why
+        pattern: "(?i)\\.profile"
+        describe: You found which file sources ~/.bashrc
+      - type: file_matches
+        path: /tmp/answer-why
+        pattern: "bash -lic now sees FROM_BASHRC: yes"
+        describe: And proved it by reproducing the mechanism
+      - type: file_matches
+        path: /tmp/answer-why
+        pattern: "(?i)convention"
+        describe: And identified it as a convention rather than a rule
+      - type: file_matches
+        path: /tmp/answer-why
+        pattern: "(?i)PS1"
+        describe: And how /etc/bash.bashrc reaches a login shell
+
+  - id: s4
+    instruction: >-
+      Read the first lines of /etc/skel/.bashrc. Explain what the guard there is
+      for, and what breaks without it. Save to /tmp/answer-guard.
+    hint: >-
+      Ask what would happen if ~/.profile sourced ~/.bashrc during a
+      non-interactive login shell, and that bashrc printed something.
+    walkthrough: |
+      {
+        echo "the first lines of the default ~/.bashrc:"
+        head -9 /etc/skel/.bashrc | sed 's/^/  /'
+        echo
+        echo "what it does: 'case \$- in *i*)' tests whether the shell's option flags contain i, meaning interactive. if not, it returns immediately and the rest of the file never runs."
+        echo
+        echo "why it has to be there: ~/.profile sources ~/.bashrc UNCONDITIONALLY, and ~/.profile runs for non-interactive login shells too. ssh host 'cat file' is exactly that."
+        echo
+        echo "so without the guard, ssh host 'cat file' would execute my aliases, my prompt setup, and anything that prints a banner or a fortune."
+        echo
+        echo "and output from a startup file lands in the MIDDLE OF THE DATA STREAM. that is what breaks scp, rsync and git push over ssh - the remote end receives my welcome message spliced into the protocol, and the error names neither the shell nor the file."
+        echo
+        echo "note the very first comment in the file debian ships:"
+        head -1 /etc/skel/.bashrc | sed 's/^/  /'
+        echo "the distribution is telling me the rule outright, in a line everybody scrolls past."
+        echo
+        echo "the habit: never print anything from a startup file without checking that the shell is interactive."
+      } > /tmp/answer-guard
+      cat /tmp/answer-guard
+    verify:
+      - type: file_matches
+        path: /tmp/answer-guard
+        pattern: "(?i)interactive"
+        describe: You explained what the guard tests
+      - type: file_matches
+        path: /tmp/answer-guard
+        pattern: "(?i)scp|rsync"
+        describe: And what breaks without it
+      - type: file_matches
+        path: /tmp/answer-guard
+        pattern: "(?i)data stream|middle of"
+        describe: And why printing is the specific danger
+      - type: file_matches
+        path: /tmp/answer-guard
+        pattern: "(?i)non-login shells"
+        describe: And quoted the line Debian ships saying so
+
+  - id: s5
+    instruction: >-
+      Demonstrate that the environment is inherited rather than looked up, and
+      write what follows from that to /tmp/answer-inherit.
+    hint: >-
+      Compare a shell variable with an exported one, and try to change a
+      parent's environment from a child.
+    walkthrough: |
+      {
+        SHELL_ONLY=set-without-export
+        export EXPORTED=set-with-export
+        echo "a shell variable versus an exported one:"
+        echo "  child sees SHELL_ONLY: $(bash -c 'echo ${SHELL_ONLY:-unset}')"
+        echo "  child sees EXPORTED:   $(bash -c 'echo ${EXPORTED:-unset}')"
+        echo
+        echo "  and bash will tell me which is which:"
+        declare -p SHELL_ONLY EXPORTED | sed 's/^/    /'
+        echo "  the -x flag is the whole difference."
+        echo
+        echo "can a child change its parent?"
+        bash -c 'export EXPORTED=changed-by-child'
+        echo "  after the child ran: EXPORTED=$EXPORTED"
+        echo "  no. the copy went one way, at exec, and the two are unrelated afterwards."
+        echo
+        echo "what follows from 'inherited, never looked up':"
+        echo "  - a variable set in one terminal does not exist in another"
+        echo "  - editing ~/.bashrc changes nothing about processes already running;"
+        echo "    a daemon started last year has last year's environment"
+        echo "  - anything that appears to change a parent - source, eval \"\$(...)\" -"
+        echo "    is running commands INSIDE the parent, not in a child"
+        echo "  - systemd, cron and container runtimes are not 'missing' my settings."
+        echo "    they never consulted anything that had them, deliberately, so that"
+        echo "    a scheduled job does not depend on whose shell edited a dotfile last"
+      } > /tmp/answer-inherit
+      cat /tmp/answer-inherit
+    verify:
+      - type: file_matches
+        path: /tmp/answer-inherit
+        pattern: "child sees SHELL_ONLY: unset"
+        describe: You showed an unexported variable does not reach a child
+      - type: file_matches
+        path: /tmp/answer-inherit
+        pattern: "declare -x EXPORTED"
+        describe: And how bash reports the difference
+      - type: file_matches
+        path: /tmp/answer-inherit
+        pattern: "after the child ran: EXPORTED=set-with-export"
+        describe: And that a child cannot change its parent
+      - type: file_matches
+        path: /tmp/answer-inherit
+        pattern: "(?i)never consulted"
+        describe: And why schedulers give a minimal environment on purpose
+
+solution: >-
+  **What exists before you start.**
+
+
+  `/etc/profile`, `/etc/bash.bashrc` and an **empty** `/etc/environment` — and
+  **no user dotfiles at all**, because the home directory is a tmpfs mounted over
+  whatever the image had. That is also why this platform puts its prompt and
+  history settings in `/etc/bash.bashrc`: a per-user dotfile would be masked.
+
+
+  `/etc/environment` is worth a moment. It is read by **PAM**, not by any shell,
+  and a container usually has no PAM — so variables placed there have no effect
+  whatsoever. It is a popular place to configure nothing.
+
+
+  **The matrix, measured.**
+
+
+  ```text
+  MODE     ~/.profile     ~/.bashrc      /etc/bash.bashrc
+  -lic     yes            no             yes
+  -lc      yes            no             no
+  -ic      no             yes            yes
+  -c       no             no             no
+  ```
+
+
+  Two results matter. **`bash -c` reads nothing** — no profile, no bashrc,
+  nothing — and that is the shell every script, cron job, systemd unit and CI
+  step runs in.
+
+
+  And the top-right cell contradicts the usual summary: **a login shell does not
+  read `~/.bashrc`, even when it is interactive.** Bash reads `~/.bashrc` only for
+  *non-login* interactive shells.
+
+
+  **So why do aliases work after logging in?**
+
+
+  Because the default `~/.profile` sources it explicitly:
+
+
+  ```sh
+  if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then
+    . "$HOME/.bashrc"
+  fi
+  ```
+
+
+  It is a **convention implemented in a file you can overwrite**, not a rule bash
+  enforces. People overwrite `~/.profile` constantly — usually to add a PATH
+  entry — and silently disconnect their own `~/.bashrc` from every login session.
+  The symptom is aliases that work in a new terminal tab and not after `ssh`.
+
+
+  `/etc/bash.bashrc` arrives the same way, from `/etc/profile`, guarded by a
+  `$PS1` test — which is `/etc/profile` asking whether the shell is interactive.
+  That is why `ssh host 'cmd'` gets `/etc/profile` and not `/etc/bash.bashrc`.
+
+
+  **The guard nobody explains.**
+
+
+  ```sh
+  # If not running interactively, don't do anything
+  case $- in
+      *i*) ;;
+        *) return;;
+  esac
+  ```
+
+
+  `~/.profile` sources `~/.bashrc` **unconditionally**, and runs for
+  non-interactive login shells too — `ssh host 'cat file'` is exactly that.
+  Without the guard, that command executes your aliases and anything that prints
+  a banner, and **the output lands in the middle of the data stream**. That is
+  what breaks `scp`, `rsync` and `git push` over ssh, with an error naming
+  neither the shell nor the file.
+
+
+  Debian states the rule in the first line of the file it ships: *"~/.bashrc:
+  executed by bash(1) for non-login shells."*
+
+
+  **And the environment itself is inherited, never looked up.**
+
+
+  `export` is the entire difference between a variable a child can see and one it
+  cannot, and `declare -p` shows which is which via the `-x` flag. A child cannot
+  change its parent — the copy went one way, at `execve`.
+
+
+  Which is why editing `~/.bashrc` does nothing to a daemon started last year,
+  and why systemd, cron and container runtimes are not "missing" your settings.
+  **They never consulted anything that had them**, deliberately, so that a
+  scheduled job does not depend on whose shell last edited a dotfile.

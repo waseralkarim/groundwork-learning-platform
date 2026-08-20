@@ -1,0 +1,217 @@
+id: troubleshooting.zombie-pile-up
+topic: topic.processes
+title: "The box is fine, but nothing will start"
+level: L3
+objectives: [OBJ-A01.2.8, OBJ-A01.2.4]
+reveal_policy: progressive
+
+situation: >-
+  You are paged at 04:12. The alert is vague: "batch-runner-03 unreachable".
+
+
+  SSH eventually connects after a long delay, and your shell greets you with:
+
+
+  ```text
+  -bash: fork: retry: Resource temporarily unavailable
+  ```
+
+
+  Half the commands you type fail with the same message. The ones that work show
+  a machine that looks completely healthy: memory is fine, the CPUs are idle,
+  the disks have space.
+
+
+  The service on this host has been running for eleven days without a restart.
+
+
+  Diagnose it before reading on. Say which number you would look at first, and
+  why the obvious ones are misleading.
+
+symptoms:
+  - "fork: Resource temporarily unavailable, on most commands"
+  - "SSH connects, slowly, and the shell is barely usable"
+  - "Memory 18% used, 26GB available"
+  - "Load average 0.4 on 8 cores"
+  - "Disks 40% full, no I/O wait"
+  - "No application errors in the last 24 hours"
+  - "The service has been up 11 days; the problem appeared tonight"
+
+artifacts:
+  - type: command_output
+    label: "free -h"
+    content: |
+      $ free -h
+                     total        used        free      shared  buff/cache   available
+      Mem:            31Gi       5.6Gi       1.2Gi       210Mi        24Gi        26Gi
+      Swap:          4.0Gi          0B       4.0Gi
+
+  - type: command_output
+    label: "uptime"
+    content: |
+      $ uptime
+       04:19:02 up 11 days,  3:44,  1 user,  load average: 0.41, 0.38, 0.44
+
+  - type: command_output
+    label: "ps -eo stat= | sort | uniq -c | sort -rn"
+    content: |
+      $ ps -eo stat= | sort | uniq -c | sort -rn
+        31402 Z
+          186 S
+           41 Ss
+           12 Sl
+            3 R
+
+  - type: command_output
+    label: "sysctl kernel.pid_max"
+    content: |
+      $ sysctl kernel.pid_max
+      kernel.pid_max = 32768
+
+  - type: command_output
+    label: "ps -eo ppid,stat | awk '$2 ~ /^Z/ {print $1}' | sort | uniq -c | sort -rn | head -3"
+    content: |
+        31399 2841
+            2 1
+            1 8102
+
+  - type: command_output
+    label: "ps -p 2841 -o pid,ppid,etime,rss,comm,args"
+    content: |
+      $ ps -p 2841 -o pid,ppid,etime,rss,comm,args
+        PID  PPID     ELAPSED   RSS COMMAND  COMMAND
+       2841     1 11-03:41:02 91240 batch-ru /usr/bin/batch-runner --workers 8 --spawn-per-job
+
+  - type: metric
+    label: "Process count over the last 14 days"
+    content: |
+      day 1   412
+      day 3   4,110
+      day 5   8,240
+      day 7   12,900
+      day 9   20,180
+      day 11  31,644     <-- pid_max is 32,768
+
+diagnostic_questions:
+  - "Which resource has actually run out? It is not memory, CPU or disk."
+  - "What does the state breakdown tell you, and what does 31,402 in that state mean?"
+  - "Which single process is responsible, and which command identified it?"
+  - "Why did this take eleven days to appear, and why tonight specifically?"
+  - "Why did none of the standard resource alerts fire?"
+  - "Killing the zombies is the instinct. Why will it achieve nothing?"
+
+hints:
+  - >-
+    Every conventional resource is fine. So look at the resources that are not on
+    a standard dashboard — what else is finite on a Linux machine?
+  - >-
+    `fork` failing with EAGAIN means the kernel could not create a process. What
+    would have to be exhausted for that to happen?
+  - >-
+    You have a count of processes by state. One of those states means "already
+    dead, not yet collected". Compare that count to pid_max.
+
+root_cause: >-
+  PID exhaustion. There are 31,402 zombie processes against a `pid_max` of
+  32,768, so the kernel has almost no PIDs left to allocate and `fork` fails.
+
+
+  Every one of those zombies has PPID 2841 — the `batch-runner` process, running
+  with `--spawn-per-job`. It forks a subprocess for each job and never calls
+  `wait()` to collect the exit status, so each finished child stays in the
+  process table as a zombie forever.
+
+
+  It took eleven days because the leak is slow and linear: roughly 2,800 zombies
+  a day, hitting the ceiling overnight on day eleven. Nothing about tonight was
+  special — it is simply when the line crossed the limit.
+
+
+  No alert fired because zombies consume no memory, no CPU and no disk. Every
+  metric on a standard dashboard was flat and healthy right up to the moment the
+  machine could no longer start a process. The first thing to fail was the
+  monitoring agent's own fork, which is why the alert was "unreachable" rather
+  than anything diagnostic.
+
+method: |
+  **1. When every obvious resource is fine, ask what else is finite.** Memory,
+  CPU and disk are the three everyone checks because they are the three on every
+  dashboard. A Linux machine also has finite PIDs, file descriptors, inodes and
+  ports — and none of those is usually graphed. `fork` failing points squarely at
+  the first.
+
+  **2. Read the error precisely.** `fork: Resource temporarily unavailable` is
+  EAGAIN from `fork(2)`, which means the kernel could not create a process. That
+  is a much narrower statement than "the box is broken", and it eliminates
+  memory and disk immediately.
+
+  **3. Break processes down by state before by name.**
+
+  ```bash
+  ps -eo stat= | sort | uniq -c | sort -rn
+  ```
+
+  One command, and the answer is unmissable: 31,402 in state Z against 242 of
+  everything else. This is the single highest-value triage command for a machine
+  behaving strangely, and it costs nothing.
+
+  **4. Group the zombies by parent.** Zombies never tell you who is at fault —
+  their parent does.
+
+  ```bash
+  ps -eo ppid,stat | awk '$2 ~ /^Z/ {print $1}' | sort | uniq -c | sort -rn
+  ```
+
+  31,399 of them share one PPID. That is your culprit, named in one line.
+
+  **5. Check the trend, not just the level.** The process count rising linearly
+  for eleven days is what turns "we hit a limit" into "we have a leak". A level
+  tells you that you have a problem now; a trend tells you that you would have
+  had it again next week regardless.
+
+  **6. Resist the instinct.** Killing zombies cannot work — they have already
+  exited, so there is nothing to signal. The instinct to `kill -9` them is the
+  thing this scenario exists to defeat.
+
+  The transferable rule: **a resource exhaustion whose dashboards look healthy is
+  a resource nobody is graphing.** Find what is finite and count it.
+
+resolution: |
+  **Immediate:** restart `batch-runner`.
+
+  ```bash
+  systemctl restart batch-runner
+  ```
+
+  Killing the parent orphans all 31,399 zombies, the kernel reparents them to
+  PID 1, and init reaps them immediately. The PID table empties within seconds
+  and the machine is usable again.
+
+  If even that fails because you cannot fork, `kill` is a shell builtin and needs
+  no new process:
+
+  ```bash
+  kill 2841
+  ```
+
+  **Do not** raise `pid_max` as the fix. It buys days and hides the leak.
+
+  **Actual fix**, in `batch-runner`:
+
+  - Call `wait()` / `waitpid()` after each child, or
+  - Install a `SIGCHLD` handler that reaps in a loop, or
+  - Set `SIGCHLD` to `SIG_IGN`, which tells the kernel to reap automatically —
+    the simplest correct option when the parent does not need exit statuses
+
+  **Prevention**, and this is the part that matters most:
+
+  - **Alert on process count as a fraction of `pid_max`.** Warn at 60%, page at
+    80%. This alone converts a 04:12 outage into a Tuesday-afternoon ticket.
+  - **Alert on zombies above a small threshold** — say 100. A handful is normal;
+    hundreds is always a bug.
+  - Set a `TasksMax=` on the systemd unit, or a `pids` cgroup limit, so a leaking
+    service exhausts its own budget and fails visibly instead of taking the host
+    down with it.
+
+  The last point is the general lesson: **give every service a limit smaller
+  than the machine's**, so a leak is contained to the thing that is leaking.

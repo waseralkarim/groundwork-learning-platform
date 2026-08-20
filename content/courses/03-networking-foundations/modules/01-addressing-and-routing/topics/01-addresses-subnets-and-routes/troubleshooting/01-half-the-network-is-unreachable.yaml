@@ -1,0 +1,226 @@
+id: troubleshooting.half-the-network-is-unreachable
+topic: topic.addresses-subnets-and-routes
+title: Exactly half the servers stopped answering
+level: L2
+objectives: [OBJ-A03.1.8, OBJ-A03.1.2]
+reveal_policy: progressive
+
+situation: >-
+  A monitoring host checks 200 servers on the `10.40.12.0/24` subnet every
+  minute. Overnight, 126 of them went red simultaneously. The other 74 are fine.
+
+
+  The red ones are not grouped by rack, by role, by operating system or by
+  purchase date. Nobody deployed anything. The network team say no change was
+  made and the switches show no errors.
+
+
+  Somebody has noticed that the failing servers all have "high" addresses and
+  the working ones all have "low" ones, and the current theory is that a DHCP
+  scope has been corrupted.
+
+
+  The monitoring host itself was rebuilt yesterday afternoon.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "126 of 200 servers unreachable from the monitoring host, all at once"
+  - "The failing servers all have addresses above 10.40.12.128"
+  - "The servers are all healthy — each answers when checked from a machine beside it"
+  - "The monitoring host reaches the gateway and the internet normally"
+  - "No network change was made; no server was changed"
+  - "The monitoring host was rebuilt yesterday"
+
+artifacts:
+  - type: command_output
+    label: On the monitoring host
+    content: |
+      $ ip -br addr
+      lo               UNKNOWN        127.0.0.1/8
+      eth0             UP             10.40.12.20/25
+
+      $ ip route
+      default via 10.40.12.1 dev eth0
+      10.40.12.0/25 dev eth0 proto kernel scope link src 10.40.12.20
+
+  - type: command_output
+    label: On one of the "failing" servers
+    content: |
+      $ ip -br addr
+      lo               UNKNOWN        127.0.0.1/8
+      eth0             UP             10.40.12.190/24
+
+      $ ip route
+      default via 10.40.12.1 dev eth0
+      10.40.12.0/24 dev eth0 proto kernel scope link src 10.40.12.190
+
+  - type: command_output
+    label: Two lookups from the monitoring host
+    content: |
+      $ ip route get 10.40.12.90
+      10.40.12.90 dev eth0 src 10.40.12.20 uid 0
+
+      $ ip route get 10.40.12.190
+      10.40.12.190 via 10.40.12.1 dev eth0 src 10.40.12.20 uid 0
+
+  - type: command_output
+    label: The monitoring host's ARP cache
+    content: |
+      $ ip neigh
+      10.40.12.1 dev eth0 lladdr 00:1c:73:aa:14:02 REACHABLE
+      10.40.12.90 dev eth0 lladdr 00:50:56:9b:31:c8 REACHABLE
+      10.40.12.44 dev eth0 lladdr 00:50:56:9b:07:a1 REACHABLE
+
+  - type: config
+    label: The monitoring host's interface configuration, after the rebuild
+    content: |
+      # /etc/netplan/01-netcfg.yaml
+      network:
+        version: 2
+        ethernets:
+          eth0:
+            addresses: [10.40.12.20/25]
+            routes:
+              - to: default
+                via: 10.40.12.1
+
+diagnostic_questions:
+  - "What prefix does the monitoring host have, and what prefix do the servers have?"
+  - "Which addresses fall inside the monitoring host's own network, and which do not?"
+  - "How many addresses are in each half, and how does that compare with 126 and 74?"
+  - "What does the difference between the two `ip route get` outputs tell you?"
+  - "Which machine was changed, and which machines are being blamed?"
+
+hints:
+  - "Compare the two `ip -br addr` outputs character by character. They differ by one digit."
+  - "Compute the range the monitoring host believes its network covers."
+  - "126 is a suspiciously round number in this context. What has 126 usable addresses?"
+  - "One of the two `ip route get` answers contains `via` and the other does not."
+
+root_cause: >-
+  The monitoring host was rebuilt with a `/25` where every other machine on the
+  subnet has a `/24`. Its netplan file says `10.40.12.20/25`.
+
+
+  A /25 has 128 addresses, so the monitoring host believes its network is
+  `10.40.12.0` to `10.40.12.127`. Servers below .128 are neighbours: it ARPs for
+  them and reaches them directly, and those 74 checks pass. Servers above .128
+  are, as far as it is concerned, on a different network — so it sends their
+  traffic to the default gateway, which has no reason to route packets back onto
+  the subnet they came from, and they are silently dropped.
+
+
+  The two `ip route get` outputs are the whole diagnosis side by side. For
+  `10.40.12.90` the answer is `dev eth0` with no `via` — directly connected. For
+  `10.40.12.190` it is `via 10.40.12.1` — hand it to a router.
+
+
+  The numbers confirm it exactly. A /25 covers 128 addresses of which 126 are
+  usable; the remaining half of the /24 is the other 126, and 200 servers spread
+  across the range gives roughly the split observed. "All the high addresses"
+  was the correct observation with the wrong boundary — it is not "high", it is
+  "at or above .128", which is precisely where a /25 divides a /24.
+
+
+  Every server is healthy and correctly configured. One machine changed
+  yesterday, and it is the one doing the complaining.
+
+method: >-
+  **1. Take the boundary seriously.** "All the high ones" is a sloppy
+  observation containing an exact fact. 126 failures out of 200 on a /24, split
+  at what looks like the halfway point, is the shape of a /25 — and that guess
+  costs nothing to check.
+
+
+  **2. Compare the two `ip -br addr` outputs directly.** They differ by a single
+  character: `/25` against `/24`. Reading a configuration for what it *should*
+  say is how this survives several people looking at it; reading two of them side
+  by side does not.
+
+
+  **3. Use `ip route get` on one working and one failing destination.** Two
+  commands, and the difference is the entire mechanism:
+
+
+  ```text
+  10.40.12.90  dev eth0 src 10.40.12.20                 <- direct
+  10.40.12.190 via 10.40.12.1 dev eth0 src 10.40.12.20  <- to the gateway
+  ```
+
+
+  That is not an inference about what the kernel might do. It is the kernel
+  reporting what it will do.
+
+
+  **4. Check the ARP cache for corroboration.** It contains entries for the
+  gateway and for hosts below .128, and none at all for anything above it —
+  because the monitoring host has never ARPed for them. It never considered them
+  neighbours.
+
+
+  **5. Ask which machine changed.** The servers have been running for months and
+  the monitoring host was rebuilt yesterday. When a fault appears on one side of
+  a relationship immediately after that side was rebuilt, the rebuild is the
+  first suspect, not the two hundred machines that did not change.
+
+
+  The habit worth taking: when a failure splits a population cleanly in half or
+  in quarters, suspect a prefix boundary. Networks fail in powers of two far more
+  often than by coincidence.
+
+resolution: >-
+  **Correct the prefix on the monitoring host.** In netplan, then apply:
+
+
+  ```yaml
+  network:
+    version: 2
+    ethernets:
+      eth0:
+        addresses: [10.40.12.20/24]
+        routes:
+          - to: default
+            via: 10.40.12.1
+  ```
+
+
+  ```bash
+  netplan apply
+  ip route get 10.40.12.190     # should now be `dev eth0` with no via
+  ```
+
+
+  Verify with `ip route get` rather than by waiting for the dashboard to go
+  green — it is immediate and it confirms the mechanism rather than the symptom.
+
+
+  **Then find out how the rebuild produced the wrong value.** A machine rebuilt
+  yesterday with a prefix nothing else on its subnet uses is a template, an
+  automation default or a hand-edit. Whichever it was will do it again, and the
+  next machine may be one whose failures are less obvious than a monitoring host
+  reporting on itself.
+
+
+  **Add a check that would have caught this in seconds.** The monitoring host is
+  in an unusually good position to notice its own misconfiguration:
+
+
+  ```bash
+  # every host on the subnet should agree about the prefix
+  ip -br addr show eth0 | awk '{print $3}'
+  ```
+
+
+  Collecting that from every host and alerting when they disagree is a handful
+  of lines and it catches the whole class of problem — including the far worse
+  version where the odd machine out is a database replica rather than a
+  monitoring host.
+
+
+  **Finally, write down what the failure pattern meant**, because it is the
+  transferable part. A clean split of a population into halves or quarters is a
+  prefix boundary until proven otherwise. It is not a coincidence, it is not
+  DHCP, and it is not the switch — subnets divide in powers of two, and so do
+  the failures they cause.

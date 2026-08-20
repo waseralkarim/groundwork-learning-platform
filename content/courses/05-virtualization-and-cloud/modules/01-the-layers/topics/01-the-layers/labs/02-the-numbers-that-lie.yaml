@@ -1,0 +1,313 @@
+id: lab.the-numbers-that-lie
+topic: topic.the-layers
+title: Follow nproc, and measure what it costs you
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A05.1.4, OBJ-A05.1.5]
+
+intro: >-
+  `nproc` will tell you how many CPUs this container has. It will be wrong by a
+  factor of about thirty, and every runtime that sizes a thread pool from it is
+  about to make itself slower.
+
+
+  You will measure the gap, then size a workload from the wrong number and from
+  the right one, and compare. The result is not that the wrong number is merely
+  wasteful — following it does **less work**.
+
+setup:
+  - /opt/lab/seed-layers.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Ask three different standard interfaces how many CPUs you have, then read
+      what the cgroup actually allows. Save the comparison and the ratio to
+      /tmp/answer-cpu-gap.
+    hint: >-
+      `nproc`, `getconf _NPROCESSORS_ONLN` and `/proc/cpuinfo`. The allowed value
+      is `/sys/fs/cgroup/cpu.max`, as quota and period in microseconds — divide
+      them.
+    walkthrough: |
+      {
+        echo "nproc:                            $(nproc)"
+        echo "getconf _NPROCESSORS_ONLN:        $(getconf _NPROCESSORS_ONLN)"
+        echo "grep -c ^processor /proc/cpuinfo: $(grep -c ^processor /proc/cpuinfo)"
+        echo
+        echo "cpu.max (quota period, microseconds): $(cat /sys/fs/cgroup/cpu.max)"
+        cores=$(awk '{ if ($1=="max") print "unlimited"; else printf "%.2f", $1/$2 }' /sys/fs/cgroup/cpu.max)
+        echo "actually allowed:                 $cores cores"
+        echo
+        echo "ratio: $(awk -v n=$(nproc) '{ printf "%.0f", n/($1/$2) }' /sys/fs/cgroup/cpu.max)x"
+        echo
+        echo "all three interfaces agree with each other and none of them is describing me. they describe the machine, accurately, and i asked about my cgroup. there is no cpu namespace - namespaces virtualise process ids, network interfaces and mounts, and limits are enforced by cgroups, which is a separate mechanism that constrains usage without changing what any file reports."
+      } > /tmp/answer-cpu-gap
+      cat /tmp/answer-cpu-gap
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cpu-gap
+        pattern: "actually allowed: *[0-9.]+ cores"
+        describe: You computed the allowed CPU from quota and period
+      - type: command_exit
+        command: "test $(sed -n 's/^ratio: \\([0-9]*\\)x/\\1/p' /tmp/answer-cpu-gap) -ge 4"
+        exit_code: 0
+        describe: And the visible count exceeds the allowed one several times over
+      - type: file_matches
+        path: /tmp/answer-cpu-gap
+        pattern: "(?i)no cpu namespace|separate mechanism"
+        describe: And explained why the standard interfaces do not know about the limit
+
+  - id: s2
+    instruction: >-
+      Do the same for memory, and check whether uptime is yours. Save to
+      /tmp/answer-memory-gap.
+    hint: >-
+      `MemTotal` in /proc/meminfo against `/sys/fs/cgroup/memory.max`, which is
+      in bytes. Then compare `/proc/uptime` against how long this container has
+      existed.
+    walkthrough: |
+      {
+        awk '/MemTotal/ {printf "MemTotal (the machine): %.1f GiB\n", $2/1048576}' /proc/meminfo
+        awk '{ if ($1=="max") print "memory.max: unlimited"; else printf "memory.max (me):        %.0f MiB\n", $1/1048576 }' /sys/fs/cgroup/memory.max
+        echo
+        echo "uptime reported to me:  $(cut -d. -f1 /proc/uptime) seconds"
+        echo "this container's age:   under a minute"
+        echo
+        echo "three borrowed numbers: cpu count, total memory and uptime. all are the machine's."
+        echo "a jvm with no explicit heap setting reads MemTotal and takes roughly a quarter of it. here that is several gigabytes against a 512 mib limit, so it runs fine under light load and gets oom-killed the first time real traffic makes the heap grow - exit code 137, no stack trace, hours or weeks after the mistake."
+      } > /tmp/answer-memory-gap
+      cat /tmp/answer-memory-gap
+    verify:
+      - type: file_matches
+        path: /tmp/answer-memory-gap
+        pattern: "MemTotal \\(the machine\\): [0-9.]+ GiB"
+        describe: You read the machine's memory
+      - type: file_matches
+        path: /tmp/answer-memory-gap
+        pattern: "memory.max \\(me\\): *[0-9]+ MiB"
+        describe: And the limit that actually applies
+      - type: file_matches
+        path: /tmp/answer-memory-gap
+        pattern: "137"
+        describe: And named the failure a wrongly-sized heap produces
+
+  - id: s3
+    instruction: >-
+      Now pay for it. Run a CPU-bound workload with as many threads as `nproc`
+      advises, and record the throttling it causes. Save to /tmp/answer-throttled.
+    hint: >-
+      `/opt/lab/spin <threads>` spins that many threads. Read `nr_throttled` and
+      `throttled_usec` from `/sys/fs/cgroup/cpu.stat` before and after, and keep
+      the difference.
+    walkthrough: |
+      bp=$(awk '/^nr_throttled/{print $2}' /sys/fs/cgroup/cpu.stat)
+      bt=$(awk '/^throttled_usec/{print $2}' /sys/fs/cgroup/cpu.stat)
+      work=$(timeout 8 /opt/lab/spin $(nproc) 2>&1 | sed -n 's/increments attempted: *//p')
+      ap=$(awk '/^nr_throttled/{print $2}' /sys/fs/cgroup/cpu.stat)
+      at=$(awk '/^throttled_usec/{print $2}' /sys/fs/cgroup/cpu.stat)
+      {
+        echo "threads used (from nproc): $(nproc)"
+        echo "throttled periods added:   $(( ap - bp ))"
+        echo "throttled time added:      $(( (at - bt)/1000 )) ms"
+        echo "work done (increments):    ${work:-0}"
+        echo
+        echo "note the units. that throttled time accumulated inside about 8 seconds of wall clock, because all $(nproc) threads are stopped simultaneously at the end of every period and the waits add up."
+      } > /tmp/answer-throttled
+      cat /tmp/answer-throttled
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/^throttled periods added: *//p' /tmp/answer-throttled) -gt 5"
+        exit_code: 0
+        describe: The workload was throttled repeatedly
+      - type: command_exit
+        command: "test $(sed -n 's/^throttled time added: *\\([0-9]*\\) ms/\\1/p' /tmp/answer-throttled) -gt 1000"
+        exit_code: 0
+        describe: And accumulated more than a second of stopped time
+      - type: file_matches
+        path: /tmp/answer-throttled
+        pattern: "work done \\(increments\\): *[0-9]+"
+        describe: And you recorded how much work it actually completed
+
+  - id: s4
+    instruction: >-
+      Run the same workload sized from the cgroup instead, and compare both
+      numbers — throttled time and work done. Save to /tmp/answer-sized-right.
+    hint: >-
+      Derive the thread count from `cpu.max`, rounding up to at least 1. Then
+      compare against what you recorded in the previous step.
+    walkthrough: |
+      cores=$(awk '{ if ($1=="max") print 0; else printf "%d", ($1/$2)+0.5 }' /sys/fs/cgroup/cpu.max)
+      [ "$cores" -lt 1 ] && cores=1
+      bp=$(awk '/^nr_throttled/{print $2}' /sys/fs/cgroup/cpu.stat)
+      bt=$(awk '/^throttled_usec/{print $2}' /sys/fs/cgroup/cpu.stat)
+      work=$(timeout 8 /opt/lab/spin $cores 2>&1 | sed -n 's/increments attempted: *//p')
+      ap=$(awk '/^nr_throttled/{print $2}' /sys/fs/cgroup/cpu.stat)
+      at=$(awk '/^throttled_usec/{print $2}' /sys/fs/cgroup/cpu.stat)
+      wrongwork=$(sed -n 's/^work done (increments): *//p' /tmp/answer-throttled)
+      wrongtime=$(sed -n 's/^throttled time added: *\([0-9]*\) ms/\1/p' /tmp/answer-throttled)
+      {
+        echo "threads derived from cpu.max: $cores"
+        echo "throttled periods added:      $(( ap - bp ))"
+        echo "throttled time added:         $(( (at - bt)/1000 )) ms"
+        echo "work done (increments):       ${work:-0}"
+        echo
+        echo "against the nproc-sized run:"
+        echo "  throttled time: ${wrongtime} ms  ->  $(( (at - bt)/1000 )) ms"
+        echo "  work done:      ${wrongwork}  ->  ${work:-0}"
+        echo
+        echo "the period COUNT barely changed, because at a sub-one-core quota every period gets throttled no matter how many threads there are. what changed is the aggregate stopped TIME, and the work completed."
+        echo "following nproc did not merely waste memory on extra threads - it did LESS WORK. the threads contend for a fraction of a core and pay context switching for nothing."
+      } > /tmp/answer-sized-right
+      cat /tmp/answer-sized-right
+    verify:
+      - type: file_matches
+        path: /tmp/answer-sized-right
+        pattern: "threads derived from cpu.max: [0-9]+"
+        describe: You derived the thread count from the real limit
+      - type: command_exit
+        command: "test $(sed -n 's/^throttled time added: *\\([0-9]*\\) ms/\\1/p' /tmp/answer-sized-right) -lt $(sed -n 's/^throttled time added: *\\([0-9]*\\) ms/\\1/p' /tmp/answer-throttled)"
+        exit_code: 0
+        describe: The correctly-sized run accumulated less stopped time
+      - type: file_matches
+        path: /tmp/answer-sized-right
+        pattern: "(?i)less work|LESS WORK"
+        describe: And you identified that the wrong size reduced throughput
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-monitoring which counter would have revealed this on a
+      dashboard, which one would not, and what you would set in a deployment to
+      prevent it.
+    hint: >-
+      Look again at how the two runs differed. One of the two throttling counters
+      barely moved between them.
+    walkthrough: |
+      {
+        echo "what a cpu utilisation graph shows: this container using its 0.5 cores against a 16 core host, which is about 3 percent. the dashboard shows a comfortable service while every request waits."
+        echo
+        echo "the counter that would NOT have revealed it: nr_throttled. the period count was nearly identical between the two runs, so an alert on 'is it being throttled' fires the same either way."
+        echo
+        echo "the counter that WOULD: throttled_usec - the aggregate stopped time. it differed by more than an order of magnitude between the two runs, and it is where the latency actually lives."
+        echo "cpu.pressure is the other one worth alerting on, because it is per cgroup, where /proc/loadavg is the whole machine's including every neighbour."
+        echo
+        echo "what to set in a deployment:"
+        echo "  GOMAXPROCS derived from the cpu limit rather than left to default on older runtimes"
+        echo "  -XX:MaxRAMPercentage=75 rather than -Xmx, so it tracks the container limit instead of a fixed number that stops being right when the limit changes"
+        echo "  an explicit worker count for any web server, never 'auto' - auto means auto from the host's numbers"
+        echo
+        echo "the general rule: in a container, 'auto' is auto from the machine. read the limit from /sys/fs/cgroup and set the value."
+      } > /tmp/answer-monitoring
+      cat /tmp/answer-monitoring
+    verify:
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: "throttled_usec"
+        describe: You identified the counter that reveals the difference
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: "nr_throttled"
+        describe: And the one that does not distinguish the two cases
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: "(?i)MaxRAMPercentage|GOMAXPROCS"
+        describe: And gave a concrete setting that fixes it
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: "(?i)auto"
+        describe: And named the general rule about defaults in containers
+
+solution: >-
+  **The gap.**
+
+
+  ```text
+  nproc                             16
+  getconf _NPROCESSORS_ONLN         16
+  grep -c ^processor /proc/cpuinfo  16
+  cpu.max                           50000 100000  →  0.50 cores
+  ```
+
+
+  Three interfaces agree with each other and none of them is describing you.
+  They describe **the machine**, accurately, while you asked about **your
+  cgroup** — and the ratio here is about 32×.
+
+
+  The reason is structural rather than a bug. Namespaces virtualise process ids,
+  network interfaces, mounts and hostnames. **There is no CPU namespace and no
+  memory namespace.** Limits are enforced by cgroups, a separate mechanism that
+  constrains *usage* without altering what any file *reports*. Two subsystems
+  answering different questions, and the confusion comes from expecting one to
+  know about the other.
+
+
+  Memory is the same story — 15.5 GiB visible against a 512 MiB limit — and so is
+  uptime, which reports the machine's.
+
+
+  **What following the wrong number costs.**
+
+
+  ```text
+                       threads   throttled periods   throttled time   work done
+  sized from nproc        16            32             ~47,000 ms     494,400,000
+  sized from cpu.max       1            30              ~1,500 ms   1,245,400,000
+  ```
+
+
+  Two things in that table are worth sitting with.
+
+
+  **The period count barely moved.** At a sub-one-core quota every period gets
+  throttled regardless of thread count, because even a single CPU-bound thread
+  wants more than 0.5 cores. So an alert on `nr_throttled` — *is this being
+  throttled* — fires identically in both cases and distinguishes nothing.
+
+
+  **The aggregate stopped time differs by 30×.** `throttled_usec` accumulated 47
+  seconds inside 8 seconds of wall clock, because all 16 threads are stopped
+  simultaneously at the end of every period and their waits add up. That is where
+  the latency lives, and it is the counter to alert on.
+
+
+  **And the throughput went down.** Following `nproc` did not merely waste memory
+  on extra threads — it completed **40% of the work** the correctly-sized run
+  did. Sixteen threads contend for half a core and pay context-switching for
+  nothing.
+
+
+  That last point is what makes this worth measuring rather than describing. The
+  intuition is that over-threading is wasteful but harmless. It is not harmless;
+  it is slower.
+
+
+  **Why the dashboard says everything is fine.**
+
+
+  The container uses its 0.5 cores. Against a 16-core host that is about 3%. Every
+  CPU graph shows a comfortable service, and every request is waiting.
+
+
+  What to watch instead: `throttled_usec` rising, and `cpu.pressure`, which is
+  per-cgroup where `/proc/loadavg` is the whole machine's including every
+  neighbour.
+
+
+  **The fix is one line per runtime.**
+
+
+  ```bash
+  GOMAXPROCS=$(cores from cpu.max)
+  JAVA_OPTS="-XX:MaxRAMPercentage=75"     # tracks the limit; -Xmx does not
+  --workers 2                             # never "auto"
+  ```
+
+
+  `MaxRAMPercentage` rather than a fixed `-Xmx` because it survives somebody
+  changing the memory limit without telling anybody.
+
+
+  **The rule to carry: in a container, `auto` means auto from the machine.** If a
+  setting says auto, find out what it read.

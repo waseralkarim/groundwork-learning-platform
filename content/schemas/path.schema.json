@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "PathCourse": {
+      "additionalProperties": false,
+      "properties": {
+        "course": {
+          "maxLength": 120,
+          "minLength": 3,
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+          "title": "Course",
+          "type": "string"
+        },
+        "order": {
+          "minimum": 1,
+          "title": "Order",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "course",
+        "order"
+      ],
+      "title": "PathCourse",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "slug": {
+      "maxLength": 80,
+      "minLength": 2,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "title": "Slug",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 140,
+      "minLength": 4,
+      "title": "Title",
+      "type": "string"
+    },
+    "summary": {
+      "maxLength": 600,
+      "minLength": 20,
+      "title": "Summary",
+      "type": "string"
+    },
+    "courses": {
+      "items": {
+        "$ref": "#/$defs/PathCourse"
+      },
+      "minItems": 1,
+      "title": "Courses",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "slug",
+    "title",
+    "summary",
+    "courses"
+  ],
+  "title": "LearningPath",
+  "type": "object"
+}

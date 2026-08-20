@@ -1,0 +1,173 @@
+id: topic.user-space-and-the-kernel
+slug: user-space-and-the-kernel
+title: "User Space and the Kernel: The Boundary Everything Is Built On"
+summary: >-
+  Your code cannot touch hardware. Every useful thing it does is a request
+  across a boundary the CPU enforces. What that request costs, who is allowed to
+  make it, and why containers are an argument about this one line.
+order: 3
+levels: [L1, L2, L3]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.processes
+    hardness: required
+  - topic: topic.the-machine
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A01.3.1
+    level: L1
+    verb: describe
+    statement: >-
+      Describe the two privilege levels a CPU runs code in, and identify which
+      of the kernel, a shell and a web server runs in each.
+    assessed_by: [quiz.q1, quiz.q2, lab.every-crossing]
+
+  - id: OBJ-A01.3.2
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why a program cannot read a disk or send a packet directly, and
+      what it must do instead.
+    assessed_by: [quiz.q3, quiz.q4, lab.every-crossing, assessment.A]
+
+  - id: OBJ-A01.3.3
+    level: L2
+    verb: trace
+    statement: >-
+      Trace one line of code from a library call, through the system call
+      boundary, into the kernel and back.
+    assessed_by: [quiz.q5, quiz.q6, lab.every-crossing, exercise.e1]
+
+  - id: OBJ-A01.3.4
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret user time against system time for a workload, and attribute the
+      difference to what the program is actually doing.
+    assessed_by: [quiz.q7, quiz.q8, lab.the-cost-of-asking, exercise.e2]
+
+  - id: OBJ-A01.3.5
+    level: L3
+    verb: measure
+    statement: >-
+      Measure what crossing the boundary costs, and explain why buffering exists
+      in every I/O library you have ever used.
+    assessed_by: [quiz.q9, quiz.q10, lab.the-cost-of-asking, assessment.B]
+
+  - id: OBJ-A01.3.6
+    level: L3
+    verb: explain
+    statement: >-
+      Explain what a capability is, and why "running as root" and "being allowed
+      to do a privileged thing" are two different questions.
+    assessed_by: [quiz.q11, quiz.q12, lab.what-you-may-ask, exercise.e3]
+
+  - id: OBJ-A01.3.7
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a refused operation by identifying which check rejected it — file
+      permissions, mount options, or a missing capability.
+    assessed_by: [quiz.q13, lab.permission-denied-but-why, troubleshooting.root-but-not-allowed, exercise.e4]
+
+  - id: OBJ-A01.3.8
+    level: L3
+    verb: troubleshoot
+    statement: >-
+      Troubleshoot a workload spending most of its CPU time in the kernel, and
+      identify the syscall pattern responsible.
+    assessed_by: [quiz.q14, quiz.q15, troubleshooting.system-time-spike, assessment.C]
+
+terminology:
+  - term: user space
+    definition: >-
+      Where every program you run lives — shells, servers, databases, your
+      code. Code here cannot touch hardware or another process's memory; it can
+      only compute and make requests.
+  - term: kernel space
+    definition: >-
+      Where the kernel runs, with full access to hardware and to every process's
+      memory. One kernel per running machine, shared by everything on it.
+  - term: privilege level
+    definition: >-
+      A mode the CPU itself is in, which determines whether the instruction it
+      is executing is allowed to touch hardware. On x86-64 these are called
+      rings; Linux uses two of the four — ring 0 for the kernel, ring 3 for
+      everything else.
+  - term: system call
+    definition: >-
+      The defined way user-space code asks the kernel to do something on its
+      behalf. The only way in. Around 350 of them exist on Linux, and every file
+      read, network packet and process creation goes through one.
+  - term: syscall number
+    definition: >-
+      The integer identifying which system call is being requested. Placed in a
+      register before the trap instruction, because the CPU is not going to read
+      your function names.
+  - term: mode switch
+    definition: >-
+      The CPU changing privilege level to run kernel code and then changing
+      back. Cheaper than a context switch between processes, but not free — this
+      is the cost buffering exists to amortise.
+  - term: context switch
+    definition: >-
+      The kernel saving one process's state and restoring another's so a
+      different process can run. Far more expensive than a mode switch, and the
+      thing a syscall that blocks will usually cause.
+  - term: user time
+    definition: >-
+      CPU time a process spent running its own instructions. In `top` this is
+      the `us` column; for one process, the `user` line from `time`.
+  - term: system time
+    definition: >-
+      CPU time the kernel spent working on this process's behalf, inside system
+      calls. The `sy` column in `top`. High system time means a program is
+      asking for a lot, not computing a lot.
+  - term: capability
+    definition: >-
+      One slice of the powers traditionally bundled into "root". Linux splits
+      that authority into around forty of them — binding a low port, changing
+      the system clock, mounting filesystems — so a process can be given one
+      without being given all of them.
+  - term: CAP_SYS_ADMIN
+    definition: >-
+      The capability that covers mounting filesystems and much else besides. It
+      is so broad that granting it is widely described as granting root, which
+      is why container runtimes drop it by default.
+  - term: EPERM
+    definition: >-
+      "Operation not permitted." The kernel understood the request, the object
+      exists, and the process was not allowed to make it — usually a missing
+      capability.
+  - term: EACCES
+    definition: >-
+      "Permission denied." The file permission check failed: mode bits,
+      ownership or ACLs. A different failure from EPERM, with a different fix.
+  - term: EROFS
+    definition: >-
+      "Read-only file system." Nothing to do with permissions at all — the
+      filesystem itself was mounted read-only, so no user, root included, can
+      write to it.
+  - term: seccomp
+    definition: >-
+      A kernel feature that filters which system calls a process may make at
+      all. Where capabilities restrict what a call may do, seccomp restricts
+      whether the call can be made.
+  - term: vDSO
+    definition: >-
+      A small piece of kernel code mapped into every process so that a few very
+      frequent calls — reading the clock, most importantly — can be answered
+      without crossing the boundary at all.
+
+foreshadows:
+  - "Containers share one kernel: every container on a host crosses the same boundary into the same code, which is the entire security argument of C16."
+  - "Dropping capabilities and applying a seccomp profile are the two main hardening levers in C16, and both operate exactly here."
+  - "Namespaces change what a process sees on the other side of the boundary; cgroups change how much it may consume (C14)."
+  - "A Kubernetes securityContext is capabilities, seccomp and user IDs expressed as YAML (E29)."
+  - "High system time is a standard performance signature in B07, and its usual causes are the syscall patterns in this topic."
+  - "gVisor and Kata Containers exist because sharing one kernel is a risk some workloads will not accept (E31)."
+
+tags: [kernel, syscalls, capabilities, linux, isolation, fundamentals, troubleshooting]

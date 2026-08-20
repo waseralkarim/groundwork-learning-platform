@@ -1,0 +1,511 @@
+id: quiz.environment-and-shell-startup
+topic: topic.environment-and-shell-startup
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.4.1]
+    stem: Which startup files does `bash -c 'somescript'` read?
+    options:
+      - id: a
+        text: None — unless `BASH_ENV` is set, which it almost never is
+        correct: true
+      - id: b
+        text: "`/etc/profile` and `~/.profile`"
+        note: >-
+          Those are for login shells, and `-c` does not create one.
+      - id: c
+        text: "`/etc/bash.bashrc` and `~/.bashrc`"
+        note: >-
+          Those are for interactive shells. A `-c` invocation is not
+          interactive.
+      - id: d
+        text: All of them, in order
+        note: >-
+          That describes a login interactive shell — and even that one skips
+          `~/.bashrc` unless the profile sources it.
+    explanation: >-
+      This is the shell that runs every script, cron job, systemd unit and CI
+      step, and it reads nothing. `BASH_ENV` is the single hook available, and it
+      is worth knowing for two opposite reasons: it is occasionally the right way
+      to make a wrapper apply to every script, and it is a persistence mechanism
+      worth checking on a machine that is behaving oddly.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.4.1]
+    stem: >-
+      Your aliases work in a new terminal tab but not after `ssh`ing to the same
+      machine. What is the most likely cause?
+    options:
+      - id: a
+        text: >-
+          `~/.profile` no longer sources `~/.bashrc` — a login shell does not
+          read it on its own
+        correct: true
+      - id: b
+        text: The ssh session is not interactive, so no startup files run
+        note: >-
+          An ssh session with a terminal is interactive. It is also a login
+          shell, and that is the part that matters here.
+      - id: c
+        text: Aliases are never available over ssh
+        note: >-
+          They are, on any normal account — which is what makes this symptom
+          confusing.
+      - id: d
+        text: "`sshd` strips the environment for security"
+        note: >-
+          It does control environment passing, but that is unrelated to whether
+          your own dotfiles run on the remote side.
+    explanation: >-
+      Bash reads `~/.bashrc` only for **non-login interactive** shells. A new tab
+      is one; an ssh session is a *login* shell and skips it. It normally works
+      anyway because the default `~/.profile` explicitly sources `~/.bashrc` —
+      a convention implemented in a file people overwrite constantly, usually to
+      add a PATH entry, and the symptom is exactly this.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.4.1]
+    stem: >-
+      You add a `~/.bash_profile` containing one line. Your existing `~/.profile`
+      settings stop applying. Why?
+    options:
+      - id: a
+        text: >-
+          A login shell reads the **first** of `~/.bash_profile`, `~/.bash_login`,
+          `~/.profile` — not all of them
+        correct: true
+      - id: b
+        text: "`~/.bash_profile` is read instead of `~/.bashrc`, so the settings moved"
+        note: >-
+          It replaces the *profile* file that gets read. `~/.bashrc` is a
+          separate mechanism.
+      - id: c
+        text: The two files conflict and bash refuses to read either
+        note: >-
+          Nothing errors. One file is read and the other is silently ignored.
+      - id: d
+        text: "`~/.bash_profile` must source `/etc/profile` explicitly or nothing works"
+        note: >-
+          `/etc/profile` is read regardless; it is the user-level file that is
+          chosen by first match.
+    explanation: >-
+      First-match, not merge. Adding a `~/.bash_profile` silently disables
+      `~/.profile`, with no warning — which is how people lose their PATH after
+      an installer helpfully creates one. It is also why most `~/.bash_profile`
+      files in the wild contain nothing but a line sourcing `~/.profile` or
+      `~/.bashrc`.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.4.2]
+    stem: A script sets `FOO=bar` without `export`. What can see it?
+    options:
+      - id: a
+        text: Only that shell — nothing it runs, and not its parent
+        correct: true
+      - id: b
+        text: That shell and every process it starts
+        note: >-
+          That is what `export` adds. Without it the variable is not in the
+          environment handed to children.
+      - id: c
+        text: Every shell belonging to that user
+        note: >-
+          There is no shared store. Each process has its own copy, made at
+          `execve`.
+      - id: d
+        text: That shell and its parent
+        note: >-
+          A child can never modify its parent's environment — the copy went one
+          way.
+    explanation: >-
+      The environment is a list of strings copied into a process at `execve`.
+      `export` marks a shell variable for inclusion in that list; without it the
+      variable exists in one shell and nowhere else. `declare -p FOO` shows which
+      is which — an exported variable is marked `declare -x`.
+
+  - id: q5
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.4.2]
+    stem: >-
+      You add a variable to `~/.bashrc`. A daemon that has been running for six
+      months does not see it. Why?
+    options:
+      - id: a
+        text: >-
+          It took its copy of the environment when it started; nothing updates a
+          running process
+        correct: true
+      - id: b
+        text: Daemons ignore user dotfiles for security reasons
+        note: >-
+          True that it never read them, but the deeper point is that even a
+          variable it *had* would not change after start.
+      - id: c
+        text: "`~/.bashrc` needs to be sourced before it takes effect"
+        note: >-
+          Sourcing affects your current shell. It cannot reach into another
+          process.
+      - id: d
+        text: The variable needs to be in `/etc/environment` to be global
+        note: >-
+          Nothing is global. `/etc/environment` is read by PAM at login and by
+          no shell at all.
+    explanation: >-
+      There is no lookup and no registry — a copy is made once, at `execve`, and
+      the two are unrelated afterwards. A daemon started last year has last
+      year's environment, which is also why changing a unit file requires a
+      `daemon-reload` and a restart rather than just an edit.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.4.3]
+    stem: >-
+      On Debian, `bash -lc 'echo $PATH'` prints a **shorter** PATH than
+      `bash -c 'echo $PATH'` for a non-root user. What causes that?
+    options:
+      - id: a
+        text: >-
+          `/etc/profile` is read only by login shells and *assigns* PATH,
+          omitting the `sbin` directories for non-root users
+        correct: true
+      - id: b
+        text: Non-login shells inherit extra directories from the parent process
+        note: >-
+          They inherit what the parent had, unmodified — which is the point.
+          The login shell is the one that changed it.
+      - id: c
+        text: Login shells drop directories that do not exist
+        note: >-
+          No shell prunes PATH. The directories are simply not in the string
+          `/etc/profile` assigns.
+      - id: d
+        text: "`sbin` is only added for interactive shells"
+        note: >-
+          Interactivity is a different axis, and it is not what selects this
+          PATH.
+    explanation: >-
+      `/etc/profile` branches on `id -u`: root gets the `sbin` entries and
+      everyone else gets `games` instead. And it **assigns** rather than appends,
+      so whatever the image or the parent set is discarded. The consequence is
+      backwards from the usual story — a script can run `capsh` and your login
+      shell cannot.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.4.3]
+    stem: >-
+      A hardening script ends with `unset PATH` before invoking a helper. Why is
+      that worse than leaving a wrong PATH in place?
+    options:
+      - id: a
+        text: >-
+          Bash falls back to a compiled-in PATH whose final entry is `.`, so
+          commands may be found in the current directory
+        correct: true
+      - id: b
+        text: Every command will fail, so the script cannot complete
+        note: >-
+          It does not fail — bash substitutes a default, which is precisely the
+          problem.
+      - id: c
+        text: "`unset` on PATH is a syntax error in bash"
+        note: >-
+          It is perfectly legal, which is why this is worth knowing.
+      - id: d
+        text: The shell will read `/etc/profile` again to rebuild PATH
+        note: >-
+          Nothing re-reads startup files mid-script.
+    explanation: >-
+      `env -u PATH bash -c 'echo $PATH'` prints
+      `/usr/local/bin:…:/sbin:.` — the final `.` is the current directory. Being
+      last, it cannot shadow a real command; what it does is turn a **missing**
+      command into a silent success against whatever is in the working directory.
+      So a wrong PATH fails loudly with `command not found`, and an unset one
+      converts that same failure into execution of a file somebody else may have
+      placed there. Set PATH explicitly, and prefer `env -i PATH=/usr/bin:/bin`
+      over a bare `env -i`.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.4.4]
+    stem: >-
+      A job runs correctly by hand and fails from cron with `command not found`.
+      What is the fastest way to reproduce it?
+    options:
+      - id: a
+        text: "`env -i PATH=/usr/bin:/bin HOME=\"$HOME\" bash ./job`"
+        correct: true
+      - id: b
+        text: Wait for the next scheduled run and read the logs
+        note: >-
+          It works, and it costs a day per iteration. The environment can be
+          reproduced in a second.
+      - id: c
+        text: "`bash -l ./job`, since cron uses a login shell"
+        note: >-
+          Cron does not use a login shell and reads no dotfiles. A login shell
+          would give a *different* wrong environment.
+      - id: d
+        text: "`sudo -u cronuser ./job`"
+        note: >-
+          That changes the user, not the environment, and `sudo` brings much of
+          yours along.
+    explanation: >-
+      `env -i` starts from nothing, and adding cron's minimal PATH reproduces the
+      failure immediately. Put that invocation in the repository as a test: a job
+      that has never been run without a human's environment has not been tested,
+      and the first honest run happens at 02:00 on a Sunday.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.4.4]
+    stem: >-
+      A systemd service fails writing to `~/.cache`. `systemctl show` confirms
+      the unit is correct. What is the likely cause?
+    options:
+      - id: a
+        text: "`HOME=/` because the unit has no `User=`, so `$HOME/.cache` is `/.cache`"
+        correct: true
+      - id: b
+        text: systemd runs services with no HOME at all
+        note: >-
+          It sets one — that is the trap. An unset variable would fail more
+          obviously.
+      - id: c
+        text: The root filesystem is mounted read-only by systemd
+        note: >-
+          Possible with `ProtectSystem=`, and the give-away here is the path the
+          error names.
+      - id: d
+        text: The service needs `Environment=HOME` to be inherited from your shell
+        note: >-
+          Nothing inherits from your shell. The unit's environment is
+          constructed by systemd.
+    explanation: >-
+      Without `User=`, systemd gives `HOME=/`, so anything writing a cache or
+      config under `$HOME` tries to write to the root directory — producing a
+      permissions error that points nowhere useful. Set `User=` and, if the
+      service needs a home, `Environment=HOME=…` or `WorkingDirectory=`
+      explicitly. It is the same lesson as the rest of the topic: declare it.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.4.5]
+    stem: >-
+      A process exports `LATE=1` after starting. Where will you see it?
+    options:
+      - id: a
+        text: "In `env` and in children started afterwards — but not in `/proc/PID/environ`"
+        correct: true
+      - id: b
+        text: Everywhere, including `/proc/PID/environ`
+        note: >-
+          That file is a snapshot taken at `execve` and never updates.
+      - id: c
+        text: Only in `/proc/PID/environ`, since that is the authoritative copy
+        note: >-
+          Backwards — it is the *historical* copy. The live one is what the
+          process and its children use.
+      - id: d
+        text: Nowhere, because a variable exported after start has no effect
+        note: >-
+          It works normally; the question is only which observer sees it.
+    explanation: >-
+      There are two environments and most tooling does not distinguish them. The
+      live copy is what `env`, `getenv` and new children see.
+      `/proc/PID/environ` records what the kernel copied in at `execve`, which
+      makes it the right tool for exactly one question — *what was this process
+      started with?* — and the wrong tool for every other.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.4.5, OBJ-B06.4.6]
+    stem: >-
+      An application reads `API_TOKEN` at startup and immediately calls
+      `unset API_TOKEN`. What has that achieved?
+    options:
+      - id: a
+        text: >-
+          Children started afterwards no longer inherit it — but the value is
+          still in `/proc/PID/environ` for the life of the process
+        correct: true
+      - id: b
+        text: The secret is removed from the process entirely
+        note: >-
+          It is removed from the live copy only. The exec snapshot is
+          unchanged and readable.
+      - id: c
+        text: Nothing at all — `unset` cannot remove an exported variable
+        note: >-
+          It removes it from the live environment, which is a real and useful
+          effect.
+      - id: d
+        text: The secret is removed everywhere except `docker inspect`
+        note: >-
+          `docker inspect` is unaffected, and so are `/proc/PID/environ`, `ps
+          eww` and any core dump.
+    explanation: >-
+      Worth being precise, because this appears in security reviews as a
+      completed control. It genuinely removes the child-process exposure — which
+      matters, since most applications shell out to tools that receive the whole
+      environment. It does nothing about the process itself: `/proc/PID/environ`,
+      `ps eww`, `docker inspect` and core dumps all still have the value. A
+      control that is *believed* to work is worse than none, because the finding
+      gets closed.
+
+  - id: q12
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B06.4.6]
+    stem: >-
+      A secret is passed as `docker run -e DB_PASSWORD=…`. Who can read it?
+    options:
+      - id: a
+        text: Any process running as the same user inside the container, via `/proc`
+        correct: true
+      - id: b
+        text: Anyone who can run `ps eww` in that container
+        correct: true
+      - id: c
+        text: Anyone who can reach the Docker daemon, via `docker inspect`
+        correct: true
+      - id: d
+        text: Every child process the application starts
+        correct: true
+      - id: e
+        text: Nobody — the environment is private to the process
+        note: >-
+          `/proc/PID/environ` is mode 0400, which sounds restrictive and means
+          every process of that *user* can read every other one's.
+    explanation: >-
+      Four exposures that compound rather than overlap — closing the `/proc`
+      route does not help while `ps` works, and neither matters if `docker
+      inspect` is available. The `inspect` route is the widest: it works from
+      outside the container, the value is stored on disk, it survives the
+      container stopping, and it lands in whatever backs up the daemon's state
+      directory.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.4.6, OBJ-B06.4.8]
+    stem: >-
+      What does `--env-file` improve over `-e VAR=secret` once the container is
+      running?
+    options:
+      - id: a
+        text: >-
+          Nothing — it only keeps the value out of your shell history and the
+          host's process list at launch
+        correct: true
+      - id: b
+        text: The value is no longer visible to `docker inspect`
+        note: >-
+          `docker inspect` shows it either way; the file is read at launch and
+          the result becomes ordinary environment variables.
+      - id: c
+        text: The variable is not inherited by child processes
+        note: >-
+          Inheritance is a property of the environment, not of how it was
+          populated.
+      - id: d
+        text: The secret can be rotated without restarting the container
+        note: >-
+          It cannot. A variable is fixed for the life of the process, which is
+          the property that actually matters.
+    explanation: >-
+      Both routes produce identical environment variables inside the container.
+      The improvement is real but narrow — the secret is not in your shell
+      history or in the process list of whoever ran `docker run`. The property
+      that decides the design is rotation: a variable is fixed for the life of
+      the process, so rotating means restarting everything that holds it, while a
+      file can be replaced underneath a running process.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.4.7]
+    stem: >-
+      A colleague says "it works when I run it". What is the fastest way to turn
+      that into a list of candidate causes?
+    options:
+      - id: a
+        text: >-
+          Capture `env` from their invocation and from the failing one, sort
+          both, and diff
+        correct: true
+      - id: b
+        text: Ask them to paste their `~/.bashrc`
+        note: >-
+          Useful and incomplete — the difference may be in `~/.profile`,
+          `/etc/profile.d`, or a variable set by their terminal.
+      - id: c
+        text: Run the job with `bash -x` to trace it
+        note: >-
+          That shows what the script does, not what differs between the two
+          environments it does it in.
+      - id: d
+        text: Compare the two shells' versions
+        note: >-
+          Rarely the cause, and it does not explain why the same shell behaves
+          differently in two modes.
+    explanation: >-
+      ```bash
+      bash -lic 'env' | sort > /tmp/theirs.env
+      bash -c   'env' | sort > /tmp/scheduler.env
+      diff /tmp/theirs.env /tmp/scheduler.env
+      ```
+      Every line of that diff is something a startup file did, and one of them is
+      the bug. It is usually five to twenty lines and takes a minute — and it
+      converts an anecdote about somebody's shell into evidence about the job.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.4.8]
+    stem: >-
+      Which single change most reduces a script's dependence on whoever launched
+      it?
+    options:
+      - id: a
+        text: '`: "${VAR:?VAR must be set}"` for every variable it needs, plus an explicit PATH'
+        correct: true
+      - id: b
+        text: Sourcing `~/.bashrc` at the top of the script
+        note: >-
+          That makes the script depend on a *specific person's* dotfiles, which
+          is the problem made mandatory rather than fixed.
+      - id: c
+        text: Adding `#!/bin/bash -l` so the script gets a login shell
+        note: >-
+          It pulls in `/etc/profile` — including the PATH rewrite that removes
+          `sbin` — and still depends on whichever profile files exist.
+      - id: d
+        text: Running it under `sudo` so the environment is consistent
+        note: >-
+          `sudo` changes which user's environment applies and adds its own
+          rules; it does not make requirements explicit.
+    explanation: >-
+      `${VAR:?message}` exits immediately with a sentence naming the problem, so
+      an invisible dependency becomes a one-line failure at the top instead of
+      something obscure at line 40 — or worse, a success against the wrong path
+      because the variable was empty. Combined with an explicit PATH, the script
+      stops caring who started it, which is the entire goal. Then declare the
+      values where the scheduler can see them: `Environment=` in a unit, or a
+      `PATH=` header in the crontab.

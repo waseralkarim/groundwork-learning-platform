@@ -1,0 +1,138 @@
+id: topic.set-euo-pipefail
+slug: set-euo-pipefail
+title: "set -euo pipefail, and What It Does Not Do"
+summary: >-
+  Everyone puts it at the top and almost nobody knows where it stops working.
+  `set -e` is exempt in nine contexts including every `if` condition;
+  `local x=$(cmd)` silently discards the failure; and `((count++))` ends your
+  script the first time it runs. This topic measures each one and builds a
+  preamble worth defending.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.finding-files
+    hardness: required
+  - topic: topic.where-output-goes
+    hardness: required
+
+objectives:
+  - id: OBJ-B08.5.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify what `-e`, `-u` and `-o pipefail` each change, and what exit
+      status each produces.
+    assessed_by: [quiz.q1, quiz.q2, lab.when-errexit-fires, exercise.e1]
+
+  - id: OBJ-B08.5.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe the contexts in which errexit does not fire.
+    assessed_by: [quiz.q3, quiz.q4, lab.when-errexit-fires]
+
+  - id: OBJ-B08.5.3
+    level: L2
+    verb: predict
+    statement: >-
+      Predict whether a script exits at a given line, given the surrounding
+      construct.
+    assessed_by: [quiz.q5, quiz.q6, quiz.q7, lab.when-errexit-fires, exercise.e2]
+
+  - id: OBJ-B08.5.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why an assignment can discard the exit status of the command that
+      produced its value.
+    assessed_by: [quiz.q8, quiz.q9, lab.the-masked-failure, exercise.e3, troubleshooting.the-migration-that-reported-success]
+
+  - id: OBJ-B08.5.5
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish arithmetic forms that are safe under errexit from those that
+      terminate the script.
+    assessed_by: [quiz.q10, quiz.q11, lab.the-masked-failure]
+
+  - id: OBJ-B08.5.6
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret `set -u` behaviour for defaults, positional parameters and
+      required variables.
+    assessed_by: [quiz.q12, lab.when-errexit-fires, exercise.e4]
+
+  - id: OBJ-B08.5.7
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a script that continued past a failure, or stopped at a success.
+    assessed_by: [quiz.q13, quiz.q14, lab.cleanup-that-runs, troubleshooting.the-migration-that-reported-success, troubleshooting.the-cleanup-that-ran-twice]
+
+  - id: OBJ-B08.5.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a script preamble and cleanup strategy, naming what each line
+      buys and what it cannot catch.
+    assessed_by: [quiz.q15, lab.the-preamble, exercise.e5, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: errexit
+    definition: >-
+      `set -e`. Exit when a command returns non-zero — except in the many
+      contexts where the shell is already testing that status.
+  - term: nounset
+    definition: >-
+      `set -u`. Fail on expanding an unset variable. Exits **127**, not 1, and
+      does not object to `${VAR:-default}`.
+  - term: pipefail
+    definition: >-
+      `set -o pipefail`. A pipeline's status becomes the last non-zero one
+      instead of the last command's.
+  - term: exemption
+    definition: >-
+      A context where errexit is deliberately suppressed — an `if` or `while`
+      condition, an operand of `&&` or `||`, anything after `!`, and any
+      non-final pipeline stage.
+  - term: masked status
+    definition: >-
+      A failure hidden because the shell reported something else's status —
+      most commonly `local x=$(cmd)`, where `local` succeeds regardless.
+  - term: EXIT trap
+    definition: >-
+      A handler that runs when the shell exits for any reason, including an
+      errexit abort. The correct place for cleanup.
+  - term: ERR trap
+    definition: >-
+      A handler that runs when a command fails. It is **not** inherited by
+      functions unless `set -E` is also given.
+  - term: "set -E"
+    definition: >-
+      errtrace. Makes functions, subshells and command substitutions inherit the
+      ERR trap. Without it an ERR trap is silent in exactly the places you want
+      it.
+  - term: mktemp
+    definition: >-
+      Create a temporary file or directory with a unique name. Paired with an
+      EXIT trap, it is how a script cleans up after itself.
+  - term: idempotent
+    definition: >-
+      Safe to run twice. The property that makes a failed run recoverable by
+      re-running it rather than by repairing state.
+  - term: strict mode
+    definition: >-
+      The `set -euo pipefail` preamble. A useful default and not a guarantee —
+      it catches unhandled failures, not wrong ones.
+
+foreshadows:
+  - "B08.6's functions and exit codes build directly on errexit's behaviour inside them."
+  - "B08.7's traps and cleanup extend the EXIT-trap pattern this topic introduces."
+  - "E27's CI steps run with their own shell options, which is why a script must not depend on the caller's."
+  - "D22's configuration management is idempotency enforced by a tool rather than by discipline."
+
+tags: [shell, bash, errexit, traps, robustness, fundamentals]

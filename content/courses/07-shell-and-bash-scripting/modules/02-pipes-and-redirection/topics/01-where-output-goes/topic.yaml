@@ -1,0 +1,154 @@
+id: topic.where-output-goes
+slug: where-output-goes
+title: "Where Output Actually Goes"
+summary: >-
+  Redirection is applied left to right, a pipeline runs every stage in its own
+  process, and a program writing to a pipe buffers differently than one writing
+  to a terminal. Each of those has a failure mode that produces no error — a
+  config file truncated to nothing, a variable that stays zero, and a log that
+  goes quiet exactly when you need it.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.how-a-line-becomes-a-command
+    hardness: required
+  - topic: topic.user-space-and-the-kernel
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B08.2.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify the three standard file descriptors and what each is connected to
+      for a given process.
+    assessed_by: [quiz.q1, quiz.q2, lab.where-output-goes, exercise.e1]
+
+  - id: OBJ-B08.2.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe what a pipe connects, and what the shell does to create one.
+    assessed_by: [quiz.q3, quiz.q4, lab.the-pipeline-that-lost-the-count]
+
+  - id: OBJ-B08.2.3
+    level: L2
+    verb: predict
+    statement: >-
+      Predict where output lands for a given sequence of redirections, applied
+      left to right.
+    assessed_by: [quiz.q5, quiz.q6, quiz.q7, lab.where-output-goes, exercise.e2, troubleshooting.the-errors-that-never-reached-the-log]
+
+  - id: OBJ-B08.2.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why a redirection can destroy the file it was going to read, and
+      which idioms avoid it.
+    assessed_by: [quiz.q8, quiz.q9, lab.destructive-redirection, exercise.e3]
+
+  - id: OBJ-B08.2.5
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret a pipeline's exit status, and say which stage failed.
+    assessed_by: [quiz.q10, quiz.q11, lab.the-pipeline-that-lost-the-count, exercise.e4]
+
+  - id: OBJ-B08.2.6
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose output that is produced but does not appear, and identify the
+      buffering that caused it.
+    assessed_by: [quiz.q12, quiz.q13, lab.output-that-never-arrived, troubleshooting.the-log-that-went-quiet]
+
+  - id: OBJ-B08.2.7
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish a here-doc, a here-string and process substitution, and say
+      when each is the right tool.
+    assessed_by: [quiz.q14, lab.the-pipeline-that-lost-the-count, exercise.e5]
+
+  - id: OBJ-B08.2.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a logging and redirection design for a scheduled job, naming what
+      each choice makes visible.
+    assessed_by: [quiz.q15, lab.output-that-never-arrived, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: file descriptor
+    definition: >-
+      A small integer naming an open file, pipe or socket for one process. 0, 1
+      and 2 are opened before your program starts and are visible in
+      `/proc/PID/fd`.
+  - term: stdin
+    definition: >-
+      Descriptor 0 — where a program reads input from unless told otherwise.
+  - term: stdout
+    definition: >-
+      Descriptor 1 — results. Redirected by `>` and consumed by the next stage
+      of a pipeline.
+  - term: stderr
+    definition: >-
+      Descriptor 2 — diagnostics. Deliberately separate so errors survive a
+      redirect and are not fed into the next command.
+  - term: redirection
+    definition: >-
+      Attaching a descriptor to a file or to another descriptor. Applied **left
+      to right**, which is why `>f 2>&1` and `2>&1 >f` do different things.
+  - term: duplication
+    definition: >-
+      `2>&1` — make descriptor 2 a copy of *wherever 1 points now*. It copies the
+      current target, not the name, which is the entire source of the ordering
+      trap.
+  - term: truncation
+    definition: >-
+      `>` empties the target before the command runs. That is why `sort f > f`
+      leaves an empty file.
+  - term: noclobber
+    definition: >-
+      A shell option making `>` refuse to overwrite an existing file. `>|`
+      overrides it for one redirection.
+  - term: pipe
+    definition: >-
+      A kernel buffer connecting one process's stdout to another's stdin. Both
+      run at once, and the writer blocks when the buffer is full.
+  - term: subshell
+    definition: >-
+      A child shell. Every stage of a pipeline runs in one, which is why a
+      variable set inside `cmd | while read` is gone afterwards.
+  - term: PIPESTATUS
+    definition: >-
+      A bash array holding the exit status of every stage of the last pipeline.
+      The only way to see which stage failed.
+  - term: pipefail
+    definition: >-
+      A shell option making a pipeline's status the last non-zero one. Without
+      it, `false | true` succeeds.
+  - term: SIGPIPE
+    definition: >-
+      The signal a writer gets when the reader has closed. It is how `head` stops
+      `yes`, and it shows as exit status 141.
+  - term: line buffering
+    definition: >-
+      Flushing output at every newline. The C library does this when stdout is a
+      terminal and **block-buffers** when it is a pipe — which is why piped
+      output can arrive minutes late.
+  - term: process substitution
+    definition: >-
+      `<(cmd)` — a command's output presented as a filename. Lets a loop read a
+      command's output without a pipeline, so no subshell is involved.
+
+foreshadows:
+  - "B08.3's find and xargs build pipelines whose exit status this topic teaches you to read."
+  - "B08.5's `set -euo pipefail` is the pipefail option, in context."
+  - "F34's log shipping depends on the buffering behaviour this topic measures."
+  - "C14's container logs are stdout and stderr, which is why a container that logs to a file logs nowhere."
+
+tags: [shell, bash, pipes, redirection, buffering, fundamentals]

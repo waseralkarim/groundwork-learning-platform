@@ -1,0 +1,343 @@
+id: lab.where-output-goes
+topic: topic.where-output-goes
+title: Send output to four places on purpose
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.2.1, OBJ-B08.2.3]
+
+intro: >-
+  Redirections are applied left to right, and `2>&1` copies wherever descriptor
+  1 points **at that moment**. Both halves of that sentence are load-bearing.
+
+
+  You will look at your own descriptors, then make the same command's output
+  land in four different arrangements — including the two orderings of `2>&1`,
+  which look identical and are not.
+
+setup:
+  - /opt/lab/seed-pipes.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Look at your shell's own file descriptors and record what each points at.
+      Save to /tmp/answer-fds.
+    hint: >-
+      /proc/self/fd holds a symlink per open descriptor. `ls -l` resolves them.
+    walkthrough: |
+      {
+        echo "this shell's descriptors:"
+        ls -l /proc/self/fd/ 2>/dev/null | grep -E '^l' | sed 's/^/  /'
+        echo
+        echo "0, 1 and 2 were open before anything of mine ran. i did not open them and i cannot choose not to have them."
+        echo
+        echo "and redirection changes what they point at:"
+        echo "  fd 1 normally: $(readlink /proc/self/fd/1)"
+        echo "  fd 1 inside a redirect: $(readlink /proc/self/fd/1 > /tmp/fd1.txt; cat /tmp/fd1.txt)"
+        echo
+        echo "the split between 1 and 2 is a design decision, not an accident. errors are kept OUT of the data stream so that 'cmd | process' does not feed an error message into process, and so 'cmd > file' captures results while i still see what went wrong."
+        echo
+        echo "a program that writes errors to stdout has broken that contract, and the symptom is confusing: error text inside a data file, or a pipeline treating a complaint as a record."
+      } > /tmp/answer-fds
+      cat /tmp/answer-fds
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fds
+        pattern: "(?i)0, 1 and 2 were open before"
+        describe: You identified the three standard descriptors
+      - type: file_matches
+        path: /tmp/answer-fds
+        pattern: "(?i)out of the data stream"
+        describe: And why stderr is separate from stdout
+      - type: file_matches
+        path: /tmp/answer-fds
+        pattern: "(?i)broken that contract"
+        describe: And what a program writing errors to stdout costs you
+
+  - id: s2
+    instruction: >-
+      Write a command that prints one line to stdout and one to stderr, then
+      capture them four different ways. Save the results to /tmp/answer-four.
+    hint: >-
+      Try both files separately, both to one file, and both orderings of
+      `>file 2>&1`.
+    walkthrough: |
+      mk() { echo "to stdout"; echo "to stderr" >&2; }
+      {
+        echo "1. separated into two files:"
+        mk > /tmp/o1.txt 2> /tmp/e1.txt
+        echo "   out.txt: [$(cat /tmp/o1.txt)]   err.txt: [$(cat /tmp/e1.txt)]"
+        echo
+        echo "2. both into one file, >file 2>&1:"
+        mk > /tmp/o2.txt 2>&1
+        echo "   file: [$(tr '\n' '|' < /tmp/o2.txt)]"
+        echo
+        echo "3. the SAME two redirections, swapped: 2>&1 >file"
+        mk 2>&1 > /tmp/o3.txt 2>/dev/null
+        echo "   file: [$(tr '\n' '|' < /tmp/o3.txt)]"
+        echo "   ^ only stdout landed. stderr went to wherever fd 1 pointed BEFORE the >file."
+        echo
+        echo "4. discard stdout, keep errors:"
+        mk > /dev/null 2> /tmp/e4.txt
+        echo "   err.txt: [$(cat /tmp/e4.txt)]"
+      } > /tmp/answer-four
+      cat /tmp/answer-four
+    verify:
+      - type: file_matches
+        path: /tmp/answer-four
+        pattern: "out.txt: \\[to stdout\\] +err.txt: \\[to stderr\\]"
+        describe: You separated the two streams
+      - type: file_matches
+        path: /tmp/answer-four
+        pattern: "file: \\[to stdout\\|to stderr\\|\\]"
+        describe: And captured both with >file 2>&1
+      - type: file_matches
+        path: /tmp/answer-four
+        pattern: "file: \\[to stdout\\|\\]"
+        describe: And showed the swapped order captures only stdout
+      - type: file_matches
+        path: /tmp/answer-four
+        pattern: "(?i)BEFORE the"
+        describe: And explained where stderr went instead
+
+  - id: s3
+    instruction: >-
+      Explain precisely why the order matters, in terms of what 2>&1 does. Save
+      to /tmp/answer-why-order.
+    hint: >-
+      Ask what `2>&1` copies — the number 1, or the thing 1 currently points at.
+    walkthrough: |
+      {
+        echo "2>&1 does NOT mean 'send stderr to stdout'. it means: make descriptor 2 a COPY OF WHEREVER DESCRIPTOR 1 POINTS RIGHT NOW."
+        echo
+        echo "it duplicates the TARGET, not the name. afterwards the two descriptors are independent - changing one does not affect the other."
+        echo
+        echo "so, left to right:"
+        echo
+        echo "  cmd >file 2>&1"
+        echo "    start:  1 -> terminal, 2 -> terminal"
+        echo "    >file:  1 -> file"
+        echo "    2>&1:   2 -> copy of 1 = file"
+        echo "    result: both in the file. correct."
+        echo
+        echo "  cmd 2>&1 >file"
+        echo "    start:  1 -> terminal, 2 -> terminal"
+        echo "    2>&1:   2 -> copy of 1 = TERMINAL"
+        echo "    >file:  1 -> file. 2 is untouched, because it copied the target"
+        echo "            and not the name."
+        echo "    result: stdout in the file, errors on the terminal."
+        echo
+        echo "which is why '2>&1' goes at the END, after the redirection it should follow. and why &>file exists in bash as a shorthand for the correct order."
+        echo
+        echo "the swapped form is not useless - 'cmd 2>&1 >file | grep x' pipes STDERR while stdout goes to a file, which is a real idiom. but it is deliberate, and it deserves a comment when written."
+      } > /tmp/answer-why-order
+      cat /tmp/answer-why-order
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-order
+        pattern: "(?i)copy of wherever descriptor 1 points"
+        describe: You stated what 2>&1 actually does
+      - type: file_matches
+        path: /tmp/answer-why-order
+        pattern: "(?i)target, not the name"
+        describe: And that it copies the target rather than linking
+      - type: file_matches
+        path: /tmp/answer-why-order
+        pattern: "(?i)at the END|goes at the"
+        describe: And where 2>&1 belongs
+      - type: file_matches
+        path: /tmp/answer-why-order
+        pattern: "(?i)not useless|real idiom"
+        describe: And when the other order is deliberate
+
+  - id: s4
+    instruction: >-
+      Use tee to send output to a file and onward at the same time, and use a
+      saved descriptor to keep a progress message on the terminal while bulk
+      output goes to a file. Save to /tmp/answer-tee.
+    hint: >-
+      `exec 3>&1` saves the current stdout so you can still write to it from
+      inside a redirected block.
+    walkthrough: |
+      {
+        echo "tee writes to a file AND passes the data on:"
+        printf 'alpha\nbravo\n' | tee /tmp/tee1.txt | wc -l | sed 's/^/  lines that continued down the pipe: /'
+        echo "  and the file also received: $(wc -l < /tmp/tee1.txt) lines"
+        echo
+        echo "saving a descriptor so a progress message escapes a redirect:"
+      } > /tmp/answer-tee
+      exec 3>&1
+      {
+        echo "  [progress] starting bulk work" >&3
+        echo "bulk line one"
+        echo "bulk line two"
+        echo "  [progress] done" >&3
+      } > /tmp/bulk.log 2>&1
+      exec 3>&-
+      {
+        echo "  bulk.log received: $(wc -l < /tmp/bulk.log) lines"
+        echo "  bulk.log contents: $(tr '\n' '|' < /tmp/bulk.log)"
+        echo
+        echo "the progress lines went to fd 3, which was a saved copy of the ORIGINAL stdout, so they bypassed the redirect entirely. the bulk output went to the file."
+        echo
+        echo "that is the save/redirect/restore pattern, and it is how a script logs a SECTION of its own output without wrapping every command individually."
+      } >> /tmp/answer-tee
+      cat /tmp/answer-tee
+    verify:
+      - type: file_matches
+        path: /tmp/answer-tee
+        pattern: "lines that continued down the pipe: +2"
+        describe: tee passed the data onward
+      - type: file_matches
+        path: /tmp/answer-tee
+        pattern: "the file also received: 2 lines"
+        describe: And wrote it to a file at the same time
+      - type: file_matches
+        path: /tmp/answer-tee
+        pattern: "bulk.log received: 2 lines"
+        describe: And the saved descriptor kept progress out of the log
+      - type: file_matches
+        path: /tmp/answer-tee
+        pattern: "(?i)save/redirect/restore"
+        describe: And you named the pattern
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-logging the redirection line you would put in a
+      crontab, and say what each part makes visible.
+    walkthrough: |
+      {
+        echo "the line most people write:"
+        echo "  0 2 * * * /opt/jobs/nightly.sh >> /var/log/nightly.log 2>&1"
+        echo
+        echo "three problems with it:"
+        echo "  - no timestamps, so nothing can be correlated with an alert or a deploy"
+        echo "  - results and diagnostics interleaved, so 'did it produce output' and"
+        echo "    'did it complain' become one question i cannot answer separately"
+        echo "  - >> with no rotation is a disk-full incident with no date on it yet"
+        echo
+        echo "what i would write:"
+        echo "  0 2 * * * /opt/jobs/nightly.sh >> /var/log/nightly.out 2>> /var/log/nightly.err"
+        echo
+        echo "and inside the script:"
+        echo "  log() { printf '%s %s\\n' \"\$(date -Is)\" \"\$*\"; }"
+        echo
+        echo "what each part makes visible:"
+        echo "  two files      reading nightly.err in the morning becomes a meaningful"
+        echo "                 action, instead of grepping one interleaved stream"
+        echo "  >> not >       cron appends across runs; > would keep only the last"
+        echo "  2>> at the end so stderr follows its own file, not a copy of stdout's"
+        echo "                 earlier target"
+        echo "  date -Is       sorts correctly and every log tool parses it. and it"
+        echo "                 records when the EVENT happened, which matters because"
+        echo "                 buffering means the write time can be much later"
+        echo
+        echo "plus rotation configured, because otherwise this design has a disk-full failure scheduled for a date nobody has chosen."
+      } > /tmp/answer-logging
+      cat /tmp/answer-logging
+    verify:
+      - type: file_matches
+        path: /tmp/answer-logging
+        pattern: "nightly.out 2>> /var/log/nightly.err"
+        describe: You separated the two streams
+      - type: file_matches
+        path: /tmp/answer-logging
+        pattern: "(?i)date -Is"
+        describe: And added timestamps
+      - type: file_matches
+        path: /tmp/answer-logging
+        pattern: "(?i)rotation"
+        describe: And addressed unbounded growth
+      - type: file_matches
+        path: /tmp/answer-logging
+        pattern: "(?i)when the EVENT happened|write time"
+        describe: And why in-script timestamps beat the write time
+
+solution: >-
+  **The three descriptors were open before your program started.**
+
+
+  ```console
+  $ ls -l /proc/self/fd/
+  lr-x------ 0 -> pipe:[52947108]
+  l-wx------ 1 -> pipe:[52950029]
+  l-wx------ 2 -> /dev/null
+  ```
+
+
+  The split between 1 and 2 is a design decision: **errors are kept out of the
+  data stream**, so `cmd | process` does not feed an error message into
+  `process`, and `cmd > file` captures results while you still see the
+  complaints. A program that writes errors to stdout has broken that contract,
+  and the symptom is confusing — error text inside a data file.
+
+
+  **Four arrangements, and one that surprises.**
+
+
+  ```text
+  mk > out.txt 2> err.txt    out.txt: [to stdout]   err.txt: [to stderr]
+  mk > file 2>&1             file: [to stdout|to stderr|]
+  mk 2>&1 > file             file: [to stdout|]        ← errors went elsewhere
+  mk > /dev/null 2> err.txt  err.txt: [to stderr]
+  ```
+
+
+  The third contains the same two redirections as the second, in the other
+  order, and captures half as much.
+
+
+  **Why:** `2>&1` does not mean "send stderr to stdout". It means **make
+  descriptor 2 a copy of wherever descriptor 1 points right now** — it duplicates
+  the *target*, not the name, and afterwards the two are independent.
+
+
+  ```text
+  cmd >file 2>&1     1→file, then 2 = copy of 1 = file.      both captured
+  cmd 2>&1 >file     2 = copy of 1 = TERMINAL, then 1→file.  errors escape
+  ```
+
+
+  So `2>&1` goes at the **end**, after the redirection it should follow — and
+  `&>file` is bash's shorthand for the correct order. The swapped form is not
+  useless: `cmd 2>&1 >file | grep x` pipes *stderr* while stdout goes to a file.
+  It is deliberate, and deserves a comment.
+
+
+  **`tee` and a saved descriptor.**
+
+
+  `tee` writes to a file and passes the data onward, so it is the answer whenever
+  output is wanted in two places.
+
+
+  ```bash
+  exec 3>&1                       # 3 is now a copy of the real stdout
+  {
+    echo "[progress] starting" >&3    # bypasses the redirect
+    do_bulk_work                       # captured
+  } > work.log 2>&1
+  exec 3>&-
+  ```
+
+
+  That is the **save / redirect / restore** pattern, and it is how a script logs a
+  section of its own output without wrapping every command.
+
+
+  **And the crontab line.**
+
+
+  ```text
+  0 2 * * * /opt/jobs/nightly.sh >> /var/log/nightly.out 2>> /var/log/nightly.err
+  ```
+
+
+  Two files, because "did it produce output" and "did it complain" should be
+  separately answerable at 08:00. `>>` because cron runs repeatedly. Timestamps
+  from `date -Is` inside the script, because they record when the **event**
+  happened — buffering means the write time can be much later. And rotation
+  configured, because `>>` without it is a disk-full incident that has not
+  happened yet.

@@ -1,0 +1,310 @@
+id: lab.the-quorum-that-was-not
+topic: topic.regions-and-failure-domains
+title: Two zones, and the redundancy that is not there
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A05.3.5, OBJ-A05.3.2]
+
+intro: >-
+  Topology bravo is "everything doubled across two availability zones". Its three
+  etcd nodes sit 2 in AZ-a and 1 in AZ-b.
+
+
+  You are going to compute what that survives, discover it is half of what
+  everybody assumes, and then find that the obvious correction makes it worse.
+
+
+  The arithmetic is four lines of `awk` and the result decides whether a design
+  works.
+
+setup:
+  - /opt/lab/seed-domains.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/topologies/bravo.txt. Compute the quorum for its three etcd
+      nodes, then compute what remains after losing each zone. Save to
+      /tmp/answer-bravo-quorum.
+    hint: >-
+      Quorum for n nodes is `int(n/2)+1`. Work out how many nodes are in each
+      zone, then subtract.
+    walkthrough: |
+      cat /tmp/topologies/bravo.txt
+      {
+        n=3
+        q=$(awk -v n=$n 'BEGIN{print int(n/2)+1}')
+        echo "etcd nodes: $n, quorum: $q"
+        echo "placement: 2 in AZ-a, 1 in AZ-b"
+        echo
+        for z in "AZ-a:2" "AZ-b:1"; do
+          name=${z%%:*}; count=${z##*:}
+          left=$(( n - count ))
+          awk -v nm="$name" -v c="$count" -v l="$left" -v q="$q" \
+            'BEGIN{ printf "lose %s (%d nodes): %d left, quorum %d -> %s\n", nm, c, l, q, (l>=q ? "HELD" : "LOST") }'
+        done
+        echo
+        echo "so this survives losing AZ-b and does NOT survive losing AZ-a. a random zone failure is survived HALF the time."
+        echo "the claim 'everything doubled across two availability zones' is true of the application replicas and false of the thing that decides whether the cluster accepts writes."
+      } > /tmp/answer-bravo-quorum
+      cat /tmp/answer-bravo-quorum
+    verify:
+      - type: file_matches
+        path: /tmp/answer-bravo-quorum
+        pattern: "lose AZ-a \\(2 nodes\\): 1 left, quorum 2 -> LOST"
+        describe: Losing the zone with two nodes loses quorum
+      - type: file_matches
+        path: /tmp/answer-bravo-quorum
+        pattern: "lose AZ-b \\(1 nodes\\): 2 left, quorum 2 -> HELD"
+        describe: And losing the other zone survives
+      - type: file_matches
+        path: /tmp/answer-bravo-quorum
+        pattern: "(?i)half the time"
+        describe: And you stated what that means for a random zone failure
+
+  - id: s2
+    instruction: >-
+      Try the obvious fix. Compute what a fourth etcd node — two per zone — does
+      to zone fault tolerance. Save to /tmp/answer-four-nodes.
+    hint: >-
+      Recompute the quorum for four nodes first. It changes.
+    walkthrough: |
+      {
+        for n in 3 4; do
+          q=$(awk -v n=$n 'BEGIN{print int(n/2)+1}')
+          echo "n=$n quorum=$q"
+        done
+        echo
+        echo "four nodes, two per zone, quorum 3:"
+        awk 'BEGIN{ n=4; q=3; l=n-2; printf "  lose either zone (2 nodes): %d left, quorum %d -> %s\n", l, q, (l>=q?"HELD":"LOST") }'
+        echo
+        echo "summary:"
+        echo "  3 nodes / 2 zones (2,1):  survives 1 of 2 zone failures"
+        echo "  4 nodes / 2 zones (2,2):  survives 0 of 2 zone failures"
+        echo
+        echo "adding a node made it strictly WORSE. the fourth node raised the quorum from 2 to 3 without adding a zone, so losing either zone now leaves two against a quorum of three."
+        echo "an even node count is actively harmful for this reason, which is why quorum systems are always deployed in odd numbers."
+      } > /tmp/answer-four-nodes
+      cat /tmp/answer-four-nodes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-four-nodes
+        pattern: "n=4 quorum=3"
+        describe: You recomputed the quorum for four nodes
+      - type: file_matches
+        path: /tmp/answer-four-nodes
+        pattern: "lose either zone \\(2 nodes\\): 2 left, quorum 3 -> LOST"
+        describe: And found neither zone loss survives
+      - type: file_matches
+        path: /tmp/answer-four-nodes
+        pattern: "(?i)worse"
+        describe: And that adding a node made it worse
+
+  - id: s3
+    instruction: >-
+      Compute the placements that do work. Test 3 nodes across 3 zones and 5
+      nodes across 3 zones, and save the comparison table to
+      /tmp/answer-placements.
+    hint: >-
+      For five nodes across three zones the placement is 2/2/1. Test losing each
+      zone in turn.
+    walkthrough: |
+      {
+        printf '%-26s %s\n' PLACEMENT "SURVIVES"
+        # 3 over 2
+        awk 'BEGIN{n=3;q=2; s=0; split("2 1",z," "); for(i in z) if (n-z[i]>=q) s++; printf "%-26s %d of 2 zone failures\n", "3 nodes / 2 zones (2,1)", s}'
+        # 4 over 2
+        awk 'BEGIN{n=4;q=3; s=0; split("2 2",z," "); for(i in z) if (n-z[i]>=q) s++; printf "%-26s %d of 2 zone failures\n", "4 nodes / 2 zones (2,2)", s}'
+        # 3 over 3
+        awk 'BEGIN{n=3;q=2; s=0; split("1 1 1",z," "); for(i in z) if (n-z[i]>=q) s++; printf "%-26s %d of 3 zone failures\n", "3 nodes / 3 zones (1,1,1)", s}'
+        # 5 over 2
+        awk 'BEGIN{n=5;q=3; s=0; split("3 2",z," "); for(i in z) if (n-z[i]>=q) s++; printf "%-26s %d of 2 zone failures\n", "5 nodes / 2 zones (3,2)", s}'
+        # 5 over 3
+        awk 'BEGIN{n=5;q=3; s=0; split("2 2 1",z," "); for(i in z) if (n-z[i]>=q) s++; printf "%-26s %d of 3 zone failures\n", "5 nodes / 3 zones (2,2,1)", s}'
+        echo
+        echo "the pattern: the number of ZONES decides zone fault tolerance, not the number of nodes. five nodes across two zones is no better than three across two - both survive exactly one of the two."
+        echo "for a majority quorum, three zones is the minimum that tolerates any single zone loss, and that is why every distributed system's documentation says three."
+      } > /tmp/answer-placements
+      cat /tmp/answer-placements
+    verify:
+      - type: file_matches
+        path: /tmp/answer-placements
+        pattern: "3 nodes / 3 zones \\(1,1,1\\) +3 of 3"
+        describe: Three nodes across three zones survives every single zone loss
+      - type: file_matches
+        path: /tmp/answer-placements
+        pattern: "5 nodes / 2 zones \\(3,2\\) +1 of 2"
+        describe: And five nodes across two zones is no better than three
+      - type: file_matches
+        path: /tmp/answer-placements
+        pattern: "(?i)number of ZONES|zones decides"
+        describe: And you identified what actually determines zone fault tolerance
+
+  - id: s4
+    instruction: >-
+      Bravo has a second problem in the same paragraph. Find what else is placed
+      badly, and save it with the consequence to /tmp/answer-bravo-rest.
+    hint: >-
+      Read the database line. Where is the primary, and which zone did you just
+      establish is the fatal one to lose?
+    walkthrough: |
+      cat /tmp/topologies/bravo.txt
+      {
+        echo "the database primary is in AZ-a, with a synchronous standby in AZ-b."
+        echo "AZ-a is also the zone holding two of the three etcd nodes - the zone whose loss takes quorum with it."
+        echo
+        echo "so losing AZ-a costs, simultaneously:"
+        echo "  - etcd quorum, so the cluster stops accepting changes"
+        echo "  - the database primary, so a failover is required"
+        echo "  - half the application replicas"
+        echo
+        echo "and the failover to the standby needs a control plane that has just lost quorum. the two failures are not independent - they are the same event, and the recovery from one depends on the other."
+        echo
+        echo "that is the concentration to look for: not just 'is there redundancy' but 'do the critical roles cluster in one domain'. bravo put the etcd majority and the database primary in the same zone, which turns one facility failure into a compound one."
+      } > /tmp/answer-bravo-rest
+      cat /tmp/answer-bravo-rest
+    verify:
+      - type: file_matches
+        path: /tmp/answer-bravo-rest
+        pattern: "(?i)primary"
+        describe: You found the database primary's placement
+      - type: file_matches
+        path: /tmp/answer-bravo-rest
+        pattern: "(?i)same (zone|event)|AZ-a"
+        describe: And that it shares a zone with the etcd majority
+      - type: file_matches
+        path: /tmp/answer-bravo-rest
+        pattern: "(?i)failover"
+        describe: And that recovery depends on the thing that also failed
+
+  - id: s5
+    instruction: >-
+      Write the corrected placement for bravo to /tmp/answer-corrected, and state
+      what it costs.
+    hint: >-
+      You know how many zones a majority quorum needs. Consider also where the
+      critical roles should sit relative to each other.
+    walkthrough: |
+      {
+        echo "corrected placement:"
+        echo "  etcd: 3 nodes, one per zone across AZ-a, AZ-b, AZ-c. survives any single zone loss."
+        echo "  database: multi-AZ managed instance with replicas in all three zones, primary NOT in the same zone as any etcd majority - which is automatic once etcd is 1/1/1, because there is no majority zone."
+        echo "  application: 6 replicas, 2 per zone, with topology spread constraints so the scheduler cannot pack them."
+        echo "  load balancer: managed, spanning three zones."
+        echo "  capacity: enough that two zones carry full load, so losing one requires no scaling and therefore no control plane."
+        echo
+        echo "what it costs: a third availability zone. in a cloud region that is close to nothing - the zones already exist, cross-zone traffic may carry a small charge, and there is no additional infrastructure to buy."
+        echo "which is the uncomfortable part of this lab: the fix is nearly free and the broken version is extremely common, because two zones feels redundant and the arithmetic is never done."
+        echo
+        echo "the one real cost is capacity headroom - running enough that n-1 zones carry full load means about 50% more compute at three zones. that is a genuine trade and it is what buys static stability."
+      } > /tmp/answer-corrected
+      cat /tmp/answer-corrected
+    verify:
+      - type: file_matches
+        path: /tmp/answer-corrected
+        pattern: "(?i)one per zone|1/1/1"
+        describe: You placed etcd across three zones
+      - type: file_matches
+        path: /tmp/answer-corrected
+        pattern: "(?i)spread constraint|topology spread"
+        describe: And constrained the application replicas
+      - type: file_matches
+        path: /tmp/answer-corrected
+        pattern: "(?i)close to nothing|nearly free"
+        describe: And noted that the fix is almost free
+      - type: file_matches
+        path: /tmp/answer-corrected
+        pattern: "(?i)headroom|capacity"
+        describe: And named capacity headroom as the real cost
+
+solution: >-
+  **What bravo actually survives.**
+
+
+  ```text
+  etcd nodes: 3, quorum: 2, placement 2 in AZ-a / 1 in AZ-b
+
+  lose AZ-a (2 nodes): 1 left, quorum 2 -> LOST
+  lose AZ-b (1 node):  2 left, quorum 2 -> HELD
+  ```
+
+
+  **A random zone failure is survived half the time.** "Everything doubled across
+  two availability zones" is true of the application replicas and false of the
+  component that decides whether the cluster accepts writes at all.
+
+
+  **And the obvious fix makes it worse.**
+
+
+  ```text
+  3 nodes / 2 zones (2,1):  survives 1 of 2
+  4 nodes / 2 zones (2,2):  survives 0 of 2
+  ```
+
+
+  The fourth node raises quorum from 2 to 3 without adding a zone, so losing
+  either zone now leaves two against a quorum of three. **Adding a node removed
+  the only zone failure the cluster could tolerate.** This is why quorum systems
+  are always deployed in odd numbers.
+
+
+  **The placements that work.**
+
+
+  ```text
+  3 nodes / 2 zones (2,1)    1 of 2
+  4 nodes / 2 zones (2,2)    0 of 2
+  3 nodes / 3 zones (1,1,1)  3 of 3
+  5 nodes / 2 zones (3,2)    1 of 2
+  5 nodes / 3 zones (2,2,1)  3 of 3
+  ```
+
+
+  **The number of zones decides zone fault tolerance, not the number of nodes.**
+  Five nodes across two zones is exactly as tolerant as three across two — one of
+  two — because in both cases one zone holds a majority. For a majority quorum,
+  three zones is the minimum that survives any single zone loss, which is why
+  every distributed system's documentation says three.
+
+
+  **Bravo's second problem, in the same paragraph.**
+
+
+  The database primary is in AZ-a — the same zone holding the etcd majority. So
+  losing AZ-a costs etcd quorum, the database primary, and half the application
+  replicas *simultaneously*, and the database failover needs a control plane that
+  has just lost quorum.
+
+
+  The two failures are not independent; they are the same event, and recovery
+  from one depends on the other. The thing to look for is not "is there
+  redundancy" but **do the critical roles cluster in one domain**.
+
+
+  **The correction, and what it costs.**
+
+
+  etcd 1/1/1 across three zones. The database multi-AZ across three. Application
+  replicas 2 per zone with topology spread constraints so the scheduler cannot
+  pack them. A load balancer spanning three. And enough capacity that two zones
+  carry full load.
+
+
+  Note that once etcd is 1/1/1 there *is* no majority zone, so the
+  primary-placement problem disappears by construction rather than needing a
+  rule.
+
+
+  What it costs is a third availability zone, which in a cloud region is close to
+  nothing — the zones exist, and there is no infrastructure to buy. **The fix is
+  nearly free and the broken version is extremely common**, because two zones
+  feels redundant and the arithmetic is never done.
+
+
+  The one genuine cost is capacity headroom: running enough that `n−1` zones
+  carry full load is about 50% more compute at three zones. That is a real trade,
+  and it is what buys static stability — the ability to lose a zone without
+  anything needing to act.

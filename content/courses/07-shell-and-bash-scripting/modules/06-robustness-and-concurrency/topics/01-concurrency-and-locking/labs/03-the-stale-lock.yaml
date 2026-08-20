@@ -1,0 +1,409 @@
+id: lab.the-stale-lock
+topic: topic.concurrency-and-locking
+title: Kill a lock holder and see which scheme survives
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.8.4, OBJ-B08.8.8]
+
+intro: >-
+  Four ways to be the only one running. All four work when everything goes well.
+
+
+  You will kill a holder with `SIGKILL` — no trap, no cleanup, nothing runs — and
+  find out which schemes recover on their own and which need a human.
+
+setup:
+  - /opt/lab/seed-lock.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Kill a `flock` holder with SIGKILL and try to acquire again. Save to
+      /tmp/answer-flock-kill.
+    hint: >-
+      A trap cannot help you here — SIGKILL cannot be caught.
+    walkthrough: |
+      rm -f /tmp/lock/k1.lock
+      {
+        echo "a holder that will be killed outright:"
+        bash -c 'exec 9>/tmp/lock/k1.lock; flock 9; echo "  holder pid $$ acquired"; sleep 30' &
+        holder=$!
+        sleep 0.4
+
+        printf '  while it is alive:  '
+        bash -c 'flock -n 9 || echo "refused"' 9>/tmp/lock/k1.lock
+
+        kill -9 "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+        echo "  --- SIGKILL. no trap ran, nothing was cleaned up ---"
+        sleep 0.3
+
+        printf '  after the kill:     '
+        bash -c 'flock -n 9 && echo "acquired"' 9>/tmp/lock/k1.lock
+
+        echo
+        echo "  lock file still on disk? $([ -e /tmp/lock/k1.lock ] && echo YES || echo NO)"
+        echo
+        echo "A FLOCK CANNOT GO STALE. the kernel closes every descriptor when a"
+        echo "process dies - however it dies - and the lock is attached to the"
+        echo "descriptor, so it goes with it."
+        echo
+        echo "note the file is still there and that is fine. THE FILE IS NOT THE LOCK."
+        echo "an empty file with nobody holding it is an unlocked lock."
+      } > /tmp/answer-flock-kill
+      cat /tmp/answer-flock-kill
+    verify:
+      - type: file_matches
+        path: /tmp/answer-flock-kill
+        pattern: 'while it is alive: +refused'
+        describe: A live holder excludes a second run
+      - type: file_matches
+        path: /tmp/answer-flock-kill
+        pattern: 'after the kill: +acquired'
+        describe: And SIGKILL releases the lock
+      - type: file_matches
+        path: /tmp/answer-flock-kill
+        pattern: 'lock file still on disk\? YES'
+        describe: While the file itself survives
+      - type: file_matches
+        path: /tmp/answer-flock-kill
+        pattern: '(?i)CANNOT GO STALE'
+        describe: You stated the property
+      - type: file_matches
+        path: /tmp/answer-flock-kill
+        pattern: '(?i)THE FILE IS NOT THE LOCK'
+        describe: And distinguished the file from the lock
+
+  - id: s2
+    instruction: >-
+      Do the same to a PID-file guard. Save to /tmp/answer-pidfile.
+    hint: >-
+      Write `$$` to a file, kill the writer, then look at what the next run has
+      to work with.
+    walkthrough: |
+      rm -f /tmp/lock/app.pid
+      {
+        echo "a PID-file holder:"
+        bash -c 'echo $$ > /tmp/lock/app.pid; echo "  holder pid $$ recorded"; sleep 30' &
+        holder=$!
+        sleep 0.4
+        kill -9 "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+        echo "  --- SIGKILL. the EXIT trap never ran ---"
+        echo
+        echo "  pid file present?  $([ -e /tmp/lock/app.pid ] && echo YES || echo NO)"
+        recorded=$(cat /tmp/lock/app.pid)
+        echo "  it names pid:      $recorded"
+        echo "  is that alive?     $(kill -0 "$recorded" 2>/dev/null && echo yes || echo NO - the process is gone)"
+        echo
+        echo "THE FILE OUTLIVED THE PROCESS. a script that only checks for the file's"
+        echo "existence now refuses to run FOREVER, until a human deletes it."
+        echo
+        echo "three defects, in increasing order of how long they take to find:"
+        echo
+        echo "  1. IT GOES STALE. SIGKILL, an OOM kill, or a node reboot means the"
+        echo "     trap never runs and the file stays."
+        echo
+        echo "  2. THE kill -0 CHECK IS A GUESS. pids are reused, so on a busy machine"
+        echo "     the recorded number may now belong to something else entirely and"
+        echo "     the check reports 'still running' about an unrelated process."
+        echo
+        echo "  3. IT IS TOCTOU. between the test and the write, another run can do"
+        echo "     exactly the same test. both find no live pid, both write, both"
+        echo "     proceed. small window, real race."
+        echo
+        echo "the only good use of a pid file is as INFORMATION - written inside a"
+        echo "real lock so a human can see who holds it. it is not the lock."
+      } > /tmp/answer-pidfile
+      cat /tmp/answer-pidfile
+    verify:
+      - type: file_matches
+        path: /tmp/answer-pidfile
+        pattern: 'pid file present\? +YES'
+        describe: The PID file survives its owner
+      - type: file_matches
+        path: /tmp/answer-pidfile
+        pattern: '(?i)is that alive\? +NO - the process is gone'
+        describe: And names a dead process
+      - type: file_matches
+        path: /tmp/answer-pidfile
+        pattern: '(?i)OUTLIVED THE PROCESS'
+        describe: You named the failure
+      - type: file_matches
+        path: /tmp/answer-pidfile
+        pattern: '(?i)pids are reused'
+        describe: And why the liveness check is a guess
+      - type: file_matches
+        path: /tmp/answer-pidfile
+        pattern: 'TOCTOU'
+        describe: And the race in check-then-write
+
+  - id: s3
+    instruction: >-
+      Compare `mkdir` and check-then-create. Show which of the two is a real
+      lock, and kill a holder of each. Save to /tmp/answer-mkdir.
+    walkthrough: |
+      rm -rf /tmp/lock/m.d /tmp/lock/t.lock
+      {
+        echo "mkdir is ATOMIC - it either creates or fails, with no window:"
+        mkdir /tmp/lock/m.d 2>/dev/null && echo "  first  mkdir: acquired"
+        mkdir /tmp/lock/m.d 2>/dev/null && echo "  second mkdir: acquired (WRONG)" \
+                                        || echo "  second mkdir: refused rc=1"
+        rm -rf /tmp/lock/m.d
+        echo
+        echo "check-then-create is NOT:"
+        echo "      [ -e \"\$LOCK\" ] || touch \"\$LOCK\""
+        echo "  between the test and the touch, another run runs the same test."
+        echo "  both find nothing, both touch, both proceed."
+        echo
+        echo "  the atomic equivalent, if you have no flock:"
+        ( set -o noclobber
+          : > /tmp/lock/t.lock 2>/dev/null && echo "      first  noclobber create: acquired"
+          : > /tmp/lock/t.lock 2>/dev/null && echo "      second: acquired (WRONG)" \
+                                           || echo "      second noclobber create: refused" )
+        echo
+        echo "now kill a mkdir holder:"
+        bash -c 'mkdir /tmp/lock/m2.d 2>/dev/null && { trap "rmdir /tmp/lock/m2.d" EXIT; echo "  holder acquired"; sleep 30; }' &
+        h=$!
+        sleep 0.4
+        kill -9 "$h" 2>/dev/null; wait "$h" 2>/dev/null
+        echo "  --- SIGKILL ---"
+        echo "  directory still present? $([ -d /tmp/lock/m2.d ] && echo YES || echo NO)"
+        mkdir /tmp/lock/m2.d 2>/dev/null && echo "  next run: acquired" \
+                                         || echo "  next run: REFUSED - stale lock, needs a human"
+        rm -rf /tmp/lock/m2.d
+        echo
+        echo "mkdir IS a real lock - atomic, no tool needed, works where flock does not"
+        echo "(some network filesystems, or a shell with no spare descriptors). but the"
+        echo "rmdir is in a TRAP, and a trap does not run on SIGKILL, so it goes stale"
+        echo "exactly like a pid file."
+      } > /tmp/answer-mkdir
+      cat /tmp/answer-mkdir
+    verify:
+      - type: file_matches
+        path: /tmp/answer-mkdir
+        pattern: 'second mkdir: refused rc=1'
+        describe: mkdir is atomic
+      - type: file_matches
+        path: /tmp/answer-mkdir
+        pattern: 'second noclobber create: refused'
+        describe: And noclobber gives an atomic create
+      - type: file_matches
+        path: /tmp/answer-mkdir
+        pattern: 'directory still present\? YES'
+        describe: But the directory survives a SIGKILL
+      - type: file_matches
+        path: /tmp/answer-mkdir
+        pattern: '(?i)REFUSED - stale lock, needs a human'
+        describe: So the next run is blocked
+      - type: file_matches
+        path: /tmp/answer-mkdir
+        pattern: '(?i)a trap does not run on SIGKILL'
+        describe: And you explained why
+
+  - id: s4
+    instruction: >-
+      Build the comparison table from what you measured, and say when you would
+      use each. Save to /tmp/answer-table.
+    walkthrough: |
+      {
+        printf '  %-22s %-10s %-8s %-14s %s\n' SCHEME 'SURVIVES' ATOMIC 'NEEDS' 'STALE-PROOF'
+        printf '  %-22s %-10s %-8s %-14s %s\n' '' 'SIGKILL' '' '' ''
+        printf '  %-22s %-10s %-8s %-14s %s\n' 'flock'            yes yes 'flock(1)'  yes
+        printf '  %-22s %-10s %-8s %-14s %s\n' 'mkdir'            no  yes nothing     no
+        printf '  %-22s %-10s %-8s %-14s %s\n' 'noclobber create' no  yes nothing     no
+        printf '  %-22s %-10s %-8s %-14s %s\n' 'pid file'         no  no  nothing     no
+        printf '  %-22s %-10s %-8s %-14s %s\n' '[ -e ] || touch'  no  no  nothing     no
+        echo
+        echo "WHEN I WOULD USE EACH:"
+        echo
+        echo "  flock       almost always. it is the only one the kernel cleans up,"
+        echo "              which means a crashed run never needs a human. on Linux"
+        echo "              with util-linux installed there is no reason to use"
+        echo "              anything else."
+        echo
+        echo "  mkdir       when flock is unavailable or unreliable - some network"
+        echo "              filesystems do not implement flock semantics across"
+        echo "              clients, and a POSIX sh with no spare descriptor cannot"
+        echo "              use the exec idiom. accept that crashes need cleaning up,"
+        echo "              and put the age of the directory in your alerting."
+        echo
+        echo "  pid file    as INFORMATION ONLY, written inside a real lock, so a"
+        echo "              human can see which process holds it. never as the lock."
+        echo
+        echo "  [ -e ] ||   never. it is not a lock. it is a comment about intent with"
+        echo "  touch       a race in the middle, and it appears in production more"
+        echo "              often than the other three combined."
+        echo
+        echo "THE PROPERTY THAT DECIDES IT is who keeps the record. with flock the"
+        echo "KERNEL does, and the kernel always gets to run its cleanup. with"
+        echo "everything else the SCRIPT does, and a script can be killed between any"
+        echo "two instructions."
+      } > /tmp/answer-table
+      cat /tmp/answer-table
+    verify:
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: 'flock +yes +yes'
+        describe: flock survives SIGKILL and is atomic
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: 'mkdir +no +yes'
+        describe: mkdir is atomic but not stale-proof
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: '\[ -e \] \|\| touch +no +no'
+        describe: And check-then-create is neither
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: '(?i)never as the lock'
+        describe: You placed the PID file correctly
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: '(?i)who keeps the record'
+        describe: And named the property that decides it
+
+  - id: s5
+    instruction: >-
+      A lock protects against overlap and creates a new failure mode. Find it,
+      and say what you would monitor. Save to /tmp/answer-monitoring.
+    hint: >-
+      What happens to every subsequent run if the holder hangs?
+    walkthrough: |
+      rm -f /tmp/lock/hang.lock
+      {
+        echo "a holder that never finishes:"
+        bash -c 'exec 9>/tmp/lock/hang.lock; flock 9; sleep 300' &
+        hung=$!
+        sleep 0.4
+        for run in 1 2 3; do
+          printf '  scheduled run %s: ' "$run"
+          bash -c 'exec 9>/tmp/lock/hang.lock
+                   flock -n 9 || { echo "another run holds the lock - skipping"; exit 0; }
+                   echo "did the work"'
+        done
+        kill -9 "$hung" 2>/dev/null; wait "$hung" 2>/dev/null
+        echo
+        echo "THE LOCK IS WORKING PERFECTLY AND NO WORK IS BEING DONE."
+        echo
+        echo "every run skips, exits 0, and logs a reassuring message. a job that has"
+        echo "not run since Tuesday looks exactly like a job that is running fine,"
+        echo "because the only signal is a line saying it decided not to."
+        echo
+        echo "this is the failure mode the lock CREATES. before the lock, a hung run"
+        echo "and a healthy one were distinguishable; after it, both produce a stream"
+        echo "of successful exits."
+        echo
+        echo "WHAT I WOULD MONITOR:"
+        echo
+        echo "  1. CONSECUTIVE SKIPS. one is normal, three in a row means the holder"
+        echo "     is stuck. this is the single most valuable alert here and almost"
+        echo "     nobody has it."
+        echo
+        echo "  2. TIME SINCE THE LAST SUCCESSFUL COMPLETION - not since the last"
+        echo "     invocation. the difference between those two numbers IS the bug."
+        echo
+        echo "  3. AGE OF THE HOLDER. pair the lock with timeout -k so no run can hold"
+        echo "     it indefinitely:"
+        echo "         timeout -k 30 3600 build_report"
+        echo "     a bounded run means a stuck holder resolves itself in an hour"
+        echo "     instead of at the next incident review."
+        echo
+        echo "  4. WAIT TIME, if the lock is a blocking one, because a queue that is"
+        echo "     growing is a pile-up in progress."
+        echo
+        echo "the general shape: A GUARD THAT MAKES FAILURE QUIET NEEDS ITS OWN"
+        echo "MONITORING. the lock converted a visible overlap into an invisible"
+        echo "absence, and absence is the harder of the two to notice."
+      } > /tmp/answer-monitoring
+      cat /tmp/answer-monitoring
+    verify:
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: '(?s)scheduled run 1: another run holds.*scheduled run 3: another run holds'
+        describe: Every scheduled run skips while the holder hangs
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: '(?i)NO WORK IS BEING DONE'
+        describe: You named the failure the lock creates
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: '(?i)CONSECUTIVE SKIPS'
+        describe: And the alert that catches it
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: '(?i)last successful completion'
+        describe: And the metric that distinguishes it
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: 'timeout -k'
+        describe: And how to bound the holder
+      - type: file_matches
+        path: /tmp/answer-monitoring
+        pattern: '(?i)MAKES FAILURE QUIET'
+        describe: And the general rule
+
+solution: >-
+  **`flock` cannot go stale.**
+
+
+  ```console
+  while it is alive:  refused
+  --- SIGKILL. no trap ran ---
+  after the kill:     acquired
+  lock file still on disk? YES
+  ```
+
+
+  The kernel closes every descriptor when a process dies — however it dies — and
+  the lock is attached to the descriptor. The file remains, and that is fine:
+  **the file is not the lock.** An empty file nobody holds is an unlocked lock.
+
+
+  **A PID file outlives its owner.**
+
+
+  ```console
+  pid file present?  YES
+  it names pid:      26
+  is that alive?     NO - the process is gone
+  ```
+
+
+  Three defects: it goes **stale**, because a trap does not run on SIGKILL; the
+  `kill -0` liveness check is a **guess**, since PIDs are reused and the number
+  may now belong to something unrelated; and it is **TOCTOU** — between the test
+  and the write, another run does the same test and both proceed. Its only good
+  use is as *information*, written inside a real lock.
+
+
+  **`mkdir` is a real lock and still goes stale.** It is atomic — the second
+  `mkdir` fails with `EEXIST` and there is no window — which makes it the right
+  answer where `flock` is unavailable. But the `rmdir` lives in a trap, and a
+  trap does not run on SIGKILL, so the next run is refused until a human
+  intervenes. `set -o noclobber` with `: > file` gives the same atomic create and
+  the same staleness.
+
+
+  | Scheme | Survives SIGKILL | Atomic | Stale-proof |
+  |---|---|---|---|
+  | `flock` | **yes** | yes | **yes** |
+  | `mkdir` | no | **yes** | no |
+  | noclobber create | no | **yes** | no |
+  | PID file | no | no | no |
+  | `[ -e ] \|\| touch` | no | **no** | no |
+
+
+  **The property that decides it is who keeps the record.** With `flock` the
+  *kernel* does, and the kernel always gets to run its cleanup. With everything
+  else the *script* does, and a script can be killed between any two
+  instructions.
+
+
+  **And the lock creates a new failure mode.** A holder that hangs makes every
+  subsequent run skip, exit 0, and log a reassuring message — so a job that has
+  not run since Tuesday looks exactly like one running fine. Monitor
+  **consecutive skips**, **time since last successful completion** (not since
+  last invocation — the gap between those two numbers *is* the bug), and bound
+  the holder with `timeout -k`. **A guard that makes failure quiet needs its own
+  monitoring.**

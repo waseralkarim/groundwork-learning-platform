@@ -1,0 +1,204 @@
+topic: topic.the-block-layer
+
+questions:
+  - id: i1
+    level: L2
+    question: What happens between `write()` returning and the data being on disk?
+    model_answer: >-
+      `write()` copies the bytes into page-cache pages, marks them dirty, and
+      returns. Nothing has reached a device, and nothing is scheduled to — the
+      filesystem has not allocated blocks and no request exists.
+
+
+      Writeback happens later, triggered by one of four things: dirty pages
+      crossing `dirty_background_ratio`, in which case kernel threads write back
+      and nobody blocks; dirty pages crossing `dirty_ratio`, at which point the
+      writer is throttled and `write()` starts blocking; a page ageing past
+      `dirty_expire_centisecs`, thirty seconds by default; or the application
+      calling `fsync`.
+
+
+      Then the filesystem allocates and builds bios, the block layer merges
+      adjacent requests, the I/O scheduler queues and dispatches them, and the
+      device has its own queue after that.
+
+
+      The practical consequence is that `close()` does not flush and a successful
+      `write()` is not a durability promise. If the machine loses power in the
+      next thirty seconds the data is gone and your program was told it
+      succeeded.
+    signal: >-
+      Naming both dirty thresholds and knowing that only the second one blocks
+      is the main signal — that distinction explains the shape of most write
+      latency incidents. Volunteering that `close()` does not flush suggests
+      they have debugged a real data-loss bug rather than read about buffering.
+    follow_ups:
+      - "Which of those triggers blocks the application, and which do not?"
+      - "How would you tell how much data is currently unwritten?"
+      - "Why might you set vm.dirty_bytes instead of vm.dirty_ratio?"
+
+  - id: i2
+    level: L3
+    question: >-
+      `iostat` shows a disk at 100% utilisation. What do you conclude, and what
+      do you look at next?
+    model_answer: >-
+      On its own, almost nothing. `%util` is the fraction of the interval during
+      which at least one request was in flight. For a spinning disk serving one
+      request at a time that approximated saturation; for anything that serves
+      requests concurrently — NVMe especially — it saturates at 100% while the
+      device is using a few percent of its capability.
+
+
+      What I would look at instead: average queue depth and `await` together.
+      Queue depth near or below one with a low `await` means requests are not
+      waiting for each other and the device is fine, whatever `%util` says. A
+      high `await` with a high queue depth means a queue problem, and a deeper
+      queue would make it worse. A high `await` with queue depth around one
+      means the device really is slow, or the requests are very large.
+
+
+      Best of all is `io.pressure` from the cgroup, which measures how much time
+      tasks spent stalled waiting for I/O. It is about the work rather than the
+      device, it does not saturate, and it is comparable across device types.
+
+
+      I would also want the request size — throughput divided by IOPS — because
+      50 MB/s of 4 KiB random writes and 50 MB/s of 1 MiB sequential writes are
+      completely different amounts of work.
+    signal: >-
+      Refusing to conclude anything from `%util` is the discriminator; most
+      candidates treat it as saturation. Pairing `await` with queue depth to
+      separate slow-device from deep-queue is the senior version. Reaching for
+      PSI, and asking for request size before accepting a throughput figure, are
+      both strong.
+    follow_ups:
+      - "How would you compute queue depth from /proc/diskstats?"
+      - "What does await include that device service time does not?"
+      - "When is %util still a fair signal?"
+
+  - id: i3
+    level: L3
+    question: >-
+      A process shows 8 GB of `wchar` and 103 GB of `write_bytes`. What is going
+      on, and how would you narrow it down?
+    model_answer: >-
+      That is twelvefold write amplification — the device did twelve times the
+      work the application asked for. Something between the two is enlarging the
+      writes.
+
+
+      The candidates, roughly in order of how often I have seen them: overlayfs
+      copy-up, where the first write to a file living in a lower layer copies the
+      whole file first; a filesystem journal, which is usually a small constant
+      factor and not twelve; RAID parity, likewise bounded; and 512-byte writes
+      to a device whose real block size is 4 KiB, turning every write into a
+      read-modify-write.
+
+
+      To narrow it: check the mount first — `findmnt` on the directory being
+      written. An overlay under a database data directory is the answer nine
+      times out of ten in a container. I would also look at `read_bytes`,
+      because copy-up must *read* the original before reproducing it, so a large
+      read counter alongside a large write counter on a write-heavy workload is
+      the fingerprint.
+
+
+      If it is overlayfs, the fix is a volume, and it is worth saying that this
+      is a performance fix as much as a durability one — people accept "databases
+      need volumes" as a rule without knowing it is also worth an order of
+      magnitude.
+    signal: >-
+      Naming copy-up specifically, and using `read_bytes` as corroboration
+      rather than just the write ratio, is what distinguishes someone who has
+      diagnosed this from someone who has heard of it. Listing the alternatives
+      with a sense of their magnitudes — journal small, copy-up unbounded — shows
+      real calibration.
+    follow_ups:
+      - "Why would read_bytes be large on a write-heavy workload?"
+      - "What is the granularity of overlayfs copy-on-write, and why does that matter?"
+      - "How would you benchmark this before a migration rather than after?"
+
+  - id: i4
+    level: L3
+    question: >-
+      Why is a database's performance dominated by fsync latency rather than by
+      throughput?
+    model_answer: >-
+      Because a transaction is not committed until its write-ahead log record is
+      durable, and durable means the device has acknowledged it. That is an
+      `fsync`, and the commit blocks on it.
+
+
+      So the number that matters is how quickly the device can promise a *small*
+      write is safe, which is close to unrelated to how many megabytes per second
+      it can move sequentially. A device with excellent sequential throughput and
+      poor flush latency will be slow for a database and look wonderful in a
+      benchmark — which is most of the history of consumer SSDs in database
+      workloads.
+
+
+      A few things follow. Group commit exists to amortise this: batch several
+      transactions into one flush and the per-transaction cost falls, at the
+      price of latency for the first one in the batch. `write_cache` in sysfs
+      says whether the device acknowledges before the media is written, in which
+      case `fsync` must additionally issue a flush — and a device that ignores
+      flushes is fast and loses data on power failure. And on overlayfs, `fsync`
+      has to satisfy both layers, which is one reason databases in containers
+      without volumes are slower than the hardware suggests.
+
+
+      Practically: benchmark with small writes and `--fsync=1`, through the same
+      filesystem path the database will use. Not sequential throughput.
+    signal: >-
+      Connecting commit to WAL to fsync in one chain is the core. Mentioning
+      group commit shows they understand the amortisation. The device write
+      cache and flush-honouring point is a strong extra — it is where the
+      "cheap SSD benchmarks great and loses data" story comes from.
+    follow_ups:
+      - "What does group commit trade away?"
+      - "How would you benchmark for this specifically?"
+      - "What does a device that ignores flushes look like in a benchmark?"
+
+  - id: i5
+    level: L3
+    question: >-
+      How would you choose an I/O scheduler for a device you have just been
+      handed?
+    model_answer: >-
+      Read the device first: `/sys/block/<dev>/queue/rotational` and the
+      available schedulers. Then ask what the workload is and what must not be
+      starved.
+
+
+      For NVMe, `none`. The device has tens of thousands of queue entries and
+      reorders using knowledge of its own flash layout that the kernel does not
+      have; kernel-side reordering adds CPU cost and gets in the way of a better
+      decision made downstream.
+
+
+      For a SATA SSD, a cloud volume, or a rotational disk, `mq-deadline`. It is
+      cheap and it gives reads a deadline, which matters because merging adjacent
+      writes is the efficient thing to do and a scheduler with no deadline will
+      keep doing it — so a read can wait behind a write stream essentially
+      without bound. A deadline converts an unbounded failure into a bounded one.
+
+
+      `bfq` when fairness between processes or tenants matters more than
+      throughput; it does proportional sharing at a real CPU cost. `kyber` when
+      you have a specific tail latency target on a fast device.
+
+
+      While I am there I would check `read_ahead_kb` too, because it is the
+      bigger win for a random-access workload: at the default of 128, every 4 KiB
+      random read pulls 128 KiB off the device and discards almost all of it.
+    signal: >-
+      Choosing by device first and workload second, rather than reciting a
+      preference, is the shape to listen for. The read-starvation argument for
+      `mq-deadline` is the one that shows they know why the default matters.
+      Volunteering readahead is a good sign — it is often the larger win and
+      rarely mentioned.
+    follow_ups:
+      - "Why does none work well on NVMe when it does no reordering at all?"
+      - "When would you lower read_ahead_kb, and what does it cost?"
+      - "How would you verify the change actually helped?"

@@ -1,0 +1,179 @@
+id: assessment.files-and-filesystems
+topic: topic.files-and-filesystems
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a container's filesystem to a new engineer
+    kind: explain
+    objectives: [OBJ-A01.5.4]
+    prompt: >-
+      A developer asks why the file they wrote inside a running container
+      disappeared when it was replaced, and why the team keeps telling them to
+      use a volume.
+
+
+      Answer in about 150 words. Cover what the root filesystem actually is,
+      where their write went, and one cost of writing to it that has nothing to
+      do with persistence.
+    rubric:
+      - "Describes the root as an overlay of read-only image layers plus one writable layer"
+      - "States that the writable layer is created at start and discarded when the container is removed"
+      - "Notes that the read-only layers are shared between containers from the same image"
+      - "Names copy-up as a cost independent of persistence, with a concrete consequence"
+      - "Concludes with the rule: frequently written or valuable data belongs on a volume"
+    model_answer: >-
+      A container's `/` is not a disk. It is an overlay: several read-only
+      directories from the image, plus one writable directory created for that
+      container, presented as one tree. Your write went into that writable layer,
+      which is deleted with the container — not a bug, the design.
+
+
+      The read-only layers are shared. Ten containers from one image use one copy
+      on disk, and share its page cache in RAM too, which is why containers start
+      instantly and cost so little.
+
+
+      There is a second cost that is not about persistence. Modifying a file that
+      came from a lower layer copies the whole file into the writable layer
+      first, so appending one line to a 2 GB file inherited from the image costs
+      2 GB and the time to copy it.
+
+
+      Hence the rule: anything written frequently, or worth keeping, belongs on a
+      volume.
+    common_failures:
+      - "Describing the container filesystem as a copy of the image"
+      - "Explaining persistence but missing copy-up, which is the performance half of the rule"
+      - "Claiming each container gets its own copy of the image layers"
+      - "Recommending a bind mount for production data without noting what it exposes"
+
+  - id: B
+    title: Reason about durability
+    kind: reason
+    objectives: [OBJ-A01.5.7]
+    prompt: >-
+      A colleague's service writes an audit record with a single `write()` call,
+      gets a successful return, and acknowledges the request. They argue that
+      adding `fsync` is premature optimisation in reverse — it would slow the
+      service down for a failure mode that "never happens".
+
+
+      Write your response. Say what guarantee they currently have, what `fsync`
+      would add, what it would cost, and under what circumstances their position
+      is actually correct.
+    rubric:
+      - "States that a successful write means the kernel has the bytes, not the device"
+      - "Explains that the data sits dirty in the page cache until flushed"
+      - "Names fsync as the durability barrier and notes the directory must also be synced for a new file"
+      - "Quantifies the cost honestly: a device round trip, bounding throughput"
+      - "Identifies when the colleague is right — data that can be regenerated, or where the loss window is acceptable"
+      - "Distinguishes a deliberate decision from an unexamined assumption"
+    model_answer: >-
+      Right now the guarantee is that the kernel has the bytes. They are in the
+      page cache, marked dirty, and will reach the device on a flush thread's
+      schedule — typically within seconds. A power loss or kernel panic in that
+      window loses the record after the service told the caller it succeeded.
+
+
+      `fsync` closes that window: it returns when the device confirms the data is
+      stored. For a newly created file the directory needs syncing too, or the
+      data can exist in an inode that nothing names.
+
+
+      The cost is real and worth stating plainly: every fsync is a round trip to
+      the device, so fsyncing per record bounds throughput to the device's sync
+      rate, which can be orders of magnitude below its write rate. Batching —
+      sync every N records or every T milliseconds — trades a bounded loss window
+      for most of the throughput back.
+
+
+      Their position is correct when the data can be regenerated, or when losing
+      a few seconds of it is genuinely acceptable and someone has said so. It is
+      not correct for an audit log, where the whole point is that the record
+      exists when someone asks later.
+
+
+      The distinction I would push on is not fsync versus no fsync. It is whether
+      the loss window is a decision with a number attached, or an assumption
+      nobody has examined.
+    common_failures:
+      - "Treating a successful write as durable"
+      - "Demanding fsync everywhere without acknowledging the throughput cost"
+      - "Missing that a new file also needs its directory synced"
+      - "Not identifying any case where the colleague is right, which makes the answer dogma rather than engineering"
+
+  - id: C
+    title: Diagnose a full filesystem under pressure
+    kind: diagnose
+    objectives: [OBJ-A01.5.5, OBJ-A01.5.8]
+    prompt: >-
+      02:40. `/var` is 100% full on the primary host, the service is returning
+      errors, and the on-call engineer has already deleted around 30 GB of logs
+      with no effect. `du -x -sh /var` reports 6 GB of a 200 GB filesystem.
+      `df -i` shows 4% inode usage.
+
+
+      Say what you would run, in what order, what each result would tell you, and
+      what you would do — including how to free the space without restarting the
+      service. Then say what you would change so this does not recur.
+    rubric:
+      - "Stops further deletion once du and df disagree, and says why deleting more cannot help"
+      - "Uses df -i to eliminate inode exhaustion explicitly"
+      - "Finds the holder with lsof +L1 or /proc/*/fd and reads the '(deleted)' marker"
+      - "Frees the space by truncating in place rather than killing the process"
+      - "Explains why restarting works, and why that is why nobody learned the cause before"
+      - "Identifies log rotation that renames without signalling the writer as the underlying defect"
+      - "Proposes monitoring that would have caught it earlier — the du/df gap, or growth rate"
+    model_answer: >-
+      The first thing is to stop deleting. `du` accounting for 6 GB of 200 GB is
+      not measurement error; it is the diagnosis. `du` walks names, so a gap that
+      size means the space is held by files that have no name — and more deletions
+      cannot reach them.
+
+
+      `df -i` at 4% eliminates the other common cause of ENOSPC in one command,
+      which is worth doing before theorising.
+
+
+      Then find the holder:
+
+
+      ```bash
+      lsof +L1 || ls -l /proc/*/fd/* 2>/dev/null | grep '(deleted)'
+      ```
+
+
+      The link target names both the process and the file. Almost certainly one
+      service holding several rotated logs.
+
+
+      To free the space without an outage, truncate rather than kill:
+
+
+      ```bash
+      : > /proc/<pid>/fd/<n>
+      ```
+
+
+      That empties the inode the descriptor points at, so the blocks are released
+      and the writer carries on. Restarting also works, which is exactly why this
+      has recurred — it clears the symptom in a way that teaches nobody anything.
+
+
+      The underlying defect is rotation that renames files without telling the
+      writer, combined with an application that opens its log once and holds the
+      descriptor. `copytruncate`, or a `postrotate` signal and a handler that
+      reopens, fixes it properly.
+
+
+      For monitoring: alert on the gap between `df` used and `du` total, which is
+      specific to this failure, and on disk growth rate rather than level — the
+      level alert fired at 100%, which is the last useful moment rather than the
+      first.
+    common_failures:
+      - "Deleting more files, which is the instinct and cannot work"
+      - "Restarting immediately, resolving the incident and losing the cause"
+      - "Not checking df -i, and so not excluding inode exhaustion"
+      - "Killing the process when truncation would have freed the space with no outage"
+      - "Fixing the incident without touching the rotation configuration that caused it"

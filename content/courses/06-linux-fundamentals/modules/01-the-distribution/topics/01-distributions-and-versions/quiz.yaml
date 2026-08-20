@@ -1,0 +1,450 @@
+id: quiz.distributions-and-versions
+topic: topic.distributions-and-versions
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.1.1]
+    stem: What is the portable way to identify a Linux distribution from a script?
+    options:
+      - id: a
+        text: Read `/etc/os-release`, using the `ID` and `VERSION_ID` fields
+        correct: true
+      - id: b
+        text: Run `lsb_release -a`
+        note: >-
+          A package rather than a guarantee. Absent on minimal images, Alpine,
+          and by default on RHEL derivatives.
+      - id: c
+        text: Read `/etc/debian_version`
+        note: >-
+          Exists only on Debian lineage, and reports a Debian codename on
+          Ubuntu.
+      - id: d
+        text: Parse `uname -a`
+        note: >-
+          That reports the kernel, which in a container belongs to the host.
+    explanation: >-
+      `/etc/os-release` is present on every modern distribution and is written as
+      shell assignments, so a script can source it and get the fields as
+      variables with no parsing. `ID` and `VERSION_ID` are machine-readable and
+      stable; `PRETTY_NAME` is for humans and its format is not guaranteed.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.1.1]
+    stem: >-
+      A script branches on `uname` to decide which package manager to use. Where
+      does it go wrong?
+    options:
+      - id: a
+        text: In a container — `uname` reports the host's kernel, not the userland it is running in
+        correct: true
+      - id: b
+        text: Nowhere; the kernel identifies the distribution reliably
+        note: >-
+          The same kernel runs under every distribution. It carries no userland
+          information.
+      - id: c
+        text: Only on systems with a custom kernel
+        note: >-
+          The problem is what `uname` describes, not whether the kernel is
+          custom.
+      - id: d
+        text: Only when the kernel is older than the userland
+        note: >-
+          Relative age is not the issue; the kernel simply does not identify the
+          distribution.
+    explanation: >-
+      A Debian container on an Ubuntu host reports Ubuntu's kernel, so the script
+      branches on the machine underneath rather than on the filesystem it is
+      operating against. It produces a wrong answer that looks like a right one,
+      which is worse than failing.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.1.2]
+    stem: What actually distinguishes one Linux distribution from another?
+    options:
+      - id: a
+        text: The package archive and the release policy
+        correct: true
+      - id: b
+        text: The kernel
+        note: >-
+          Broadly the same everywhere, give or take a version and some patches.
+      - id: c
+        text: The shell and core utilities
+        note: >-
+          Largely common property. Debian and Ubuntu share an enormous amount of
+          it.
+      - id: d
+        text: The init system
+        note: >-
+          A real difference historically, and now systemd nearly everywhere.
+    explanation: >-
+      A distribution is a kernel, a userland, an archive of packages built to
+      work together, and a policy about when any of it changes. The first two are
+      shared property; the archive and the policy are the product. Which means
+      "which distribution should we use" is really "whose release policy do we
+      want to live under" — a question that has an answer.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B06.1.2]
+    stem: >-
+      An `/etc/os-release` has `ID=ubuntu` and `ID_LIKE=debian`. What is
+      `ID_LIKE` for?
+    options:
+      - id: a
+        text: So a script can handle a distribution it does not know by name, via its family
+        correct: true
+      - id: b
+        text: To record which distribution it was forked from historically
+        note: >-
+          It records behavioural compatibility, which is a claim about now
+          rather than about lineage.
+      - id: c
+        text: To indicate binary compatibility of packages
+        note: >-
+          Packages are frequently not interchangeable between a distribution and
+          its derivative.
+      - id: d
+        text: It is informational only and should not be used in scripts
+        note: >-
+          It is precisely the field to use, because listing derivatives by name
+          never stays current.
+    explanation: >-
+      Matching on `$ID $ID_LIKE` together is what lets one branch handle Ubuntu,
+      Mint and every other Debian derivative without naming them. A list of
+      derivatives maintained by hand is a list that is permanently out of date,
+      and the failure mode is a silently wrong guess.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.3]
+    stem: "In the version `4:14.2.0-1`, what does the `4` mean?"
+    options:
+      - id: a
+        text: An epoch — a manual override used when upstream versioning went backwards
+        correct: true
+      - id: b
+        text: The major version
+        note: >-
+          The upstream version here is 14.2.0. The epoch is a separate field
+          before the colon.
+      - id: c
+        text: The number of times it has been rebuilt
+        note: >-
+          A rebuild is recorded as a suffix such as `+b9`.
+      - id: d
+        text: The Debian release it was built for
+        note: >-
+          That appears as a suffix like `~deb13u2`, not as a leading number.
+    explanation: >-
+      An epoch exists because upstream versioning sometimes goes backwards — a
+      project renames its scheme and ships a lower number, so normal comparison
+      would treat the new release as older and the upgrade would never happen.
+      The epoch forces the ordering, and it can never be removed: dropping it
+      would make the next version compare as older.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.3]
+    stem: >-
+      What does the `-2` change between `3.5.6-1` and `3.5.6-2` tell you?
+    options:
+      - id: a
+        text: The distribution changed something — often a backported security fix
+        correct: true
+      - id: b
+        text: Upstream released a new version
+        note: >-
+          Upstream is still 3.5.6. Only the part after the hyphen moved.
+      - id: c
+        text: The package was rebuilt against a new library
+        note: >-
+          That is usually recorded as a binary NMU suffix such as `+b1`.
+      - id: d
+        text: It is a downgrade
+        note: >-
+          A higher revision is newer.
+    explanation: >-
+      The revision counts what the distribution did to the same upstream release
+      — a patch, a build fix, or a security backport. It is exactly where "our
+      version is old but not vulnerable" lives, and it is the field a scanner
+      that only reads the upstream number throws away.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.4]
+    stem: "Which is true: `1.10` or `1.9`?"
+    options:
+      - id: a
+        text: "`1.10` is newer — components are compared numerically"
+        correct: true
+      - id: b
+        text: "`1.9` is newer — 9 sorts after 1"
+        note: >-
+          That is string comparison, which the shell does and package managers
+          do not.
+      - id: c
+        text: They are equal
+        note: >-
+          They differ in the second component.
+      - id: d
+        text: It depends on the distribution revision
+        note: >-
+          Neither has one, and the upstream components decide it first anyway.
+    explanation: >-
+      Version components are compared as numbers, so ten is greater than nine.
+      `[ "$a" \> "$b" ]` in a shell does string comparison and gets this
+      backwards — a bug that stays invisible until a project ships a `.10`
+      release, which is exactly when nobody is looking at that code any more.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.4]
+    stem: "Which is newer: `1:1.0` or `99.0`?"
+    options:
+      - id: a
+        text: "`1:1.0` — an epoch is compared first and beats everything else"
+        correct: true
+      - id: b
+        text: "`99.0` — it is a far higher version"
+        note: >-
+          The upstream number is never reached; the epoch decides it.
+      - id: c
+        text: They cannot be compared without knowing the package
+        note: >-
+          The rules are the same for every package.
+      - id: d
+        text: "`99.0`, unless both have the same epoch"
+        note: >-
+          A missing epoch is treated as 0, so 1 beats it.
+    explanation: >-
+      An epoch is compared before anything else, and a package without one is
+      treated as having epoch 0. This is the rule that surprises people most,
+      because the epoch is invisible in the version anybody quotes — nobody says
+      "gcc four colon fourteen point two".
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.4]
+    stem: "Which is newer: `1.0~rc1` or `1.0`?"
+    options:
+      - id: a
+        text: "`1.0` — a tilde sorts before nothing at all"
+        correct: true
+      - id: b
+        text: "`1.0~rc1` — it has more characters"
+        note: >-
+          Length is not the rule, and the tilde specifically sorts earlier.
+      - id: c
+        text: They are equal, since the suffix is ignored
+        note: >-
+          The suffix is compared and is decisive here.
+      - id: d
+        text: "`1.0~rc1`, because `~` sorts after alphanumerics"
+        note: >-
+          The tilde is the one character that sorts *before* the empty string.
+    explanation: >-
+      The tilde is the only character that sorts before nothing, and that is what
+      makes pre-releases expressible: `1.0~rc1` is correctly older than `1.0`.
+      Without it there would be no way to say so — `1.0rc1` sorts *after* `1.0`.
+      The mirror rule is that `+` sorts after nothing, so `2.0-1+b1 > 2.0-1`.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.5]
+    stem: >-
+      Why does a stable distribution ship software older than upstream?
+    options:
+      - id: a
+        text: Deliberately — versions freeze at release so behaviour does not change under you
+        correct: true
+      - id: b
+        text: Maintainers cannot keep up with upstream
+        note: >-
+          Frozen versions are a policy, not a capacity problem.
+      - id: c
+        text: Newer versions are less secure
+        note: >-
+          They are usually more secure. The trade is predictability, not
+          security.
+      - id: d
+        text: Licensing prevents shipping current releases
+        note: >-
+          Licensing does not generally constrain version currency.
+    explanation: >-
+      A fixed release changes versions only for security fixes and grave bugs, so
+      a system tested in January behaves identically in November and upgrades are
+      events you schedule. It costs software behind upstream, features you cannot
+      have without stepping outside the archive, and an eventual upgrade made
+      large by deferral.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.5]
+    stem: >-
+      A scanner reports `openssl 3.5.6` as vulnerable to a CVE fixed upstream in
+      `3.5.9`. The installed package is `3.5.6-1~deb13u2`. What is the most
+      likely situation?
+    options:
+      - id: a
+        text: The fix was backported into the revision, and the scanner is comparing upstream numbers only
+        correct: true
+      - id: b
+        text: The system is vulnerable and must be upgraded immediately
+        note: >-
+          Possible, and it cannot be concluded from the upstream number on a
+          stable distribution.
+      - id: c
+        text: The scanner is reading the wrong package
+        note: >-
+          It is reading the right package and only the wrong field of its
+          version.
+      - id: d
+        text: Debian does not patch OpenSSL
+        note: >-
+          Security backports are the central promise of a stable release.
+    explanation: >-
+      A backport applies the fix from a newer release to the older one, so the
+      bug goes away and the upstream number does not move. Version-based scanning
+      against a stable distribution is therefore wrong by default. Check the
+      distribution's security tracker rather than comparing upstream numbers —
+      and note that the inverse assumption, "stable therefore patched", is
+      equally unfounded.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.6]
+    stem: >-
+      An `/etc/os-release` has `ID=arch` and no `VERSION_ID`. What does the
+      absence tell you?
+    options:
+      - id: a
+        text: It is a rolling release — there is no release to have a version
+        correct: true
+      - id: b
+        text: The file is malformed
+        note: >-
+          `VERSION_ID` is optional precisely because rolling distributions have
+          nothing to put in it.
+      - id: c
+        text: The system has not been updated
+        note: >-
+          Update state is not recorded there.
+      - id: d
+        text: It is a container image without full metadata
+        note: >-
+          Container images carry the same file as the distribution they come
+          from.
+    explanation: >-
+      A rolling release updates continuously and has no release event, so there
+      is no version number to report. The absence is meaningful data rather than
+      a missing field — and a script that requires `VERSION_ID` will break on
+      such a system, which is worth handling deliberately.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.6]
+    stem: What does a long-term support commitment usually promise?
+    options:
+      - id: a
+        text: Security fixes for packages in the archive, backported — not new versions
+        correct: true
+      - id: b
+        text: New upstream versions throughout the support period
+        note: >-
+          The opposite: versions stay put, which is the point.
+      - id: c
+        text: Support for every package in the archive
+        note: >-
+          Many distributions support a smaller subset than they ship.
+      - id: d
+        text: A guarantee that no package will change
+        note: >-
+          Security fixes change packages; that is what the commitment is.
+    explanation: >-
+      An LTS commitment is somebody agreeing to keep backporting fixes to what
+      you already have. It is often tiered — full support then critical fixes
+      only — and frequently covers a subset of the archive. If you need a newer
+      version of something, the support lifetime does not help you and you are
+      stepping outside the archive.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.7]
+    stem: >-
+      A rollback deploys an older package and the package manager reports
+      nothing to do. What should you suspect first?
+    options:
+      - id: a
+        text: The "older" version compares as newer — an epoch, or a numeric component
+        correct: true
+      - id: b
+        text: The package manager cache is stale
+        note: >-
+          Worth refreshing, and it would usually produce a different symptom.
+      - id: c
+        text: The repository no longer carries the old version
+        note: >-
+          That produces a not-found error rather than nothing to do.
+      - id: d
+        text: The package is held
+        note: >-
+          A hold reports itself explicitly.
+    explanation: >-
+      "Nothing to do" means the package manager believes what is installed is at
+      least as new as what was requested. An epoch is the classic cause, because
+      it is invisible in the version people quote — and a numeric component such
+      as `1.10` versus `1.9` is the other. `dpkg --compare-versions` settles it
+      in one command, and forcing a downgrade requires saying so explicitly.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B06.1.8]
+    stem: >-
+      Which decision most often creates unowned patching work?
+    options:
+      - id: a
+        text: Installing software from outside the distribution's archive
+        correct: true
+      - id: b
+        text: Choosing a fixed release over a rolling one
+        note: >-
+          It defers upgrade work; the archive still patches what is in it.
+      - id: c
+        text: Choosing a slim base image
+        note: >-
+          It removes documentation, and the packages are still the
+          distribution's.
+      - id: d
+        text: Pinning a base image by digest
+        note: >-
+          It makes builds reproducible and does not remove anything from
+          support.
+    explanation: >-
+      A third-party repository, a vendor `.deb`, something compiled into
+      `/usr/local`, or a system-wide `pip install` each takes software out of the
+      distribution's support — and nobody records that it is now yours. The
+      failure arrives years later as a CVE against something nobody remembers
+      installing, which is the shared-responsibility problem from A05.2 in a
+      different vocabulary: a layer with no owner and no error state.

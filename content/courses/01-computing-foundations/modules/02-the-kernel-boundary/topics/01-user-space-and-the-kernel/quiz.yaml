@@ -1,0 +1,466 @@
+id: quiz.user-space-and-the-kernel
+topic: topic.user-space-and-the-kernel
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A01.3.1]
+    stem: Which of these runs in kernel space?
+    options:
+      - id: a
+        text: The Linux scheduler, filesystem code and device drivers
+        correct: true
+      - id: b
+        text: Your web server, because it binds a privileged port
+        note: >-
+          Binding port 80 needs a capability, not a privilege level. The server
+          is an ordinary ring 3 process that asks the kernel to bind for it.
+      - id: c
+        text: Any process running as root
+        note: >-
+          Root is a user ID, checked by the kernel. It does not change which
+          ring the CPU is executing in — root processes are still user space.
+      - id: d
+        text: Anything inside a container, since containers are privileged
+        note: >-
+          Containers are ordinary user-space processes. If anything, they are
+          less privileged than a normal process, not more.
+    explanation: >-
+      Ring 0 holds the kernel: scheduler, memory manager, filesystems, network
+      stack, drivers. Everything you start — shells, servers, databases, every
+      process in every container — runs in ring 3, regardless of its user ID.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A01.3.1]
+    stem: >-
+      A user-space program executes an instruction that only ring 0 may run.
+      What happens?
+    options:
+      - id: a
+        text: The CPU traps into the kernel, which usually kills the process with a signal
+        correct: true
+      - id: b
+        text: The instruction runs, and the kernel logs a warning
+        note: >-
+          It cannot run. The restriction is enforced by the processor, not by a
+          check the kernel performs afterwards.
+      - id: c
+        text: The kernel asks the process for its credentials first
+        note: >-
+          There is no negotiation. Privileged instructions are unavailable in
+          ring 3 regardless of who the process belongs to.
+      - id: d
+        text: The compiler would have refused to produce it
+        note: >-
+          Compilers emit whatever you write, and any process can execute
+          arbitrary bytes. Enforcement is at runtime, in hardware.
+    explanation: >-
+      This is why the boundary is trustworthy. The kernel does not decide
+      whether your process may write to a device register — the CPU refuses to
+      execute the instruction in ring 3 and traps. It also explains why a
+      segfault kills one process while a kernel bug can take the machine.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.3.2]
+    stem: What is a system call?
+    options:
+      - id: a
+        text: The defined mechanism by which user-space code asks the kernel to act on its behalf
+        correct: true
+      - id: b
+        text: A function in the C library
+        note: >-
+          libc provides thin wrappers around system calls, but the call itself
+          is a transition into the kernel. Go and Rust make the same calls
+          without libc.
+      - id: c
+        text: Any call into shared library code
+        note: >-
+          A shared library runs in your process at your privilege level. That is
+          a library call and it costs a function call, not a mode switch.
+      - id: d
+        text: An interrupt raised by hardware
+        note: >-
+          Hardware interrupts also enter the kernel, but they are not initiated
+          by your program and are not how a program requests service.
+    explanation: >-
+      A system call is a request across the privilege boundary, entering the
+      kernel at one fixed address the kernel registered at boot. Around 350 of
+      them exist, and every effect your program has outside its own memory goes
+      through one.
+
+  - id: q4
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-A01.3.2]
+    stem: Which of these require a system call? Select all that apply.
+    options:
+      - id: a
+        text: Reading a file from disk
+        correct: true
+      - id: b
+        text: Sending a network packet
+        correct: true
+      - id: c
+        text: Creating a new process
+        correct: true
+      - id: d
+        text: Sorting an array already in memory
+        note: >-
+          Pure computation on memory the process already has needs nothing from
+          the kernel. This is user time, and it is where a profiler helps and
+          strace does not.
+    explanation: >-
+      Anything touching hardware, another process, or shared kernel state
+      requires a request across the boundary. Computation on memory you already
+      hold does not. The split shows up directly as user time versus system
+      time.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.3.3]
+    stem: >-
+      How does the kernel know which system call a process is requesting?
+    options:
+      - id: a
+        text: The process puts a syscall number in a register before the trap instruction
+        correct: true
+      - id: b
+        text: The kernel inspects the function name in the calling program
+        note: >-
+          Nothing about your function names survives compilation, and the kernel
+          never reads your symbols. Only registers cross.
+      - id: c
+        text: Each system call has its own kernel entry address the process jumps to
+        note: >-
+          That would let a process enter kernel code at an address of its
+          choosing. There is exactly one entry point, registered by the kernel.
+      - id: d
+        text: The C library sends a message to a kernel thread
+        note: >-
+          No message passing is involved. The transition is a single CPU
+          instruction that changes privilege level.
+    explanation: >-
+      Number in `rax`, up to six arguments in `rdi`, `rsi`, `rdx`, `r10`, `r8`,
+      `r9`, then the `syscall` instruction. The kernel dispatches on the number.
+      Because this ABI is language-independent, strace works on any binary.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.3.3]
+    stem: >-
+      A program calls `clock_gettime` a million times, but `strace` shows no
+      `clock_gettime` calls at all. What is the most likely explanation?
+    options:
+      - id: a
+        text: It is served by the vDSO, so it never crosses into the kernel
+        correct: true
+      - id: b
+        text: strace cannot trace time-related calls
+        note: >-
+          strace traces any call that crosses the boundary. This one did not
+          cross.
+      - id: c
+        text: The calls were optimised away by the compiler
+        note: >-
+          The compiler cannot remove calls with observable effects, and the
+          program does use the results.
+      - id: d
+        text: The kernel batches them and reports only the first
+        note: >-
+          There is no such batching. Every crossing is individually visible.
+    explanation: >-
+      The vDSO is a page of kernel code mapped into every process so the most
+      frequent calls can be answered in ring 3. The general lesson is important:
+      strace shows crossings, not work, so a call missing from the trace has not
+      necessarily been skipped.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.3.4]
+    stem: >-
+      `time ./program` reports real 20s, user 0.4s, sys 18.9s. What is the
+      program doing?
+    options:
+      - id: a
+        text: Making a very large number of system calls
+        correct: true
+      - id: b
+        text: Running a computationally expensive algorithm
+        note: >-
+          That would show as high user time. Here the program's own code used
+          under half a second of CPU.
+      - id: c
+        text: Waiting on slow disk or network
+        note: >-
+          Waiting shows as real time far exceeding user plus sys. Here they are
+          nearly equal, so the CPU was busy the whole time — in the kernel.
+      - id: d
+        text: Being starved of CPU by other processes
+        note: >-
+          Starvation also shows as real time much larger than user plus sys.
+    explanation: >-
+      System time is CPU spent inside the kernel on this process's behalf.
+      Eighteen seconds of it against 0.4 seconds of the program's own logic means
+      the program is asking, not computing — and the next command is `strace -c`.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A01.3.4]
+    stem: >-
+      In `top`, a machine shows 4% us and 88% sy. Which action is most likely to
+      help?
+    options:
+      - id: a
+        text: Find the syscall pattern responsible and make fewer, larger calls
+        correct: true
+      - id: b
+        text: Add more CPU cores
+        note: >-
+          The CPU is already busy doing kernel work you do not need. More cores
+          means more of the same overhead in parallel.
+      - id: c
+        text: Move to faster storage
+        note: >-
+          Storage latency appears as `wa`, not `sy`. This workload is burning
+          CPU in the kernel, most likely before storage is involved at all.
+      - id: d
+        text: Increase the process's memory limit
+        note: >-
+          Memory pressure has its own signatures — reclaim, swap, OOM kills —
+          and none of them is high system time on its own.
+    explanation: >-
+      High `sy` with low `us` is the signature of syscall volume: unbuffered
+      writes, poll loops with no sleep, stat storms, or tiny reads. `strace -c -p
+      <pid>` for a few seconds names it, and the fix is always fewer, larger
+      crossings.
+
+  - id: q9
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.3.5]
+    stem: >-
+      Writing 1 MB with `bs=1` takes far longer than with `bs=64k`, though both
+      produce an identical file. Why?
+    options:
+      - id: a
+        text: The first makes about a million boundary crossings; the second makes sixteen
+        correct: true
+      - id: b
+        text: The disk performs better with larger blocks
+        note: >-
+          Both land in the page cache and are flushed by the kernel in its own
+          batches. The cost was paid before storage was involved.
+      - id: c
+        text: Small writes are not cached and must go straight to disk
+        note: >-
+          They are cached identically. Nothing about a one-byte write bypasses
+          the page cache.
+      - id: d
+        text: The filesystem must allocate a block for each write
+        note: >-
+          Allocation is by extent and is unaffected by how many writes composed
+          the data.
+    explanation: >-
+      Each crossing costs a mode switch plus the kernel's descriptor lookup,
+      permission check and copy from user memory. A few hundred nanoseconds
+      each, a million times over, is the entire difference — and it appears as
+      system time.
+
+  - id: q10
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.3.5]
+    stem: >-
+      A service crashes and the last few seconds of its log are missing, though
+      the same code prints everything when run by hand in a terminal. Why?
+    options:
+      - id: a
+        text: >-
+          Redirected to a file, stdout is block-buffered, so the final lines were
+          still in user-space memory when the process died
+        correct: true
+      - id: b
+        text: The log collector dropped them during the crash
+        note: >-
+          The collector never saw them. They had not crossed the boundary, so
+          nothing outside the process ever had those bytes.
+      - id: c
+        text: The kernel discarded buffered writes when the process exited
+        note: >-
+          Anything that reached the kernel is written. The bytes never reached
+          it.
+      - id: d
+        text: The filesystem was mounted with a delayed write option
+        note: >-
+          Filesystem write-back would still have the data in the page cache and
+          would still flush it. The data was never handed over.
+    explanation: >-
+      libc buffers stdout by line for a terminal and by block — typically 4 KB —
+      for a file or pipe. On crash, whatever is still in that user-space buffer
+      is lost. `stdbuf -oL`, `PYTHONUNBUFFERED=1` or an explicit flush trades
+      completeness for extra crossings, and that trade should be deliberate.
+
+  - id: q11
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.3.6]
+    stem: What is a Linux capability?
+    options:
+      - id: a
+        text: One slice of the authority that used to be bundled into "root"
+        correct: true
+      - id: b
+        text: A feature flag telling the kernel which syscalls exist
+        note: >-
+          The syscall table is fixed at build time. Capabilities govern whether
+          a call is honoured, not whether it exists.
+      - id: c
+        text: A per-user permission stored in /etc/passwd
+        note: >-
+          Capabilities belong to processes and to executable files, not to user
+          accounts, and are not stored there.
+      - id: d
+        text: Another name for a file's mode bits
+        note: >-
+          Mode bits are the DAC check and produce EACCES. Capabilities are a
+          separate check and produce EPERM.
+    explanation: >-
+      Linux splits root's authority into around forty capabilities —
+      CAP_NET_BIND_SERVICE, CAP_SYS_ADMIN, CAP_CHOWN and so on. The kernel
+      consults the process's capability set, which is why uid 0 with an empty set
+      can do nothing privileged.
+
+  - id: q12
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.3.6]
+    stem: >-
+      A container runs as uid 0 and gets `Operation not permitted` when it calls
+      `mount()`. What is the best first response?
+    options:
+      - id: a
+        text: >-
+          Check CapEff in /proc/1/status — the container almost certainly lacks
+          CAP_SYS_ADMIN
+        correct: true
+      - id: b
+        text: Add `--privileged`, since the container clearly needs more privilege
+        note: >-
+          This works, and that is the trap. It grants all forty capabilities and
+          disables seccomp to solve a problem that named one capability.
+      - id: c
+        text: chmod the mount point so root can write to it
+        note: >-
+          The failure was EPERM, not EACCES. No file permission change affects a
+          capability check.
+      - id: d
+        text: Rebuild the image with the process running as a different user
+        note: >-
+          The user is not the issue — it is already uid 0. Capabilities are
+          granted at container start, independently of uid.
+    explanation: >-
+      Reading CapEff and decoding it with `capsh --decode` turns the guess into
+      a fact and names the exact capability. Then either avoid needing it —
+      mount on the host and bind-mount in — or add that one capability.
+
+  - id: q13
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.3.7]
+    stem: >-
+      A process gets `EROFS` writing to /etc/app.conf. Which fix can work from
+      inside the container?
+    options:
+      - id: a
+        text: None — the filesystem was mounted read-only, so the fix is outside
+        correct: true
+      - id: b
+        text: chmod 666 on the file
+        note: >-
+          EROFS is not a permission failure. The mode bits were never consulted,
+          and changing them is itself a write to a read-only filesystem.
+      - id: c
+        text: Add CAP_DAC_OVERRIDE
+        note: >-
+          That capability bypasses file permission checks. A read-only mount
+          refuses root just as firmly as anyone else.
+      - id: d
+        text: Run the process as root
+        note: >-
+          Root gets EROFS too. The refusal has nothing to do with identity.
+    explanation: >-
+      EROFS is a property of the mount, not of the file, the user or the
+      process. The fix is to write somewhere writable — a mounted volume or
+      tmpfs — or to change how the filesystem was mounted, which happens before
+      the container's first instruction runs.
+
+  - id: q14
+    type: single_choice
+    level: L3
+    objectives: [OBJ-A01.3.8]
+    stem: >-
+      You attach `strace -c -f -p <pid>` to a busy production process. What is
+      the main risk?
+    options:
+      - id: a
+        text: >-
+          The process is stopped on every syscall and may slow by 10–100×,
+          possibly failing health checks
+        correct: true
+      - id: b
+        text: strace can modify the syscalls it observes
+        note: >-
+          strace observes and reports; it does not alter arguments or results.
+      - id: c
+        text: The process will be killed when strace detaches
+        note: >-
+          Detaching leaves the process running normally. Killing strace with
+          SIGKILL mid-trace can leave the tracee stopped, which is why you
+          detach cleanly.
+      - id: d
+        text: It requires the process to be restarted first
+        note: >-
+          Attaching to a running process is the normal case and needs no
+          restart.
+    explanation: >-
+      Tracing is not free — the kernel stops the tracee on every crossing. On a
+      syscall-heavy service that is enough to trip liveness probes. Trace
+      briefly, prefer `-c`, and know your health check timeout before you attach.
+
+  - id: q15
+    type: multi_choice
+    level: L3
+    objectives: [OBJ-A01.3.8]
+    stem: >-
+      Which of these are plausible causes of a process sitting at 90% system
+      time? Select all that apply.
+    options:
+      - id: a
+        text: Writing log lines one at a time with no buffering
+        correct: true
+      - id: b
+        text: A poll loop calling epoll_wait millions of times with no sleep
+        correct: true
+      - id: c
+        text: Reading a large file 128 bytes at a time
+        correct: true
+      - id: d
+        text: A tight loop doing floating-point maths on an in-memory array
+        note: >-
+          That is pure computation and shows as user time. It never enters the
+          kernel, so strace would show nothing at all.
+    explanation: >-
+      All the syscall-heavy patterns share one fix: fewer, larger crossings.
+      Pure computation is the opposite signature — high user time — and needs a
+      profiler rather than strace.

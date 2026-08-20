@@ -1,0 +1,290 @@
+id: troubleshooting.the-cleanup-that-cleaned-too-much
+topic: topic.how-a-line-becomes-a-command
+title: The tidy-up job that deleted a customer's exports
+level: L2
+objectives: [OBJ-B08.1.6, OBJ-B08.1.4]
+reveal_policy: progressive
+
+situation: >-
+  A nightly job removes export files older than seven days from a shared
+  directory. It has run for three years without incident.
+
+
+  On Tuesday a customer reported that exports they generated that morning were
+  missing. Investigation found 340 files deleted overnight, including 61 created
+  in the previous 24 hours.
+
+
+  The script has not been changed in fourteen months. The retention setting is
+  correct. The job exited 0 and its log says `removed 340 files`, which is what
+  it always says give or take a few.
+
+
+  Two weeks earlier, a release allowed customers to name their own exports.
+
+
+  Work out what deleted the recent files.
+
+symptoms:
+  - "340 files deleted, 61 of them newer than the retention window"
+  - "The script is unchanged for fourteen months and the retention value is correct"
+  - "The job exited 0 and logged a plausible count"
+  - "A release two weeks earlier let customers choose export filenames"
+  - "No error appears in any log"
+
+artifacts:
+  - type: config
+    label: The cleanup script
+    content: |
+      #!/bin/bash
+      # /opt/jobs/cleanup-exports.sh
+      DIR=/srv/exports
+      DAYS=7
+
+      count=0
+      for f in $(find $DIR -maxdepth 1 -name '*.csv' -mtime +$DAYS); do
+        rm -f $f
+        count=$((count + 1))
+      done
+
+      echo "removed $count files"
+
+  - type: command_output
+    label: A sample of the export directory, after the release
+    content: |
+      $ ls -b /srv/exports | head -8
+      2026-08-01-report.csv
+      Q3\ summary\ FINAL.csv
+      customer-export.csv
+      march\ 2026\ data.csv
+      -f\ everything.csv
+      new\ pricing\ (draft).csv
+      orders\ 2026.csv
+      weekly\ rollup.csv
+
+  - type: log
+    label: The job's own log, Tuesday
+    content: |
+      02:00:04  removed 340 files
+
+  - type: log
+    label: What the release note said
+    content: |
+      2026-08-04  "Exports now use the customer-supplied report title as the
+                   filename, so downloads are recognisable. Titles are
+                   sanitised for path separators."
+
+  - type: command_output
+    label: What the loop actually iterates over
+    content: |
+      $ f='march 2026 data.csv'
+      $ for x in $f; do echo "[$x]"; done
+      [march]
+      [2026]
+      [data.csv]
+
+  - type: command_output
+    label: Someone tried to reproduce it
+    content: |
+      $ cd /srv/exports
+      $ rm -f march
+      $ echo $?
+      0
+      # (rm -f does not complain about files that do not exist)
+
+diagnostic_questions:
+  - "What does the loop iterate over when a filename contains spaces?"
+  - "How many arguments does `rm -f $f` receive when `f` is `march 2026 data.csv`?"
+  - "Why did the count come out plausible rather than obviously wrong?"
+  - "Why is there no error in the log?"
+  - "What did the release change, given that the script did not?"
+
+hints:
+  - "Read the `for` line and ask what word splitting does to `find`'s output."
+  - "Count the loop iterations for one filename containing two spaces."
+  - "Look at what `rm -f` does when given a name that does not exist."
+  - "One of the sample filenames begins with a hyphen."
+
+root_cause: >-
+  **`find`'s output is word-split, so every filename containing a space became
+  several loop iterations — and `rm -f` deleted whatever those fragments matched
+  while silently ignoring the rest.**
+
+
+  The chain is short and every link is ordinary.
+
+
+  **Word splitting on the command substitution.** `for f in $(find ...)` takes
+  `find`'s output and splits it at spaces, tabs and newlines. A file called
+  `march 2026 data.csv` produces three loop iterations: `march`, `2026`,
+  `data.csv`.
+
+
+  **`rm -f` is silent about what does not exist.** That is `-f`'s entire job.
+  Deleting `march` when no such file exists is a no-op that exits 0, so the loop
+  proceeds without a single error — and the counter increments once per
+  *fragment*, not once per file.
+
+
+  **The count looked normal because it was inflated for one reason and deflated
+  for another.** Fragments that matched nothing still incremented `count`, and
+  the split names meant the real old files were often never deleted at all. `340`
+  is not a count of files removed; it is a count of loop iterations.
+
+
+  **And the recent files.** A fragment sometimes *is* a real filename. With
+  hundreds of customer-titled exports sharing common words, a file genuinely
+  called `orders.csv` or `summary.csv` is matched by a fragment from some other
+  file's name — and gets deleted regardless of its age, because the `-mtime`
+  test was applied by `find` to a different file entirely.
+
+
+  That is the crucial step: **the age check and the deletion are performed on
+  different things.** `find` selected old files correctly; word splitting then
+  handed `rm` fragments that were never age-checked.
+
+
+  **The file named `-f everything.csv`** is the same fault with a sharper edge.
+  It splits into `-f` and `everything.csv`, and `rm` reads the first as an
+  option. A customer title beginning with `-r` or `--recursive` would have been
+  read as one too.
+
+
+  **Why the script did not have to change.** For three years every export was
+  named `2026-08-01-report.csv` — no spaces, no surprises. The release two weeks
+  earlier began deriving filenames from customer-supplied titles, and sanitised
+  them for path separators only. Spaces are legal in filenames, so nothing
+  sanitised them, and nothing should have had to.
+
+method: >-
+  **1. When a script is unchanged and the behaviour changed, look at the data.**
+  Fourteen months without an edit and a release two weeks ago is the whole shape
+  of the investigation. The input changed; the code was always wrong.
+
+
+  **2. Read the loop for word splitting first.** `for f in $(...)` is the single
+  most reliable place to find this bug. Command substitution output is split at
+  `IFS`, so the loop iterates over *words*, not over lines and certainly not over
+  files.
+
+
+  **3. Reproduce with one filename.** Three lines settles it:
+
+
+  ```console
+  $ f='march 2026 data.csv'
+  $ for x in $f; do echo "[$x]"; done
+  [march] [2026] [data.csv]
+  ```
+
+
+  **4. Ask why there was no error.** `rm -f` suppresses complaints about missing
+  files, which is exactly what makes the failure silent. A script that used plain
+  `rm` would have produced hundreds of error lines on night one — so `-f` here is
+  not a convenience, it is what hid the bug for two weeks.
+
+
+  **5. Distrust a plausible count.** `count` increments per iteration, and
+  iterations are fragments. A number that looks reasonable is not evidence, and
+  the log line `removed 340 files` was actively misleading — it named the wrong
+  unit.
+
+
+  **6. Check the separation between the test and the action.** `find` applied
+  `-mtime` to real files; `rm` received fragments. **Whenever a check and the
+  operation it authorises are applied to different values, the check is
+  decorative** — and that generalises well beyond shell.
+
+
+  **7. Read the filenames with escaping on.** `ls -b` shows the spaces and the
+  leading hyphen at a glance. Plain `ls` renders `march 2026 data.csv` as
+  something that looks like three files, which is how the directory listing hid
+  the problem too.
+
+resolution: >-
+  **Immediately:** stop the job, and check whether the deleted files are
+  recoverable from backup or from the objects the exports were generated from.
+  Sixty-one files created that morning suggests this has been happening at a
+  lower rate since the release — Tuesday is when somebody noticed, not when it
+  started.
+
+
+  **Then fix the script.** The correct version is shorter than the broken one:
+
+
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+
+  DIR=/srv/exports
+  DAYS=7
+
+  count=$(find "$DIR" -maxdepth 1 -name '*.csv' -mtime +"$DAYS" -print0 \
+          | tee >(xargs -0 --no-run-if-empty rm --) \
+          | tr -dc '\0' | wc -c)
+
+  echo "removed $count files"
+  ```
+
+
+  Or, avoiding the pipeline entirely, which is easier to read and to trust:
+
+
+  ```bash
+  find "$DIR" -maxdepth 1 -name '*.csv' -mtime +"$DAYS" -delete
+  ```
+
+
+  `find -delete` is the right answer here. There is **no shell involved** between
+  selecting a file and removing it, so there is nothing to split, nothing to
+  glob, and no way for the age test and the deletion to be applied to different
+  things. It is also the version that cannot be broken by the next filename
+  nobody anticipated.
+
+
+  If a loop is genuinely needed — to log each removal, say — the safe form uses
+  NUL:
+
+
+  ```bash
+  while IFS= read -r -d '' f; do
+    rm -- "$f"
+    printf 'removed: %s\n' "$f"
+  done < <(find "$DIR" -maxdepth 1 -name '*.csv' -mtime +"$DAYS" -print0)
+  ```
+
+
+  Every part earns its place: `-print0` and `-d ''` because NUL is the one byte a
+  filename cannot contain, `IFS=` so leading and trailing spaces survive, `-r` so
+  backslashes are literal, and `rm --` so a leading hyphen is data.
+
+
+  **Do not sanitise the filenames instead.** It is the tempting fix and it is the
+  wrong one — spaces are legal, the sanitiser will always be one character behind,
+  and the script would remain broken for every *other* source of filenames.
+  Fixing the consumer fixes it once.
+
+
+  **Add the test that would have caught it:**
+
+
+  ```bash
+  touch "$FIXTURE/a file.csv" "$FIXTURE/-f dash.csv"
+  ```
+
+
+  Two files in the test fixture, and this becomes a test failure instead of a
+  customer report. That is the cheapest control available for the entire class.
+
+
+  **And change the log line.** `removed $count files` counted iterations, not
+  files, and read as reassurance for two weeks. Log the actual filenames removed,
+  or nothing — a number whose unit is wrong is worse than silence.
+
+
+  **For the postmortem:** the script was wrong the day it was written and correct
+  for the data it was given. Nothing in the release was a mistake — deriving
+  filenames from customer titles is a reasonable feature, and sanitising path
+  separators is the right amount of sanitising. The defect is that a three-year
+  clean record was evidence about the *filenames*, and everybody read it as
+  evidence about the *script*.

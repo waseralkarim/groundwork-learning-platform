@@ -1,0 +1,11 @@
+graph TD
+    SRC["Source code<br/>server.c"] -->|compile| BIN["Binary on disk<br/>ELF, tagged amd64"]
+    BIN -->|"execve syscall"| K{Kernel}
+    K -->|"wrong architecture"| ERR1["Exec format error"]
+    K -->|"header ok"| MAP["Create address space<br/>map code and data"]
+    MAP --> DL{Dynamically linked?}
+    DL -->|yes| LOAD["Dynamic linker<br/>loads libc and friends"]
+    LOAD -->|"library missing"| ERR2["version GLIBC_2.34 not found"]
+    LOAD --> ENTRY["Jump to entry point"]
+    DL -->|no| ENTRY
+    ENTRY --> PROC["Running process<br/>has PID, RSS, open files"]

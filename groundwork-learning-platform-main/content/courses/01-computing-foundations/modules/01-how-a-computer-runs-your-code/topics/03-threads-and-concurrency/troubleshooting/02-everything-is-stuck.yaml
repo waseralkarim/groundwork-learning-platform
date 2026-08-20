@@ -1,0 +1,192 @@
+id: troubleshooting.everything-is-stuck
+topic: topic.threads-and-concurrency
+title: The service hangs every few days and a restart fixes it
+level: L3
+objectives: [OBJ-A01.6.8]
+reveal_policy: progressive
+
+situation: >-
+  An order-processing service stops responding every three or four days. Health
+  checks fail, the pod is restarted by Kubernetes, and everything is fine again
+  for another few days. It has been happening for two months.
+
+
+  The runbook says "restart it". Nobody has looked further, because it recovers
+  on its own and there are no errors to investigate.
+
+
+  You have a pod that is currently hung and has not yet been killed, because
+  someone had the presence of mind to remove its labels so the probe would stop
+  restarting it. Find out what is wrong.
+
+symptoms:
+  - "Hangs every 3–4 days, always under moderate rather than peak load"
+  - "No errors in the log — the log simply stops"
+  - "CPU usage drops to near zero when it hangs"
+  - "Memory is flat and normal"
+  - "Restarting always fixes it, for a few days"
+  - "Never reproduced in staging"
+
+artifacts:
+  - type: command_output
+    label: The hung pod, from inside
+    content: |
+      $ ps -L -o pid,tid,stat,wchan:20,comm -p 1
+        PID   TID STAT WCHAN                COMMAND
+          1     1 S    futex_wait_queue     order-service
+          1    22 S    futex_wait_queue     order-service
+          1    23 S    futex_wait_queue     order-service
+          1    24 S    futex_wait_queue     order-service
+          1    25 S    do_epoll_wait        order-service
+          1    26 S    do_epoll_wait        order-service
+
+  - type: command_output
+    label: CPU and throttling
+    content: |
+      $ grep -E 'usage_usec|nr_throttled|throttled_usec' /sys/fs/cgroup/cpu.stat
+      usage_usec 88213440914
+      nr_throttled 12
+      throttled_usec 391204
+
+      # sampled again 60 seconds later
+      usage_usec 88213441002
+      nr_throttled 12
+      throttled_usec 391204
+
+  - type: command_output
+    label: Context switches, sampled a minute apart
+    content: |
+      $ grep ctxt /proc/1/status ; sleep 60 ; grep ctxt /proc/1/status
+      voluntary_ctxt_switches:        84102244
+      nonvoluntary_ctxt_switches:     1029338
+      voluntary_ctxt_switches:        84102244
+      nonvoluntary_ctxt_switches:     1029338
+
+  - type: log
+    label: The relevant code, found after the diagnosis
+    content: |
+      # inventory.py
+      def reserve(order):
+          with order_lock:                 # A
+              with inventory_lock:         # B
+                  ...
+
+      # restock.py
+      def restock(item):
+          with inventory_lock:             # B
+              with order_lock:             # A
+                  ...
+
+diagnostic_questions:
+  - "What are the threads waiting on, and what does futex_wait mean?"
+  - "Did usage_usec change between the two samples? What does that tell you?"
+  - "Why do the context-switch counters not move?"
+  - "Is this service throttled?"
+  - "Why would it only happen under moderate load, and never in staging?"
+
+hints:
+  - "Compare the two cpu.stat samples carefully. Look at usage_usec, not the throttling figures."
+  - "futex is the kernel primitive underneath userspace locks."
+  - "A service doing nothing at all is a different failure from a service doing too much."
+  - "Two code paths take the same two locks. In what order?"
+
+root_cause: >-
+  A deadlock. `reserve()` takes the order lock then the inventory lock;
+  `restock()` takes them in the opposite order. When the two run at overlapping
+  times, each holds the lock the other needs and neither can proceed.
+
+
+  Four threads are parked in `futex_wait_queue`, which is the kernel primitive
+  under a userspace mutex. The two threads in `do_epoll_wait` are the event loop,
+  still accepting connections it can never hand to a worker — which is why the
+  service accepts requests and answers none.
+
+
+  `usage_usec` advanced by 88 microseconds in sixty seconds, and both
+  context-switch counters were completely unchanged. This process is not slow; it
+  is doing nothing whatsoever.
+
+
+  It happens under moderate rather than peak load because the two paths need to
+  overlap. Under light load they rarely coincide; under heavy load one path tends
+  to dominate. The middle is where both run often enough to collide, and it is
+  the load profile staging never has.
+
+method: >-
+  **1. Look at the CPU before anything else.** Two samples a minute apart with
+  `usage_usec` essentially unchanged is decisive: the process is not working.
+  That single observation eliminates saturation, throttling and a slow
+  dependency, which are the three things most people check first.
+
+
+  **2. Confirm throttling is not involved.** `nr_throttled` and `throttled_usec`
+  are identical across both samples. Whatever is wrong, the CPU limit is not
+  doing it.
+
+
+  **3. Read the thread states.** Four threads in `futex_wait_queue` are blocked
+  on userspace locks. Threads waiting on I/O would show a socket or filesystem
+  function, or state `D`; threads waiting for work would be in `epoll` — and two
+  of them are, which is the event loop still accepting connections it cannot
+  serve.
+
+
+  **4. Check the context switches.** Both counters frozen means the threads are
+  not even being woken to retry. This is not contention or livelock; nothing is
+  moving at all.
+
+
+  **5. Only now read the code.** A thread dump — `py-spy dump`, `jstack`, SIGQUIT
+  — names the lines. Two call paths taking the same two locks in opposite orders
+  is the classic shape, and it is visible in seconds once you know to look for a
+  lock-ordering problem rather than a performance one.
+
+
+  **The general rule this illustrates:** a stuck service is either busy or idle,
+  and the two have nothing in common. Establishing which before theorising is the
+  difference between a ten-minute diagnosis and a two-month runbook entry.
+
+resolution: >-
+  **Fix the lock ordering.** Every path that needs both locks must take them in
+  the same order:
+
+
+  ```python
+  # A global ordering, documented where the locks are defined:
+  #   order_lock is always acquired before inventory_lock.
+  def restock(item):
+      with order_lock:                 # A — was B
+          with inventory_lock:         # B — was A
+              ...
+  ```
+
+
+  A consistent global order makes this class of deadlock impossible, which is
+  better than making it unlikely.
+
+
+  **Add a timeout as a backstop**, so that if an ordering violation is ever
+  reintroduced it becomes a slow error rather than a permanent hang:
+
+
+  ```python
+  if not order_lock.acquire(timeout=5):
+      raise ResourceBusy("could not acquire order lock")
+  ```
+
+
+  A service that fails a request loudly is far easier to diagnose than one that
+  stops answering silently.
+
+
+  **Make the liveness probe honest.** It currently fails, which is what triggers
+  the restart — but the restart is also what erased the evidence for two months.
+  Have the probe check that a worker can actually make progress, and ensure the
+  pod's termination captures a thread dump on the way down, so the next
+  occurrence leaves something behind.
+
+
+  **And add the alert that names this shape**: a process whose CPU usage is
+  near-zero while requests are queuing. That combination is not normal for a
+  busy service, and nothing else in the monitoring would have distinguished this
+  from an ordinary restart.

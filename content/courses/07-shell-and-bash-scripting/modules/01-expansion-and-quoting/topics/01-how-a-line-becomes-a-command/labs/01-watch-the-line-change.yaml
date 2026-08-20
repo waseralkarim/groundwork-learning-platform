@@ -1,0 +1,348 @@
+id: lab.watch-the-line-change
+topic: topic.how-a-line-becomes-a-command
+title: Watch a line change through each stage
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B08.1.1, OBJ-B08.1.2]
+
+intro: >-
+  The shell rewrites your line before running anything, in eight stages whose
+  order never varies. You are going to make each stage visible.
+
+
+  Two tools do all the work — `set -x`, which prints a command after expansion,
+  and `argc`, which reports exactly how many arguments a command received. By
+  the end you will settle any quoting argument by running it rather than
+  discussing it.
+
+setup:
+  - /opt/lab/seed-shell.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Prove the order is real: show that brace expansion happens before a
+      variable is substituted. Save to /tmp/answer-order.
+    hint: >-
+      Try a brace range with a literal number, then the same range with a
+      variable in it. The difference is the finding.
+    walkthrough: |
+      export PATH="/tmp/sh:$PATH"
+      {
+        n=3
+        echo "with a literal:  echo {1..3}   -> $(echo {1..3})"
+        echo "with a variable: echo {1..\$n}  -> $(echo {1..$n})"
+        echo
+        echo "the second produced the LITERAL TEXT {1..3}, not 1 2 3."
+        echo
+        echo "why: brace expansion is stage 1 and parameter expansion is stage 3. when the brace stage looked at the line it saw {1..\$n}, which is not a valid range, so it left it alone. by the time \$n became 3, the brace stage had already finished."
+        echo
+        echo "this is the cleanest proof that the order is a real sequence rather than a description. if the stages ran in any other order, or all at once, this would print 1 2 3."
+        echo
+        echo "the practical consequence: i cannot use a variable in a brace range. seq or a C-style for loop instead."
+      } > /tmp/answer-order
+      cat /tmp/answer-order
+    verify:
+      - type: file_matches
+        path: /tmp/answer-order
+        pattern: "echo \\{1\\.\\.3\\}   -> 1 2 3"
+        describe: The literal range expanded
+      - type: file_matches
+        path: /tmp/answer-order
+        pattern: "-> \\{1\\.\\.3\\}"
+        describe: And the variable one did not
+      - type: file_matches
+        path: /tmp/answer-order
+        pattern: "(?i)stage 1|before"
+        describe: And you explained it by the ordering
+
+  - id: s2
+    instruction: >-
+      Use argc to show that the same variable produces a different number of
+      arguments depending only on quoting. Save to /tmp/answer-splitting.
+    hint: >-
+      /tmp/sh/argc prints the argument list it received. Add /tmp/sh to your
+      PATH first.
+    walkthrough: |
+      export PATH="/tmp/sh:$PATH"
+      {
+        f='a file.log'
+        echo "f='a file.log'"
+        echo
+        echo "unquoted - argc \$f:"
+        argc $f | sed 's/^/  /'
+        echo
+        echo "quoted - argc \"\$f\":"
+        argc "$f" | sed 's/^/  /'
+        echo
+        echo "one variable, one value, two different argument COUNTS. nothing about the variable changed - the difference is entirely in what the shell did to its contents after substituting them."
+        echo
+        echo "stage 3 put the text 'a file.log' into the line. stage 6, word splitting, then treated that text like any other and broke it at the space. double quotes suppress stage 6, which is the whole of their job."
+      } > /tmp/answer-splitting
+      cat /tmp/answer-splitting
+    verify:
+      - type: file_matches
+        path: /tmp/answer-splitting
+        pattern: "argc = 2"
+        describe: The unquoted form produced two arguments
+      - type: file_matches
+        path: /tmp/answer-splitting
+        pattern: "argc = 1"
+        describe: And the quoted form one
+      - type: file_matches
+        path: /tmp/answer-splitting
+        pattern: "\\$1 = \\[a\\]"
+        describe: And you captured how it was split
+      - type: file_matches
+        path: /tmp/answer-splitting
+        pattern: "(?i)suppress"
+        describe: And what double quotes actually do
+
+  - id: s3
+    instruction: >-
+      Use set -x to see the expanded command, and printf %q to see exact word
+      boundaries. Save both to /tmp/answer-tools.
+    hint: >-
+      Run the command inside a subshell with set -x so the trace does not
+      persist. bash quotes any word in the trace that needs it.
+    walkthrough: |
+      export PATH="/tmp/sh:$PATH"
+      f='a file.log'
+      {
+        echo "set -x trace, unquoted:"
+        ( set -x; argc $f ) 2>&1 >/dev/null | sed 's/^/  /'
+        echo "set -x trace, quoted:"
+        ( set -x; argc "$f" ) 2>&1 >/dev/null | sed 's/^/  /'
+        echo
+        echo "bash quotes a word in the trace when the word would need quoting to be re-read. so 'a file.log' appearing WITH quotes means it is one argument; appearing without means it is two."
+        echo
+        echo "printf %q, which escapes rather than quotes:"
+        printf '  unquoted: '; printf '%q ' $f; echo
+        printf '  quoted:   '; printf '%q ' "$f"; echo
+        echo
+        echo "a\\ file.log - the escaped space - is one word. a file.log with a bare space is two."
+        echo
+        echo "and the shortest form of all, needing no helper script at all:"
+        set -- 'a b' c
+        printf '  [%s]\n' "$@"
+        echo
+        echo "printf repeats its format when given more arguments than specifiers, so printf '[%s]\\n' \"\$@\" prints one bracketed line per argument. that is the argument dump i will actually use."
+      } > /tmp/answer-tools
+      cat /tmp/answer-tools
+    verify:
+      - type: file_matches
+        path: /tmp/answer-tools
+        pattern: "\\+ argc a file.log"
+        describe: The trace shows the unquoted form as two words
+      - type: file_matches
+        path: /tmp/answer-tools
+        pattern: "\\+ argc 'a file.log'"
+        describe: And the quoted form as one
+      - type: file_matches
+        path: /tmp/answer-tools
+        pattern: "quoted: +a. file.log"
+        describe: And printf %q escaped the space
+      - type: file_matches
+        path: /tmp/answer-tools
+        pattern: "\\[a b\\]"
+        describe: And you used the printf argument dump
+
+  - id: s4
+    instruction: >-
+      Show what each of the three quoting forms suppresses, using one expression
+      that exercises several stages at once. Save to /tmp/answer-quotes.
+    hint: >-
+      Pick something containing a variable, a command substitution and a glob
+      character, then try it unquoted, in double quotes and in single quotes.
+    walkthrough: |
+      export PATH="/tmp/sh:$PATH"
+      cd /tmp/sh/files
+      f='a file.log'
+      {
+        echo "the same expression, three ways. cwd has $(ls *.log 2>/dev/null | wc -l) matches for *.log"
+        echo
+        n_un=$(argc $f *.log $(echo sub) | sed -n "s/^argc = //p")
+        n_dq=$(argc "$f" "*.log" "$(echo sub)" | sed -n "s/^argc = //p")
+        n_sq=$(argc '$f' '*.log' '$(echo sub)' | sed -n "s/^argc = //p")
+        echo "  unquoted  $f *.log $(echo sub)      -> argc = $n_un"
+        echo "  double    quoted, all three         -> argc = $n_dq"
+        echo "  single    quoted, all three         -> argc = $n_sq"
+        echo
+        echo "what each suppresses:"
+        echo "  unquoted   nothing. the variable split, the glob matched, the substitution ran and its output split too."
+        echo "  double     word splitting and globbing. the variable still expanded, the substitution still ran - i keep the expansions i asked for and lose the two done TO me."
+        echo "  single     everything. \$f stayed the literal text \$f. there is no escape inside single quotes, not even for a single quote."
+        echo
+        echo "and the quotes themselves never reach the command. they are removed at stage 8, after they have finished instructing stages 6 and 7. that is why argc never sees a quote character."
+      } > /tmp/answer-quotes
+      cat /tmp/answer-quotes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-quotes
+        pattern: "single .*argc = 3"
+        describe: Single quotes produced exactly three literal arguments
+      - type: file_matches
+        path: /tmp/answer-quotes
+        pattern: "double .*argc = 3"
+        describe: Double quotes also produced three, having suppressed splitting and globbing
+      - type: file_matches
+        path: /tmp/answer-quotes
+        pattern: "(?i)stage 8|removed"
+        describe: And you noted the quotes are removed before the command runs
+      - type: file_matches
+        path: /tmp/answer-quotes
+        pattern: "(?i)no escape inside single"
+        describe: And that single quotes admit no escapes
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-rule the rule you would give a colleague, including
+      when NOT to quote.
+    hint: >-
+      "Quote everything" is nearly right. What does it fail to say?
+    walkthrough: |
+      {
+        echo "the rule: QUOTE EVERY EXPANSION, unless you are deliberately using splitting or globbing - and when you are, say so in a comment."
+        echo
+        echo "  cp \"\$src\" \"\$dst\"        # normal"
+        echo "  rm -- \"\$f\"               # normal, plus -- to end option parsing"
+        echo
+        echo "  # deliberate: EXTRA_FLAGS is a list of separate flags"
+        echo "  run_tool \$EXTRA_FLAGS \"\$input\""
+        echo
+        echo "why the second half matters: 'quote everything' does not tell a reviewer how to read an UNquoted expansion. without the comment convention, a deliberate split and an oversight look identical, and the review question 'why is this not quoted?' has no answer that scales."
+        echo
+        echo "the exceptions where quoting is genuinely unnecessary - assignments, inside [[ ]], and arithmetic contexts - are real and i would still quote. three exceptions nobody remembers reliably are worth less than one rule applied everywhere."
+        echo
+        echo "what it costs: two characters and some visual noise. there is no case where correct quoting breaks a working script, which is what makes this an unusually cheap rule."
+        echo
+        echo "and the highest-value habit is not a rule at all: put a file called 'a file.log' and one called '-n' in the test fixtures. that costs two touch commands and turns a rare production incident into a test failure."
+      } > /tmp/answer-rule
+      cat /tmp/answer-rule
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)unless you are deliberately"
+        describe: Your rule covers the deliberate case
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)comment"
+        describe: And how a reviewer tells intent from oversight
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)no case where correct quoting breaks"
+        describe: And you stated the cost honestly
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)test fixtures|touch commands"
+        describe: And proposed the habit that catches it earliest
+
+solution: >-
+  **The order is a real sequence.**
+
+
+  ```console
+  $ echo {1..3}
+  1 2 3
+  $ n=3; echo {1..$n}
+  {1..3}
+  ```
+
+
+  Brace expansion is **stage 1** and parameter expansion is **stage 3**. When the
+  brace stage looked at the line it saw `{1..$n}` — not a valid range — and left
+  it alone. By the time `$n` became `3`, that stage had finished. If the stages
+  ran in any other order, or simultaneously, this would print `1 2 3`.
+
+
+  **One variable, two argument counts.**
+
+
+  ```console
+  $ f='a file.log'
+  $ argc $f
+  argc = 2
+    $1 = [a]
+    $2 = [file.log]
+  $ argc "$f"
+  argc = 1
+  ```
+
+
+  Stage 3 put the text into the line; **stage 6 — word splitting — then treated
+  it like any other text** and broke it at the space. Suppressing stage 6 is the
+  entire job of double quotes.
+
+
+  **Two tools end every argument about this.**
+
+
+  ```console
+  $ ( set -x; argc $f )
+  + argc a file.log
+  $ ( set -x; argc "$f" )
+  + argc 'a file.log'
+  ```
+
+
+  Bash quotes a word in the trace when it would need quoting to be re-read — so
+  quotes in the trace mean one argument, no quotes mean two.
+
+
+  `printf '%q'` shows it as escaping instead: `a file.log` against `a\ file.log`.
+  And the shortest form needs no helper at all:
+
+
+  ```console
+  $ set -- 'a b' c
+  $ printf '[%s]\n' "$@"
+  [a b]
+  [c]
+  ```
+
+
+  `printf` repeats its format when given more arguments than specifiers.
+
+
+  **What each quoting form suppresses.**
+
+
+  | | Expansions | Word splitting | Globbing |
+  |---|---|---|---|
+  | unquoted | yes | **yes** | **yes** |
+  | `"..."` | yes | no | no |
+  | `'...'` | **no** | no | no |
+
+
+  Double quotes are almost always right: you keep the expansions you asked for
+  and lose the two that were done *to* you. Single quotes suppress everything,
+  and admit **no escapes at all** — not even for a single quote.
+
+
+  And the quotes never reach the command. They are removed at stage 8, having
+  finished instructing stages 6 and 7, which is why `argc` never sees one.
+
+
+  **The rule.**
+
+
+  > Quote every expansion, unless you are deliberately using splitting or
+  > globbing — and when you are, say so in a comment.
+
+
+  The second half is what "quote everything" leaves out. Without a comment
+  convention, **a deliberate split and an oversight look identical**, and the
+  review question "why is this not quoted?" has no answer that scales.
+
+
+  The genuine exceptions — assignments, inside `[[ ]]`, arithmetic contexts — are
+  real, and quote anyway. Three exceptions nobody remembers reliably are worth
+  less than one rule applied everywhere. The cost is two characters and some
+  noise, and **there is no case where correct quoting breaks a working script**.
+
+
+  The highest-value habit is not a rule: put a file called `a file.log` and one
+  called `-n` in your test fixtures. Two `touch` commands, and a rare production
+  incident becomes a test failure.

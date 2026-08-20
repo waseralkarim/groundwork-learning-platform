@@ -1,0 +1,446 @@
+id: lab.a-cli-worth-shipping
+topic: topic.arguments-and-options
+title: Write a CLI that refuses bad input by name
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.7.8]
+
+intro: >-
+  The seeded prune script turns a dry run into a deletion. You will rewrite it so
+  that cannot happen, then build the seven-invocation test that would have caught
+  it — and every other defect in this topic.
+
+setup:
+  - /opt/lab/seed-args.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Reproduce the incident. Show what the operator meant, what they typed, and
+      what evidence survives in a log that keeps only stdout. Save to
+      /tmp/answer-incident.
+    hint: >-
+      `/tmp/args/prune.sh` accepts `-n` for a dry run; its help text mentions
+      `--dry-run`.
+    walkthrough: |
+      reseed() { rm -rf /tmp/args/exports; mkdir -p /tmp/args/exports
+                 for n in 01 02 03 04; do echo "export $n" > /tmp/args/exports/export-$n.csv; done; }
+      {
+        reseed
+        echo "what the operator MEANT (-n, a real dry run):"
+        bash /tmp/args/prune.sh -n /tmp/args/exports 2>&1 | sed 's/^/    /'
+        echo "    files remaining: $(ls /tmp/args/exports | wc -l)"
+        echo
+        reseed
+        echo "what the operator TYPED (--dry-run, from the help text):"
+        bash /tmp/args/prune.sh --dry-run /tmp/args/exports 2>&1 | sed 's/^/    /'
+        echo "    files remaining: $(ls /tmp/args/exports | wc -l)"
+        echo
+        reseed
+        echo "and what a cron log keeping only stdout records:"
+        bash /tmp/args/prune.sh --dry-run /tmp/args/exports 2>/dev/null | sed 's/^/    /'
+        echo "    files remaining: $(ls /tmp/args/exports | wc -l)"
+        echo
+        echo "--dry-run ENABLED DELETION. getopts split it into - d r y - r u n; the d"
+        echo "matched and set delete=1, and the n matched and set dry=1 as well - which"
+        echo "of those wins is decided by the order of the script's own ifs."
+        echo
+        echo "the unknown-letter warnings went to STDERR. drop stderr and the log shows"
+        echo "delete=1 dry=1 and four removals, with NOTHING recording that the operator"
+        echo "asked for the opposite."
+        reseed
+      } > /tmp/answer-incident
+      cat /tmp/answer-incident
+    verify:
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: '(?s)MEANT.*would remove export-01.csv'
+        describe: The real dry run removes nothing
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: '(?s)TYPED.*removed export-01.csv'
+        describe: While --dry-run deletes
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: 'files remaining: 0'
+        describe: Leaving nothing behind
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: '(?i)ENABLED DELETION'
+        describe: You stated the cause
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: '(?i)NOTHING recording'
+        describe: And what evidence survives
+
+  - id: s2
+    instruction: >-
+      Rewrite it as /tmp/prune2.sh so this class of mistake is impossible, not
+      merely unlikely. Prove the happy path and the dry run both work.
+    hint: >-
+      Long options that really exist; a destructive action that must be asked for
+      explicitly; validation before any work.
+    walkthrough: |
+      cat > /tmp/prune2.sh <<'P'
+      #!/bin/bash
+      set -euo pipefail
+
+      usage() {
+        cat >&2 <<EOF
+      usage: ${0##*/} [--apply] [--dry-run] [--older-than DAYS] DIR
+        --dry-run           report what would be removed (DEFAULT)
+        --apply             actually remove. required to delete anything.
+        --older-than DAYS   only files older than DAYS (default 7)
+        -h, --help          this text, on stdout
+      EOF
+      }
+      die() { echo "${0##*/}: $*" >&2; exit 1; }
+
+      parsed=$(getopt -o h --long apply,dry-run,older-than:,help \
+                      -n "${0##*/}" -- "$@") || { usage; exit 64; }
+      eval set -- "$parsed"
+
+      apply=0 days=7
+      while true; do
+        case $1 in
+          --apply)      apply=1; shift ;;
+          --dry-run)    apply=0; shift ;;
+          --older-than) days=$2; shift 2 ;;
+          -h|--help)    usage 2>&1; exit 0 ;;
+          --)           shift; break ;;
+          *)            die "internal error at $1" ;;
+        esac
+      done
+
+      # validate everything before doing anything
+      [ $# -eq 1 ] || { usage; exit 64; }
+      DIR=$1
+      [ -d "$DIR" ] || die "not a directory: $DIR"
+      [[ $days =~ ^[0-9]+$ ]] || die "--older-than must be a whole number, got '$days'"
+
+      count=0
+      while IFS= read -r -d '' f; do
+        if [ "$apply" -eq 1 ]; then
+          rm -f -- "$f"
+          echo "removed $(basename "$f")"
+        else
+          echo "would remove $(basename "$f")"
+        fi
+        count=$((count + 1))
+      done < <(find "$DIR" -maxdepth 1 -type f -mtime "+$((days - 1))" -print0)
+
+      if [ "$apply" -eq 1 ]; then
+        echo "removed $count files from $DIR"
+      else
+        echo "would remove $count files from $DIR (re-run with --apply)"
+      fi
+      P
+      chmod 0755 /tmp/prune2.sh
+
+      rm -rf /tmp/old && mkdir -p /tmp/old
+      for n in 1 2 3; do touch -d '30 days ago' "/tmp/old/old-$n.csv"; done
+      touch /tmp/old/fresh.csv
+
+      echo "=== default (no flags) ==="
+      bash /tmp/prune2.sh /tmp/old
+      echo "files remaining: $(ls /tmp/old | wc -l)"
+      echo "=== --dry-run ==="
+      bash /tmp/prune2.sh --dry-run /tmp/old
+      echo "=== --apply ==="
+      bash /tmp/prune2.sh --apply /tmp/old
+      echo "files remaining: $(ls /tmp/old | wc -l)"
+    verify:
+      - type: file_exists
+        path: /tmp/prune2.sh
+        describe: You wrote the replacement
+      - type: command_exit
+        command: bash -n /tmp/prune2.sh
+        exit_code: 0
+        describe: And it parses
+      - type: file_matches
+        path: /tmp/prune2.sh
+        pattern: '--apply'
+        describe: Deletion has to be asked for explicitly
+      - type: file_matches
+        path: /tmp/prune2.sh
+        pattern: 'rm -f -- '
+        describe: And the removal honours --
+      - type: file_exists
+        path: /tmp/old/fresh.csv
+        describe: A file inside the window survived
+      - type: command_exit
+        command: "test ! -e /tmp/old/old-1.csv"
+        exit_code: 0
+        describe: And the old ones were removed by --apply
+
+  - id: s3
+    instruction: >-
+      Prove the failure modes: unknown option, missing value, bad value, wrong
+      argument count, a directory that does not exist, and a directory literally
+      named `--apply`. Save to /tmp/answer-refusals.
+    walkthrough: |
+      t() { printf '  %-34s ' "$1"; shift; out=$(bash /tmp/prune2.sh "$@" 2>&1); rc=$?
+            printf 'rc=%-3s %s\n' "$rc" "$(printf '%s' "$out" | head -1)"; }
+      mkdir -p '/tmp/--apply'
+      {
+        echo "every way of calling it wrong:"
+        t 'no arguments'
+        t 'unknown option'        --nope /tmp/old
+        t 'missing value'         --older-than
+        t 'non-numeric value'     --older-than abc /tmp/old
+        t 'two directories'       /tmp/old /tmp/other
+        t 'directory absent'      /tmp/nosuchdir
+        t 'dir named --apply'     -- '/tmp/--apply'
+        echo
+        echo "and the successful ones, for contrast:"
+        t 'default'               /tmp/old
+        t 'explicit dry run'      --dry-run /tmp/old
+        echo
+        echo "every refusal NAMES THE PROBLEM and exits non-zero. 64 is EX_USAGE - you"
+        echo "called it wrong - and 1 is you called it right and it went wrong. a wrapper"
+        echo "deciding whether to retry needs that distinction: retrying a usage error"
+        echo "is pointless, retrying a missing directory may not be."
+        echo
+        echo "the -- case is the one people forget. without it a directory literally"
+        echo "named --apply could not be passed at all, and worse, passing it would"
+        echo "ENABLE DELETION."
+      } > /tmp/answer-refusals
+      cat /tmp/answer-refusals
+    verify:
+      - type: file_matches
+        path: /tmp/answer-refusals
+        pattern: 'no arguments +rc=64'
+        describe: A missing argument is EX_USAGE
+      - type: file_matches
+        path: /tmp/answer-refusals
+        pattern: 'unknown option +rc=64'
+        describe: And so is an unknown option
+      - type: file_matches
+        path: /tmp/answer-refusals
+        pattern: "(?i)non-numeric value +rc=1.*--older-than must be a whole number"
+        describe: A bad value is named
+      - type: file_matches
+        path: /tmp/answer-refusals
+        pattern: '(?i)directory absent +rc=1.*not a directory'
+        describe: And a missing directory
+      - type: file_matches
+        path: /tmp/answer-refusals
+        pattern: 'dir named --apply +rc=0'
+        describe: And -- lets a dash-named directory through safely
+      - type: file_matches
+        path: /tmp/answer-refusals
+        pattern: '(?i)ENABLE DELETION'
+        describe: You said why -- matters here
+
+  - id: s4
+    instruction: >-
+      Build the seven-invocation parser test as a reusable script, and run it
+      against both the old and new prune. Save to /tmp/answer-test.
+    hint: >-
+      A table of "arguments → expected first line of output" is enough.
+    walkthrough: |
+      cat > /tmp/parser-test.sh <<'T'
+      #!/bin/bash
+      # Seven invocations that catch most parser defects.
+      # usage: parser-test.sh SCRIPT
+      prog=$1
+      pass=0 fail=0
+
+      check() {
+        local desc=$1 expect=$2; shift 2
+        local got rc
+        got=$(bash "$prog" "$@" 2>&1 | head -1); rc=$?
+        if printf '%s' "$got" | grep -q -- "$expect"; then
+          printf '  PASS  %-26s\n' "$desc"; pass=$((pass + 1))
+        else
+          printf '  FAIL  %-26s expected /%s/ got [%s]\n' "$desc" "$expect" "$got"
+          fail=$((fail + 1))
+        fi
+      }
+
+      check 'no arguments'      'usage'
+      check 'unknown option'    'nrecognized\|nknown'  --nope /tmp/probe-dir
+      check 'long dry-run'      'would remove'   --dry-run /tmp/probe-dir
+      check 'missing value'     'requires\|argument' --older-than
+      check 'operand after opt' 'would remove'   /tmp/probe-dir --dry-run
+      check 'dash-named dir'    'would remove\|not a directory' -- /tmp/probe-dir
+      check 'help to stdout'    'usage'          --help
+
+      printf '  %s passed, %s failed\n' "$pass" "$fail"
+      [ "$fail" -eq 0 ]
+      T
+      chmod 0755 /tmp/parser-test.sh
+      mkdir -p /tmp/probe-dir
+
+      {
+        echo "=== the new prune ==="
+        bash /tmp/parser-test.sh /tmp/prune2.sh; echo "  suite rc=$?"
+        echo
+        echo "=== the original ==="
+        bash /tmp/parser-test.sh /tmp/args/prune.sh; echo "  suite rc=$?"
+        echo
+        echo "the original fails most of them, and the interesting part is HOW. it does"
+        echo "not crash on any invocation - it accepts every one of them and does"
+        echo "something. that is what a missing parser test looks like: no failures to"
+        echo "notice, because nothing ever fails."
+        echo
+        echo "the seven cases are chosen to cover one defect class each:"
+        echo "  no arguments      does it refuse, or default to something destructive?"
+        echo "  unknown option    refused by name, or silently treated as a filename?"
+        echo "  long option       real, or split into letters?"
+        echo "  missing value     refused, or does it take the next flag as the value?"
+        echo "  operand first     permuted, or is the flag silently dropped?"
+        echo "  --                honoured, or is a dash-named path unusable?"
+        echo "  --help            on stdout and exit 0, or on stderr and exit 1?"
+        echo
+        echo "seven lines, run in CI, and every defect in this topic is caught the day"
+        echo "it is written."
+        echo
+        echo "one honest weakness in this suite: it greps OUTPUT, not exit status. the"
+        echo "original 'passes' the unknown-option check because it PRINTS the words"
+        echo "'unknown option' - and then carries on and does the work anyway. a real"
+        echo "suite asserts the status too, and that is the first thing i would add."
+      } > /tmp/answer-test
+      cat /tmp/answer-test
+    verify:
+      - type: file_exists
+        path: /tmp/parser-test.sh
+        describe: You wrote the suite
+      - type: file_matches
+        path: /tmp/answer-test
+        pattern: '(?s)the new prune.*7 passed, 0 failed'
+        describe: The new script passes all seven
+      - type: file_matches
+        path: /tmp/answer-test
+        pattern: '(?s)the original ===.*FAIL'
+        describe: And the original does not
+      - type: file_matches
+        path: /tmp/answer-test
+        pattern: '(?i)nothing ever fails'
+        describe: You characterised what the original does instead
+      - type: file_matches
+        path: /tmp/answer-test
+        pattern: '(?i)one defect class each'
+        describe: And justified the seven cases
+
+  - id: s5
+    instruction: >-
+      State the contract you would require of any script the team ships, and the
+      one design change that mattered most here. Save to /tmp/answer-contract.
+    walkthrough: |
+      {
+        echo "THE CONTRACT - what a script other people run owes them:"
+        echo
+        echo "  1. a usage line on STDERR and exit 64 when called wrong."
+        echo "     -h is the exception: requested help goes to STDOUT and exits 0,"
+        echo "     because the user asked for it and may be piping it to less."
+        echo
+        echo "  2. errors that name the input:"
+        echo "     '--older-than must be a whole number, got abc'"
+        echo "     beats 'invalid argument', and both beat silence."
+        echo
+        echo "  3. -- honoured, so a path beginning with a dash can be passed."
+        echo
+        echo "  4. validation IMMEDIATELY after parsing, before any work. a bad value"
+        echo "     caught at line 20 is a message; caught at line 200 it is a"
+        echo "     half-finished job."
+        echo
+        echo "  5. long options that EXIST if the help text mentions them."
+        echo
+        echo "  6. safe defaults, and a real dry run on anything destructive - tested,"
+        echo "     because an untested dry run is the most dangerous flag in the script."
+        echo
+        echo "THE CHANGE THAT MATTERED MOST is none of those. it is that DELETION NOW"
+        echo "HAS TO BE ASKED FOR."
+        echo
+        echo "the original defaulted to reporting and had -d to delete, so a"
+        echo "mis-parsed flag could turn a safe run into a destructive one. the"
+        echo "rewrite defaults to a dry run and requires --apply, so a mis-parsed"
+        echo "flag can only ever turn a destructive run into a safe one."
+        echo
+        echo "that is the difference between making the mistake unlikely and making it"
+        echo "IMPOSSIBLE IN THE DANGEROUS DIRECTION. every other rule on the list is"
+        echo "about catching errors; this one is about which way an error falls when"
+        echo "you fail to catch it. it is the only one that would still have saved the"
+        echo "data if the parser had been wrong anyway."
+        echo
+        echo "and the honest limit: once i want subcommands, mutually exclusive flags,"
+        echo "enum-validated values and help generated from the option definitions, i"
+        echo "am reimplementing argparse badly. the prune incident was, at bottom, a"
+        echo "help text that had drifted away from the code - and a generated help text"
+        echo "cannot drift."
+      } > /tmp/answer-contract
+      cat /tmp/answer-contract
+    verify:
+      - type: file_matches
+        path: /tmp/answer-contract
+        pattern: '(?i)exit 64 when called wrong'
+        describe: You gave the usage rule
+      - type: file_matches
+        path: /tmp/answer-contract
+        pattern: '(?i)STDOUT and exits 0'
+        describe: With the -h exception
+      - type: file_matches
+        path: /tmp/answer-contract
+        pattern: '(?i)DELETION NOW\s+HAS TO BE ASKED FOR'
+        describe: And identified the change that mattered most
+      - type: file_matches
+        path: /tmp/answer-contract
+        pattern: '(?i)IMPOSSIBLE IN THE DANGEROUS DIRECTION'
+        describe: And why it beats the others
+      - type: file_matches
+        path: /tmp/answer-contract
+        pattern: '(?i)cannot drift'
+        describe: And the limit of shell here
+
+solution: >-
+  **The incident.** `-n` reports; `--dry-run` — which the help text advertises —
+  deletes all four files. `getopts` split it into `-`,`d`,`r`,`y`,`-`,`r`,`u`,`n`;
+  the `d` set `delete=1` and the `n` set `dry=1`, and which wins is decided by the
+  order of the script's own `if`s. The unknown-letter warnings went to **stderr**,
+  so a cron log keeping only stdout shows `delete=1 dry=1` and four removals with
+  nothing recording that the operator asked for the opposite.
+
+
+  **The rewrite** uses `getopt(1)` so the long options are real, validates
+  everything before doing anything, honours `--`, uses `-print0` / `read -d ''`
+  so a filename with a newline cannot split, and passes `--` to `rm`.
+
+
+  **Every failure mode is refused by name:**
+
+
+  | Called | rc |
+  |---|---|
+  | no arguments | **64** |
+  | unknown option | **64** |
+  | `--older-than` with no value | 64 |
+  | `--older-than abc` | 1, *"must be a whole number, got 'abc'"* |
+  | directory absent | 1, *"not a directory"* |
+  | directory named `--apply`, after `--` | 0 |
+
+
+  64 is `EX_USAGE` — "you called it wrong" — as distinct from 1, "you called it
+  right and it went wrong". A wrapper deciding whether to retry needs that
+  difference.
+
+
+  **The seven-invocation test** covers one defect class each: no arguments,
+  unknown option, long option, missing value, operand-before-option, `--`, and
+  `--help`. The new script passes all seven; the original fails most — and never
+  *crashes* on any of them, which is what a missing parser test looks like: no
+  failures to notice, because nothing ever fails.
+
+
+  **The change that mattered most is none of the contract rules.** It is that
+  **deletion now has to be asked for.** The original defaulted to reporting with
+  `-d` to delete, so a mis-parsed flag could turn a safe run destructive. The
+  rewrite defaults to a dry run and requires `--apply`, so a mis-parsed flag can
+  only turn a destructive run *safe*.
+
+
+  That is the difference between making a mistake unlikely and making it
+  impossible **in the dangerous direction** — and it is the only change that would
+  still have saved the data if the parser had been wrong anyway.

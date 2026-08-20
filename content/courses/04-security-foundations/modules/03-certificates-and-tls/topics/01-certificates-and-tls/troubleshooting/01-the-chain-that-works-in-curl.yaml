@@ -1,0 +1,241 @@
+id: troubleshooting.the-chain-that-works-in-curl
+topic: topic.certificates-and-tls
+title: The partner integration fails and our monitoring has been green for weeks
+level: L2
+objectives: [OBJ-A04.3.4, OBJ-A04.3.6]
+reveal_policy: progressive
+
+situation: >-
+  A partner bank has been unable to call `api.example.com` since Tuesday. Their
+  Java client fails at connection setup. They have sent a stack trace ending in
+  `PKIX path building failed`.
+
+
+  Your side reports no problem. The synthetic monitor has been green for six
+  weeks. Browsers load the API's health page without a warning. Two engineers
+  have run `curl https://api.example.com/health` from their laptops and got 200.
+
+
+  The partner has been told, twice, that the issue must be on their side. They
+  have now escalated commercially.
+
+
+  A certificate was renewed on Monday evening.
+
+
+  Work out what changed before reading on.
+
+symptoms:
+  - "A partner's Java client fails with PKIX path building failed"
+  - "Browsers load the endpoint with no warning"
+  - "curl from two engineers' laptops returns 200"
+  - "The synthetic monitor has been green throughout"
+  - "A certificate renewal ran on Monday evening"
+  - "Nothing else was deployed"
+
+artifacts:
+  - type: command_output
+    label: What the server actually sends
+    content: |
+      $ openssl s_client -connect api.example.com:443 -servername api.example.com </dev/null 2>&1 \
+          | grep -E '^depth=|Verify return code'
+      depth=0 CN=api.example.com
+      Verify return code: 21 (unable to verify the first certificate)
+
+  - type: config
+    label: The nginx configuration, and what renewal wrote
+    content: |
+      ssl_certificate     /etc/letsencrypt/live/api.example.com/cert.pem;
+      ssl_certificate_key /etc/letsencrypt/live/api.example.com/privkey.pem;
+
+      # directory contents after renewal:
+      #   cert.pem        (leaf only)
+      #   chain.pem       (intermediate only)
+      #   fullchain.pem   (leaf + intermediate)
+      #   privkey.pem
+
+  - type: command_output
+    label: The engineers' test, reproduced
+    content: |
+      $ curl -sS https://api.example.com/health -o /dev/null -w '%{http_code}\n'
+      200
+
+      $ curl -sS --cacert /etc/ssl/certs/ca-certificates.crt \
+          https://api.example.com/health -o /dev/null -w '%{http_code}\n'
+      200
+
+  - type: config
+    label: The synthetic monitor's check
+    content: |
+      check: https://api.example.com/health
+      assert: status == 200
+      tls_verify: false        # set 2025-11-04, comment: "flaky cert on staging"
+
+  - type: log
+    label: The partner's client
+    content: |
+      javax.net.ssl.SSLHandshakeException: PKIX path building failed:
+        sun.security.provider.certpath.SunCertPathBuilderException:
+        unable to find valid certification path to requested target
+
+diagnostic_questions:
+  - "How many certificates is the server sending, and how many should it send?"
+  - "Which file does nginx point at, and what is the difference between the four files in that directory?"
+  - "Why do the engineers' curl commands succeed when the partner's client does not?"
+  - "What has the synthetic monitor been asserting for the last nine months?"
+  - "Why did this start on Tuesday and not earlier?"
+
+hints:
+  - "Count the `depth=` lines in the s_client output. A complete chain reaches more than one."
+  - "Read the four filenames the ACME client wrote. Only one of them is the whole chain."
+  - "The engineers' laptops have browsed the web. What might that have left behind?"
+  - "Look at the `tls_verify` line in the monitor's configuration and its date."
+
+root_cause: >-
+  **The renewal repointed nginx at `cert.pem`, which is the leaf alone, so the
+  server stopped sending its intermediate.**
+
+
+  The ACME client writes four files. `cert.pem` is the leaf only; `chain.pem` is
+  the intermediate only; `fullchain.pem` is both, in the order a server must send
+  them. nginx is configured with `cert.pem`, so it serves one certificate and the
+  chain cannot be walked.
+
+
+  `s_client` shows it in one line: a single `depth=0`, where a complete chain
+  reaches `depth=2`. `Verify return code: 21` — the client end of error 20,
+  *unable to get local issuer certificate*. The partner's `PKIX path building
+  failed` is the same fault in Java's vocabulary: it cannot build a path from the
+  leaf to anything it trusts, because the middle of the path was never sent.
+
+
+  **Why every check on your side missed it, for three different reasons.**
+
+
+  *The browsers* cache intermediates from other sites, and some fetch a missing
+  one using the Authority Information Access extension in the leaf. Anyone who
+  has recently visited another site from the same CA — which is nearly everyone —
+  has that intermediate already. Browsers are structurally unable to detect this
+  fault.
+
+
+  *The engineers' laptops* are subject to the same effect in their system trust
+  stores, and a `curl` that succeeds on a developer machine says nothing about a
+  clean one. This is why two people "reproducing" it proved nothing.
+
+
+  *The synthetic monitor* has `tls_verify: false`, added nine months ago to work
+  around an unrelated staging problem. It has not verified a certificate since.
+  It would have been green through an expired certificate, a self-signed one, or
+  an active interception — it has been asserting only that something returned
+  200.
+
+
+  **Why Tuesday.** The renewal ran Monday evening and nginx reloaded with the new
+  path. It is not that the certificate is invalid — it is entirely valid — it is
+  that half the chain stopped being transmitted.
+
+
+  The partner is right, has been right since Tuesday, and has been told twice
+  that it is their problem.
+
+method: >-
+  **1. Ask what the server actually sends, not whether it works.** `openssl
+  s_client` and count the `depth=` lines. One line means one certificate. A
+  complete chain to a root shows every level it walked. This is a two-second
+  check and it is the whole diagnosis here.
+
+
+  **2. Translate the client's error rather than dismissing it.** `PKIX path
+  building failed` is Java for error 20. Different runtimes phrase the same six
+  faults differently — `unable to get local issuer certificate`,
+  `SSL certificate problem`, `x509: certificate signed by unknown authority` —
+  and treating an unfamiliar phrasing as an unfamiliar problem is how a partner
+  gets told it is their fault.
+
+
+  **3. Distrust any test run on a machine that browses the web.** Developer
+  laptops and browsers both accumulate intermediates. Reproducing a TLS chain
+  problem requires a clean trust store — a fresh container is the easiest one to
+  get.
+
+
+  **4. Read the monitoring's configuration, not its status.** A green check that
+  does not verify TLS is worse than no check, because it is actively consulted
+  during an incident and produces false confidence. `tls_verify: false` in a
+  certificate monitor is the finding, and its nine-month-old date says how long
+  the gap has existed.
+
+
+  **5. Read what the renewal wrote.** ACME clients emit `cert.pem`, `chain.pem`
+  and `fullchain.pem` for exactly this reason, and choosing the wrong one is
+  among the most common TLS misconfigurations there is. The name that looks
+  right — `cert.pem` — is the wrong one.
+
+
+  **6. Correlate with the change.** Renewal Monday, failure Tuesday, nothing else
+  deployed. The certificate was not the problem; the path to it was.
+
+
+  The habit: **when one client fails and others succeed, ask what the failing one
+  does differently rather than assuming it is broken.** Here the failing client
+  was the only one verifying honestly.
+
+resolution: >-
+  **Immediately:** point nginx at the full chain and reload.
+
+
+  ```nginx
+  ssl_certificate     /etc/letsencrypt/live/api.example.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/api.example.com/privkey.pem;
+  ```
+
+
+  Then confirm from outside, with a clean trust store rather than a laptop:
+
+
+  ```bash
+  docker run --rm curlimages/curl:latest \
+    -sS https://api.example.com/health -o /dev/null -w '%{http_code}\n'
+
+  openssl s_client -connect api.example.com:443 -servername api.example.com \
+    </dev/null 2>&1 | grep -E '^depth=|Verify return code'
+  ```
+
+
+  You want `depth=2`, `depth=1`, `depth=0` and `Verify return code: 0`.
+
+
+  **Tell the partner, plainly.** They were right, they reported it accurately,
+  and they were dismissed twice. Say what the fault was and how long it existed —
+  that is worth more commercially than the fix, and the alternative is that they
+  stop reporting things.
+
+
+  **Then fix the monitoring, which is the larger finding.**
+
+
+  `tls_verify: false` has been in place for nine months, added for an unrelated
+  staging issue and never removed. Remove it, and make the check assert what
+  actually matters:
+
+
+  - the chain reaches a trust anchor, from a clean trust store
+  - the served leaf's Not After is more than 30 days away
+  - the *whole chain's* dates, since an expiring intermediate leaves the leaf
+    looking fine
+  - a SAN exists and contains the hostname served
+  - the failure **message** is recorded, not just the exit status — curl returns
+    60 for four distinct faults
+
+
+  Add an alert for any monitoring check with verification disabled. This one hid
+  a real fault for a week and would equally have hidden an expired certificate or
+  an active interception.
+
+
+  **And remove the class of error.** Have the ACME deploy hook assert the served
+  chain after every renewal, so that a wrong path fails the renewal rather than
+  the partner. A renewal that does not verify what it produced is half a
+  renewal — and this failure will otherwise recur on every host where someone
+  types `cert.pem` because it is the file whose name sounds correct.

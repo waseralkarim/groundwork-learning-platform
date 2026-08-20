@@ -1,0 +1,209 @@
+id: lab.the-limit-is-real
+topic: topic.threads-and-concurrency
+title: Watch the CPU limit stop your threads
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A01.6.4, OBJ-A01.6.5]
+
+intro: >-
+  A CPU limit does not make your threads slower. It stops them — completely —
+  for the rest of every period in which they spend the quota.
+
+
+  You are going to read the limit, run one thread, then four, and watch the
+  throttling counters climb. By the end you will have the two commands that
+  explain "we added workers and it got slower", with numbers from this machine.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read this container's CPU limit and record it to /tmp/answer-limit, then
+      work out how many whole CPUs it represents and write that to
+      /tmp/answer-cpus as a decimal.
+    hint: >-
+      `cat /sys/fs/cgroup/cpu.max` gives quota and period in microseconds.
+      Divide the first by the second.
+    walkthrough: |
+      cat /sys/fs/cgroup/cpu.max > /tmp/answer-limit
+      awk '{printf "%.1f\n", $1/$2}' /tmp/answer-limit > /tmp/answer-cpus
+      cat /tmp/answer-limit /tmp/answer-cpus
+    verify:
+      - type: file_matches
+        path: /tmp/answer-limit
+        pattern: '^\d+ \d+$'
+        describe: The quota and period were captured
+      - type: file_matches
+        path: /tmp/answer-cpus
+        pattern: '^0\.[1-9]|^[1-9]'
+        describe: You converted the quota into a CPU count
+
+  - id: s2
+    instruction: >-
+      Now compare that with what the machine claims. Record `nproc` to
+      /tmp/answer-nproc.
+
+
+      The two numbers disagree by a wide margin, and that gap is the most common
+      cause of container CPU misconfiguration.
+    hint: "`nproc > /tmp/answer-nproc`"
+    walkthrough: |
+      nproc > /tmp/answer-nproc
+      echo "nproc=$(cat /tmp/answer-nproc) limit=$(cat /tmp/answer-cpus) CPUs"
+    verify:
+      - type: file_matches
+        path: /tmp/answer-nproc
+        pattern: '^\d+$'
+        describe: The host CPU count was recorded
+      - type: command_exit
+        command: "test $(cat /tmp/answer-nproc) -gt 1"
+        exit_code: 0
+        describe: nproc reports far more CPUs than this container may use
+
+  - id: s3
+    instruction: >-
+      Record the throttling counters before doing any work, to
+      /tmp/answer-stat-before.
+    hint: "`grep -E 'nr_periods|nr_throttled|throttled_usec' /sys/fs/cgroup/cpu.stat`"
+    walkthrough: |
+      grep -E 'nr_periods|nr_throttled|throttled_usec' /sys/fs/cgroup/cpu.stat > /tmp/answer-stat-before
+      cat /tmp/answer-stat-before
+    verify:
+      - type: file_matches
+        path: /tmp/answer-stat-before
+        pattern: 'throttled_usec \d+'
+        describe: The starting throttling figures were captured
+
+  - id: s4
+    instruction: >-
+      Run a single busy thread for 5 seconds, then record the counters again to
+      /tmp/answer-stat-one.
+
+
+      One thread cannot spend a half-CPU quota, so expect little or no
+      throttling.
+    hint: "`/opt/lab/spin 1 5` in the foreground, then read cpu.stat again."
+    walkthrough: |
+      /opt/lab/spin 1 5 >/dev/null 2>&1
+      grep -E 'nr_periods|nr_throttled|throttled_usec' /sys/fs/cgroup/cpu.stat > /tmp/answer-stat-one
+      cat /tmp/answer-stat-one
+    verify:
+      - type: file_matches
+        path: /tmp/answer-stat-one
+        pattern: 'throttled_usec \d+'
+        describe: The counters were captured after one thread
+
+  - id: s5
+    instruction: >-
+      Now run four busy threads for the same 5 seconds and record the counters
+      to /tmp/answer-stat-four.
+
+
+      Four threads want four CPUs' worth of time from a budget that has not
+      changed. Compare `throttled_usec` with the previous step.
+    hint: "`/opt/lab/spin 4 5`, then read cpu.stat again and compare."
+    walkthrough: |
+      /opt/lab/spin 4 5 >/dev/null 2>&1
+      grep -E 'nr_periods|nr_throttled|throttled_usec' /sys/fs/cgroup/cpu.stat > /tmp/answer-stat-four
+      echo "--- after one thread ---"; cat /tmp/answer-stat-one
+      echo "--- after four ---"; cat /tmp/answer-stat-four
+    verify:
+      - type: command_exit
+        command: "test $(awk '/throttled_usec/{print $2}' /tmp/answer-stat-four) -gt $(awk '/throttled_usec/{print $2}' /tmp/answer-stat-one)"
+        exit_code: 0
+        describe: Four threads spent far longer stopped by the limit
+      - type: command_exit
+        command: "test $(awk '/nr_throttled/{print $2}' /tmp/answer-stat-four) -gt 0"
+        exit_code: 0
+        describe: The quota ran out in whole periods
+
+  - id: s6
+    instruction: >-
+      Work out how much of the run was spent stopped. Write the total throttled
+      time added by the four-thread run, in seconds to one decimal place, to
+      /tmp/answer-throttled-seconds.
+
+
+      Then write, in at least twenty words, to /tmp/answer-why-slower: why
+      adding workers can make a service slower rather than faster.
+    hint: >-
+      Subtract the `throttled_usec` before the four-thread run from the value
+      after it, and divide by 1,000,000.
+    walkthrough: |
+      before=$(awk '/throttled_usec/{print $2}' /tmp/answer-stat-one)
+      after=$(awk '/throttled_usec/{print $2}' /tmp/answer-stat-four)
+      awk -v b="$before" -v a="$after" 'BEGIN {printf "%.1f\n", (a-b)/1000000}' > /tmp/answer-throttled-seconds
+      cat /tmp/answer-throttled-seconds
+      cat > /tmp/answer-why-slower <<'EOF'
+      The CPU quota is fixed and shared by every thread in the container, so more
+      workers spend it faster and throttling begins earlier in each period. Every
+      thread is then stopped until the next period, so each request spends more
+      wall clock time waiting rather than working, even though no thread became
+      slower.
+      EOF
+    verify:
+      - type: file_matches
+        path: /tmp/answer-throttled-seconds
+        pattern: '^[0-9]+\.[0-9]$'
+        describe: The throttled time was calculated
+      - type: command_output
+        command: "wc -w < /tmp/answer-why-slower"
+        pattern: "([2-9][0-9]|[0-9]{3,})"
+        describe: At least twenty words of explanation
+      - type: file_matches
+        path: /tmp/answer-why-slower
+        pattern: "quota|period|throttl"
+        describe: You named the quota as the mechanism
+
+solution: |
+  ```bash
+  cat /sys/fs/cgroup/cpu.max          # 50000 100000 — half a CPU
+  nproc                               # 16 — the HOST's CPUs
+
+  grep -E 'nr_throttled|throttled_usec' /sys/fs/cgroup/cpu.stat   # before
+  /opt/lab/spin 1 5
+  grep -E 'nr_throttled|throttled_usec' /sys/fs/cgroup/cpu.stat   # barely moved
+  /opt/lab/spin 4 5
+  grep -E 'nr_throttled|throttled_usec' /sys/fs/cgroup/cpu.stat   # climbed sharply
+  ```
+
+  **What you measured.**
+
+  **The limit is a quota per period, not a speed.** `50000 100000` means 50ms of
+  CPU in every 100ms. Threads run at full speed until the quota is gone, and then
+  every one of them is **stopped** until the next period begins. Not throttled in
+  the sense of slowed — stopped.
+
+  **One thread could not exhaust it; four did easily.** One busy thread wants one
+  CPU and may have half, so it runs about half the time and rarely exhausts a
+  whole period. Four threads want four CPUs from the same budget, so the quota is
+  gone a quarter of the way into each period and all four sit out the rest.
+
+  **`throttled_usec` is the honest signal.** It measures exactly one thing: time
+  the container was stopped by its own limit. Any non-zero value means the limit
+  is shaping latency, and it cannot be produced by anything else.
+
+  **CPU utilisation would not have shown you this.** A stopped container is idle,
+  so its utilisation looks moderate — which is why Kubernetes autoscaling on CPU
+  utilisation does not fire for a badly throttled pod, and why teams raise worker
+  counts against a graph that says there is headroom.
+
+  **The practical rule.** Size worker pools from the limit:
+
+  ```bash
+  read -r quota period < /sys/fs/cgroup/cpu.max
+  [ "$quota" = "max" ] && cpus=$(nproc) || cpus=$(( (quota + period - 1) / period ))
+  ```
+
+  And when the work genuinely needs more CPU, raise the *limit* rather than the
+  worker count. They are different changes, and confusing them is what turns a
+  capacity question into an outage.
+
+  **Where this goes.** In **E29** this limit is `resources.limits.cpu` in
+  millicores, and `container_cpu_cfs_throttled_seconds_total` is the metric to
+  alert on — the argument about whether to set CPU limits at all is an argument
+  about the numbers you just produced.

@@ -1,0 +1,202 @@
+id: assessment.the-machine
+topic: topic.the-machine
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain it to a colleague
+    kind: explain
+    objectives: [OBJ-A01.1.1, OBJ-A01.1.5]
+    prompt: >-
+      A developer on your team says: "My program runs fine on my laptop but the
+      server says `exec format error`. I've checked the code three times and
+      there's nothing wrong with it."
+
+
+      Write a reply, in your own words, of roughly 150–250 words. Explain what is
+      actually happening, why their code is not the problem, and how they can
+      confirm the cause themselves. Assume they are a competent programmer who
+      has never thought about what a binary is.
+    rubric:
+      - "Distinguishes the program (file on disk) from the process (running instance)"
+      - "Identifies that the failure occurs in the loader, before any application code runs"
+      - "Names architecture mismatch as the cause and explains what an ISA is, without jargon"
+      - "Gives a concrete command the developer can run to confirm it (file, readelf, uname -m)"
+      - "States clearly that reviewing the source code cannot find this"
+      - "Is written for the stated audience — no unexplained terms"
+    model_answer: >-
+      Your code is fine — this is failing before any of it runs.
+
+
+      When you compile, you get a binary: a file full of instructions for one
+      specific kind of CPU. Intel/AMD chips (amd64) and ARM chips (arm64) speak
+      genuinely different instruction sets, so a binary built for one is
+      meaningless to the other.
+
+
+      When you run it, the kernel reads the binary's header, checks which
+      architecture it was built for, and compares that to the CPU. If they do not
+      match it refuses to start the process at all. That refusal is
+      `exec format error`. Not one line of your program executed, which is why no
+      amount of reading the source will find it.
+
+
+      To confirm it yourself, two commands. On the server, `uname -m` tells you
+      the machine's architecture. Then `file ./yourprogram` tells you what the
+      binary was built for. If one says `aarch64` and the other says `x86_64`,
+      that is your answer.
+
+
+      The likely cause is that your laptop is Apple Silicon (arm64) and the
+      server is Intel (amd64). The fix is to build for the target — with Docker,
+      `docker buildx build --platform linux/amd64`.
+    common_failures:
+      - "Describing the fix without explaining the mechanism — the developer learns a command, not a concept"
+      - "Saying 'the binary is incompatible' without explaining what an instruction set is"
+      - "Failing to state explicitly that the application code is not at fault, which was the developer's actual question"
+      - "Using terms like ELF, loader or ABI without defining them for the stated audience"
+
+  - id: B
+    title: Diagnose from evidence
+    kind: diagnose
+    objectives: [OBJ-A01.1.7]
+    prompt: |
+      You are handed the following from a production host and told "it's slow".
+
+      ```text
+      $ vmstat 1 4
+      procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+       r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+      14  0      0 2100000 340000 8200000   0    0    18    42 4200 12000 94  4  2  0  0
+      13  1      0 2098000 340000 8200000   0    0    22    38 4150 11800 93  5  2  0  0
+      15  0      0 2095000 339000 8200000   0    0    16    45 4310 12200 95  3  2  0  0
+      14  0      0 2093000 339000 8200000   0    0    20    40 4280 12050 94  4  2  0  0
+
+      $ free -h
+                     total        used        free      shared  buff/cache   available
+      Mem:            32Gi       21Gi       2.0Gi       200Mi       8.2Gi        10Gi
+      Swap:          4.0Gi          0B       4.0Gi
+
+      $ nproc
+      4
+      ```
+
+      Answer all four:
+
+      1. Is this CPU-, memory- or I/O-bound? State which columns prove it.
+      2. For each of the two resources you ruled out, name the specific evidence
+         that ruled it out.
+      3. What is the single most useful next command, and what would you look for?
+      4. Name two distinct actions that would reduce the symptom, and say which
+         you would try first and why.
+    rubric:
+      - "Correctly identifies CPU-bound"
+      - "Cites r=14 against nproc=4, and id≈2%, as the evidence"
+      - "Rules out memory using si/so=0 and available=10Gi, not just 'looks fine'"
+      - "Rules out I/O using wa=0 and b≈0"
+      - "Proposes a process-level command (ps sorted by %cpu, top, or pidstat) and says what it is looking for"
+      - "Gives two genuinely distinct remedies and justifies an ordering"
+    model_answer: |
+      **1. CPU-bound.** The run queue `r` sits at 13–15 on a 4-core machine, and
+      idle time is around 2%. There are consistently three times more runnable
+      processes than there are cores to run them, so most processes spend most of
+      their time queued rather than executing. `us` at ~94% confirms the time is
+      going to user-space work rather than the kernel.
+
+      **2. Ruling out the others.**
+      - *Memory:* `si` and `so` are both 0 across every sample, so nothing is
+        swapping. `free -h` independently confirms 10Gi available and 0B swap
+        used. There is no memory pressure.
+      - *I/O:* `wa` is 0 and `b` is 0 or 1. No process is blocked on I/O, and
+        `bi`/`bo` are trivially small. The disk is idle.
+
+      **3. Next command:** `ps -eo pid,comm,%cpu --sort=-%cpu | head` or
+      `top -o %CPU`. The question is whether this is one runaway process, a
+      handful of workers each doing legitimate work, or a large number of
+      processes that should not all be running. Those three have different fixes,
+      and the vmstat output cannot distinguish them.
+
+      **4. Two remedies.**
+      - *Reduce concurrency* — lower the worker or thread count so it is
+        proportionate to 4 cores. Free, immediate, reversible.
+      - *Add CPU capacity* — scale up or scale out. Effective, but costs money
+        and takes longer.
+
+      I would reduce concurrency first. It is free and instant, and if the
+      workload is oversubscribed rather than genuinely under-provisioned, adding
+      cores would mask a configuration error at permanent cost. If reducing
+      concurrency degrades throughput, that is evidence the machine genuinely
+      needs more CPU, and I would then scale with confidence rather than by guess.
+    common_failures:
+      - "Answering 'CPU-bound' with no evidence cited — the reasoning is the assessed skill"
+      - "Misreading %CPU 94 as the proof while ignoring the run queue, which is the stronger signal"
+      - "Ruling out memory by saying 'memory looks fine' rather than naming si/so=0"
+      - "Jumping straight to 'add more CPU' without considering that the concurrency setting may be wrong"
+      - "Proposing two variants of the same action (scale up / scale out) as 'two distinct remedies'"
+
+  - id: C
+    title: Reason about a design
+    kind: reason
+    objectives: [OBJ-A01.1.8]
+    prompt: >-
+      You are told to run 200 copies of a process that uses about 300MB RSS each,
+      on a single 32GB machine with swap enabled.
+
+
+      Do not simply answer whether it fits. Write roughly 250–350 words covering:
+      the arithmetic; what happens as the limit is approached, **in order**; what
+      users experience at each stage and when they first notice; what you would
+      measure before committing to any number; and what you would actually
+      recommend.
+
+
+      This is a senior-level question asked early on purpose. The reasoning is
+      the assessment, not the verdict.
+    rubric:
+      - "Does the arithmetic and accounts for OS and page-cache overhead, not just 200 × 300MB"
+      - "Describes the degradation in the correct order: page cache eviction → swapping → unresponsiveness → OOM kill"
+      - "Identifies that users experience timeouts before any out-of-memory error appears"
+      - "Notes that a restart loop can make the situation worse rather than better"
+      - "Questions the inputs — is 300MB RSS or VSZ, steady-state or peak, growing over time"
+      - "Gives a concrete recommendation with a stated safety margin, not just 'it does not fit'"
+    model_answer: |
+      **The arithmetic.** 200 × 300MB = 60GB. Total RAM is 32GB, of which the OS,
+      agents and a working page cache need perhaps 2GB, leaving ~30GB usable.
+      Demand exceeds supply roughly 2:1. It does not fit.
+
+      **What happens, in order.**
+
+      1. Processes start without complaint — Linux overcommits, so reservation
+         succeeds even though the memory does not exist.
+      2. As real usage grows, the kernel evicts page cache first. This is
+         invisible in memory graphs but file I/O quietly slows as cached reads
+         become disk reads.
+      3. Around 90–100 processes, RAM is genuinely exhausted and swapping begins.
+         A memory access that cost 80ns now costs ~50µs. Latency does not degrade
+         gradually; it falls off a cliff.
+      4. The machine becomes unresponsive while technically still working. SSH
+         takes 30 seconds. Health checks time out. Monitoring reports the service
+         down while `ps` shows every process running.
+      5. The OOM killer fires and kills the largest process, then another.
+      6. If a supervisor restarts them, the restarts consume the little remaining
+         capacity and the machine gets worse rather than recovering.
+
+      **What users see.** Timeouts, at stage 3 — well before any out-of-memory
+      error exists anywhere. This is why memory exhaustion is so often
+      misdiagnosed as a latency or network problem.
+
+      **What I would measure first.** Is 300MB RSS or VSZ? RSS is the bill; VSZ
+      is a reservation and routinely much larger. Is it steady-state or peak?
+      Does it grow over time — a leak makes any static answer wrong eventually?
+      And do the 200 processes need to be processes, or could they be 8 processes
+      with 25 threads each, sharing one copy of the runtime?
+
+      **Recommendation.** Around 80 processes on this machine, sized on peak RSS
+      with headroom — and I would push back on the shape of the request rather
+      than just the number.
+    common_failures:
+      - "Answering only 'no, it does not fit' — the arithmetic is the easy part and not what is being assessed"
+      - "Getting the degradation order wrong, most often putting the OOM kill before swapping"
+      - "Claiming users see an out-of-memory error, when they see timeouts"
+      - "Not distinguishing RSS from VSZ when the input number is ambiguous"
+      - "Failing to question the premise — 200 separate processes may be the wrong design"

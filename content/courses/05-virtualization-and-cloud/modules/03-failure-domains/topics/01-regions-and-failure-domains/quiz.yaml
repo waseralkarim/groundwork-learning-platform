@@ -1,0 +1,455 @@
+id: quiz.regions-and-failure-domains
+topic: topic.regions-and-failure-domains
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.3.1]
+    stem: What is an availability zone a boundary against?
+    options:
+      - id: a
+        text: A facility-level failure — power, cooling, fire, a fibre cut into one building
+        correct: true
+      - id: b
+        text: A regional disaster
+        note: >-
+          That is what a region boundary is for. Zones are within a region and
+          close together.
+      - id: c
+        text: A bad deployment
+        note: >-
+          A deployment reaches every zone. No placement protects against a
+          change.
+      - id: d
+        text: A provider-wide outage
+        note: >-
+          Zones share a provider, an account and usually a control plane.
+    explanation: >-
+      A zone is one or more datacentres with independent power, cooling and
+      network, close enough to its siblings for synchronous replication —
+      single-digit milliseconds. That closeness is what lets one system span
+      zones, and it is also why zones do not protect against anything regional.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.3.1]
+    stem: >-
+      Why is a region usually the largest single failure domain a deployment has?
+    options:
+      - id: a
+        text: Most cloud services are regional, including the control plane, and most deployments use one region
+        correct: true
+      - id: b
+        text: Regions have no internal redundancy
+        note: >-
+          They contain multiple zones with independent facilities.
+      - id: c
+        text: Regional networks are less reliable than zonal ones
+        note: >-
+          Not the issue. The issue is that services are scoped to a region.
+      - id: d
+        text: Providers do not replicate data between regions
+        note: >-
+          They offer it. Whether you use it is your decision, which is the
+          point.
+    explanation: >-
+      Load balancers, managed databases and Kubernetes clusters each live in one
+      region and span zones within it. So everything you run typically shares one
+      regional control plane, and a regional control-plane failure is far more
+      common than a datacentre being destroyed.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.3.2]
+    stem: >-
+      Three replicas are running. What does that tell you about fault tolerance?
+    options:
+      - id: a
+        text: Nothing until you know how many failure domains they span
+        correct: true
+      - id: b
+        text: It tolerates two failures
+        note: >-
+          Only if the three fail independently. On one node they are one
+          failure.
+      - id: c
+        text: It tolerates one failure
+        note: >-
+          Also assumes independence, which the replica count does not
+          establish.
+      - id: d
+        text: It depends on the replicas' CPU limits
+        note: >-
+          Resource limits do not determine failure domains.
+    explanation: >-
+      Schedulers pack by default, so three replicas with no constraint routinely
+      land on one node — three processes in one failure domain. Counting replicas
+      tells you about capacity; counting domains tells you about fault tolerance,
+      and the replica count actively conceals the difference by supplying a
+      number that sounds like redundancy.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A05.3.2]
+    stem: >-
+      Which failure domains are most often left off a dependency list?
+    options:
+      - id: a
+        text: Provider and global — DNS, certificate authorities, registries, identity
+        correct: true
+      - id: b
+        text: Node and rack
+        note: >-
+          Node is usually considered; rack is invisible but generally understood
+          to exist.
+      - id: c
+        text: Process and container
+        note: >-
+          These are the ones everybody counts.
+      - id: d
+        text: Zone and region
+        note: >-
+          Both appear on most architecture diagrams.
+    explanation: >-
+      Almost nobody lists their DNS registrar, certificate authority or container
+      registry as dependencies, and all are required to serve or to deploy. They
+      sit above the region in the domain hierarchy, so no amount of regional
+      redundancy touches them.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.3]
+    stem: >-
+      Four required services at 99.95%, 99.95%, 99.99% and 99.99%. What does the
+      system promise?
+    options:
+      - id: a
+        text: About 99.88% — worse than any individual component
+        correct: true
+      - id: b
+        text: 99.95%, the weakest component
+        note: >-
+          The composite is below the weakest, because every component's
+          unavailability adds.
+      - id: c
+        text: 99.99%, the strongest component
+        note: >-
+          Series composition can never exceed the weakest link.
+      - id: d
+        text: The average, about 99.97%
+        note: >-
+          Availabilities multiply in series; they do not average.
+    explanation: >-
+      0.9995 × 0.9995 × 0.9999 × 0.9999 = 99.880046%, about 52 minutes a month.
+      Components in series multiply, so availability can only fall, and **adding
+      any dependency always lowers it**. Vendors publish per-service figures;
+      nobody publishes the product, and the product is what users get.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.3]
+    stem: Two components at 99% each, either one sufficient. Combined availability?
+    options:
+      - id: a
+        text: 99.99% — the unavailabilities multiply
+        correct: true
+      - id: b
+        text: 99% — no better than one
+        note: >-
+          Both must fail simultaneously for the pair to fail, which is much less
+          likely.
+      - id: c
+        text: 198% — they add
+        note: >-
+          Availability is a probability and cannot exceed 1.
+      - id: d
+        text: 99.5% — they average
+        note: >-
+          Parallel composition multiplies unavailability, it does not average
+          availability.
+    explanation: >-
+      1 − (1−0.99)(1−0.99) = 1 − 0.0001 = 99.99%. Each addition removes roughly
+      an order of magnitude of downtime, so two mediocre components in parallel
+      beat one excellent one — provided the failures are independent, which is
+      the assumption the whole calculation rests on.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.4]
+    stem: >-
+      When does the parallel availability formula stop being valid?
+    options:
+      - id: a
+        text: When the failures are not independent — shared node, dependency, deployment or load
+        correct: true
+      - id: b
+        text: Above three components
+        note: >-
+          The formula extends to any number. Independence is the constraint, not
+          the count.
+      - id: c
+        text: When the components have different availabilities
+        note: >-
+          It handles unequal figures fine.
+      - id: d
+        text: When components are in different regions
+        note: >-
+          That improves independence rather than breaking it.
+    explanation: >-
+      Multiplying unavailabilities is only correct when the failures have nothing
+      in common. Two replicas on one node are not parallel at all — they are one
+      component with a slightly different failure rate. Calculated parallel
+      availability is therefore an upper bound, usually a distant one.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.4]
+    stem: >-
+      Nine replicas across three zones all fetch secrets from one single-zone
+      vault. What is the system's availability?
+    options:
+      - id: a
+        text: Approximately the vault's — it is in series with every replica
+        correct: true
+      - id: b
+        text: Approximately the replicas' — nine copies is very redundant
+        note: >-
+          The redundancy is real and irrelevant; one shared dependency dominates
+          the product.
+      - id: c
+        text: The average of the two
+        note: >-
+          Series composition multiplies. It does not average.
+      - id: d
+        text: Higher than either, since redundancy compounds
+        note: >-
+          Adding a required dependency can only lower the composite.
+    explanation: >-
+      Nine replicas in parallel produce essentially perfect availability, and
+      putting one component in series with that result gives back approximately
+      that component's own figure. Replicas across three zones with a single-zone
+      dependency is a single-zone system wearing nine copies — and adding replicas
+      does not move the number at all.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.5]
+    stem: >-
+      Three quorum nodes across two zones, 2 in AZ-a and 1 in AZ-b. Which zone
+      failures does it survive?
+    options:
+      - id: a
+        text: Only the loss of AZ-b — a random zone failure is survived half the time
+        correct: true
+      - id: b
+        text: Both — three nodes tolerate one failure
+        note: >-
+          Losing AZ-a removes two of three, leaving one against a quorum of two.
+      - id: c
+        text: Neither — quorum needs all nodes
+        note: >-
+          Quorum is a majority, so two of three suffices.
+      - id: d
+        text: Both, provided replication is synchronous
+        note: >-
+          Replication mode does not change how many nodes remain.
+    explanation: >-
+      Quorum for three is two. Lose AZ-a and one node remains — quorum lost, and
+      the system stops accepting writes. Lose AZ-b and two remain — quorum held.
+      So "redundant across two availability zones" tolerates a random zone loss
+      50% of the time, which is why every distributed system's documentation
+      specifies three zones.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.5]
+    stem: >-
+      Adding a fourth quorum node to a two-zone deployment (2 per zone) does what?
+    options:
+      - id: a
+        text: Makes it worse — quorum becomes 3, so neither zone loss survives
+        correct: true
+      - id: b
+        text: Improves it — four nodes tolerate more failures than three
+        note: >-
+          More nodes raise the quorum too. Two of four is short of three.
+      - id: c
+        text: No change — quorum stays at two
+        note: >-
+          Quorum is floor(n/2)+1, so four nodes need three.
+      - id: d
+        text: Improves it only if the fourth node is a non-voting observer
+        note: >-
+          True of a genuine non-voter, and that is not what adding a node means
+          by default.
+    explanation: >-
+      Three nodes over two zones survives one of two zone failures; four nodes
+      over two zones survives zero. The extra node raises quorum from two to
+      three without adding a zone. **The number of zones decides zone fault
+      tolerance, not the number of nodes** — which is also why quorum systems are
+      deployed in odd numbers.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.6]
+    stem: >-
+      Replicas in three zones served no traffic during an outage in a fourth
+      location they do not run in. What is the most likely cause?
+    options:
+      - id: a
+        text: A health check that depends on something in the failed location
+        correct: true
+      - id: b
+        text: The load balancer failed
+        note: >-
+          It behaved correctly — it removed targets that reported themselves
+          unhealthy.
+      - id: c
+        text: DNS propagated the failure
+        note: >-
+          DNS does not mark backends unhealthy.
+      - id: d
+        text: The replicas crashed from the network disruption
+        note: >-
+          They were healthy throughout, which is what makes the symptom
+          confusing.
+    explanation: >-
+      A readiness probe that calls a remote service puts that service in series
+      with yours — and when it fails, every replica in every zone fails its check
+      simultaneously and the load balancer removes all of them. **Anything on a
+      health check path is a hard dependency of the whole service**, and health
+      checks are written casually.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.6]
+    stem: >-
+      A service fetches secrets at startup from a single-zone vault. That zone
+      fails. What happens?
+    options:
+      - id: a
+        text: Running replicas keep serving; any that restart cannot start — so it degrades gradually
+        correct: true
+      - id: b
+        text: Everything fails immediately
+        note: >-
+          Running replicas already hold their secrets, so the failure is
+          delayed.
+      - id: c
+        text: Nothing — secrets are only needed at startup
+        note: >-
+          Until something restarts, which happens routinely.
+      - id: d
+        text: The replicas fail over to a cached copy automatically
+        note: >-
+          No such mechanism exists unless it was built.
+    explanation: >-
+      The delay is what makes it dangerous. The service degrades as pods are
+      rescheduled rather than failing cleanly, so the cause is harder to spot —
+      and a deploy during the outage replaces every healthy replica with one that
+      cannot start, turning a partial failure into a total one at the worst
+      moment.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.7]
+    stem: What does an untested failover procedure represent?
+    options:
+      - id: a
+        text: A plan rather than a capability — and failover is itself a common cause of outages
+        correct: true
+      - id: b
+        text: Adequate protection, since the standby exists
+        note: >-
+          A standby that was never receiving replication looks identical to one
+          that was.
+      - id: c
+        text: A compliance requirement satisfied
+        note: >-
+          Auditors increasingly ask when it was last exercised.
+      - id: d
+        text: Sufficient, provided the runbook is current
+        note: >-
+          A current runbook describes intent. It does not establish that the
+          steps work.
+    explanation: >-
+      Common failover failures: a standby not actually receiving replication, DNS
+      that will not propagate quickly enough, a secondary sized for a fraction of
+      real traffic, and split brain. The honest question is not "can we fail
+      over" but "when did we last fail over deliberately, in business hours" — and
+      if the answer is never, the capability is unproven regardless of what has
+      been built.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.8]
+    stem: >-
+      Which change reduces real downtime most for a typical service deploying 20
+      times a day?
+    options:
+      - id: a
+        text: Progressive rollout with fast rollback
+        correct: true
+      - id: b
+        text: A second region
+        note: >-
+          Doubles infrastructure and runs the same bad release in both places.
+      - id: c
+        text: More replicas per zone
+        note: >-
+          Adds capacity and no protection against a change.
+      - id: d
+        text: A higher-tier managed database
+        note: >-
+          Improves one component that is usually not the limiting factor.
+    explanation: >-
+      Most outages are changes — deployments, config edits, expiring
+      certificates, scheduled deprecations. Redundancy protects against none of
+      them: a bad release reaches every replica in minutes and a second region
+      runs the same release. Rollout controls appear in no availability
+      calculation and are the largest real term.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A05.3.8]
+    stem: >-
+      Which review question most reliably finds a hidden single point of failure?
+    options:
+      - id: a
+        text: "Does anything on the health check path leave this failure domain?"
+        correct: true
+      - id: b
+        text: "How many replicas are there?"
+        note: >-
+          The number that conceals the answer rather than revealing it.
+      - id: c
+        text: "Which region is this in?"
+        note: >-
+          Worth knowing and rarely the hidden dependency.
+      - id: d
+        text: "What is the vendor's SLA?"
+        note: >-
+          An upper bound on one component, and not where correlated failures
+          hide.
+    explanation: >-
+      It is the question that is not on standard checklists and the one that
+      catches the worst class of correlated failure: a readiness probe reading
+      from a single-zone service will remove every replica in every zone at once.
+      The related questions worth adding are static stability — does anything
+      have to *act* when a zone fails — and when any of it was last tested.

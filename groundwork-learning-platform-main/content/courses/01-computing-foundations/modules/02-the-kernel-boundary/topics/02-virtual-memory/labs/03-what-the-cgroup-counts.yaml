@@ -1,0 +1,215 @@
+id: lab.what-the-cgroup-counts
+topic: topic.virtual-memory
+title: Find out what your memory limit is counting
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A01.4.5]
+
+intro: >-
+  Your container has a memory limit. This lab is about what that limit counts —
+  which is more than the memory your program allocated, and includes something
+  the kernel will hand straight back if anything needs it.
+
+
+  You will write a file and watch the limit's number climb without any program
+  allocating anything — then discover that this particular kind of "file" memory
+  is charged to you and cannot be given back, which is the trap that turns a
+  temporary file into an OOM kill.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Record this container's memory limit and its current charge to
+      /tmp/answer-limit, in the form `max=<n> current=<n>`, both in bytes.
+    hint: "`/sys/fs/cgroup/memory.max` and `/sys/fs/cgroup/memory.current`."
+    walkthrough: |
+      echo "max=$(cat /sys/fs/cgroup/memory.max) current=$(cat /sys/fs/cgroup/memory.current)" > /tmp/answer-limit
+      cat /tmp/answer-limit
+    verify:
+      - type: file_matches
+        path: /tmp/answer-limit
+        pattern: 'max=\d+'
+        describe: The limit was captured
+      - type: file_matches
+        path: /tmp/answer-limit
+        pattern: 'current=\d+'
+        describe: The current charge was captured
+
+  - id: s2
+    instruction: >-
+      Now compare that with what `free -m` says the machine has. Save the total
+      line from `free -m` to /tmp/answer-free.
+
+
+      The two disagree by a wide margin. Write which of the two — the literal
+      word `cgroup` or `free` — a program should trust when sizing itself, to
+      /tmp/answer-trust.
+    hint: >-
+      `free -m | head -2 > /tmp/answer-free`. /proc/meminfo is not namespaced,
+      so `free` inside a container is describing the host.
+    walkthrough: |
+      free -m | head -2 > /tmp/answer-free
+      echo cgroup > /tmp/answer-trust
+    verify:
+      - type: file_matches
+        path: /tmp/answer-free
+        pattern: 'Mem:'
+        describe: The host figures were captured
+      - type: file_matches
+        path: /tmp/answer-trust
+        pattern: '^cgroup$'
+        describe: You identified the cgroup limit as the number to trust
+
+  - id: s3
+    instruction: >-
+      Break the charge into its parts. Save the `anon`, `file` and `slab` lines
+      from memory.stat to /tmp/answer-stat-before.
+    hint: "`grep -E '^(anon|file|slab) ' /sys/fs/cgroup/memory.stat`"
+    walkthrough: |
+      grep -E '^(anon|file|slab) ' /sys/fs/cgroup/memory.stat > /tmp/answer-stat-before
+      cat /tmp/answer-stat-before
+    verify:
+      - type: file_matches
+        path: /tmp/answer-stat-before
+        pattern: '^anon \d+'
+        describe: Anonymous memory was captured
+      - type: file_matches
+        path: /tmp/answer-stat-before
+        pattern: '^file \d+'
+        describe: Page cache was captured
+
+  - id: s4
+    instruction: >-
+      Write a 200 MB file to /tmp. Your shell allocates nothing — it asks the
+      kernel to store bytes in a file.
+
+
+      Then save the same lines again to /tmp/answer-stat-after, and add the
+      `shmem` line this time.
+    hint: >-
+      `dd if=/dev/zero of=/tmp/big bs=1M count=200`. Then
+      `grep -E '^(anon|file|shmem|slab) ' /sys/fs/cgroup/memory.stat`.
+    walkthrough: |
+      dd if=/dev/zero of=/tmp/big bs=1M count=200 2>/dev/null
+      grep -E '^(anon|file|shmem|slab) ' /sys/fs/cgroup/memory.stat > /tmp/answer-stat-after
+      echo "current=$(cat /sys/fs/cgroup/memory.current)"
+      cat /tmp/answer-stat-after
+    verify:
+      - type: file_matches
+        path: /tmp/answer-stat-after
+        pattern: '^shmem \d+'
+        describe: The shmem figure was captured
+      - type: command_exit
+        command: "test $(awk '/^file /{print $2}' /tmp/answer-stat-after) -gt $(awk '/^file /{print $2}' /tmp/answer-stat-before)"
+        exit_code: 0
+        describe: Writing a file increased the memory charged to this container
+
+  - id: s5
+    instruction: >-
+      Your container is now holding far more than it was, and no program
+      allocated any of it. Record the new `memory.current` to
+      /tmp/answer-current-after and work out what percentage of the limit it is.
+
+
+      Then answer this in /tmp/answer-danger, with `yes` or `no`: is the
+      container in danger?
+    hint: >-
+      Look at what the charge is made of. One of the two big numbers can be
+      taken back by the kernel at any moment without losing anything.
+    walkthrough: |
+      cat /sys/fs/cgroup/memory.current > /tmp/answer-current-after
+      awk '{printf "%.0f%% of the limit\n", 100*$1/'"$(cat /sys/fs/cgroup/memory.max)"'}' /tmp/answer-current-after
+      echo no > /tmp/answer-danger
+    verify:
+      - type: file_matches
+        path: /tmp/answer-current-after
+        pattern: '^\d+$'
+        describe: The new charge was recorded
+      - type: file_matches
+        path: /tmp/answer-danger
+        pattern: '^no$'
+        describe: You recognised that a cache-heavy charge is not memory pressure
+
+  - id: s6
+    instruction: >-
+      Now find out whether the kernel can take it back. Allocate 250 MB of real,
+      touched memory and then read memory.stat again into
+      /tmp/answer-stat-under-pressure.
+
+
+      Compare the `file` figure with step 4's. Real page cache would have shrunk
+      to make room. Did this?
+    hint: >-
+      `/opt/lab/eat-memory 250 250 &`, wait a few seconds, then read memory.stat
+      again. 200 + 250 is close to the limit, so if anything could be reclaimed
+      it would be now.
+    walkthrough: |
+      /opt/lab/eat-memory 250 250 >/dev/null 2>&1 &
+      sleep 5
+      grep -E '^(anon|file|shmem) ' /sys/fs/cgroup/memory.stat > /tmp/answer-stat-under-pressure
+      cat /tmp/answer-stat-under-pressure
+      pkill -f eat-memory || true
+    verify:
+      - type: file_matches
+        path: /tmp/answer-stat-under-pressure
+        pattern: '^anon \d+'
+        describe: Anonymous memory grew
+      - type: command_exit
+        command: "test $(awk '/^file /{print $2}' /tmp/answer-stat-under-pressure) -ge $(( $(awk '/^file /{print $2}' /tmp/answer-stat-after) - 8388608 ))"
+        exit_code: 0
+        describe: The file charge did not shrink — tmpfs pages cannot be reclaimed
+
+solution: |
+  ```bash
+  cat /sys/fs/cgroup/memory.max
+  cat /sys/fs/cgroup/memory.current
+  free -m | head -2                       # the HOST's memory, not yours
+
+  grep -E '^(anon|file|slab) ' /sys/fs/cgroup/memory.stat
+
+  dd if=/dev/zero of=/tmp/big bs=1M count=200
+  grep -E '^(anon|file|shmem|slab) ' /sys/fs/cgroup/memory.stat   # file and shmem grew
+  df -h /tmp                              # tmpfs — the file is in RAM
+
+  /opt/lab/eat-memory 250 250 &
+  grep -E '^(anon|file|shmem) ' /sys/fs/cgroup/memory.stat        # file did NOT shrink
+  ```
+
+  **What you just measured.**
+
+  **`free` lied, and it was not its fault.** `/proc/meminfo` is not namespaced,
+  so `free` inside a container reports the host's memory. Anything sizing itself
+  from that number — a JVM heap, a worker count, a cache — is configuring for a
+  machine it does not have. The only honest source is `memory.max`, and this is
+  the most common container memory bug there is.
+
+  **Writing a file charged your container.** Your shell allocated nothing, and
+  `memory.current` climbed by 200 MB. The `file` line grew, and so did `shmem`.
+
+  **And the kernel could not take it back.** This is the part worth carrying
+  away. `file` in `memory.stat` is usually reclaimable — page cache for a file on
+  disk can be dropped and re-read. But `/tmp` here is a **tmpfs**, which means
+  the file *is* memory. There is no disk copy to go back to, so those pages are
+  charged as `file`, counted against your limit, and as unreclaimable as heap.
+
+  **Why this matters more than it looks.** "Writing to a temporary file" sounds
+  like the opposite of using memory, and in a container with a tmpfs `/tmp` it is
+  exactly the same thing. A service that spools uploads to `/tmp` is allocating
+  memory against its own limit and will be OOM-killed for it — with a memory
+  graph showing a perfectly healthy heap.
+
+  :::note
+  On a machine where `/tmp` is on disk, the same write produces genuine page
+  cache: charged the same way, but dropped the moment anything needs the memory.
+  The accounting line is identical; the reclaimability is not. `shmem` is what
+  distinguishes them, and it is why that line is worth reading.
+  :::
+
+  **Where this goes.** A Kubernetes `emptyDir` with `medium: Memory` is a tmpfs
+  and counts against the pod's memory limit for exactly this reason. So does
+  `/dev/shm`. Both surprise people, and both are this lab (**E29**).

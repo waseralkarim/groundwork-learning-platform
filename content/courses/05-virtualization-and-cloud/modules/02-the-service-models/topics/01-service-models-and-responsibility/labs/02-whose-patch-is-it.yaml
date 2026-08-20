@@ -1,0 +1,293 @@
+id: lab.whose-patch-is-it
+topic: topic.service-models-and-responsibility
+title: Twelve advisories in one week — sort them
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A05.2.2, OBJ-A05.2.7]
+
+intro: >-
+  Twelve security advisories arrive in one week. You are running the PaaS
+  deployment — managed Kubernetes, managed PostgreSQL, your image.
+
+
+  Sort them into yours, the provider's, and shared. Some are obvious in each
+  direction. The interesting ones are the four that are yours no matter which
+  model you are on, and the two where "shared" is doing real work.
+
+setup:
+  - /opt/lab/seed-responsibility.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read the advisories and the PaaS responsibility list, then sort every
+      advisory into provider, yours, or shared. Save the classification to
+      /tmp/answer-sorted.
+    hint: >-
+      For each advisory, find the layer it belongs to in
+      /tmp/deployments/3-paas.txt and read off who owns that layer.
+    walkthrough: |
+      cat /tmp/patches/advisories.txt
+      cat /tmp/deployments/3-paas.txt
+      {
+        echo "PROVIDER:"
+        echo "  A01 linux kernel        - node OS is theirs on managed nodes"
+        echo "  A05 kubernetes api      - the control plane is theirs"
+        echo "  A06 containerd          - container runtime is theirs"
+        echo "  A07 server firmware     - hardware layer"
+        echo "  A11 control plane cross-tenant exposure - entirely theirs"
+        echo
+        echo "SHARED:"
+        echo "  A02 openssl in my base image - the fix is published by the distro, and rebuilding and rolling my image is mine"
+        echo "  A03 postgresql minor release - they apply it, i choose the window"
+        echo
+        echo "MINE:"
+        echo "  A04 my json library rce  - my image, my dependency"
+        echo "  A08 cross-tenant records - my application code"
+        echo "  A09 public bucket        - configuration"
+        echo "  A10 IAM role * on *      - access control"
+        echo "  A12 database password    - access control"
+      } > /tmp/answer-sorted
+      cat /tmp/answer-sorted
+    verify:
+      - type: command_exit
+        command: "grep -A6 'PROVIDER' /tmp/answer-sorted | grep -q 'A05'"
+        exit_code: 0
+        describe: You assigned the Kubernetes API server to the provider
+      - type: file_matches
+        path: /tmp/answer-sorted
+        pattern: "A09"
+        describe: And the public bucket to yourself
+      - type: command_exit
+        command: "grep -A9 'MINE' /tmp/answer-sorted | grep -qE 'A1[02]'"
+        exit_code: 0
+        describe: With the access-control advisories in your column
+
+  - id: s2
+    instruction: >-
+      A02 is OpenSSL in your base image and A01 is OpenSSL's cousin in the node
+      kernel. Explain why these two have different owners, in
+      /tmp/answer-two-openssl.
+    hint: >-
+      Both are libraries in an operating system. Ask which operating system, and
+      who put it there.
+    walkthrough: |
+      {
+        echo "A01 - a kernel flaw on the managed nodes. the node OS is the provider's on managed kubernetes: they build the image, they patch it, they publish a new one. i do not install a kernel."
+        echo
+        echo "A02 - openssl inside MY container image. the container has its own userspace, which came from a base image i chose. the distro publishes a fixed package; nothing rebuilds my image but me."
+        echo
+        echo "same class of software, two different operating systems. the container shares the host KERNEL and brings its own USERSPACE - which is exactly the a05.1 distinction, showing up as a responsibility boundary."
+        echo
+        echo "so 'the provider patches the OS' is true and ambiguous. they patch the node's os. everything inside my image is mine, forever, at every service model up to saas."
+        echo "this is why base image age is worth alerting on: nothing tells me my image has a vulnerable openssl in it, and no provider patch will ever fix it."
+      } > /tmp/answer-two-openssl
+      cat /tmp/answer-two-openssl
+    verify:
+      - type: file_matches
+        path: /tmp/answer-two-openssl
+        pattern: "(?i)kernel"
+        describe: You identified which OS the provider patches
+      - type: file_matches
+        path: /tmp/answer-two-openssl
+        pattern: "(?i)userspace|my image|base image"
+        describe: And that the image's userspace is yours
+      - type: file_matches
+        path: /tmp/answer-two-openssl
+        pattern: "(?i)base image age|nothing tells me"
+        describe: And what that implies for detecting it
+
+  - id: s3
+    instruction: >-
+      A03 is a PostgreSQL authentication bypass on your managed database. Work
+      out what "shared" means here in practice, and what happens if you do
+      nothing. Save to /tmp/answer-shared-db.
+    hint: >-
+      The provider will definitely apply it. The question is when, and what
+      controls that.
+    walkthrough: |
+      {
+        echo "the provider will apply this patch - it is their software and an authentication bypass is not optional. what is mine is WHEN."
+        echo
+        echo "if i do nothing: they apply it during whatever maintenance window is configured. if that window has been left at its default of 'any time', it lands whenever they schedule it - which may be the middle of a working day, and a minor version patch can mean minutes of unavailability or, on a large instance, hours."
+        echo
+        echo "so 'shared' here means: they do the doing, i do the scheduling. and the default is a decision made by not deciding."
+        echo
+        echo "what i should have in place before an advisory arrives:"
+        echo "1. a maintenance window that is actually set, off-peak, and known to the on-call rota"
+        echo "2. an expectation that patches WILL arrive inside it, so the window is not a surprise"
+        echo "3. a way of knowing what version we are on, so i can tell whether it has already happened"
+        echo
+        echo "setting the window is a two minute change and it prevents an entire class of incident. it is the single highest value thing to check on a managed database i have inherited."
+      } > /tmp/answer-shared-db
+      cat /tmp/answer-shared-db
+    verify:
+      - type: file_matches
+        path: /tmp/answer-shared-db
+        pattern: "(?i)when|window"
+        describe: You identified timing as your half of the shared layer
+      - type: file_matches
+        path: /tmp/answer-shared-db
+        pattern: "(?i)any time|default"
+        describe: And what the default window means
+      - type: file_matches
+        path: /tmp/answer-shared-db
+        pattern: "(?i)two minute|highest value"
+        describe: And that setting it is cheap relative to what it prevents
+
+  - id: s4
+    instruction: >-
+      Four of the twelve would be yours on every deployment in
+      /tmp/deployments — including SaaS. Identify them and explain what they have
+      in common. Save to /tmp/answer-always-mine.
+    hint: >-
+      Compare the advisories against the three layers you computed in the
+      previous lab.
+    walkthrough: |
+      {
+        echo "A08 - my application returns another tenant's records"
+        echo "A09 - my bucket is public"
+        echo "A10 - my IAM role grants * on *"
+        echo "A12 - my database password is 'postgres'"
+        echo
+        echo "what they have in common: none of them is a patch."
+        echo "there is no version to upgrade to, no vendor advisory to wait for, and no service model that transfers them. they live in data, access control and configuration - the three layers that are mine in every deployment including saas."
+        echo
+        echo "the other eight all have an owner and a fix, and moving up a service model genuinely transfers most of them. these four do not move at all."
+        echo
+        echo "and they are the ones that actually cause breaches. not hypervisor escapes and kernel flaws - those exist and are rare - but a public bucket, an over-permissive role and a default credential."
+      } > /tmp/answer-always-mine
+      cat /tmp/answer-always-mine
+    verify:
+      - type: command_exit
+        command: "test $(grep -cE '^A(08|09|10|12)' /tmp/answer-always-mine) -eq 4"
+        exit_code: 0
+        describe: You identified all four that never transfer
+      - type: file_matches
+        path: /tmp/answer-always-mine
+        pattern: "(?i)none of them is a patch|not a patch"
+        describe: And what they have in common
+      - type: file_matches
+        path: /tmp/answer-always-mine
+        pattern: "(?i)cause breaches|breach"
+        describe: And why they matter more than their number suggests
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-mechanism what mechanism you need for each category,
+      and which category fails most often.
+    hint: >-
+      Three categories, three different kinds of work. One of them has no error
+      state when you skip it.
+    walkthrough: |
+      {
+        echo "PROVIDER advisories - mechanism: awareness only. subscribe to their security bulletins so i know an incident was theirs and can answer questions about it. no action from me."
+        echo
+        echo "MINE - mechanism: dependency scanning on my images and code, a rebuild-and-roll pipeline, and configuration checks that run continuously rather than at review time. these fail loudly - a scanner reports them."
+        echo
+        echo "SHARED - mechanism: a named owner, a schedule and an alert. rolling node images on a cadence, a maintenance window that is set, a restore test that actually runs."
+        echo
+        echo "shared fails most often, and for a structural reason: it has NO ERROR STATE. if i never roll my nodes, nothing fails - the cluster is healthy, the dashboard is green, and i am simply on the old image. if i never restore a backup, every backup still reports success."
+        echo
+        echo "the provider does the doing and i do the noticing, and noticing does not error. that is why shared layers need a schedule and a name against them rather than good intentions."
+      } > /tmp/answer-mechanism
+      cat /tmp/answer-mechanism
+    verify:
+      - type: file_matches
+        path: /tmp/answer-mechanism
+        pattern: "(?i)shared fails most"
+        describe: You identified which category fails most often
+      - type: file_matches
+        path: /tmp/answer-mechanism
+        pattern: "(?i)no error state|does not error"
+        describe: And the structural reason why
+      - type: file_matches
+        path: /tmp/answer-mechanism
+        pattern: "(?i)restore"
+        describe: And gave a concrete mechanism for a shared layer
+
+solution: >-
+  **The sort.**
+
+
+  *Provider:* the node kernel (A01), the Kubernetes API server (A05), containerd
+  (A06), server firmware (A07), and their control-plane exposure (A11). On
+  managed Kubernetes all of these are theirs entirely — you do not install a
+  kernel or run an API server.
+
+
+  *Shared:* OpenSSL in your base image (A02) and the PostgreSQL minor release
+  (A03).
+
+
+  *Yours:* your JSON library (A04), your cross-tenant bug (A08), the public
+  bucket (A09), the IAM role (A10), the database password (A12).
+
+
+  **The two OpenSSLs are the instructive pair.**
+
+
+  A01 is a kernel flaw on managed nodes — the provider builds the image, patches
+  it and publishes a new one. A02 is OpenSSL *inside your container image*, which
+  came from a base image you chose, and nothing rebuilds it but you.
+
+
+  Same class of software, two different operating systems — because a container
+  **shares the host kernel and brings its own userspace**. That is A05.1's
+  distinction reappearing as a responsibility boundary.
+
+
+  So "the provider patches the OS" is true and ambiguous. They patch the *node's*
+  OS. Everything inside your image is yours, at every model up to SaaS, and
+  nothing will tell you your base image has a vulnerable OpenSSL in it. Alerting
+  on base image age is the mechanism, and it is uncommon.
+
+
+  **What "shared" means for the database.**
+
+
+  The provider will apply an authentication-bypass patch; that is not optional.
+  Your half is **when**. Left at the default of "any time", it lands whenever
+  they schedule it — possibly mid-afternoon, and on a large instance a minor
+  version patch can mean hours.
+
+
+  Setting a maintenance window is a two-minute change that prevents a whole class
+  of incident, and it is the highest-value thing to check on any managed database
+  you have inherited.
+
+
+  **The four that never move.**
+
+
+  A08, A09, A10, A12 — a cross-tenant bug, a public bucket, an over-permissive
+  role, a default password.
+
+
+  **None of them is a patch.** No version to upgrade to, no advisory to wait for,
+  no model that transfers them. They live in data, access control and
+  configuration — the three layers the previous lab computed as yours everywhere.
+
+
+  The other eight all have an owner and a fix. These four are also the ones that
+  actually cause breaches: not hypervisor escapes, which exist and are rare, but
+  a bucket, a role and a credential.
+
+
+  **And the category that fails most.**
+
+
+  *Provider* needs awareness only. *Yours* fails loudly — a scanner reports it.
+
+
+  *Shared* fails silently, and structurally: **it has no error state.** Never roll
+  your nodes and nothing fails — the cluster is healthy, the dashboard is green,
+  and you are simply on the old image. Never restore a backup and every backup
+  still reports success.
+
+
+  The provider does the doing and you do the noticing, and noticing does not
+  error. Which is why shared layers need a schedule and a name against them
+  rather than good intentions.

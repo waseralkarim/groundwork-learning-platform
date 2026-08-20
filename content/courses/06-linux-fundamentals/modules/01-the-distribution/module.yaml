@@ -1,0 +1,8 @@
+id: module.the-distribution
+slug: the-distribution
+title: The Distribution
+summary: >-
+  What a distribution is beyond a logo — a kernel, a userland, an archive and a
+  policy — how to identify one from the machine rather than from memory, and how
+  to read the version strings that policy produces.
+order: 1

@@ -1,0 +1,150 @@
+id: topic.identity-and-least-privilege
+slug: identity-and-least-privilege
+title: "Identity and Least Privilege: Measure What You Actually Hold"
+summary: >-
+  Two questions decide what a compromise costs you: who is this process, and
+  what is it allowed to do. Both have answers on the running system that
+  routinely differ from the manifest — and the second one is almost never
+  measured, because the tools that report it are not the ones people reach for.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.certificates-and-tls
+    hardness: required
+  - topic: topic.cgroups
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A04.4.1
+    level: L1
+    verb: distinguish
+    statement: >-
+      Distinguish authentication from authorization, and identify which one a
+      given failure belongs to.
+    assessed_by: [quiz.q1, quiz.q2, lab.who-am-i-really, exercise.e1]
+
+  - id: OBJ-A04.4.2
+    level: L1
+    verb: identify
+    statement: >-
+      Identify the identity a process is actually running with — user, group,
+      supplementary groups — from the process rather than from configuration.
+    assessed_by: [quiz.q3, quiz.q4, lab.who-am-i-really]
+
+  - id: OBJ-A04.4.3
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret permission bits on files and directories, and predict access
+      before testing it.
+    assessed_by: [quiz.q5, quiz.q6, quiz.q7, lab.the-bit-that-is-not-read, exercise.e2]
+
+  - id: OBJ-A04.4.4
+    level: L2
+    verb: measure
+    statement: >-
+      Measure the privilege a process actually holds, including the difference
+      between what it has and what it could regain.
+    assessed_by: [quiz.q8, quiz.q9, lab.who-am-i-really, assessment.A]
+
+  - id: OBJ-A04.4.5
+    level: L2
+    verb: explain
+    statement: >-
+      Explain how setuid grants privilege, and why every setuid binary is part
+      of the attack surface.
+    assessed_by: [quiz.q10, quiz.q11, lab.who-am-i-really, exercise.e3]
+
+  - id: OBJ-A04.4.6
+    level: L2
+    verb: trace
+    statement: >-
+      Trace SSH public key authentication, naming the cryptographic primitive at
+      each step.
+    assessed_by: [quiz.q12, quiz.q13, lab.keys-not-passwords, assessment.B]
+
+  - id: OBJ-A04.4.7
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose an access failure, distinguishing the object that was denied from
+      the object that caused it.
+    assessed_by: [quiz.q14, lab.the-bit-that-is-not-read, troubleshooting.the-file-that-is-readable]
+
+  - id: OBJ-A04.4.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a least-privilege design by naming what a compromise of each
+      component would reach.
+    assessed_by: [quiz.q15, lab.audit-the-privilege, exercise.e4, exercise.e5, assessment.C, troubleshooting.the-key-nobody-owns]
+
+terminology:
+  - term: authentication
+    definition: >-
+      Establishing who you are. It happens once per session and either succeeds
+      or fails.
+  - term: authorization
+    definition: >-
+      Deciding whether that identity may do a specific thing. It happens on
+      every operation, and it is where least privilege lives.
+  - term: least privilege
+    definition: >-
+      Holding only what is needed for the task, so that a compromise reaches
+      only what that component needed. It is measured by what an attacker gets,
+      not by what is configured.
+  - term: uid and gid
+    definition: >-
+      The numeric user and group a process runs as. The kernel knows only the
+      numbers; names are a lookup for humans, which is why a uid can exist with
+      no matching account.
+  - term: supplementary groups
+    definition: >-
+      Additional groups a process carries beyond its primary one. They are a
+      common and quiet source of access nobody remembers granting.
+  - term: permission bits
+    definition: >-
+      Read, write and execute for owner, group and other. Evaluated by the first
+      matching class — owner, then group, then other — not by the union.
+  - term: the directory execute bit
+    definition: >-
+      On a directory, `x` permits traversal — resolving a name inside it — while
+      `r` permits listing. They are independent, and confusing them produces an
+      error that names the wrong object.
+  - term: umask
+    definition: >-
+      The permission bits removed from newly created files. It explains why a
+      file you just created is not the mode you expected.
+  - term: setuid
+    definition: >-
+      A bit making a program run as its owner rather than its caller. It is how
+      an unprivileged user changes their own password, and it is why every
+      setuid binary is a potential escalation.
+  - term: capabilities
+    definition: >-
+      Root's powers, split into units that can be granted individually. The
+      effective set is what a process holds now; the bounding set is the ceiling
+      on what it could ever regain.
+  - term: authorized_keys
+    definition: >-
+      The list of public keys permitted to authenticate as an account. It is
+      append-only in practice — entries accumulate and are almost never removed.
+  - term: key fingerprint
+    definition: >-
+      A hash of a public key, used to compare keys at a glance. `SHA256:...` —
+      the same primitive as A04.1, applied to identity.
+  - term: blast radius
+    definition: >-
+      What an attacker reaches by compromising one component. It is the only
+      useful measure of whether a privilege decision was correct.
+
+foreshadows:
+  - "C16's container security is this topic applied to images and runtimes — non-root, dropped capabilities, read-only roots."
+  - "E29's RBAC is authorization with a different vocabulary; the questions asked here are the ones to ask of a Role."
+  - "E29's ServiceAccount tokens are the identity half, and they leak in exactly the ways authorized_keys does."
+  - "G43's supply-chain controls depend on the CI runner not holding more than it needs, which is the audit this topic ends on."
+
+tags: [security, identity, permissions, least-privilege, ssh, capabilities, fundamentals]

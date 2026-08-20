@@ -1,0 +1,216 @@
+id: lab.read-your-namespaces
+topic: topic.namespaces
+title: Read your own namespaces, and find the one you did not get
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A02.1.1, OBJ-A02.1.2]
+
+intro: >-
+  You are typing into a container. This lab is about establishing exactly what
+  that means, using nothing but files you can read.
+
+
+  Eight symlinks under /proc/self/ns say which view of the world this process
+  has. Seven of them were created for you. One was not, and finding out which is
+  the point of the lab — because that one is why every other hardening control
+  in this platform exists.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      List every namespace this process belongs to, and save it to
+      /tmp/answer-ns.
+
+
+      Read what comes back before moving on. Each line is one dimension of
+      isolation, with the inode number that identifies it.
+    hint: "`ls -l /proc/self/ns/ > /tmp/answer-ns`"
+    walkthrough: |
+      ls -l /proc/self/ns/ > /tmp/answer-ns
+      cat /tmp/answer-ns
+    verify:
+      - type: file_matches
+        path: /tmp/answer-ns
+        pattern: "pid:\\["
+        describe: The PID namespace is listed with its inode
+      - type: file_matches
+        path: /tmp/answer-ns
+        pattern: "user:\\["
+        describe: The user namespace is listed with its inode
+
+  - id: s2
+    instruction: >-
+      That listing is hard to compare by eye. Produce a clean one — the eight
+      namespace types with just their inode numbers, sorted numerically by
+      inode — and save it to /tmp/answer-sorted.
+    hint: >-
+      Loop over /proc/self/ns/*, print the basename and the inode from the
+      symlink target, and sort on the number. Skip the two `_for_children`
+      entries, which are not separate namespaces.
+    walkthrough: |
+      for n in /proc/self/ns/*; do
+        case "$n" in *_for_children) continue;; esac
+        t=$(readlink "$n")
+        echo "${t%%:*} ${t//[^0-9]/}"
+      done | sort -k2 -n > /tmp/answer-sorted
+      cat /tmp/answer-sorted
+    verify:
+      - type: file_matches
+        path: /tmp/answer-sorted
+        pattern: "^user [0-9]+"
+        describe: The user namespace sorted to the top — it has the lowest inode
+      - type: file_matches
+        path: /tmp/answer-sorted
+        pattern: "net [0-9]+"
+        describe: All eight types are present, including net
+
+  - id: s3
+    instruction: >-
+      One line in that sorted list is an outlier — its inode is far below the
+      others, not merely first.
+
+
+      Write the name of that namespace type, and nothing else, to
+      /tmp/answer-outlier.
+    hint: >-
+      Compare the numbers, not the order. Seven cluster within a few hundred of
+      each other; one sits thousands below them.
+    walkthrough: |
+      head -1 /tmp/answer-sorted | cut -d' ' -f1 > /tmp/answer-outlier
+      cat /tmp/answer-outlier
+    verify:
+      - type: file_matches
+        path: /tmp/answer-outlier
+        pattern: "^user$"
+        describe: You identified the user namespace as the one that stands apart
+
+  - id: s4
+    instruction: >-
+      Low inode numbers were allocated early — at boot, by the kernel itself.
+      The seven clustered ones were allocated when this container started.
+
+
+      So: this process is in a user namespace it did not get given. Confirm what
+      that means by reading the uid mapping, and save it to /tmp/answer-uidmap.
+    hint: "`cat /proc/self/uid_map > /tmp/answer-uidmap`"
+    walkthrough: |
+      cat /proc/self/uid_map > /tmp/answer-uidmap
+      cat /tmp/answer-uidmap
+    verify:
+      - type: file_matches
+        path: /tmp/answer-uidmap
+        pattern: '^\s*0\s+0\s+4294967295'
+        describe: The mapping is the identity — no uid is being translated
+
+  - id: s5
+    instruction: >-
+      Read that mapping carefully. The three columns are: the first uid inside,
+      the uid it corresponds to outside, and how many are mapped.
+
+
+      Given `0 0 4294967295`, would uid 0 in this container be uid 0 on the
+      host? Write `yes` or `no` to /tmp/answer-same-root.
+    hint: >-
+      The second column is the outside uid that the first column maps to. They
+      are the same number, for the entire range.
+    walkthrough: |
+      echo yes > /tmp/answer-same-root
+    verify:
+      - type: file_matches
+        path: /tmp/answer-same-root
+        pattern: "^yes$"
+        describe: You read the mapping as an identity, not a translation
+
+  - id: s6
+    instruction: >-
+      Last one. `lsns` shows the same information for every process you can see.
+      Run it and save the output to /tmp/answer-lsns.
+
+
+      Then look at the NPROCS column and ask yourself why the numbers are so
+      small on a machine running hundreds of processes.
+    hint: "`lsns > /tmp/answer-lsns`"
+    walkthrough: |
+      lsns > /tmp/answer-lsns
+      cat /tmp/answer-lsns
+    verify:
+      - type: file_matches
+        path: /tmp/answer-lsns
+        pattern: "TYPE"
+        describe: lsns produced its table
+      - type: command_ran
+        pattern: "lsns"
+        describe: You used lsns rather than assembling it by hand
+
+solution: |
+  ```bash
+  ls -l /proc/self/ns/ > /tmp/answer-ns
+
+  for n in /proc/self/ns/*; do
+    case "$n" in *_for_children) continue;; esac
+    t=$(readlink "$n")
+    echo "${t%%:*} ${t//[^0-9]/}"
+  done | sort -k2 -n > /tmp/answer-sorted
+
+  head -1 /tmp/answer-sorted | cut -d' ' -f1 > /tmp/answer-outlier   # user
+  cat /proc/self/uid_map > /tmp/answer-uidmap                        # 0 0 4294967295
+  echo yes > /tmp/answer-same-root
+  lsns > /tmp/answer-lsns
+  ```
+
+  **What you just established.**
+
+  **A container is eight symlinks.** Not a kernel object, not a process type —
+  a set of memberships, one per resource the kernel can virtualise, readable by
+  anyone as ordinary files. Everything Docker does that is visible from inside
+  is in that directory.
+
+  **Seven were created for you, one was not.** The sorted list makes it obvious
+  once you look at the magnitudes rather than the order:
+
+  ```text
+  user   4026531837     <- allocated at boot
+  mnt    4026535613     <- allocated when this container started
+  uts    4026535614
+  ipc    4026535615
+  pid    4026535616
+  cgroup 4026535617
+  net    4026535618
+  time   4026535788
+  ```
+
+  Inodes are handed out in sequence. The seven clustered values were allocated
+  within microseconds of each other, when the runtime built this container. The
+  outlier was allocated at boot, in the initial user namespace — and this
+  process is still in it.
+
+  **The uid map proves it rather than suggesting it.** `0 0 4294967295` maps
+  every uid to itself. There is no translation layer: uid 0 inside is uid 0
+  outside, uid 10001 inside is uid 10001 outside. A container with its own user
+  namespace would show something like `0 100000 65536` — its root being host uid
+  100000, an account with no rights anywhere.
+
+  **Why this is the topic's central fact.** Namespaces are usually described as
+  isolation. This one is not isolating you at all. The consequence is that
+  container root is host root, and the only things standing between a container
+  and the machine are the controls you already met in Foundations: an empty
+  capability set, `no_new_privs`, seccomp, a read-only rootfs.
+
+  Those are not defence in depth layered on top of user-namespace isolation.
+  With a shared user namespace, they *are* the defence.
+
+  **The routine worth keeping.** For any container you are asked to trust:
+
+  ```bash
+  docker inspect -f '{{.State.Pid}}' <container>
+  cat /proc/<that-pid>/uid_map
+  ```
+
+  Identity mapping means shared user namespace. Anything else means the
+  container's root is somebody harmless outside, and you can relax by exactly
+  that much.

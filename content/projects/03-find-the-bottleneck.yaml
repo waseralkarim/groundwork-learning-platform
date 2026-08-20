@@ -1,0 +1,225 @@
+id: project.find-the-bottleneck
+slug: find-the-bottleneck
+title: "Capstone: account for every millisecond"
+level: L3
+requires_topics:
+  - topic.namespaces
+  - topic.cgroups
+  - topic.the-scheduler
+  - topic.the-block-layer
+  - topic.boot-and-init
+  - topic.addresses-subnets-and-routes
+  - topic.ports-and-sockets
+  - topic.tcp-and-udp
+  - topic.http
+estimated_hours: 10
+
+summary: >-
+  Take a containerised HTTP service, put it under enough load to hurt, and
+  produce a latency budget that accounts for its p99 — every millisecond
+  attributed to a layer, with the counter that proves it.
+
+brief: |
+  "It's slow" is where most incidents start, and the first hour is usually spent
+  arguing about whose component is responsible. Three teams check three things,
+  all three find nothing wrong, and nobody has measured the one number that
+  would have ended it.
+
+  You now have the instruments to end it. Operating Systems gave you the
+  resource layer — cgroup quotas, run-queue latency, I/O queues, pressure — and
+  Networking Foundations gave you the request layer — routing, sockets,
+  transport, and where an HTTP exchange spends its time.
+
+  This capstone joins them. Take one service and account for its tail latency,
+  layer by layer, until every millisecond has a name and a counter behind it.
+
+  ## Choose your subject
+
+  A containerised HTTP service you did not write and whose source you have not
+  read. It must be something you can put real load on and constrain.
+
+  Good candidates, roughly in order of how much they will teach you:
+
+  - A database with an HTTP interface, or one behind a thin API
+  - An off-the-shelf application from Docker Hub with a real workload
+  - A reverse proxy in front of something slow, so there are two layers to
+    separate
+  - This platform's own `api` service, if you have not been reading it
+
+  You need to be able to run it under a CPU limit and a memory limit, generate
+  sustained load, and read its cgroup files and its socket table. That is all.
+
+  ## What you are producing
+
+  A **latency budget**: a written attribution of a p99 request, where every
+  component is a measurement rather than an estimate, and the parts add up.
+
+  It has to answer five questions, and each one is a course pointed at a real
+  system.
+
+  **1. Where does the request time go, from outside?** Split a representative
+  request into DNS, connect, TLS, server and transfer. That single measurement
+  usually eliminates three quarters of the possible investigations, and you
+  should say which ones it eliminated.
+
+  **2. What is the service actually constrained by?** Read the limits it is
+  running under, not the ones you think you set. Then determine whether it is
+  hitting them: throttled periods against total periods, memory against the
+  limit and against its peak, I/O queue depth and await, and pressure for all
+  three.
+
+  **3. How much of the "server" time is not the server?** This is the heart of
+  the project. Of the time between the request arriving and the first byte
+  leaving, how much was the application computing, and how much was it waiting
+  for a turn on a CPU it was entitled to? Per-thread run-queue time is the
+  measurement, and it is one most people have never taken.
+
+  **4. What does the failure look like from each side?** Break it four ways —
+  starve its CPU, starve its memory, make a response mis-framed, and bind it
+  somewhere unreachable — and for each one record what a client sees, what the
+  service's own logs say, and which counter names the cause. The point is that
+  the client-side symptom is nearly identical in all four.
+
+  **5. What would you ship it with?** Resource limits, a readiness definition
+  that means something, and an alert set — each number traceable to a
+  measurement you took.
+
+  ## Why this is the capstone
+
+  Every earlier lab handed you one instrument and a system built to demonstrate
+  it. This one gives you a service that is not cooperating and asks which
+  instrument to reach for — which is the actual skill, and the one that
+  separates an engineer who can operate a system from one who can recite its
+  parts.
+
+  The measure of these two courses is not whether you can define `nr_throttled`
+  or `size_download`. It is whether, given a bad afternoon and a p99 nobody can
+  explain, you know which four commands to run first.
+
+constraints:
+  - "You must not read the service's source before finishing sections 1 to 4. Read it afterwards and note where your findings were wrong."
+  - "Every number in the budget needs a command and its raw output in the document, not a summary of what you saw."
+  - "Load must be sustained for at least five minutes per measurement. A service at rest has no tail."
+  - "The budget must add up: state the p99 you measured, and account for it to within 20%. Where you cannot, say so explicitly rather than adjusting the numbers."
+  - "You must break it at least four ways, deliberately, and record the client-side symptom before you knew the cause."
+  - "At least one measurement must be per-thread rather than per-process. A process's own counters hide where multithreaded services actually wait."
+  - "Alert thresholds must come from a measurement you took, not from a default or a blog post."
+
+deliverables:
+  - "The latency budget: one document attributing a p99 request to layers, with commands and raw output rather than summaries, and an explicit statement of what did not add up."
+  - "A constraint inventory: the limits the service is actually running under, read from its own cgroup and socket state rather than from the manifest that was supposed to produce them."
+  - "A failure catalogue: four induced failures, each with the client symptom, the service's own logs, and the counter that named the cause."
+  - "A ship-it configuration: resource limits, readiness definition and alert rules, with a comment on every number saying which measurement produced it."
+  - "A short reflection: which instrument you reached for too late, and one thing you believed before measuring that turned out to be wrong."
+
+rubric:
+  - id: r1
+    criterion: The request is split into phases from outside before anything else is investigated
+    excellent: >-
+      Reports DNS, connect, TLS, server and transfer separately from a real
+      client, states which investigations that eliminated, and does so before
+      any deeper measurement appears in the document.
+    adequate: >-
+      Reports a phase split, but after other investigation, or without saying
+      what it ruled out.
+    inadequate: >-
+      Reports a total latency figure only, or begins with packet captures and
+      profilers.
+    evidence: The timing breakdown in section 1, and the sentence naming what it eliminated
+    weight: 3
+
+  - id: r2
+    criterion: The constraints are read from the running system rather than from configuration
+    excellent: >-
+      Reads cpu.max, memory.max, pids.max and the socket's bind address from the
+      running container, notes any difference from what the manifest specifies,
+      and identifies at least one effective limit that is not in the service's
+      own cgroup.
+    adequate: >-
+      Reads the cgroup limits from the running container and reports them
+      accurately.
+    inadequate: >-
+      Quotes the resource block from a manifest, or reports limits without
+      having read them from the system.
+    evidence: The cgroup file readings in section 2
+    weight: 3
+
+  - id: r3
+    criterion: Server time is separated into computing and waiting, per thread
+    excellent: >-
+      Reports per-thread schedstat run and wait figures under load, computes the
+      ratio, relates it to the throttled-period ratio from cpu.stat, and states
+      what fraction of the p99 is queueing rather than work.
+    adequate: >-
+      Measures run-queue wait at the process level and relates it to throttling.
+    inadequate: >-
+      Treats all time inside the service as application processing, or infers
+      waiting from CPU utilisation.
+    evidence: The per-thread schedstat readings and the cpu.stat ratio in section 3
+    weight: 4
+
+  - id: r4
+    criterion: Four failures were induced deliberately and observed from both sides
+    excellent: >-
+      Induces at least four distinct failures across both courses' territory —
+      resource and network — and for each records the client-side symptom, the
+      service's own logs, and the specific counter that named the cause, noting
+      where the symptoms were indistinguishable.
+    adequate: >-
+      Induces several failures and records what happened, without consistently
+      separating the client view from the counter that explained it.
+    inadequate: >-
+      Describes failures that were not actually induced, or asserts what would
+      happen without testing it.
+    evidence: The failure catalogue, with the client symptom recorded before the cause was known
+    weight: 3
+
+  - id: r5
+    criterion: The budget adds up, and says so honestly where it does not
+    excellent: >-
+      States a measured p99, attributes it to layers summing to within 20%, and
+      names explicitly any portion that could not be attributed rather than
+      distributing it.
+    adequate: >-
+      Attributes most of the latency with a plausible accounting, without
+      quantifying what is unexplained.
+    inadequate: >-
+      Presents percentages that sum neatly with no measurement behind them, or
+      avoids stating a total.
+    evidence: The summary table at the end of section 1, and the unexplained-remainder line
+    weight: 4
+
+  - id: r6
+    criterion: The shipped configuration is defensible from the measurements
+    excellent: >-
+      Every limit, probe and threshold carries a comment naming the measurement
+      that produced it; the readiness definition checks something the service
+      actually needs; and the alert set includes at least one signal that is
+      unambiguous rather than requiring interpretation.
+    adequate: >-
+      Limits and alerts derive from measurements, with some numbers unexplained.
+    inadequate: >-
+      Round numbers, defaults, or thresholds taken from an external source
+      without checking them against this service.
+    evidence: The comments in the ship-it configuration
+    weight: 3
+
+  - id: r7
+    criterion: The document is honest about its own limits
+    excellent: >-
+      Names an instrument reached for too late, records at least one belief that
+      measurement overturned, and states explicitly what could not be determined
+      and why.
+    adequate: >-
+      Notes some gaps without reflecting on where the process itself went wrong.
+    inadequate: >-
+      Presents complete confidence, or omits everything that did not work.
+    evidence: The reflection section
+    weight: 2
+
+going_further:
+  - "Halve the CPU limit and predict, in writing, what each number in your budget will do — then measure. A budget that predicts is worth more than one that describes."
+  - "Put a reverse proxy in front of the service and repeat section 1 from outside it. The difference between the two timing breakdowns is the proxy's contribution, and it is rarely what people assume."
+  - "Hand the failure catalogue to a colleague, show them only the client-side symptoms, and ask them to name the cause. Where they cannot, your catalogue has found a gap in the observability rather than in them."
+  - "Repeat the whole budget after a version upgrade and diff the two. The differences are the performance release notes nobody wrote."
+  - "Write the runbook entry for the failure that took longest to identify, in the shape used in docs/runbooks: what it means, how urgent, how to confirm, what to do."

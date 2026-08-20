@@ -1,0 +1,11 @@
+graph LR
+    subgraph S["Task states, from the scheduler's point of view"]
+        R["<b>Running</b><br/>on a CPU now"]
+        Q["<b>Runnable</b><br/>on a run queue,<br/>waiting for a turn"]
+        B["<b>Blocked</b><br/>waiting for I/O,<br/>a lock, a timer"]
+    end
+    R -->|"preempted —<br/><i>involuntary switch</i>"| Q
+    Q -->|"chosen"| R
+    R -->|"blocked —<br/><i>voluntary switch</i>"| B
+    B -->|"the wait ended"| Q
+    Q -.->|"time here is<br/>schedstat field 2"| Q

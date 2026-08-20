@@ -1,0 +1,333 @@
+topic: topic.concurrency-and-locking
+
+exercises:
+  - id: e1
+    title: What overlapping runs actually do
+    level: L2
+    objectives: [OBJ-B08.8.1]
+    kind: interpretation
+    prompt: >-
+      A job on a five-minute schedule appends rows to `/srv/reports/daily.csv`.
+      One evening a run takes six minutes.
+
+
+      Say what the file contains afterwards, what each run's exit status is, and
+      how the problem is most likely to be discovered.
+    answer: >-
+      **The file contains both reports, interleaved.** Measured on the seeded
+      version: ten rows where five were expected, in an order belonging to
+      neither run —
+
+
+      ```csv
+      B,row-1
+      A,row-1
+      B,row-2
+      A,row-2
+      ```
+
+
+      because both runs held the file open and the kernel scheduled their writes
+      independently.
+
+
+      **Both runs exit 0.** Nothing failed. Every write succeeded, the file is
+      syntactically valid, and neither process is aware the other exists.
+
+
+      **It is discovered downstream, as wrong data rather than as a failure** —
+      a total that is roughly double, a dashboard that steps up on one evening, a
+      reconciliation that does not balance. Days or weeks later, by somebody who
+      is not looking at the job.
+
+
+      The reason it takes so long is that every signal a monitoring system
+      normally uses says everything is fine: the job ran, on schedule, and
+      succeeded. **The only evidence is in the output**, which is exactly the
+      thing nobody checks.
+    explanation: >-
+      The lesson generalises past locking: any check that watches *whether a
+      thing ran* rather than *what it produced* is blind to this entire class.
+      The same course has now met it as a health check that could not fail, a
+      counter that stayed at zero, and a migration that reported success.
+
+  - id: e2
+    title: Read four flock guards
+    level: L2
+    objectives: [OBJ-B08.8.2]
+    kind: interpretation
+    prompt: >-
+      Say what each does when another run already holds the lock, and flag any
+      that are broken.
+
+
+      1. `exec 9>"$LOCK"; flock -n 9 || exit 0`
+
+      2. `flock -n 9 9>"$LOCK" || exit 0` — then the rest of the script
+
+      3. `exec 9>"$LOCK"; flock -w 30 9 || exit 1`
+
+      4. `exec 9>"$LOCK"; flock 9; trap 'rm -f "$LOCK"' EXIT`
+    answer: >-
+      **1. Skips, correctly.** Descriptor 9 stays open for the life of the
+      script, so the lock is held throughout. This is the standard form.
+
+
+      **2. Broken.** The redirection applies to the `flock` command only, so the
+      descriptor is closed — and the lock released — the instant `flock`
+      returns. The check passes, and then the script runs with no lock at all.
+      Two runs starting a second apart both "acquire" and both proceed. It is
+      the most convincing-looking of the four and it protects nothing.
+
+
+      **3. Waits up to 30 seconds, then exits 1.** Reasonable when late is
+      acceptable and much later is not — but it should print something on stderr
+      first, or a run that gave up is indistinguishable from one that never
+      started.
+
+
+      **4. Broken, twice over.** It blocks indefinitely, so a hung holder makes
+      every later run hang too rather than skip. And the EXIT trap removes the
+      lock file, so every run that completes arms the next collision — the lock
+      lives on the inode, and deleting the path lets the next run create and lock
+      a different one.
+
+
+      Only 1 is correct as written; 3 is correct with a message added.
+    explanation: >-
+      Case 2 is worth dwelling on because it is the one that survives review: it
+      contains the word `flock`, checks the status, and exits on failure. Every
+      element a reviewer looks for is present, and the guard has a lifetime of
+      microseconds.
+
+  - id: e3
+    title: Choose a mechanism for four situations
+    level: L2
+    objectives: [OBJ-B08.8.4]
+    kind: short_answer
+    prompt: >-
+      Say which exclusion mechanism you would use, and what failure you are
+      accepting.
+
+
+      1. A backup script on one Linux host, run from cron every hour.
+
+      2. A script that must work on Linux and on a busybox-based container image
+         with no `flock`.
+
+      3. A job that runs on three hosts behind a load balancer, of which exactly
+         one should do the work.
+
+      4. A script that writes one export file per customer, for 200 customers.
+    answer: >-
+      **1. `flock`, from the crontab.**
+      `0 * * * * flock -n /var/lock/backup.lock /opt/jobs/backup.sh` — no change
+      to the script, the guard is visible next to the schedule, and the kernel
+      cleans up after a crash. Accepting: `flock` exits 1 when it skips, so a
+      skip registers as a job failure. If skipping should be silent, move the
+      guard into the script and `exit 0`.
+
+
+      **2. `mkdir`.** Atomic, needs no tool, works in any POSIX shell.
+      Accepting: it **goes stale** — the `rmdir` is in a trap and a trap does not
+      run on `SIGKILL` — so a crashed run blocks every later one until a human
+      intervenes. Mitigate by alerting on the age of the directory, and by
+      recording the PID inside it for a human to check.
+
+
+      **3. Neither — a file lock is per-machine.** Three hosts share no
+      filesystem, so three `flock`s exclude nothing. This needs a lock all three
+      can see: a row in the shared database with a conditional insert, a lease in
+      Consul or etcd, or a Kubernetes `CronJob` with
+      `concurrencyPolicy: Forbid`. Often the right answer is simpler — decide
+      that only one host runs it, and make that explicit rather than accidental.
+      Accepting: a distributed lock has its own failure modes, chiefly a lease
+      that expires while the holder is still working.
+
+
+      **4. One lock per customer**, not one for the script:
+      `exec 9>/var/lock/export-$customer.lock`. Nothing is contended between
+      customers, so 200 exports can run in parallel and no two runs ever touch
+      the same file. Accepting: 200 lock files, and the need to be sure the
+      customer identifier cannot contain a `/` or produce a path collision.
+    explanation: >-
+      Case 4 is the one people miss. **Lock the narrowest thing that is actually
+      contended** — a lock around the whole script when only one file is shared
+      serialises work that had no reason to be serial, and the lock choice can
+      buy throughput rather than cost it.
+
+  - id: e4
+    title: Make three operations safe to retry
+    level: L2
+    objectives: [OBJ-B08.8.6]
+    kind: short_answer
+    prompt: >-
+      Each of these sits inside a retry loop. Say what a retry does today, and
+      rewrite it so a retry is harmless.
+
+
+      1. `echo "$RECORD" >> /srv/data/export.csv`
+
+      2. `curl -X POST "$API/invoices" -d "$PAYLOAD"`
+
+      3. `mv /srv/incoming/batch.csv /srv/processed/batch-$(date +%s).csv`
+    answer: >-
+      **1. A retry duplicates the record**, and the duplicate is indistinguishable
+      from a legitimate repeat.
+
+
+      Write the whole file rather than appending, so the operation describes a
+      state:
+
+
+      ```bash
+      tmp=$(mktemp /srv/data/export.csv.XXXXXX)
+      generate_all_records > "$tmp"
+      [ -s "$tmp" ] || { rm -f "$tmp"; exit 1; }
+      mv -f "$tmp" /srv/data/export.csv      # atomic within the filesystem
+      ```
+
+
+      If it must be an append, make it conditional —
+      `grep -qxF "$RECORD" "$FILE" || echo "$RECORD" >> "$FILE"` — accepting that
+      this is O(n) and racy between concurrent writers unless it is under a lock.
+
+
+      **2. A retry may create a second invoice**, because a lost response looks
+      identical to a failure.
+
+
+      Generate an idempotency key once, before the first attempt, and send it
+      every time:
+
+
+      ```bash
+      key="inv-$(date +%s%N)-$$"
+      retry curl -fsS --max-time 10 -H "Idempotency-Key: $key" \
+                 -X POST "$API/invoices" -d "$PAYLOAD"
+      ```
+
+
+      This requires the server to honour the header and return the original
+      result for a repeat. If it does not, the operation is not safely
+      retryable — record the attempt locally before making it, and reconcile
+      afterwards rather than retrying blindly.
+
+
+      **3. A retry moves nothing and reports failure**, because the source is
+      already gone — and worse, `$(date +%s)` is evaluated again, so a *partial*
+      earlier success leaves a file under one timestamp while the retry looks for
+      it under another.
+
+
+      Compute the destination once, and make the move conditional on the source
+      still existing:
+
+
+      ```bash
+      dest=/srv/processed/batch-$STAMP.csv          # computed ONCE, outside the loop
+      if [ -e /srv/incoming/batch.csv ]; then
+        mv -f /srv/incoming/batch.csv "$dest"
+      elif [ -e "$dest" ]; then
+        : # a previous attempt already succeeded
+      else
+        echo "batch.csv is in neither place" >&2; exit 1
+      fi
+      ```
+
+
+      The three-way check is the general shape for "move" operations: done,
+      not-done, or genuinely missing.
+    explanation: >-
+      Case 3 is the one that catches people, because `mv` *feels* idempotent —
+      moving something that is already moved should be a no-op. The problem is
+      not the move; it is that the **destination is computed inside the retry**,
+      so each attempt targets a different path. Any value derived from the clock
+      or a random source must be computed before the first attempt, for the same
+      reason an idempotency key must be.
+
+  - id: e5
+    title: Review a guarded job before it ships
+    level: L3
+    objectives: [OBJ-B08.8.8]
+    kind: interpretation
+    prompt: >-
+      Review this. It replaces an unguarded job that occasionally ran twice.
+
+
+      ```bash
+      #!/bin/bash
+      set -euo pipefail
+
+      LOCK=/tmp/sync.lock
+      while [ -e "$LOCK" ]; do sleep 5; done
+      echo $$ > "$LOCK"
+      trap 'rm -f "$LOCK"' EXIT
+
+      for host in $(cat /etc/sync-hosts); do
+        rsync -a "$SRC/" "$host:/srv/data/" || rsync -a "$SRC/" "$host:/srv/data/"
+      done
+
+      echo "sync complete"
+      ```
+    answer: >-
+      **It does not fix the problem it was written for.** Six findings.
+
+
+      **1. The guard is TOCTOU and is not a lock.** Between the `while` loop
+      exiting and `echo $$ > "$LOCK"`, another run does the same test. Both find
+      no file, both write, both proceed — which is the original bug, now with
+      more code. `flock` is the fix.
+
+
+      **2. It goes stale.** The trap does not run on `SIGKILL`, an OOM kill or a
+      reboot, so the file survives and every later run **waits forever** in the
+      `while` loop. Combined with finding 1, the two failure modes are "runs
+      twice" and "never runs again", which is a wide range for one guard.
+
+
+      **3. `/tmp` is the wrong home.** Predictable name, world-writable
+      directory, and a tmpfiles cleaner may remove it *while a run is relying on
+      it*. `/var/lock` or `/run/lock`.
+
+
+      **4. The retry is a bare `||` with no limit, no delay and no jitter.** One
+      immediate second attempt, so a dependency that is briefly down fails twice
+      in a row and is reported as a permanent failure. It is also a copy-paste
+      duplicate of the command, so the two can drift.
+
+
+      **5. `for host in $(cat …)` word-splits.** A hostname with a space, or a
+      comment line, becomes multiple hosts. `while IFS= read -r host` from a
+      redirect is the fix, and it also gets the count right.
+
+
+      **6. No timeout on the rsyncs.** With the blocking guard from finding 1, one
+      unreachable host holds the "lock" indefinitely and every subsequent run
+      queues behind it. `timeout -k 30 600 rsync …`.
+
+
+      **And a design question above all of them:** the loop waits rather than
+      skipping. For a sync that reflects current state, a run that is late is
+      worth less than a run that is skipped — the next one will carry the same
+      data. Blocking here risks a pile-up with no upper bound.
+
+
+      **The rewrite:**
+
+
+      ```bash
+      exec 9>/var/lock/sync.lock
+      flock -n 9 || { echo "sync: already running, skipping" >&2; exit 0; }
+
+      while IFS= read -r host; do
+        [ -n "$host" ] || continue
+        retry timeout -k 30 600 rsync -a --delete "$SRC/" "$host:/srv/data/"
+      done < /etc/sync-hosts
+      ```
+    explanation: >-
+      The instructive part is that every finding here is a *worse* version of
+      something the original did implicitly. The unguarded job ran twice
+      occasionally; this one can still run twice **and** can hang forever. A
+      guard that is not atomic does not reduce the failure surface — it adds to
+      it, while looking like a fix in the commit log.

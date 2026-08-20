@@ -1,0 +1,270 @@
+id: lab.what-the-diagram-omits
+topic: topic.service-models-and-responsibility
+title: "Challenge: the vendor diagram says nothing false"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A05.2.6, OBJ-A05.2.8]
+
+intro: >-
+  /tmp/incidents/vendor-diagram.txt is a shared-responsibility summary from a
+  provider's marketing page. Every statement in it is true.
+
+
+  Your job is to find what it does not say. There are three significant
+  omissions, and each one maps onto an incident you have already classified.
+
+
+  Then write the version you would actually put in front of a team.
+
+setup:
+  - /opt/lab/seed-responsibility.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read the vendor diagram. Before analysing, write to /tmp/hypotheses what
+      you think it leaves out — at least three things.
+    hint: >-
+      Compare it against the four deployment files and the five incidents. What
+      categories appear there that do not appear in the diagram?
+    walkthrough: |
+      cat /tmp/incidents/vendor-diagram.txt
+      {
+        echo "it has two columns and there is a third category - layers where both parties must act"
+        echo "it is a security model and says nothing about availability, which is a different question"
+        echo "it does not quantify - 'your data' and 'physical infrastructure' take equal space and are wildly different amounts of work"
+      } > /tmp/hypotheses
+      cat /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You committed to an answer before analysing
+      - type: command_exit
+        command: "test $(wc -l < /tmp/hypotheses) -ge 3"
+        exit_code: 0
+        describe: With at least three candidate omissions
+
+  - id: s2
+    instruction: >-
+      The diagram has two columns. Name the category it has no column for, give
+      an incident that landed in it, and say why it is the category that fails.
+      Save to /tmp/answer-missing-column.
+    walkthrough: |
+      {
+        echo "the missing category is SHARED - layers where the provider acts and i must also act."
+        echo
+        echo "the diagram says 'security OF the cloud' and 'security IN the cloud', which allocates every layer to exactly one party. three layers in the paas deployment belong to both:"
+        echo "  os patching       - they publish node images, i roll them"
+        echo "  database patching - they apply it, i choose the window"
+        echo "  backups           - they take them, i verify a restore works"
+        echo
+        echo "INC-2 landed here: a mandatory postgres patch applied during a maintenance window left at its default of 'any time'. INC-4 also: a node image change announced 30 days ahead and read by nobody."
+        echo
+        echo "why it is the category that fails: shared layers have NO ERROR STATE on my side. if i never roll my nodes nothing fails - the cluster is healthy and i am simply on the old image. if i never restore a backup, every backup still reports success."
+        echo "the provider does the doing and i do the noticing, and noticing does not error. a two-column diagram makes that band invisible, so it is read as theirs."
+      } > /tmp/answer-missing-column
+      cat /tmp/answer-missing-column
+    verify:
+      - type: file_matches
+        path: /tmp/answer-missing-column
+        pattern: "(?i)shared"
+        describe: You named the missing category
+      - type: file_matches
+        path: /tmp/answer-missing-column
+        pattern: "INC-2|INC-4"
+        describe: And placed an incident in it
+      - type: file_matches
+        path: /tmp/answer-missing-column
+        pattern: "(?i)no error state|does not error"
+        describe: And explained why it fails silently
+
+  - id: s3
+    instruction: >-
+      The diagram is about one property only. Name it, name the property it does
+      not address, and give the incident that shows the difference. Save to
+      /tmp/answer-not-security.
+    walkthrough: |
+      {
+        echo "it is a SECURITY model. it says nothing about AVAILABILITY, which is a different question with a different answer and its own document."
+        echo
+        echo "INC-5 shows the gap: the saas crm was down for six hours on a vendor database failure. no security property was violated - the data was not exposed, access control held, configuration was correct. we simply could not use it."
+        echo "the responsibility diagram has nothing to say about that, because availability is governed by an sla rather than by a responsibility split."
+        echo
+        echo "and the sla is a refund, not a guarantee. 99.9 percent monthly is about 43 minutes; a six hour outage breaches it and the remedy is a service credit worth a fraction of the bill."
+        echo
+        echo "worth knowing alongside it: my availability is the product of my dependencies. three components at 99.9 percent each, all required, is 0.999 cubed = 99.7003 percent - about 2 hours 9 minutes a month, not 43 minutes. dependencies in series multiply and almost nobody counts them."
+      } > /tmp/answer-not-security
+      cat /tmp/answer-not-security
+    verify:
+      - type: file_matches
+        path: /tmp/answer-not-security
+        pattern: "(?i)availability"
+        describe: You identified the property the diagram does not address
+      - type: file_matches
+        path: /tmp/answer-not-security
+        pattern: "INC-5"
+        describe: And the incident that demonstrates it
+      - type: file_matches
+        path: /tmp/answer-not-security
+        pattern: "(?i)refund|credit"
+        describe: And that an SLA is a refund rather than a guarantee
+
+  - id: s4
+    instruction: >-
+      The diagram gives equal weight to every item. Show why that is misleading
+      using the counts you computed, and name the phrase that does the most work
+      in the vendor's favour. Save to /tmp/answer-weighting.
+    walkthrough: |
+      cd /tmp/deployments
+      {
+        echo "counts from the four deployments:"
+        for f in 1-colocation 2-iaas 3-paas 4-saas; do
+          printf '  %-14s yours=%-3s provider=%s\n' "$f" "$(grep -c 'YOU' $f.txt)" "$(grep -c 'provider' $f.txt)"
+        done
+        echo
+        echo "the diagram lists 'your data, your access control, your configuration' in one column and 'physical infrastructure, hardware, virtualisation, managed services' in the other, as though they were comparable. they are not comparable in effort - but the more important point is the reverse of what the layout suggests."
+        echo "at saas my three layers are ALL that is left, and they are precisely the layers where breaches happen: a public bucket, a role granting * on *, a default credential. the diagram's small column is the one that matters most."
+        echo
+        echo "the phrase doing the most work: 'undifferentiated heavy lifting'. it is usually accurate - patching an os does not distinguish my product - and it moves the conversation away from what i am handing over along with it: control over timing, control over version, visibility, exit cost and concentration risk."
+        echo "none of those five appear anywhere in the diagram, and all five are real."
+      } > /tmp/answer-weighting
+      cat /tmp/answer-weighting
+    verify:
+      - type: file_matches
+        path: /tmp/answer-weighting
+        pattern: "4-saas +yours=3"
+        describe: You used the computed counts
+      - type: file_matches
+        path: /tmp/answer-weighting
+        pattern: "(?i)undifferentiated"
+        describe: And identified the phrase that does the most work
+      - type: file_matches
+        path: /tmp/answer-weighting
+        pattern: "(?i)exit cost|concentration"
+        describe: And named a cost the diagram omits
+
+  - id: s5
+    instruction: >-
+      Write the version you would put in front of your own team, to
+      /tmp/answer-honest-version. It must be true, must include what the vendor's
+      omits, and must be short enough that people read it.
+    walkthrough: |
+      {
+        echo "OUR RESPONSIBILITIES ON MANAGED KUBERNETES + MANAGED POSTGRES"
+        echo
+        echo "THEIRS, entirely - we are only aware:"
+        echo "  hardware, firmware, hypervisor, node OS images, control plane, container runtime, database software"
+        echo "  mechanism: subscribe to their security bulletins so we can answer questions"
+        echo
+        echo "OURS, entirely - these fail loudly and we scan for them:"
+        echo "  application code, everything inside our container image, data, access control, configuration"
+        echo "  mechanism: dependency scanning, image rebuild pipeline, continuous config checks"
+        echo "  note: data, access control and configuration stay ours at EVERY service model, including saas. they are where breaches happen."
+        echo
+        echo "SHARED - they act, we must respond. these fail SILENTLY:"
+        echo "  node OS images      they publish  -> WE roll on a cadence      owner: platform, monthly"
+        echo "  database patches    they apply    -> WE set the window         owner: platform, window is 02:00 sun"
+        echo "  backups             they take     -> WE verify a restore       owner: platform, quarterly restore test"
+        echo "  deprecations        they announce -> WE read the change feed   owner: platform, weekly"
+        echo
+        echo "AVAILABILITY - not a responsibility split, a separate question:"
+        echo "  their sla is a refund, not a guarantee"
+        echo "  our availability is the product of our dependencies: three at 99.9% = 99.70%, about 2h09 a month"
+        echo "  for anything we cannot influence: scheduled data export and a documented degraded mode"
+        echo
+        echo "WHAT WE GAVE UP by being here, so the next person knows it was a decision:"
+        echo "  timing, version pinning, visibility, exit cost, concentration on one provider"
+      } > /tmp/answer-honest-version
+      cat /tmp/answer-honest-version
+    verify:
+      - type: file_matches
+        path: /tmp/answer-honest-version
+        pattern: "(?i)SHARED"
+        describe: Your version includes the shared category
+      - type: file_matches
+        path: /tmp/answer-honest-version
+        pattern: "(?i)owner:"
+        describe: With a named owner for each shared layer
+      - type: file_matches
+        path: /tmp/answer-honest-version
+        pattern: "(?i)availability"
+        describe: And addresses availability separately from security
+      - type: file_matches
+        path: /tmp/answer-honest-version
+        pattern: "(?i)gave up|decision"
+        describe: And records what was given up
+
+solution: >-
+  **Three omissions, and none of them is a falsehood.**
+
+
+  **1. There is no column for shared.** The diagram allocates every layer to
+  exactly one party — "security *of* the cloud" or "security *in* the cloud" —
+  and three layers on managed Kubernetes belong to both: node OS images published
+  and rolled, database patches applied and scheduled, backups taken and restored.
+
+
+  INC-2 and INC-4 both landed here, and in both the provider did precisely what
+  they said they would.
+
+
+  This is the omission that costs the most, because **shared layers have no error
+  state on your side**. Never roll your nodes and nothing fails — the cluster is
+  healthy, the dashboard is green, and you are on the old image. Never restore a
+  backup and every backup still reports success. A two-column diagram makes the
+  band invisible, so it gets read as theirs.
+
+
+  **2. It is a security model and says nothing about availability.** INC-5 shows
+  the gap cleanly: six hours of SaaS outage with no security property violated —
+  data not exposed, access control intact, configuration correct — and no ability
+  to do anything.
+
+
+  Availability is governed by an SLA, which is **a refund rather than a
+  guarantee**: 99.9% monthly is about 43 minutes, so six hours breaches it and
+  the remedy is a credit worth a fraction of the bill.
+
+
+  And the arithmetic nobody does: **your availability is the product of your
+  dependencies.** Three components at 99.9%, all required, is 0.999³ = 99.7003% —
+  **2h 09m a month**, not 43 minutes.
+
+
+  **3. It gives every item equal weight, and the small column is the important
+  one.** At SaaS your three layers are *all* that is left, and they are exactly
+  where breaches happen: a public bucket, a role granting `*` on `*`, a default
+  credential.
+
+
+  The phrase carrying the most weight is **"undifferentiated heavy lifting"**. It
+  is usually accurate — patching an OS does not distinguish your product — and it
+  moves the conversation past what you hand over with it: timing, version
+  pinning, visibility, exit cost, and concentration on one provider. None of
+  those five appears in the diagram and all five are real.
+
+
+  **The version worth putting in front of a team** has four sections rather than
+  two:
+
+
+  - **Theirs entirely** — awareness only, subscribe to bulletins.
+
+  - **Ours entirely** — fails loudly, so scan for it. With the note that data,
+    access control and configuration stay ours at *every* model.
+
+  - **Shared** — fails silently. Each line gets a mechanism, a **named owner**
+    and a cadence. This section is the whole point.
+
+  - **Availability** — a separate question, with the dependency arithmetic and a
+    plan for what you cannot influence.
+
+
+  Plus one paragraph recording **what was given up**, so that in two years
+  somebody can see it was a decision rather than an accident.
+
+
+  The vendor's diagram is a fair summary of their position. It is not a plan, and
+  the gap between those two is where the incidents in this topic came from.

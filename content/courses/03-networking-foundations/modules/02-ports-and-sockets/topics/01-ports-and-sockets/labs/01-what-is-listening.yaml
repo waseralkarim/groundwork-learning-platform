@@ -1,0 +1,248 @@
+id: lab.what-is-listening
+topic: topic.ports-and-sockets
+title: Find out what is listening, and who owns it
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A03.2.1, OBJ-A03.2.2]
+
+intro: >-
+  Before you can debug a connection you have to know what is accepting them.
+  `ss` answers that, and it packs several different meanings into the same
+  columns depending on the socket's state — which is worth untangling once,
+  deliberately, rather than being confused by it during an incident.
+
+
+  You will survey what this container is already listening on, start a listener
+  of your own, and read every column of its row.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      List every listening TCP socket on this machine, with the process that
+      owns it, and save it to /tmp/answer-listening.
+    hint: "`ss -tlnp > /tmp/answer-listening` — TCP, listening, numeric, processes."
+    walkthrough: |
+      ss -tlnp > /tmp/answer-listening
+      cat /tmp/answer-listening
+    verify:
+      - type: file_matches
+        path: /tmp/answer-listening
+        pattern: 'LISTEN'
+        describe: At least one socket is already listening in this container
+      - type: command_ran
+        pattern: "ss"
+        describe: You used ss rather than guessing
+
+  - id: s2
+    instruction: >-
+      Something is listening that you did not start. Save its local address and
+      port to /tmp/answer-mystery.
+
+
+      Note the address — it is a loopback address, and not the one you expect.
+    hint: "The address begins 127. and is not 127.0.0.1."
+    walkthrough: |
+      grep -o '127\.0\.0\.[0-9]*:[0-9]*' /tmp/answer-listening | grep -v '^127\.0\.0\.1:' | head -1 > /tmp/answer-mystery
+      cat /tmp/answer-mystery
+    verify:
+      - type: file_matches
+        path: /tmp/answer-mystery
+        pattern: '^127\.0\.0\.[0-9]+:[0-9]+$'
+        describe: A loopback address other than 127.0.0.1
+
+  - id: s3
+    instruction: >-
+      The whole of 127.0.0.0/8 is loopback — sixteen million addresses that all
+      mean "this machine".
+
+
+      Write to /tmp/answer-why-loopback one sentence saying why a runtime would
+      put a service on an address like that rather than on 127.0.0.1.
+    hint: >-
+      What would happen if it used 127.0.0.1 and something inside the container
+      also wanted that address and port?
+    walkthrough: |
+      echo "using a separate loopback address avoids colliding with anything the workload itself binds on 127.0.0.1, while staying unreachable from outside the container because the whole 127.0.0.0/8 range is local to this machine" > /tmp/answer-why-loopback
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-loopback
+        pattern: "collid|conflict|clash|separate"
+        describe: You identified collision avoidance
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-why-loopback) -ge 12"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+  - id: s4
+    instruction: >-
+      Start a listener of your own on port 9000, bound to all addresses, in the
+      background — then confirm it appears.
+
+
+      Save the row for your listener to /tmp/answer-mine.
+    hint: >-
+      `nohup nc -l -k 0.0.0.0 9000 >/dev/null 2>&1 &` starts it and keeps it
+      listening after each connection.
+    walkthrough: |
+      nohup nc -l -k 0.0.0.0 9000 >/dev/null 2>&1 &
+      sleep 1
+      ss -tlnp | grep ':9000' > /tmp/answer-mine
+      cat /tmp/answer-mine
+    verify:
+      - type: file_matches
+        path: /tmp/answer-mine
+        pattern: 'LISTEN'
+        describe: Your socket is listening
+      - type: file_matches
+        path: /tmp/answer-mine
+        pattern: '0\.0\.0\.0:9000'
+        describe: On every address, port 9000
+      - type: file_matches
+        path: /tmp/answer-mine
+        pattern: 'nc'
+        describe: And ss names the process that owns it
+
+  - id: s5
+    instruction: >-
+      Read the Peer Address column on your listener's row and save it, with an
+      explanation of what that value means for a listening socket, to
+      /tmp/answer-peer.
+    hint: "It is not blank. Ask what a wildcard means here."
+    walkthrough: |
+      {
+        awk '{print "peer=" $5}' /tmp/answer-mine
+        echo "a listening socket has no peer yet, so the wildcard means it will accept a connection from any address and any port"
+      } > /tmp/answer-peer
+      cat /tmp/answer-peer
+    verify:
+      - type: file_matches
+        path: /tmp/answer-peer
+        pattern: 'peer=0\.0\.0\.0:\*'
+        describe: The wildcard peer — anyone may connect
+      - type: file_matches
+        path: /tmp/answer-peer
+        pattern: "any|anyone|wildcard"
+        describe: And you read it as "from anywhere" rather than as an address
+
+  - id: s6
+    instruction: >-
+      The Recv-Q and Send-Q columns mean something different on a LISTEN row
+      than on an established one.
+
+
+      Save your listener's two values, and the system-wide ceiling on the
+      second, to /tmp/answer-queues.
+    hint: >-
+      On a LISTEN row, Send-Q is the accept backlog. The ceiling is
+      `net.core.somaxconn`.
+    walkthrough: |
+      {
+        awk '{print "recvq=" $2 " sendq=" $3}' /tmp/answer-mine
+        echo "somaxconn=$(cat /proc/sys/net/core/somaxconn)"
+      } > /tmp/answer-queues
+      cat /tmp/answer-queues
+    verify:
+      - type: file_matches
+        path: /tmp/answer-queues
+        pattern: 'sendq=[0-9]+'
+        describe: The backlog this socket asked for
+      - type: file_matches
+        path: /tmp/answer-queues
+        pattern: 'somaxconn=[0-9]+'
+        describe: And the system ceiling it would have been capped to
+
+  - id: s7
+    instruction: >-
+      Last one. Find out whether an unprivileged process on this machine could
+      bind port 80, and save the evidence plus a yes/no to /tmp/answer-lowports.
+    hint: >-
+      `net.ipv4.ip_unprivileged_port_start` is the lowest port an unprivileged
+      process may bind. Traditionally 1024.
+    walkthrough: |
+      {
+        echo "ip_unprivileged_port_start=$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start)"
+        if [ "$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start)" -le 80 ]; then echo "can_bind_80=yes"; else echo "can_bind_80=no"; fi
+      } > /tmp/answer-lowports
+      cat /tmp/answer-lowports
+    verify:
+      - type: file_matches
+        path: /tmp/answer-lowports
+        pattern: 'ip_unprivileged_port_start=[0-9]+'
+        describe: The threshold was read rather than assumed
+      - type: file_matches
+        path: /tmp/answer-lowports
+        pattern: 'can_bind_80=(yes|no)'
+        describe: And you drew the conclusion from it
+
+solution: |
+  ```bash
+  ss -tlnp
+  nohup nc -l -k 0.0.0.0 9000 >/dev/null 2>&1 &
+  ss -tlnp | grep :9000
+  cat /proc/sys/net/core/somaxconn
+  cat /proc/sys/net/ipv4/ip_unprivileged_port_start
+  ```
+
+  **What you just read.**
+
+  A representative listing:
+
+  ```text
+  State  Recv-Q Send-Q  Local Address:Port  Peer Address:Port  Process
+  LISTEN 0      4096       127.0.0.11:34925       0.0.0.0:*
+  LISTEN 0      1             0.0.0.0:9000        0.0.0.0:*   users:(("nc",pid=42,fd=3))
+  ```
+
+  **The socket you did not start is the runtime's DNS resolver**, on
+  `127.0.0.11`. The whole of `127.0.0.0/8` is loopback — sixteen million
+  addresses that all mean "this machine" — so a runtime can put a service on one
+  of them without any risk of colliding with something the workload binds on
+  `127.0.0.1`, and without exposing it outside the container at all.
+
+  It is a good demonstration of the general point: the address a socket binds is
+  as much a part of its identity as the port.
+
+  **`Peer Address: 0.0.0.0:*` on a listening socket** is a wildcard rather than
+  an address. The socket has no peer — that is what LISTEN means — and it will
+  accept from any address and any port. An established socket has a real peer
+  there, which is how you tell the two apart at a glance.
+
+  **`Recv-Q` and `Send-Q` change meaning by state**, and this catches everyone
+  once:
+
+  | State | Recv-Q | Send-Q |
+  |---|---|---|
+  | LISTEN | Connections waiting to be accepted | The accept **backlog** |
+  | ESTAB | Bytes received, not read by the app | Bytes sent, not acknowledged |
+
+  So a LISTEN row with a non-zero `Recv-Q` means the application is not calling
+  `accept()` fast enough, and if it reaches `Send-Q` the kernel starts dropping
+  new connections — silently, which is why the symptom is a client timeout
+  against a server that looks perfectly healthy.
+
+  `nc` asked for a backlog of 1. `somaxconn` on this machine is the ceiling any
+  application would be capped to, however large a backlog it requested.
+
+  **`ip_unprivileged_port_start` is 0 here**, which means any process can bind
+  port 80. That is not the historical behaviour — ports below 1024 needed root
+  or `CAP_NET_BIND_SERVICE` — and container runtimes now commonly set it to 0,
+  because the alternatives were to run as root, grant a capability, or listen on
+  8080 and translate.
+
+  It is worth checking rather than assuming, because it is the reason the same
+  image can work on one host and fail to bind on another.
+
+  **The command to keep.** For any "is it even listening" question:
+
+  ```bash
+  ss -tlnp | grep :<port>
+  ```
+
+  Three things in one line: whether anything is bound, **which address** it bound
+  to, and which process owns it. The middle one is the answer more often than
+  either of the others, and it is the subject of the next lab.

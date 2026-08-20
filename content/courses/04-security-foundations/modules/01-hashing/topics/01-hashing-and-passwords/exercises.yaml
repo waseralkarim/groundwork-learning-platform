@@ -1,0 +1,210 @@
+topic: topic.hashing-and-passwords
+
+exercises:
+  - id: e1
+    title: Predict the digest lengths
+    level: L1
+    objectives: [OBJ-A04.1.1]
+    kind: short_answer
+    prompt: >-
+      You hash four things with SHA-256: an empty file, the single byte `a`, a
+      4 GB disk image, and the SHA-256 digest of the disk image.
+
+
+      Give the length of each output in hex characters, and say what that tells
+      you about how much of the input survives.
+    answer: >-
+      All four are 64 hex characters — 32 bytes. The empty file included: SHA-256
+      of nothing is a well-defined value.
+
+
+      What it tells you: the digest length is a property of the algorithm and
+      never of the input. For the 4 GB image, 4,294,967,296 bytes were reduced to
+      32, so essentially none of the input survives. That is not a limitation
+      being worked around — it is the reason no procedure can reverse the
+      function, because the information required to do so is not present in the
+      output.
+    explanation: >-
+      This is the intuition that makes one-wayness feel inevitable rather than
+      merely asserted. It also disposes of a common misreading: an empty input is
+      not an error and does not produce an empty digest. The pattern is worth
+      recognising in tooling, where a hash of an empty file is often the sign
+      that a build produced nothing and the pipeline hashed the void.
+
+  - id: e2
+    title: Sort the outputs
+    level: L1
+    objectives: [OBJ-A04.1.2]
+    kind: interpretation
+    prompt: >-
+      Classify each as encoding, encryption or hashing, and say what would be
+      needed to recover the original:
+
+
+      1. `aHVudGVyMg==`
+
+      2. `$6$k2Lp9QmX$i84eAppi6H568QXMfa7Bn...`
+
+      3. `2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824`
+
+      4. `U2FsdGVkX1+3mK2p9Q==` produced by `openssl enc -aes-256-cbc`
+    answer: >-
+      1. **Encoding** (base64). Recover with `base64 -d` — no key, available to
+         anyone. This is plaintext.
+
+      2. **Hashing** (sha512crypt, a password hash). Not recoverable. Only
+         guessing, at whatever rate the work factor allows.
+
+      3. **Hashing** (a bare SHA-256, 64 hex characters). Not recoverable. Only
+         guessing, at millions per second.
+
+      4. **Encryption**. Recover with the key — and note the `U2FsdGVkX1` prefix
+         is itself base64, of the literal string `Salted__`. Two transformations
+         stacked, which is why it looks like the first item.
+    explanation: >-
+      The fourth entry is the one that catches people, and it is common in the
+      wild: encrypted output is frequently base64-encoded for transport, so it
+      *looks* like an encoding. The `U2FsdGVkX1` prefix is a reliable tell for
+      OpenSSL's `enc` format specifically.
+
+
+      The distinction that matters in review is recoverability. Items 1 and 4 can
+      be turned back into the original — by anyone, and by a key holder,
+      respectively. Items 2 and 3 cannot be turned back by anybody, which is
+      exactly why they are what password storage uses.
+
+  - id: e3
+    title: What the verification did not prove
+    level: L1
+    objectives: [OBJ-A04.1.3]
+    kind: interpretation
+    prompt: >-
+      A colleague downloads a tool from `https://releases.example.com/tool.tar.gz`
+      and verifies it against `https://releases.example.com/SHA256SUMS`. The check
+      passes and they report the download as verified.
+
+
+      What has actually been established, and what has not?
+    answer: >-
+      **Established:** the file they have is byte-identical to the file that was
+      hashed when that sums file was written, and it arrived without corruption.
+      That is a genuine and useful result — it rules out a truncated or corrupted
+      transfer.
+
+
+      **Not established:** that the file is what the project intended to publish.
+      The digest came from the same server as the file, so anyone able to replace
+      one could replace the other. The check confirms internal consistency, not
+      provenance.
+
+
+      To close the gap the digest must arrive through a channel the attacker does
+      not control: a detached signature verified against a key obtained
+      separately, a digest published somewhere the release host cannot write, or
+      a value pinned in advance.
+    explanation: >-
+      Checksums-next-to-downloads is near-universal and is mostly a corruption
+      check wearing security clothing. It is not useless — corruption is real,
+      and a truncated archive is a genuine failure mode worth catching — but it
+      does not answer "is this from who I think", and it is routinely reported as
+      though it does.
+
+
+      The distinction is exactly the gap that signing closes, and it is why this
+      course goes on to certificates.
+
+  - id: e4
+    title: Turn a rate into a decision
+    level: L2
+    objectives: [OBJ-A04.1.5]
+    kind: calculation
+    prompt: >-
+      You measure your login path at 4 million SHA-256 hashes per second per core
+      and 300 sha512crypt hashes per second per core.
+
+
+      An attacker has 8 cores and a wordlist of 3 billion candidates.
+
+
+      Compute the time to exhaust the wordlist against one salted account under
+      each scheme. Then state what work factor would push the second figure past
+      ten years, and what it would cost a legitimate login.
+    answer: >-
+      **SHA-256:** 3e9 ÷ (4e6 × 8) = 3e9 ÷ 3.2e7 ≈ **94 seconds**.
+
+
+      **sha512crypt at defaults:** 3e9 ÷ (300 × 8) = 3e9 ÷ 2400 ≈ 1.25e6 seconds
+      ≈ **14.5 days**.
+
+
+      **For ten years:** ten years is about 3.16e8 seconds. Needing 3e9 guesses
+      in that time allows 9.5 guesses/sec across 8 cores, so about 1.2
+      guesses/sec/core — roughly 250× slower than the 300/sec default.
+      sha512crypt's default is 5,000 rounds, so about **1,250,000 rounds**.
+
+
+      **Cost to a legitimate login:** the inverse of 1.2 per second, about
+      **830ms**. That is above the usual 250ms budget, so the honest conclusion
+      is that sha512crypt cannot reach ten years within an acceptable login
+      budget on this hardware — which is an argument for Argon2id, whose memory
+      hardness attacks the attacker's parallelism rather than only their clock.
+    explanation: >-
+      The arithmetic is the argument. "SHA-256 is insecure" is false and will lose
+      you the room; "the entire wordlist completes in 94 seconds, and one
+      parameter moves that to two weeks" is a fact nobody can dispute.
+
+
+      The last part is the more valuable half, because it does not end where
+      people expect. Pushing the numbers honestly shows sha512crypt running out
+      of road inside a reasonable login budget — which is the actual case for a
+      memory-hard function, arrived at by measurement rather than by repeating
+      that Argon2id won a competition.
+
+  - id: e5
+    title: Six jobs, six properties
+    level: L2
+    objectives: [OBJ-A04.1.8]
+    kind: ordering
+    prompt: >-
+      Match each job to the property that decides the choice, then name a
+      suitable algorithm:
+
+
+      Jobs: (a) verify a 4 GB download, (b) store user passwords, (c) sign a
+      webhook body, (d) name a container image immutably, (e) de-identify email
+      addresses in an analytics export, (f) detect accidental corruption in a
+      cache key.
+
+
+      Properties: speed, slowness and memory hardness, key binding, collision
+      resistance, unlinkability, cheapness.
+    answer: >-
+      - **(a) verify a download** → speed + collision resistance → **SHA-256**
+
+      - **(b) store passwords** → slowness and memory hardness → **Argon2id**
+        (bcrypt or scrypt if unavailable)
+
+      - **(c) sign a webhook** → key binding → **HMAC-SHA-256**, compared in
+        constant time
+
+      - **(d) name an image** → collision resistance → **SHA-256**, as a content
+        address
+
+      - **(e) de-identify emails** → unlinkability → **no hash is suitable**;
+        tokenise with the mapping held separately, or do not collect the field
+
+      - **(f) detect cache corruption** → cheapness → a **non-cryptographic**
+        hash such as xxHash or CRC32; there is no adversary, so paying for
+        cryptographic strength is waste
+    explanation: >-
+      Two entries carry the lesson. **(e)** is the one where no algorithm choice
+      helps: the requirement is that the output not be linkable back, and any
+      deterministic function of a guessable input fails that by construction. The
+      correct answer is a different mechanism entirely, and recognising when the
+      primitive is wrong — rather than the parameters — is the harder skill.
+
+
+      **(f)** points the other way. Not every hash needs to be cryptographic, and
+      reaching for SHA-256 on a cache key is a real cost paid for a threat that
+      does not exist. Security judgement includes knowing when a security
+      property is not required.

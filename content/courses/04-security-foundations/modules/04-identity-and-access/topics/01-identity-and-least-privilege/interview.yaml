@@ -1,0 +1,276 @@
+topic: topic.identity-and-least-privilege
+
+questions:
+  - id: i1
+    level: L1
+    question: What is the difference between authentication and authorization?
+    model_answer: >-
+      Authentication is *who are you*; authorization is *may you do this*.
+
+
+      Authentication happens once, at the start of a session, and either succeeds
+      or fails. Authorization happens on **every operation** afterwards, and it
+      is where least privilege lives.
+
+
+      They have distinct failures and telling them apart is the first move in any
+      access incident. 401 versus 403. `Permission denied (publickey)` — SSH
+      never established who you are — versus `EACCES` on a file, where the kernel
+      knows exactly who you are and is refusing.
+
+
+      Getting it backwards is expensive in a specific way: people rotate
+      credentials to fix an authorization problem, or widen permissions to fix a
+      failed login. A token that worked yesterday returning 403 today feels like
+      a credential problem, and the credential is demonstrably fine — the server
+      accepted it and then made a decision. What changed is on the permission
+      side.
+
+
+      The reason I care about the distinction beyond terminology is where the
+      effort goes. Almost all of it goes into the door — password policies, MFA,
+      SSO, key rotation — and the damage in an incident is decided by the room:
+      what the identity they arrived as was permitted to reach.
+    signal: >-
+      The definitions are the baseline. The discriminator is naming the concrete
+      failure modes and the cost of confusing them — someone who has debugged
+      this knows that 403 on a valid token sends people to rotate credentials.
+      Framing it as "the door and the room" shows they understand why least
+      privilege is the higher-leverage control.
+    follow_ups:
+      - "Which one does MFA improve, and what does it not help with?"
+      - "How would you tell them apart from a log line alone?"
+      - "Where does a capability failure fit?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A service reports permission denied on a config file that is mode 644 and
+      owned by the service account. Where do you look?
+    model_answer: >-
+      At every directory on the path, and I would run one command to do it:
+
+
+      ```bash
+      namei -l /srv/app/config/settings.json
+      ```
+
+
+      It prints each component with its mode and owner, and the culprit is
+      usually visible immediately as one `drw-r--r--` among `drwxr-xr-x`.
+
+
+      The reason this happens is that on a **directory** the bits mean something
+      different from on a file. `r` permits listing; `x` permits *traversal* —
+      resolving a name inside it. You need `x` on every directory along the path.
+      So a directory at 644 can be listed while nothing inside it can be opened,
+      and the error names the file you asked for rather than the directory that
+      refused.
+
+
+      That is what makes it waste time: the file is genuinely fine, so the
+      instinct is to chmod it, which changes nothing, and then people escalate to
+      `chmod -R 777` — which does fix it and creates a much larger problem.
+
+
+      A diagnostic detail I would use: **which operations succeed**. If `ls`
+      works and `cat` fails, that is a missing `x` on the directory. If both
+      fail, the directory is missing `r` as well. The pair narrows it before you
+      run anything.
+
+
+      And I would test as the failing identity — `sudo -u appsvc` — rather than
+      as myself. Three people confirming a file is readable while logged in as
+      themselves have confirmed nothing; their groups and sudo access are
+      different.
+
+
+      A common source is `install -d -m 644`, which looks right in review because
+      644 is the mode everyone types for files, and the `-d` makes it a
+      directory.
+    signal: >-
+      Reaching for `namei -l` immediately is the practical discriminator — most
+      people walk up the tree with `ls -ld` and get there eventually. The
+      ls-works-cat-fails inference shows they understand the bits rather than
+      recalling a rule, and "test as the failing identity" is the operational
+      habit that separates people who have actually chased this.
+    follow_ups:
+      - "What is the minimal fix, and why not chmod -R?"
+      - "When is execute-without-read on a directory the right choice?"
+      - "How would you stop the deploy shipping this again?"
+
+  - id: i3
+    level: L2
+    question: >-
+      A container reports an empty effective capability set. Is it unprivileged?
+    model_answer: >-
+      It holds nothing right now, which is not the same as being unable to hold
+      anything — and the second is the one that constrains an attacker.
+
+
+      There are two numbers in `/proc/self/status` and people read only the
+      first:
+
+
+      ```text
+      CapEff: 0000000000000000     ← what it holds now
+      CapBnd: 00000000a80425fb     ← the ceiling on what it could regain
+      ```
+
+
+      Decode the bounding set with `/sbin/capsh --decode=` — full path, because
+      `/sbin` is not on an unprivileged PATH and `command not found` there is
+      misleading. On a default image that is around fourteen capabilities,
+      including `cap_setuid` and `cap_dac_override`, and there are typically
+      eight or nine setuid binaries on the filesystem to reach them through.
+
+
+      So an audit that stops at `CapEff` measures the floor and calls it done.
+      That is why `capabilities.drop: ["ALL"]` and
+      `allowPrivilegeEscalation: false` are two separate settings that both
+      matter — one lowers the floor, the other lowers the ceiling — and most
+      tooling reports only the floor.
+
+
+      I would also run `getcap -r /`, because a binary can hold file capabilities
+      without being setuid and appears in no mode-based search at all — `ls`
+      shows an ordinary `-rwxr-xr-x`. It is the step people leave out of
+      privilege audits.
+
+
+      And I would check all of this on the **running workload** rather than the
+      manifest. `kubectl exec -- id` and `kubectl exec -- grep Cap
+      /proc/self/status`. The manifest is intent; the process is fact, and they
+      differ often enough that measuring is the only honest answer.
+    signal: >-
+      The CapEff/CapBnd distinction is the core and is genuinely uncommon
+      knowledge. Connecting it to why drop-ALL and allowPrivilegeEscalation are
+      separate settings shows they can translate the measurement into a
+      configuration decision. Mentioning `getcap` and the full path to `capsh`
+      are both signs of having actually done this rather than read it.
+    follow_ups:
+      - "How would a process regain a capability from the bounding set?"
+      - "What does readOnlyRootFilesystem add on top of these?"
+      - "How would you verify it on a running pod?"
+
+  - id: i4
+    level: L2
+    question: >-
+      Why is SSH key authentication better than a password, and what goes wrong
+      with it operationally?
+    model_answer: >-
+      Cryptographically it is better because **no secret crosses the wire**. The
+      server sends a challenge containing a session nonce, the client signs it
+      with the private key, and the server verifies against the public key it
+      already holds. Nothing to intercept, nothing to replay — the challenge
+      differs every session — and nothing for a compromised server to steal,
+      because it only ever had the public half. Compare a password, which the
+      client must send and the server must receive, every single time.
+
+
+      Operationally the problem is that `authorized_keys` only ever grows.
+
+
+      Three properties make that structural rather than a discipline failure.
+      There is **no expiry** — the format has no validity window, so a key added
+      in 2019 works today. There is **no revocation** other than removing the
+      line. And there is **no verified identity**: the comment field is free
+      text, so `root@build-01` tells you nothing checkable.
+
+
+      Meanwhile adding an entry is urgent and feels safe, and removing one risks
+      locking somebody out when nobody can prove who a key belongs to. So they
+      accumulate — I have seen files with more entries than the team has ever had
+      people, including keys for systems decommissioned years earlier whose disks
+      went somewhere.
+
+
+      Asking people to be more careful does not fix an append-only format. What
+      does is making access **expire by default**: SSH certificates, where a CA
+      signs short-lived user certificates and the server trusts the CA rather
+      than a list, so removing someone means not reissuing. Or a bastion issuing
+      per-session credentials, which also gives you a connection log.
+
+
+      Failing both, the audit with teeth is to name a human owner for every entry
+      and delete anything unowned. If a key was needed, someone says so within
+      the hour — and that is how you find out who owned it.
+
+
+      One more thing I would check: whether private keys are passphrase-protected.
+      The file header says — `aes256-ctr` and `bcrypt` means yes, `none` twice
+      means the key is plaintext on disk and whoever reads the file has that
+      identity.
+    signal: >-
+      "No secret crosses the wire" plus the challenge-nonce detail is the
+      baseline. The discriminator is treating authorized_keys growth as a
+      property of the format rather than a failure of diligence, and proposing
+      expiry-by-default as the structural fix. Knowing you can read the
+      protection status out of the key file's own header is a strong practical
+      signal.
+    follow_ups:
+      - "How would you audit authorized_keys across a fleet?"
+      - "What does SSH do with a private key that is world-readable?"
+      - "Where else does the expire-by-default argument apply?"
+
+  - id: i5
+    level: L2
+    question: >-
+      How do you evaluate whether a workload is over-privileged?
+    model_answer: >-
+      I ask one question, because "is this least privilege?" is unanswerable and
+      produces a meeting:
+
+
+      > **If this is fully compromised, what does the attacker reach that they
+      > should not?**
+
+
+      Then I answer it by listing things. Which secrets are mounted and what does
+      each open; what the network can reach; what the uid owns elsewhere; what is
+      in the **bounding** capability set, not just the effective one; what a
+      shell there could do next.
+
+
+      It works because the answer is finite and writable, and two engineers
+      produce nearly the same list — which makes it a review rather than an
+      opinion. It also reframes the argument usefully: "you should not run as
+      root" invites a debate about necessity, while "compromising the log shipper
+      currently yields the cloud admin key" invites a fix.
+
+
+      What I have found consistently is that **the excess is almost never the
+      primary function**. It is a secret mounted for a feature that was removed, a
+      shared key that also opens production, a capability inherited from a base
+      image, unrestricted egress on a service that talks to one database. Things
+      *held*, not things *done*.
+
+
+      And most of it was nobody's decision. Privilege granted for a reason
+      outlives the reason, because nothing records why it was granted. A manifest
+      gets copied from a service that genuinely needed the privilege. A narrow
+      capability gets added and nobody goes back to lower the uid it was supposed
+      to replace.
+
+
+      The reviews I would require: every mounted secret names a consumer in the
+      code; every capability and non-default uid carries a reason recorded next to
+      the grant; `runAsNonRoot`, `drop: ["ALL"]` and `allowPrivilegeEscalation:
+      false` as defaults with exceptions argued individually; egress restricted by
+      default; and — the one almost nobody has — **list every other holder of each
+      credential**, because a shared-key problem is invisible in any single
+      manifest and only appears when you ask what else mounts it.
+
+
+      Then verify against the running workload rather than the manifest, because
+      the manifest is intent.
+    signal: >-
+      Replacing an unanswerable question with an answerable one is the whole
+      answer, and it is what distinguishes someone who has run these reviews.
+      "The excess is never the primary function" is a real pattern, not a
+      platitude. Asking what *else* holds a credential is the requirement that
+      catches shared-secret problems, and very few people name it.
+    follow_ups:
+      - "Which of those requirements would you block a merge on?"
+      - "How do you handle a workload that genuinely needs privilege?"
+      - "How would you find every holder of a given secret?"

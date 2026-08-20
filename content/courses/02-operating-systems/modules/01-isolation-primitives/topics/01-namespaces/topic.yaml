@@ -1,0 +1,151 @@
+id: topic.namespaces
+slug: namespaces
+title: "Namespaces: What a Container Actually Is"
+summary: >-
+  A container is not a kernel object. It is a process with its own view of a few
+  global resources, and this topic is about which views exist, which one your
+  containers are almost certainly still sharing, and why that matters.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.user-space-and-the-kernel
+    hardness: required
+  - topic: topic.processes
+    hardness: required
+  - topic: topic.files-and-filesystems
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A02.1.1
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what a namespace virtualises, and why the kernel has no object
+      called a container.
+    assessed_by: [quiz.q1, quiz.q2, lab.read-your-namespaces]
+
+  - id: OBJ-A02.1.2
+    level: L2
+    verb: identify
+    statement: >-
+      Identify which namespaces a process belongs to, and which of them it
+      shares with another process.
+    assessed_by: [quiz.q3, quiz.q4, lab.read-your-namespaces, exercise.e1]
+
+  - id: OBJ-A02.1.3
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what the PID namespace changes about what a process can see and
+      signal.
+    assessed_by: [quiz.q5, quiz.q6, lab.the-pid-namespace]
+
+  - id: OBJ-A02.1.4
+    level: L3
+    verb: interpret
+    statement: >-
+      Interpret a container's network and mount namespaces from inside it, and
+      say what the host would see differently.
+    assessed_by: [quiz.q7, quiz.q8, lab.the-pid-namespace, exercise.e2]
+
+  - id: OBJ-A02.1.5
+    level: L3
+    verb: explain
+    statement: >-
+      Explain why creating a namespace is a privileged operation, and what a
+      user namespace changes about that.
+    assessed_by: [quiz.q9, quiz.q10, lab.privileged-by-design, assessment.A]
+
+  - id: OBJ-A02.1.6
+    level: L3
+    verb: justify
+    statement: >-
+      Justify why sharing the host's user namespace makes capability dropping
+      load-bearing rather than optional.
+    assessed_by: [quiz.q11, quiz.q12, lab.privileged-by-design, exercise.e3]
+
+  - id: OBJ-A02.1.7
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose which isolation a workload is missing, given evidence from inside
+      and outside it.
+    assessed_by: [quiz.q13, lab.which-isolation-is-missing, troubleshooting.container-sees-too-much]
+
+  - id: OBJ-A02.1.8
+    level: L3
+    verb: evaluate
+    statement: >-
+      Evaluate a proposal to share a namespace with the host, and state what it
+      gives up.
+    assessed_by: [quiz.q14, quiz.q15, exercise.e4, troubleshooting.pid-host-debugging, assessment.C]
+
+terminology:
+  - term: namespace
+    definition: >-
+      A kernel facility that gives a set of processes their own view of one
+      global resource — process IDs, mounts, network interfaces, hostnames.
+      There are eight kinds, and they are independent of each other.
+  - term: PID namespace
+    definition: >-
+      Its own process ID numbering. The first process in one becomes PID 1, and
+      processes outside it are invisible and unsignalable from within.
+  - term: mount namespace
+    definition: >-
+      Its own set of mounts. Two processes can see completely different
+      filesystem trees while running on one kernel.
+  - term: network namespace
+    definition: >-
+      Its own interfaces, addresses, routes and firewall rules. A container's
+      `eth0` is not the host's.
+  - term: user namespace
+    definition: >-
+      Its own mapping of user and group IDs. It is the namespace that decides
+      whether root inside means root outside, and the only one an unprivileged
+      process may create.
+  - term: UTS namespace
+    definition: >-
+      Its own hostname and domain name. The reason a container can call itself
+      something the host does not recognise.
+  - term: IPC namespace
+    definition: >-
+      Its own System V IPC objects and POSIX message queues.
+  - term: cgroup namespace
+    definition: >-
+      Its own view of the cgroup hierarchy, so a container sees its own limits
+      at the root rather than its position in the host's tree.
+  - term: initial namespace
+    definition: >-
+      The namespace of each kind that the kernel creates at boot. Everything
+      starts in it, and anything still in it is not isolated in that dimension.
+  - term: unshare
+    definition: >-
+      The system call, and the command, that moves a process into new
+      namespaces. Every kind except the user namespace requires CAP_SYS_ADMIN.
+  - term: setns
+    definition: >-
+      The system call that joins an existing namespace. What `nsenter` and
+      `docker exec` use to put a process inside a container.
+  - term: uid mapping
+    definition: >-
+      The table a user namespace uses to translate its own uids to the parent's.
+      Root inside the namespace can be an ordinary unprivileged uid outside it.
+  - term: rootless container
+    definition: >-
+      A container created by an unprivileged user, made possible by a user
+      namespace: the container's root maps to that user outside.
+  - term: privileged container
+    definition: >-
+      One run with capabilities restored and restrictions removed. It still has
+      namespaces; what it lacks is the confinement that makes them meaningful.
+
+foreshadows:
+  - "C14 assembles namespaces, cgroups and overlayfs into what Docker calls a container, and names each one you meet here."
+  - "C16's rootless containers and user-namespace remapping are the answer to the sharing this topic makes visible."
+  - "Kubernetes shareProcessNamespace, hostNetwork and hostPID are per-namespace opt-outs, each giving up exactly what this topic describes (E29)."
+  - "Debugging a distroless container by joining its namespaces with nsenter is a standard technique in E31."
+
+tags: [namespaces, kernel, containers, isolation, linux, fundamentals]

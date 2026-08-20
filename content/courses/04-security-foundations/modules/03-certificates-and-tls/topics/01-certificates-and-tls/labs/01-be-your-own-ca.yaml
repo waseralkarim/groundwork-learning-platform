@@ -1,0 +1,282 @@
+id: lab.be-your-own-ca
+topic: topic.certificates-and-tls
+title: Be a certificate authority, and find out what authority means
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A04.3.1, OBJ-A04.3.2, OBJ-A04.3.3]
+
+intro: >-
+  You are going to issue certificates. A root, an intermediate, and a leaf for a
+  service — the same hierarchy every public CA runs, built in about six commands.
+
+
+  The point is not the commands. It is discovering that issuing a certificate
+  requires no permission from anyone, and that the entire difference between your
+  CA and a public one is which list a client already has.
+
+setup:
+  - /opt/lab/seed-tls.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Create a self-signed root CA with a 10-year life, and record what makes it
+      a CA rather than an ordinary certificate. Save the evidence to
+      /tmp/answer-root.
+    hint: >-
+      `openssl req -x509 -newkey rsa:2048 -nodes -addext
+      "basicConstraints=critical,CA:TRUE"`. Then read the extension back with
+      `openssl x509 -noout -ext basicConstraints`.
+    walkthrough: |
+      mkdir -p /tmp/myca && cd /tmp/myca
+      openssl req -x509 -newkey rsa:2048 -keyout root.key -out root.crt -days 3650 -nodes \
+        -subj "/CN=My Root CA/O=Lab" -addext "basicConstraints=critical,CA:TRUE" 2>/dev/null
+      {
+        echo "subject and issuer are the same, which is what self-signed means:"
+        openssl x509 -in root.crt -noout -subject -issuer
+        echo
+        echo "the extension that makes it a CA:"
+        openssl x509 -in root.crt -noout -ext basicConstraints
+        echo
+        echo "validity:"
+        openssl x509 -in root.crt -noout -dates
+        echo
+        echo "nobody authorised this. issuing a CA certificate is one command, and it is trusted by exactly nobody until someone adds it to a trust store."
+      } > /tmp/answer-root
+      cat /tmp/answer-root
+    verify:
+      - type: file_exists
+        path: /tmp/myca/root.crt
+        describe: You created a root certificate
+      - type: file_matches
+        path: /tmp/answer-root
+        pattern: "CA:TRUE"
+        describe: And it carries the basic constraint that permits signing
+      - type: command_exit
+        command: "test \"$(openssl x509 -in /tmp/myca/root.crt -noout -subject)\" = \"$(openssl x509 -in /tmp/myca/root.crt -noout -issuer | sed 's/^issuer=/subject=/')\""
+        exit_code: 0
+        describe: Subject and issuer match — it signed itself
+
+  - id: s2
+    instruction: >-
+      Issue an intermediate CA signed by your root, constrained so it can sign
+      leaves but not further CAs. Save its constraints to /tmp/answer-int.
+    hint: >-
+      Make a CSR, then sign it with `-extfile` carrying
+      `basicConstraints=critical,CA:TRUE,pathlen:0`. The pathlen is what limits
+      the depth.
+    walkthrough: |
+      cd /tmp/myca
+      openssl req -newkey rsa:2048 -keyout int.key -out int.csr -nodes \
+        -subj "/CN=My Issuing CA/O=Lab" 2>/dev/null
+      printf 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n' > int.ext
+      openssl x509 -req -in int.csr -CA root.crt -CAkey root.key -out int.crt -days 1825 -extfile int.ext 2>/dev/null
+      {
+        echo "issued by the root, not by itself:"
+        openssl x509 -in int.crt -noout -subject -issuer
+        echo
+        openssl x509 -in int.crt -noout -ext basicConstraints
+        echo
+        echo "pathlen:0 means it may sign end-entity certificates but no further CAs, so the hierarchy cannot be extended by whoever holds this key"
+        echo
+        echo "the root exists to sign this and then go offline. its key cannot be rotated without updating every trust store, so it is used rarely; the intermediate does the daily work and can be replaced."
+      } > /tmp/answer-int
+      cat /tmp/answer-int
+    verify:
+      - type: file_matches
+        path: /tmp/answer-int
+        pattern: "pathlen:0"
+        describe: The intermediate is constrained to a depth of zero
+      - type: file_matches
+        path: /tmp/answer-int
+        pattern: "issuer=CN *= *My Root CA"
+        describe: And it was signed by your root rather than itself
+      - type: file_matches
+        path: /tmp/answer-int
+        pattern: "offline|rotated"
+        describe: And you recorded why the hierarchy has two levels
+
+  - id: s3
+    instruction: >-
+      Issue a leaf certificate for `shop.internal` from the intermediate, with a
+      subject alternative name and `CA:FALSE`. Then prove the SAN is present.
+      Save to /tmp/answer-leaf.
+    hint: >-
+      Extensions requested in a CSR are not copied by `openssl x509 -req`. You
+      must supply them again with `-extfile` at signing time.
+    walkthrough: |
+      cd /tmp/myca
+      openssl req -newkey rsa:2048 -keyout shop.key -out shop.csr -nodes \
+        -subj "/CN=shop.internal" 2>/dev/null
+      printf 'subjectAltName=DNS:shop.internal,DNS:www.shop.internal\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\n' > shop.ext
+      openssl x509 -req -in shop.csr -CA int.crt -CAkey int.key -out shop.crt -days 365 -extfile shop.ext 2>/dev/null
+      {
+        openssl x509 -in shop.crt -noout -subject -issuer
+        echo
+        openssl x509 -in shop.crt -noout -ext subjectAltName
+        openssl x509 -in shop.crt -noout -ext basicConstraints
+        echo
+        echo "CA:FALSE is what stops the holder of this certificate issuing certificates for anyone else. without it, every service you issue to becomes a certificate authority."
+      } > /tmp/answer-leaf
+      cat /tmp/answer-leaf
+    verify:
+      - type: file_matches
+        path: /tmp/answer-leaf
+        pattern: "DNS:shop\\.internal"
+        describe: The leaf carries a subject alternative name
+      - type: file_matches
+        path: /tmp/answer-leaf
+        pattern: "CA:FALSE"
+        describe: And is forbidden from signing anything else
+      - type: file_matches
+        path: /tmp/answer-leaf
+        pattern: "issuer=CN *= *My Issuing CA"
+        describe: And was issued by the intermediate, not the root
+
+  - id: s4
+    instruction: >-
+      Verify the leaf two ways: against the root alone, and against the root with
+      the intermediate supplied. Save both results to /tmp/answer-chain.
+    hint: >-
+      `openssl verify -CAfile root.crt leaf` and then the same with
+      `-untrusted int.crt`. The difference between them is the most common TLS
+      fault in production.
+    walkthrough: |
+      cd /tmp/myca
+      {
+        echo "root alone, no intermediate:"
+        openssl verify -CAfile root.crt shop.crt 2>&1
+        echo "rc=$?"
+        echo
+        echo "root plus the intermediate:"
+        openssl verify -CAfile root.crt -untrusted int.crt shop.crt 2>&1
+        echo "rc=$?"
+        echo
+        echo "the client has the root and does not have the intermediate, so the server must send it. a server configured with only its leaf produces exactly the first result, and that is the most common tls misconfiguration there is."
+      } > /tmp/answer-chain
+      cat /tmp/answer-chain
+    verify:
+      - type: file_matches
+        path: /tmp/answer-chain
+        pattern: "error 20"
+        describe: Without the intermediate, verification failed with code 20
+      - type: file_matches
+        path: /tmp/answer-chain
+        pattern: "shop.crt: OK"
+        describe: And with it supplied, the chain reached the root
+      - type: file_matches
+        path: /tmp/answer-chain
+        pattern: "server must send"
+        describe: And you identified whose job it is to supply the intermediate
+
+  - id: s5
+    instruction: >-
+      Now find out what your authority is worth. Try to verify your leaf against
+      the system trust store, count how many CAs are in it, and record what the
+      result establishes. Save to /tmp/answer-authority.
+    hint: >-
+      `openssl verify` with no `-CAfile` uses the system store. Count the
+      certificates in /etc/ssl/certs/ca-certificates.crt.
+    walkthrough: |
+      cd /tmp/myca
+      {
+        echo "verifying against the system trust store instead of my own root:"
+        openssl verify -untrusted int.crt shop.crt 2>&1
+        echo "rc=$?"
+        echo
+        echo "certificate authorities the system already trusts: $(grep -c 'BEGIN CERTIFICATE' /etc/ssl/certs/ca-certificates.crt)"
+        echo
+        echo "my certificate is cryptographically identical in structure to a public one and worth nothing, because my root is not in that file. the difference between my ca and a public ca is not mathematics - it is membership of a list that ships with the operating system."
+        echo
+        echo "and the reverse is the uncomfortable half: every one of those authorities can issue a valid certificate for any name, including mine. the security of a domain rests on the least careful of them."
+      } > /tmp/answer-authority
+      cat /tmp/answer-authority
+    verify:
+      - type: file_matches
+        path: /tmp/answer-authority
+        pattern: "error (20|18|19)"
+        describe: The system trust store rejected your certificate
+      - type: command_exit
+        command: "test $(sed -n 's/.*already trusts: \\([0-9]*\\).*/\\1/p' /tmp/answer-authority) -gt 50"
+        exit_code: 0
+        describe: And you counted the CAs it does trust — more than fifty
+      - type: file_matches
+        path: /tmp/answer-authority
+        pattern: "membership of a list|not mathematics"
+        describe: And identified what actually separates your CA from a public one
+      - type: file_matches
+        path: /tmp/answer-authority
+        pattern: "any name|least careful"
+        describe: And noted that any trusted CA can issue for any domain
+
+solution: >-
+  **You built a certificate authority in six commands, and nobody stopped you.**
+
+
+  That is the first finding, and it is genuine rather than a gotcha. There is no
+  registration, no permission, no technical barrier. A root CA is a self-signed
+  certificate with `CA:TRUE`, and the file you produced is structurally identical
+  to the one at the top of any public hierarchy.
+
+
+  **The hierarchy has two levels for an operational reason.**
+
+
+  The root signed the intermediate and then has no further work to do. Its
+  private key cannot be rotated without updating every trust store on earth, so
+  in a real deployment it lives offline — in a safe, on hardware, used a handful
+  of times a decade. The intermediate does the daily issuing and can be revoked
+  and replaced if it is compromised.
+
+
+  `pathlen:0` on the intermediate means it may sign end-entity certificates and
+  no further CAs, so nobody holding that key can extend the hierarchy. And
+  `CA:FALSE` on the leaf is what stops every service you issue to from becoming
+  a certificate authority itself — which is not a theoretical concern, since a
+  certificate without it can sign certificates for any name at all.
+
+
+  **The extension trap you were warned about.**
+
+
+  `openssl x509 -req` copies **no** extensions from the CSR. They are requests,
+  and the issuer decides. Sign without `-extfile` and you get a certificate with
+  no SAN and no basic constraints — which is exactly how a CN-only certificate
+  gets made by accident, and you will meet one in the next lab.
+
+
+  **The chain, and the fault it predicts.**
+
+
+  Verifying against the root alone gave `error 20: unable to get local issuer
+  certificate`. Supplying the intermediate gave `OK`.
+
+
+  That gap is the most common TLS misconfiguration in production. Clients have
+  roots; they do not have your intermediate. **The server must send it.** A
+  server configured with only its leaf reproduces that first result for every
+  client that verifies honestly.
+
+
+  **And then the point of the whole lab.**
+
+
+  Verified against the system trust store, your perfectly-formed certificate is
+  worthless. The signatures are valid, the chain is internally consistent, and it
+  is rejected — because your root is not among the ~150 certificates in
+  `/etc/ssl/certs/ca-certificates.crt`.
+
+
+  **The difference between your CA and DigiCert is not mathematics. It is
+  membership of a list that ships with the operating system.** Trust here is a
+  distribution decision, made in advance, by people you have never met.
+
+
+  Which has an uncomfortable corollary worth carrying: each of those ~150
+  authorities can issue a valid certificate for *any* name, including yours. Your
+  domain's TLS is only as strong as the least careful of them. That is a real
+  structural weakness, and the mitigations — Certificate Transparency, which makes
+  issuance publicly auditable, and CAA records, which name who may issue for you —
+  are both cheap and both usually absent.

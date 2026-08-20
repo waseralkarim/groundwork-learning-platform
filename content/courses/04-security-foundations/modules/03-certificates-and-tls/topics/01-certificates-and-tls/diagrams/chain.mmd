@@ -1,0 +1,23 @@
+flowchart TB
+    subgraph STORE["The client's trust store — ~150 certificates, decided in advance"]
+        ROOT["Root CA<br/>self-signed<br/><i>trusted because it is here,<br/>not because of any signature</i>"]
+    end
+
+    subgraph SERVER["What the server sends during the handshake"]
+        LEAF["Leaf — CN=shop.example.com<br/>SAN: shop.example.com<br/>CA:FALSE"]
+        INT["Intermediate CA<br/>CA:TRUE, pathlen:0"]
+    end
+
+    ROOT -->|"signs"| INT
+    INT -->|"signs"| LEAF
+
+    LEAF -.->|"depth 0"| CHK1["Is the name I asked for<br/>in the SAN list?"]
+    INT -.->|"depth 1"| CHK2["Did this sign the leaf?<br/>Is it allowed to sign?"]
+    ROOT -.->|"depth 2"| CHK3["Is this in my trust store?"]
+
+    CHK1 --> OK["All three yes → code 0"]
+    CHK2 --> OK
+    CHK3 --> OK
+
+    MISS["If the server omits the intermediate,<br/>the client cannot reach the root<br/>→ code 20 / 21<br/><br/><b>Browsers often hide this</b> — they cache<br/>intermediates from other sites.<br/>curl and health checks do not."]
+    INT -.-> MISS

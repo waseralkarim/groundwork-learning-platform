@@ -1,0 +1,462 @@
+id: lab.four-ways-to-return
+topic: topic.functions-and-scope
+title: Return a value four ways and argue for one
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.6.2, OBJ-B08.6.3, OBJ-B08.6.6, OBJ-B08.6.8]
+
+intro: >-
+  A shell function returns an exit status and nothing else. Everything that looks
+  like returning a value is a workaround, and there are four of them with
+  different costs.
+
+
+  You will implement all four, find the one that silently loses a side effect,
+  find the trap in the cleverest one — and then find out why the seeded health
+  check has never reported a failure.
+
+setup:
+  - /opt/lab/seed-functions.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Write /tmp/four.sh implementing the same operation four ways — stdout,
+      a fixed global, a nameref, and status-only — each also incrementing a
+      counter so you can see which side effects survive.
+    hint: >-
+      The operation: count the lines in a file. The counter records how many
+      times the function was called.
+    walkthrough: |
+      cat > /tmp/four.sh <<'FOUR'
+      #!/bin/bash
+      set -uo pipefail
+
+      calls=0
+
+      # 1. print it, capture with $( )
+      lines_stdout() { calls=$((calls + 1)); wc -l < "$1"; }
+
+      # 2. assign a fixed global
+      lines_global() { calls=$((calls + 1)); REPLY=$(wc -l < "$1"); }
+
+      # 3. nameref — the caller chooses the variable
+      lines_nameref() { local -n _out=$2; calls=$((calls + 1)); _out=$(wc -l < "$1"); }
+
+      # 4. status only — a question, not a producer
+      has_lines() { calls=$((calls + 1)); [ -s "$1" ]; }
+
+      f=/tmp/funcs/services.txt
+
+      calls=0; v=$(lines_stdout "$f")
+      printf '  %-10s value=%-4s calls=%s\n' stdout "$v" "$calls"
+
+      calls=0; lines_global "$f"
+      printf '  %-10s value=%-4s calls=%s\n' global "$REPLY" "$calls"
+
+      calls=0; lines_nameref "$f" answer
+      printf '  %-10s value=%-4s calls=%s\n' nameref "$answer" "$calls"
+
+      calls=0; if has_lines "$f"; then r=yes; else r=no; fi
+      printf '  %-10s value=%-4s calls=%s\n' status "$r" "$calls"
+      FOUR
+      chmod 0755 /tmp/four.sh
+      bash /tmp/four.sh
+    verify:
+      - type: file_exists
+        path: /tmp/four.sh
+        describe: You wrote all four
+      - type: command_exit
+        command: bash -n /tmp/four.sh
+        exit_code: 0
+        describe: And it parses
+      - type: file_matches
+        path: /tmp/four.sh
+        pattern: "local -n"
+        describe: Including a nameref
+      - type: file_matches
+        path: /tmp/four.sh
+        pattern: "REPLY="
+        describe: And a fixed global
+
+  - id: s2
+    instruction: >-
+      Run it and record which of the four lost the counter, and why. Save to
+      /tmp/answer-costs.
+    walkthrough: |
+      {
+        bash /tmp/four.sh
+        echo
+        echo "STDOUT IS THE ONE THAT LOST THE COUNTER. calls=0 after a call that"
+        echo "definitely happened - the value came back correctly."
+        echo
+        echo "because v=\$(lines_stdout \"\$f\") runs the function in a SUBSHELL. the"
+        echo "increment happened in a forked process which then exited. only its OUTPUT"
+        echo "came back."
+        echo
+        echo "the other three make no fork, so both the value and the side effect"
+        echo "survive."
+        echo
+        echo "what each one costs:"
+        echo
+        echo "  stdout    reads like a function call in any other language, and is the"
+        echo "            only one that composes: \$(a \$(b x)). costs a fork, so NO"
+        echo "            side effect survives - no counter, no cache, no flag. also"
+        echo "            strips trailing newlines, and (B08.5) local v=\$(...) throws"
+        echo "            away the exit status."
+        echo
+        echo "  global    no fork, side effects survive, status is the function's own."
+        echo "            costs a HARD-CODED NAME: two nested calls both using REPLY"
+        echo "            clobber each other, and the caller has to know the name."
+        echo
+        echo "  nameref   no fork, caller picks the name, so it nests. costs bash 4.3+,"
+        echo "            an extra argument, and one real trap (next step)."
+        echo
+        echo "  status    the right answer whenever the value IS a yes/no, because it"
+        echo "            is what if was built for. costs everything else: one byte,"
+        echo "            and 126, 127 and 128+N are already taken."
+      } > /tmp/answer-costs
+      cat /tmp/answer-costs
+    verify:
+      - type: file_matches
+        path: /tmp/answer-costs
+        pattern: "stdout +value=3 +calls=0"
+        describe: stdout returns the value and loses the counter
+      - type: file_matches
+        path: /tmp/answer-costs
+        pattern: "global +value=3 +calls=1"
+        describe: While the global keeps both
+      - type: file_matches
+        path: /tmp/answer-costs
+        pattern: "nameref +value=3 +calls=1"
+        describe: And so does the nameref
+      - type: file_matches
+        path: /tmp/answer-costs
+        pattern: "(?i)SUBSHELL"
+        describe: And you named the reason
+      - type: file_matches
+        path: /tmp/answer-costs
+        pattern: "(?i)HARD-CODED NAME"
+        describe: And the cost of the global
+
+  - id: s3
+    instruction: >-
+      Find the trap in the nameref version, and the convention that avoids it.
+      Save to /tmp/answer-nameref.
+    hint: >-
+      What happens if the caller's variable has the same name as the parameter
+      inside the function?
+    walkthrough: |
+      cat > /tmp/nameref-trap.sh <<'NR'
+      #!/bin/bash
+      write_to() { local -n dest=$1; dest=written; }
+      caller() {
+        local dest=mine
+        write_to dest
+        echo "    caller's dest is now [$dest]"
+      }
+      caller
+
+      write_to2() { local -n _dest=$1; _dest=written; }
+      caller2() {
+        local dest=mine
+        write_to2 dest
+        echo "    with _dest, caller's dest is now [$dest]"
+      }
+      caller2
+      NR
+
+      {
+        echo "a nameref parameter named dest, called by a function whose local is also"
+        echo "named dest:"
+        bash /tmp/nameref-trap.sh 2>&1 | sed 's/^/    /'
+        echo
+        echo "CIRCULAR NAME REFERENCE. the nameref resolved to ITSELF, bash warned three"
+        echo "times, and the assignment was LOST - the caller still sees mine."
+        echo
+        echo "the convention is an underscore prefix on the parameter, which no caller"
+        echo "will have chosen. the second run shows it working."
+        echo
+        echo "note the failure mode: bash WARNED rather than failing. under set -e the"
+        echo "script carries on, and the caller reads a stale value. so the warning goes"
+        echo "to stderr in a CI log nobody reads, and the symptom appears later as a"
+        echo "wrong value with no error attached to it."
+        echo
+        echo "which is the general shape worth remembering: THE CLEVEREST OPTION HAS THE"
+        echo "QUIETEST FAILURE. that is a reason to prefer it only where its advantage"
+        echo "actually matters - a function that must both return a value and have a"
+        echo "side effect, and must nest."
+      } > /tmp/answer-nameref
+      cat /tmp/answer-nameref
+    verify:
+      - type: file_matches
+        path: /tmp/answer-nameref
+        pattern: "(?i)circular name reference"
+        describe: You triggered the trap
+      - type: file_matches
+        path: /tmp/answer-nameref
+        pattern: "caller's dest is now \\[mine\\]"
+        describe: And showed the assignment was lost
+      - type: file_matches
+        path: /tmp/answer-nameref
+        pattern: "with _dest, caller's dest is now \\[written\\]"
+        describe: And that the prefix fixes it
+      - type: file_matches
+        path: /tmp/answer-nameref
+        pattern: "(?i)WARNED rather than failing"
+        describe: And that it is a warning, not a failure
+      - type: file_matches
+        path: /tmp/answer-nameref
+        pattern: "(?i)QUIETEST FAILURE"
+        describe: And drew the conclusion
+
+  - id: s4
+    instruction: >-
+      /tmp/funcs/healthcheck.sh has never alerted, and `worker` is down. There
+      are two independent reasons. Find both. Save to /tmp/answer-healthcheck.
+    hint: >-
+      Add /tmp/funcs to PATH so fake_probe is found. Then ask two questions: what
+      does `failures` end up as, and what would `exit "$failures"` do if it were
+      right?
+    walkthrough: |
+      {
+        echo "the run:"
+        PATH=/tmp/funcs:$PATH bash /tmp/funcs/healthcheck.sh 2>&1 | sed 's/^/    /'
+        echo "    exit status: $(PATH=/tmp/funcs:$PATH bash /tmp/funcs/healthcheck.sh >/dev/null 2>&1; echo $?)"
+        echo
+        echo "worker IS reported DOWN, in the output, and the script still says 0 and"
+        echo "exits 0."
+        echo
+        echo "REASON 1: failures IS NEVER INCREMENTED."
+        grep -n 'failures' /tmp/funcs/healthcheck.sh | sed 's/^/    /'
+        echo
+        echo "    check_service prints DOWN and returns - it never touches failures, and"
+        echo "    the caller never looks at check_service's status either. the if/else"
+        echo "    inside the function CONSUMES the probe's result and turns it into"
+        echo "    text. after that the information exists only as characters on stdout."
+        echo
+        echo "    and note check_service's last command is an echo, so even if the"
+        echo "    caller DID test it, it would always be 0 - the B08.5 shape again."
+        echo
+        echo "REASON 2: exit \"\$failures\" IS UNSOUND EVEN WHEN CORRECT."
+        echo
+        echo "    an exit status is one unsigned byte:"
+        for n in 1 3 255 256 300; do
+          printf '      exit %-5s -> %s\n' "$n" "$(bash -c "exit $n"; echo $?)"
+        done
+        echo
+        echo "    so 256 services down is a SUCCESS, and 300 down reports 44. worse,"
+        echo "    143 down is indistinguishable from 'killed by SIGTERM' and 127 down"
+        echo "    from 'command not found' - which a supervisor may well retry on."
+        echo
+        echo "FIXING EITHER ONE ALONE STILL LEAVES IT BROKEN. increment failures and it"
+        echo "reports 1 and exits 1, which happens to work at this scale and breaks"
+        echo "silently at 256. fix the exit and it still counts zero."
+      } > /tmp/answer-healthcheck
+      cat /tmp/answer-healthcheck
+    verify:
+      - type: file_matches
+        path: /tmp/answer-healthcheck
+        pattern: "worker DOWN"
+        describe: The probe genuinely reports a failure
+      - type: file_matches
+        path: /tmp/answer-healthcheck
+        pattern: "0 services down"
+        describe: And the script reports none
+      - type: file_matches
+        path: /tmp/answer-healthcheck
+        pattern: "exit status: 0"
+        describe: And exits clean
+      - type: file_matches
+        path: /tmp/answer-healthcheck
+        pattern: "(?i)NEVER INCREMENTED"
+        describe: You found the first reason
+      - type: file_matches
+        path: /tmp/answer-healthcheck
+        pattern: "exit 256   -> 0"
+        describe: And measured the one-byte truncation
+      - type: file_matches
+        path: /tmp/answer-healthcheck
+        pattern: "(?i)FIXING EITHER ONE ALONE"
+        describe: And established both are needed
+
+  - id: s5
+    instruction: >-
+      Rewrite healthcheck.sh so it reports correctly, and state the convention
+      you would apply to every function in the repository. Save to
+      /tmp/answer-convention.
+    walkthrough: |
+      cat > /tmp/fixed-healthcheck.sh <<'HC'
+      #!/bin/bash
+      set -euo pipefail
+
+      SERVICES=${1:-/tmp/funcs/services.txt}
+
+      # a QUESTION: returns a status, prints nothing
+      service_is_up() {
+        local name=$1 port=$2
+        fake_probe "$name" "$port"
+      }
+
+      main() {
+        local name port failures=0 checked=0
+
+        while read -r name port; do
+          checked=$((checked + 1))
+          if service_is_up "$name" "$port"; then
+            echo "  $name ok"
+          else
+            echo "  $name DOWN" >&2
+            failures=$((failures + 1))
+          fi
+        done < "$SERVICES"
+
+        [ "$checked" -gt 0 ] || { echo "no services checked" >&2; exit 1; }
+
+        echo "$failures of $checked services down"
+        [ "$failures" -eq 0 ] || exit 1      # a STATUS, not a count
+      }
+
+      main "$@"
+      HC
+      chmod 0755 /tmp/fixed-healthcheck.sh
+
+      {
+        echo "fixed:"
+        PATH=/tmp/funcs:$PATH bash /tmp/fixed-healthcheck.sh 2>&1 | sed 's/^/    /'
+        echo "    exit status: $(PATH=/tmp/funcs:$PATH bash /tmp/fixed-healthcheck.sh >/dev/null 2>&1; echo $?)"
+        echo
+        echo "and with nothing down:"
+        printf 'api 8080\ncache 6379\n' > /tmp/up-only.txt
+        PATH=/tmp/funcs:$PATH bash /tmp/fixed-healthcheck.sh /tmp/up-only.txt 2>&1 | sed 's/^/    /'
+        echo "    exit status: $(PATH=/tmp/funcs:$PATH bash /tmp/fixed-healthcheck.sh /tmp/up-only.txt >/dev/null 2>&1; echo $?)"
+        echo
+        echo "what changed, and why:"
+        echo
+        echo "  - service_is_up is a QUESTION: it returns a status and prints nothing."
+        echo "    the caller decides what to say. the original mixed the two, and the"
+        echo "    moment a function turns a status into text the information is gone."
+        echo
+        echo "  - exit 1, not exit \$failures. the count goes in the MESSAGE. one byte"
+        echo "    cannot carry a count, and the values that look like counts collide"
+        echo "    with 'killed by a signal'."
+        echo
+        echo "  - the loop reads from a REDIRECT, not a pipe, so failures survives it."
+        echo
+        echo "  - checked is asserted. a health check that examines nothing and reports"
+        echo "    zero failures is the same lie in a different form."
+        echo
+        echo "  - DOWN goes to stderr, so \$( ) around this captures the summary and"
+        echo "    not the noise."
+        echo
+        echo "THE CONVENTION, six rules, each one preventing something above:"
+        echo
+        echo "  1. every variable declared local, on its own line"
+        echo "     (its own line because local x=\$(cmd) discards cmd's status)"
+        echo "  2. parameters named in locals at the top, so the signature is readable"
+        echo "  3. a function is a QUESTION or a PRODUCER, never both:"
+        echo "     a question returns a status and prints nothing"
+        echo "     a producer prints ONE thing to stdout and diagnostics to stderr"
+        echo "  4. never end a function with a bare echo unless it should always succeed"
+        echo "  5. wrappers use command, or they call themselves"
+        echo "  6. exit only in main, usage and die - a library function that exits"
+        echo "     takes the caller's cleanup with it"
+        echo
+        echo "shellcheck enforces the first mechanically (SC2155) and warns on the piped"
+        echo "loop (SC2031). the rest are read - which is why they are worth writing"
+        echo "down as rules rather than trusting to instinct."
+      } > /tmp/answer-convention
+      cat /tmp/answer-convention
+    verify:
+      - type: file_exists
+        path: /tmp/fixed-healthcheck.sh
+        describe: You rewrote it
+      - type: file_matches
+        path: /tmp/answer-convention
+        pattern: "1 of 3 services down"
+        describe: And it now counts correctly
+      - type: file_matches
+        path: /tmp/answer-convention
+        pattern: "(?s)fixed:.*exit status: 1"
+        describe: And exits non-zero
+      - type: file_matches
+        path: /tmp/answer-convention
+        pattern: "(?s)nothing down:.*0 of 2 services down"
+        describe: While the healthy case still passes
+      - type: file_matches
+        path: /tmp/answer-convention
+        pattern: "(?i)QUESTION or a PRODUCER"
+        describe: And you stated the central rule
+      - type: file_matches
+        path: /tmp/answer-convention
+        pattern: "SC2155"
+        describe: And what can be enforced mechanically
+
+solution: >-
+  **Four ways, and only one loses the side effect:**
+
+
+  | | value | calls |
+  |---|---|---|
+  | stdout — `v=$(f x)` | 3 | **0** |
+  | fixed global — `REPLY` | 3 | 1 |
+  | nameref — `local -n` | 3 | 1 |
+  | status — `if f x` | yes | 1 |
+
+
+  `$( )` runs the function in a **subshell**; the increment happened in a forked
+  process that then exited, and only the output came back.
+
+
+  **What each costs.** *stdout* reads like a real function call and is the only
+  one that composes — `$(a $(b x))` — but no side effect survives, trailing
+  newlines are stripped, and `local v=$(...)` throws away the status. *Global*
+  keeps everything but hard-codes the name, so two nested calls clobber each
+  other. *Nameref* keeps everything and nests, at the cost of bash 4.3+, an extra
+  argument, and one trap. *Status* is right whenever the value **is** a yes/no,
+  and useless for anything else — one byte, with 126/127/128+N taken.
+
+
+  **The nameref trap:**
+
+
+  ```console
+  $ write_to() { local -n dest=$1; dest=written; }
+  $ caller()  { local dest=mine; write_to dest; echo "dest is now [$dest]"; }
+  $ caller
+  bash: local: warning: dest: circular name reference     (x3, on stderr)
+  dest is now [mine]
+  ```
+
+
+  The nameref resolved to itself; bash **warned** rather than failed, so under
+  `set -e` the script carries on and the caller reads a stale value. The
+  convention is an underscore prefix — `local -n _dest=$1` — which no caller will
+  have chosen. **The cleverest option has the quietest failure**, which is a
+  reason to use it only where its advantage matters.
+
+
+  **`healthcheck.sh` has two independent defects.** `failures` is **never
+  incremented** — `check_service`'s `if/else` consumes the probe's result and
+  turns it into text, after which the information exists only as characters on
+  stdout. (And its last command is an `echo`, so testing its status would return
+  0 anyway.) Separately, `exit "$failures"` is unsound even when correct: an exit
+  status is one byte, so **256 services down is a success**, 300 reports 44, and
+  143 is indistinguishable from "killed by SIGTERM". **Fixing either alone leaves
+  it broken.**
+
+
+  **The rewrite** makes `service_is_up` a question that returns a status and
+  prints nothing; puts the count in the *message* and `exit 1` in the status;
+  reads the loop from a redirect rather than a pipe; asserts that anything was
+  checked at all; and sends `DOWN` to stderr.
+
+
+  **The convention:** every variable `local`, on its own line; parameters named
+  at the top; a function is a **question or a producer, never both**; never end
+  one with a bare `echo`; wrappers use `command`; `exit` only in `main`, `usage`
+  and `die`. `shellcheck` enforces the first mechanically (SC2155) and warns on
+  the piped loop (SC2031) — the rest are read, which is why they are worth
+  writing down.

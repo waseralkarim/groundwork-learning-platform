@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+/* Groundwork design tokens.
+   Long-form technical reading is the primary job of this UI, so the palette is
+   built around a cool neutral ground with a single copper accent — enough
+   contrast to guide the eye, not enough to fatigue it over 90 minutes.
+
+   Theming has three states, not two. An explicit choice stamps
+   data-theme="light" or data-theme="dark" on <html>; the default "system"
+   setting stamps nothing, and only prefers-color-scheme separates the two.
+   Every token is therefore defined three times, and no colour is ever declared
+   for the first time inside a media query — a token that only exists under
+   @media never applies to a reader whose OS is set the other way. */
+
+@theme {
+  --font-display: ui-serif, "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+
+  --color-ground: #e9edef;
+  --color-surface: #fbfcfc;
+  --color-surface-2: #f1f4f5;
+  --color-ink: #131a20;
+  --color-ink-soft: #3c4753;
+  --color-muted: #64717d;
+  --color-rule: #cdd5da;
+  --color-rule-soft: #dfe5e8;
+  --color-accent: #a24c18;
+  --color-signal: #0e5a5e;
+}
+
+:root {
+  color-scheme: light;
+}
+
+/* System dark — applies unless the reader has explicitly chosen light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --color-ground: #0e1317;
+    --color-surface: #151c22;
+    --color-surface-2: #1a2229;
+    --color-ink: #e3e9ed;
+    --color-ink-soft: #bac5ce;
+    --color-muted: #8b98a4;
+    --color-rule: #2a343c;
+    --color-rule-soft: #212a31;
+    --color-accent: #e08447;
+    --color-signal: #45a8ac;
+  }
+}
+
+/* Explicit dark — wins over a light OS setting. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-ground: #0e1317;
+  --color-surface: #151c22;
+  --color-surface-2: #1a2229;
+  --color-ink: #e3e9ed;
+  --color-ink-soft: #bac5ce;
+  --color-muted: #8b98a4;
+  --color-rule: #2a343c;
+  --color-rule-soft: #212a31;
+  --color-accent: #e08447;
+  --color-signal: #45a8ac;
+}
+
+/* Explicit light — wins over a dark OS setting. The declarations above are
+   scoped away from it, so this only has to restore color-scheme. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+body {
+  background-color: var(--color-ground);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Reading measure. The single most important typographic decision in a platform
+   whose core activity is reading technical prose for an hour at a time. */
+.prose-measure {
+  max-width: 70ch;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

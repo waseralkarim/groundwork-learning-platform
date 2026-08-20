@@ -1,0 +1,214 @@
+{
+  "$defs": {
+    "Level": {
+      "description": "The difficulty ladder. See docs/architecture/01-vision-and-principles.md.",
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5"
+      ],
+      "title": "Level",
+      "type": "string"
+    },
+    "Objective": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^OBJ-[A-Za-z0-9.]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "level": {
+          "$ref": "#/$defs/Level"
+        },
+        "verb": {
+          "title": "Verb",
+          "type": "string"
+        },
+        "statement": {
+          "maxLength": 400,
+          "minLength": 15,
+          "title": "Statement",
+          "type": "string"
+        },
+        "assessed_by": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Assessed By",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "level",
+        "verb",
+        "statement",
+        "assessed_by"
+      ],
+      "title": "Objective",
+      "type": "object"
+    },
+    "Prerequisite": {
+      "additionalProperties": false,
+      "properties": {
+        "topic": {
+          "maxLength": 120,
+          "minLength": 3,
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+          "title": "Topic",
+          "type": "string"
+        },
+        "hardness": {
+          "default": "required",
+          "enum": [
+            "required",
+            "recommended"
+          ],
+          "title": "Hardness",
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic"
+      ],
+      "title": "Prerequisite",
+      "type": "object"
+    },
+    "Term": {
+      "additionalProperties": false,
+      "properties": {
+        "term": {
+          "maxLength": 80,
+          "minLength": 2,
+          "title": "Term",
+          "type": "string"
+        },
+        "definition": {
+          "maxLength": 600,
+          "minLength": 10,
+          "title": "Definition",
+          "type": "string"
+        }
+      },
+      "required": [
+        "term",
+        "definition"
+      ],
+      "title": "Term",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "slug": {
+      "maxLength": 80,
+      "minLength": 2,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "title": "Slug",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 140,
+      "minLength": 4,
+      "title": "Title",
+      "type": "string"
+    },
+    "summary": {
+      "maxLength": 400,
+      "minLength": 20,
+      "title": "Summary",
+      "type": "string"
+    },
+    "order": {
+      "minimum": 1,
+      "title": "Order",
+      "type": "integer"
+    },
+    "levels": {
+      "items": {
+        "$ref": "#/$defs/Level"
+      },
+      "minItems": 1,
+      "title": "Levels",
+      "type": "array"
+    },
+    "estimated_minutes": {
+      "maximum": 240,
+      "minimum": 5,
+      "title": "Estimated Minutes",
+      "type": "integer"
+    },
+    "status": {
+      "default": "published",
+      "enum": [
+        "draft",
+        "published",
+        "retired"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "prerequisites": {
+      "items": {
+        "$ref": "#/$defs/Prerequisite"
+      },
+      "title": "Prerequisites",
+      "type": "array"
+    },
+    "objectives": {
+      "items": {
+        "$ref": "#/$defs/Objective"
+      },
+      "minItems": 1,
+      "title": "Objectives",
+      "type": "array"
+    },
+    "terminology": {
+      "items": {
+        "$ref": "#/$defs/Term"
+      },
+      "title": "Terminology",
+      "type": "array"
+    },
+    "tags": {
+      "items": {
+        "maxLength": 80,
+        "minLength": 2,
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    },
+    "foreshadows": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Foreshadows",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "slug",
+    "title",
+    "summary",
+    "order",
+    "levels",
+    "estimated_minutes",
+    "objectives"
+  ],
+  "title": "Topic",
+  "type": "object"
+}

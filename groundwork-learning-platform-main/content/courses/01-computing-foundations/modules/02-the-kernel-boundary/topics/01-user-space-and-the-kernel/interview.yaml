@@ -1,0 +1,142 @@
+topic: topic.user-space-and-the-kernel
+
+questions:
+  - id: i1
+    level: L2
+    question: What actually happens when a program calls write()?
+    model_answer: >-
+      The C library loads the syscall number and arguments into registers and
+      executes the `syscall` instruction. The CPU switches from ring 3 to ring 0
+      and jumps to one fixed entry point the kernel registered at boot — not an
+      address the process chose. The kernel looks up the number, validates the
+      file descriptor, copies the bytes out of the process's memory with
+      copy_from_user, hands them to whatever the descriptor refers to, and
+      returns a count. Control returns to ring 3 with the result in a register;
+      libc turns a negative value into -1 plus errno.
+
+
+      Worth adding: the call may not have crossed at all. If stdout is buffered,
+      libc may have copied the bytes into its own buffer and returned without
+      involving the kernel.
+    signal: >-
+      A strong answer distinguishes the library call from the crossing, and knows
+      there is exactly one kernel entry point rather than one per call. Mentioning
+      that buffering may mean no crossing happened shows the candidate has
+      debugged missing logs rather than only read about them.
+    follow_ups:
+      - "What does a short write mean, and what must the caller do about it?"
+      - "Why does the kernel copy the data rather than dereference the user pointer?"
+      - "Roughly what does a non-blocking syscall cost compared with a function call?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A service is at 90% CPU. How do you find out whether it is computing or
+      waiting on the kernel, and what do you do differently in each case?
+    model_answer: >-
+      Split the CPU time first: `time` on a run, or the `us` and `sy` columns in
+      `top`, or fields 14 and 15 of /proc/pid/stat. High user time means the
+      program is running its own code — reach for a profiler. High system time
+      means it is making syscalls — reach for `strace -c` to find which one, and
+      the fix will be fewer, larger calls.
+
+
+      If real time greatly exceeds user plus sys, it is neither: the process was
+      blocked, and the investigation moves to I/O, locks or a remote dependency.
+    signal: >-
+      Look for the candidate choosing the tool from the measurement rather than
+      reaching for a favourite. The third case — blocked, so neither profiler nor
+      strace helps — is what separates people who have actually done this from
+      people who have memorised two commands.
+    follow_ups:
+      - "What are the common syscall patterns behind high system time?"
+      - "What is the risk of attaching strace to a production process?"
+      - "Why might a profiler report a busy process as idle?"
+
+  - id: i3
+    level: L3
+    question: >-
+      A container runs as root and gets "Operation not permitted". Explain how
+      that is possible and how you would diagnose it.
+    model_answer: >-
+      uid 0 is not what the kernel checks for privileged operations — the
+      capability set is. Linux splits root's authority into around forty
+      capabilities, and container runtimes grant a subset: Docker's default is
+      fourteen, which excludes CAP_SYS_ADMIN, CAP_SYS_MODULE, CAP_SYS_TIME and
+      CAP_SYSLOG. So a root process that tries to mount, load a module, set the
+      clock or read the kernel log is refused with EPERM.
+
+
+      Diagnosis is `grep CapEff /proc/1/status` inside the container, then
+      `capsh --decode` on the value, then match the missing capability to the
+      operation. The fix is to add that one capability — or better, to remove the
+      requirement, for instance by mounting on the host and bind-mounting in.
+    signal: >-
+      The distinction between identity and authority is the whole answer. A
+      candidate who says "add --privileged" has not understood the question; one
+      who names the two commands has done it in anger. Mentioning that avoiding
+      the privilege beats granting it is a senior signal.
+    follow_ups:
+      - "What does --privileged actually change?"
+      - "What is the bounding set, and why does it matter with no-new-privileges?"
+      - "Why is CAP_SYS_ADMIN treated as roughly equivalent to root?"
+
+  - id: i4
+    level: L3
+    question: >-
+      What does "containers share the host kernel" mean, and what follows from
+      it?
+    model_answer: >-
+      Every process in every container makes system calls into the same kernel
+      as the host. There is no second kernel and no emulation layer — a container
+      is an ordinary process whose view of the other side has been restricted by
+      namespaces and whose resource use is capped by cgroups.
+
+
+      Two consequences. Performance: no syscall overhead relative to a host
+      process, which is why containers start in milliseconds. Security: the
+      attack surface is the whole system call interface, so a kernel
+      vulnerability reachable through any of ~350 calls is a potential escape.
+      That is a far larger interface than a hypervisor's, which is why VM
+      isolation is stronger and why gVisor and Kata exist.
+    signal: >-
+      The good answer draws both conclusions from one fact rather than reciting
+      them as separate bullet points. Naming the trade-off explicitly — speed
+      bought with a shared, large interface — shows the model is understood rather
+      than memorised.
+    follow_ups:
+      - "Where do namespaces and cgroups sit in relation to this boundary?"
+      - "What does gVisor change about it?"
+      - "How does a seccomp profile reduce that attack surface, and what does it cost you?"
+
+  - id: i5
+    level: L3
+    question: >-
+      Three failures: EACCES, EPERM, EROFS. What does each mean and how does the
+      fix differ?
+    model_answer: >-
+      EACCES is the file permission check — mode bits, ownership, ACLs, and
+      execute permission on every directory in the path. Fixed with chmod, chown,
+      or running as the right user.
+
+
+      EPERM is the capability check: the kernel understood the request and the
+      process lacked the authority. Fixed by granting the specific capability at
+      start, or by not needing it.
+
+
+      EROFS is the mount: the filesystem is read-only, so it refuses everyone
+      including root. Fixed by writing somewhere writable or changing the mount —
+      never from inside.
+
+
+      They all print as some variety of "not allowed", which is why the errno
+      matters more than the message. `strace` gives it directly.
+    signal: >-
+      Anyone can recite three definitions. The signal is knowing that two of the
+      three cannot be fixed from inside the container, and that EACCES on a file
+      with correct permissions usually means a missing `x` on a parent directory.
+    follow_ups:
+      - "A file is mode 644, owned by you, and you get EACCES reading it. Why?"
+      - "Which capability bypasses the EACCES check, and which narrower one would you prefer for a read-only job?"
+      - "How would you get the errno out of a program that only prints 'permission denied'?"

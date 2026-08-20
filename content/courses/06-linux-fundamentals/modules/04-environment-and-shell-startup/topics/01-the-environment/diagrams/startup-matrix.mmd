@@ -1,0 +1,27 @@
+flowchart TB
+    START["bash starts"] --> A{"login shell?<br/><i>-l, or started by login / ssh / su -</i>"}
+
+    A -- yes --> P["/etc/profile<br/>then the FIRST that exists of:<br/>~/.bash_profile · ~/.bash_login · ~/.profile"]
+    A -- no --> B2{"interactive?"}
+
+    P --> PI{"interactive?<br/><i>/etc/profile checks $PS1</i>"}
+    PI -- yes --> PB["/etc/profile sources<br/>/etc/bash.bashrc"]
+    PI -- no --> PN["/etc/bash.bashrc NOT read"]
+
+    PB --> HOOK["~/.bashrc is read ONLY if<br/>~/.profile sources it<br/><i>which the default one does</i>"]
+    PN --> HOOK
+
+    B2 -- yes --> IB["/etc/bash.bashrc<br/>then ~/.bashrc<br/><i>directly, no profile involved</i>"]
+    B2 -- no --> NONE["$BASH_ENV if set,<br/>otherwise NOTHING"]
+
+    HOOK --> M1["bash -lic — a terminal after login"]
+    HOOK --> M2["bash -lc — ssh host 'cmd'"]
+    IB --> M3["bash -ic — a new terminal tab"]
+    NONE --> M4["bash -c — script · cron · systemd · CI"]
+
+    M2 --> GUARD["this is why ~/.bashrc starts with<br/>case $- in *i*) ;; *) return;; esac<br/><i>without it, ssh host 'cmd' runs your aliases</i>"]
+
+    style M4 fill:#fdecea,stroke:#c0392b
+    style M1 fill:#e8f4ea,stroke:#2f7d4f
+    style NONE fill:#fdf6e3,stroke:#b58900
+    style GUARD fill:#fdf6e3,stroke:#b58900

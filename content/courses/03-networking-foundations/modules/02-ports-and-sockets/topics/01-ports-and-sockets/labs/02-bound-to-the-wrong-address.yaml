@@ -1,0 +1,255 @@
+id: lab.bound-to-the-wrong-address
+topic: topic.ports-and-sockets
+title: Produce "works locally, not from outside" on purpose
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A03.2.3, OBJ-A03.2.7]
+
+intro: >-
+  This is the most common networking bug in deployment, and you can create it
+  here in one command.
+
+
+  You will start two listeners on the same machine — one bound to loopback, one
+  bound to every address — and then connect to both, twice each, from two
+  different addresses on this same machine. Three of those four attempts
+  succeed. The one that fails is the bug, and the way it fails is the evidence
+  that would have identified it in seconds.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Find this container's own external address — the one on eth0, not
+      loopback — and save it to /tmp/answer-myaddr.
+    hint: "`ip -o -4 addr show eth0 | awk '{print $4}' | cut -d/ -f1`"
+    walkthrough: |
+      ip -o -4 addr show eth0 | awk '{print $4}' | cut -d/ -f1 > /tmp/answer-myaddr
+      cat /tmp/answer-myaddr
+    verify:
+      - type: file_matches
+        path: /tmp/answer-myaddr
+        pattern: '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+        describe: An address was captured
+      - type: command_exit
+        command: "grep -q '^127\\.' /tmp/answer-myaddr"
+        exit_code: 1
+        describe: And it is not a loopback address
+
+  - id: s2
+    instruction: >-
+      Start two listeners in the background: one on `127.0.0.1` port 9000, and
+      one on `0.0.0.0` port 9100.
+
+
+      Then save the two LISTEN rows to /tmp/answer-two-listeners.
+    hint: >-
+      `nohup nc -l -k <address> <port> >/dev/null 2>&1 &` for each, then
+      `ss -tln`.
+    walkthrough: |
+      nohup nc -l -k 127.0.0.1 9000 >/dev/null 2>&1 &
+      nohup nc -l -k 0.0.0.0   9100 >/dev/null 2>&1 &
+      sleep 1
+      ss -tln | grep -E ':(9000|9100)' > /tmp/answer-two-listeners
+      cat /tmp/answer-two-listeners
+    verify:
+      - type: file_matches
+        path: /tmp/answer-two-listeners
+        pattern: '127\.0\.0\.1:9000'
+        describe: One listener is bound to loopback only
+      - type: file_matches
+        path: /tmp/answer-two-listeners
+        pattern: '0\.0\.0\.0:9100'
+        describe: And the other to every address
+
+  - id: s3
+    instruction: >-
+      Connect to the loopback-bound listener via loopback, and record the
+      result and exit status in /tmp/answer-a.
+    hint: "`nc -z -v -w 2 127.0.0.1 9000`, capturing stderr too."
+    walkthrough: |
+      nc -z -v -w 2 127.0.0.1 9000 > /tmp/answer-a 2>&1
+      echo "rc=$?" >> /tmp/answer-a
+      cat /tmp/answer-a
+    verify:
+      - type: file_matches
+        path: /tmp/answer-a
+        pattern: '^rc=0$'
+        describe: It succeeded — this is the test that always passes locally
+
+  - id: s4
+    instruction: >-
+      Now the same port, reached through this machine's external address. Save
+      the result and exit status to /tmp/answer-b.
+
+
+      This is the same service, on the same machine, from the same machine.
+    hint: "Use the address you saved in /tmp/answer-myaddr, port 9000."
+    walkthrough: |
+      nc -z -v -w 2 "$(cat /tmp/answer-myaddr)" 9000 > /tmp/answer-b 2>&1
+      echo "rc=$?" >> /tmp/answer-b
+      cat /tmp/answer-b
+    verify:
+      - type: file_matches
+        path: /tmp/answer-b
+        pattern: '^rc=1$'
+        describe: Refused — the socket is not bound to this address
+      - type: command_exit
+        command: "grep -qi 'succeeded' /tmp/answer-b"
+        exit_code: 1
+        describe: And it did not succeed, despite the service running
+
+  - id: s5
+    instruction: >-
+      Now the same two tests against the listener bound to `0.0.0.0`, on port
+      9100. Save both results to /tmp/answer-c.
+    walkthrough: |
+      {
+        echo "== via loopback"
+        nc -z -v -w 2 127.0.0.1 9100 2>&1; echo "rc=$?"
+        echo "== via external address"
+        nc -z -v -w 2 "$(cat /tmp/answer-myaddr)" 9100 2>&1; echo "rc=$?"
+      } > /tmp/answer-c
+      cat /tmp/answer-c
+    verify:
+      - type: command_exit
+        command: "test $(grep -c '^rc=0$' /tmp/answer-c) -eq 2"
+        exit_code: 0
+        describe: Both succeed — a wildcard bind is reachable on every address
+
+  - id: s6
+    instruction: >-
+      One of your four attempts failed. Note how long it took, and save that
+      observation plus the reason to /tmp/answer-refused.
+    hint: >-
+      Compare the failure against what a firewall dropping packets would look
+      like. One of them is instant.
+    walkthrough: |
+      {
+        echo "the failure was instant, not a two second timeout"
+        echo "the machine answered with a tcp reset because no socket was bound to that address and port, which proves routing worked and nothing dropped the packet; a firewall drop would have produced silence and a timeout instead"
+      } > /tmp/answer-refused
+      cat /tmp/answer-refused
+    verify:
+      - type: file_matches
+        path: /tmp/answer-refused
+        pattern: "reset|refus"
+        describe: You identified the reply as an active refusal
+      - type: file_matches
+        path: /tmp/answer-refused
+        pattern: "instant|immediat|timeout"
+        describe: And used the timing as evidence
+
+  - id: s7
+    instruction: >-
+      Write to /tmp/answer-container-twist what this bug does inside a container
+      when the port has been published with `-p`.
+    hint: >-
+      A process bound to 127.0.0.1 inside a container is bound to *whose*
+      loopback?
+    walkthrough: |
+      echo "binding 127.0.0.1 inside a container binds the container's own loopback, which nothing outside shares, so the published port forwards traffic to an address where no socket is listening and every connection through it is refused even though the port mapping is correct" > /tmp/answer-container-twist
+    verify:
+      - type: file_matches
+        path: /tmp/answer-container-twist
+        pattern: "container|namespace"
+        describe: You located the loopback inside the container
+      - type: file_matches
+        path: /tmp/answer-container-twist
+        pattern: "refus|forward|publish|mapping"
+        describe: And connected it to the published port still failing
+
+  - id: s8
+    instruction: >-
+      Last one. Write the single command you would run on a server to diagnose
+      this in one line, to /tmp/answer-oneliner — and say which field of its
+      output is the answer.
+    walkthrough: |
+      {
+        echo "ss -tlnp | grep :9000"
+        echo "the local address field is the answer: 127.0.0.1 means loopback only and 0.0.0.0 means every address, and the port and process are visible in the same line"
+      } > /tmp/answer-oneliner
+      cat /tmp/answer-oneliner
+    verify:
+      - type: file_matches
+        path: /tmp/answer-oneliner
+        pattern: 'ss -tlnp'
+        describe: The command that shows bindings and owners together
+      - type: file_matches
+        path: /tmp/answer-oneliner
+        pattern: "local address|127.0.0.1|0.0.0.0"
+        describe: And you named the field that carries the diagnosis
+
+solution: |
+  ```bash
+  MY=$(ip -o -4 addr show eth0 | awk '{print $4}' | cut -d/ -f1)
+
+  nohup nc -l -k 127.0.0.1 9000 >/dev/null 2>&1 &   # loopback only
+  nohup nc -l -k 0.0.0.0   9100 >/dev/null 2>&1 &   # every address
+
+  nc -z -v -w 2 127.0.0.1 9000    # succeeded
+  nc -z -v -w 2 "$MY"     9000    # REFUSED
+  nc -z -v -w 2 127.0.0.1 9100    # succeeded
+  nc -z -v -w 2 "$MY"     9100    # succeeded
+  ```
+
+  **The four results, which are the whole lab:**
+
+  | Listener bound to | Reached via | Result |
+  |---|---|---|
+  | `127.0.0.1:9000` | `127.0.0.1` | succeeded |
+  | `127.0.0.1:9000` | `10.x.x.x` (own address) | **refused** |
+  | `0.0.0.0:9100` | `127.0.0.1` | succeeded |
+  | `0.0.0.0:9100` | `10.x.x.x` | succeeded |
+
+  One machine, one process, one port — and it is reachable via one address and
+  refused via another. Nothing is broken, nothing is filtered, and no network is
+  involved at all.
+
+  **Why the kernel refuses.** A socket bound to `127.0.0.1:9000` claimed that
+  *address* as well as that port. A packet arriving for `10.x.x.x:9000` is
+  matched against bound sockets and finds none, so the kernel replies with a TCP
+  reset — exactly as it would if nothing were running at all.
+
+  **The refusal is good news, and the timing proves it.** It came back
+  immediately, not after the two-second timeout. That means the packet arrived,
+  the machine processed it, and the machine answered. Routing worked. Nothing
+  dropped it. The host is up. Every network-shaped explanation is eliminated in
+  one observation, and what remains is the binding.
+
+  A firewall dropping packets produces the opposite: silence, then a timeout.
+  Same symptom to a user, opposite diagnosis, and the difference is free.
+
+  **Why this happens so often.** Binding loopback is the *responsible* default
+  for a development server — Flask, Rails, Vite, `python -m http.server`, and
+  most database packages ship that way so that a service on a laptop is not
+  exposed to the coffee shop's network. The setting survives into a deployment
+  where it is wrong, and every local test passes.
+
+  **The container twist**, which costs people a whole afternoon: a process bound
+  to `127.0.0.1` inside a container is bound to the *container's* loopback, and
+  nothing outside the container shares that. So `-p 8080:9000` dutifully
+  forwards to `9000` on an address where no socket is listening, and every
+  connection through the published port is refused. The port mapping is correct
+  and the bind is wrong, and the error blames the mapping.
+
+  **The one-line diagnosis:**
+
+  ```bash
+  ss -tlnp | grep :9000
+  ```
+
+  The Local Address field is the answer. `127.0.0.1` means loopback only;
+  `0.0.0.0` means every address; a specific address means that one and no other
+  — which is its own quieter trap, because an address added later by DHCP or a
+  second interface will not be served.
+
+  **And the caution on the fix.** `0.0.0.0` means *every* address, including a
+  management interface, a VPN, or a cloud metadata network. On a host with public
+  addressing, a wildcard bind and a missing firewall rule is how databases end up
+  on the internet. Bind the interface the service should be reachable on, or bind
+  `0.0.0.0` deliberately and put a firewall in front of it.

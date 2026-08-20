@@ -1,0 +1,169 @@
+id: troubleshooting.pid-host-debugging
+topic: topic.namespaces
+title: The debug container can see the process but not its files
+level: L3
+objectives: [OBJ-A02.1.8, OBJ-A02.1.4]
+reveal_policy: progressive
+
+situation: >-
+  An API pod built from a distroless image is returning 500s on about one
+  request in fifty. There is no shell in the image, so an engineer attaches a
+  debug container with `kubectl debug --target=api` and starts working.
+
+
+  It half works. `ps` shows the application. `/proc/1/status` reads fine. But
+  every attempt to read the application's config file, its log directory or its
+  TLS certificate comes back "No such file or directory" — from inside a
+  container that can clearly see the process those files belong to.
+
+
+  The engineer's conclusion, now in the incident channel, is that the debug
+  container is broken and the team should add a shell to the production image.
+  You have fifteen minutes before that becomes a pull request.
+
+symptoms:
+  - "`ps -ef` in the debug container lists the API process as PID 1"
+  - "`cat /proc/1/status` and `/proc/1/cmdline` both work"
+  - "`ls /etc/api/config.yaml` returns No such file or directory"
+  - "`ls /` in the debug container shows the debug image's own filesystem, not the API's"
+  - "The API process itself is plainly reading that config file — it started successfully"
+
+artifacts:
+  - type: command_output
+    label: What the debug container sees
+    content: |
+      $ kubectl debug -it pod/api --image=busybox --target=api -- sh
+      / # ps -ef
+      PID   USER     COMMAND
+          1 nonroot  /usr/bin/api --config /etc/api/config.yaml
+         12 root     sh
+
+      / # cat /proc/1/cmdline | tr '\0' ' '
+      /usr/bin/api --config /etc/api/config.yaml
+
+      / # ls /etc/api/config.yaml
+      ls: /etc/api/config.yaml: No such file or directory
+
+      / # ls /
+      bin  dev  etc  home  proc  root  sys  tmp  usr  var
+
+  - type: command_output
+    label: Namespaces of the two containers
+    content: |
+      # in the debug container
+      / # for t in pid net mnt uts; do printf '%-4s %s\n' "$t" "$(readlink /proc/self/ns/$t)"; done
+      pid  pid:[4026532614]
+      net  net:[4026532617]
+      mnt  mnt:[4026532690]
+      uts  uts:[4026532615]
+
+      # the API process, read through the shared /proc
+      / # for t in pid net mnt uts; do printf '%-4s %s\n' "$t" "$(readlink /proc/1/ns/$t)"; done
+      pid  pid:[4026532614]
+      net  net:[4026532617]
+      mnt  mnt:[4026532611]
+      uts  uts:[4026532615]
+
+  - type: log
+    label: The API's own errors
+    content: |
+      2026-08-15T11:04:22Z ERROR upstream call failed: tls: failed to verify certificate: x509: certificate has expired or is not yet valid
+      2026-08-15T11:04:22Z INFO  request completed status=500 duration=41ms
+      2026-08-15T11:04:23Z INFO  request completed status=200 duration=12ms
+
+diagnostic_questions:
+  - "Which namespaces do the two containers share, and which do they not?"
+  - "Why does /proc/1/cmdline work when /etc/api/config.yaml does not?"
+  - "Whose filesystem is `ls /` showing?"
+  - "Is there a path from the debug container to the API's files that does not need a new image?"
+  - "Does adding a shell to the production image actually solve anything here?"
+
+hints:
+  - "Compare the two sets of inodes line by line. Three match; one does not."
+  - "A shared PID namespace makes the process nameable. It says nothing about which files exist."
+  - "/proc/<pid>/root is a symlink into that process's mount namespace, and the kernel resolves it for you."
+  - "Ask what `kubectl debug --target` actually joins, and what it deliberately does not."
+
+root_cause: >-
+  `kubectl debug --target` joins the target's PID, network and UTS namespaces
+  but **not** its mount namespace. The debug container keeps its own filesystem,
+  which is why `/` is busybox's and `/etc/api/config.yaml` genuinely does not
+  exist there.
+
+
+  Nothing is broken. The mismatch in the evidence says it precisely: `pid`,
+  `net` and `uts` match between the two containers, and `mnt` does not. The
+  process is visible because it is in the shared PID namespace; its files are
+  not because they live in a mount namespace nobody joined.
+
+
+  This is the correct design rather than an oversight. A debug container with
+  the target's filesystem would be unable to run its own tools — busybox's
+  `/bin/sh` would not exist in the distroless image's tree.
+
+method: >-
+  **1. Do the comparison before forming a theory.** Two containers, four
+  namespace types, one mismatch. That single line of output — `mnt` differing
+  while everything else matches — is the entire diagnosis, and it is available
+  in about ten seconds.
+
+
+  **2. Explain both halves of the symptom, not just the failing one.** A theory
+  that explains why the file is missing but not why `/proc/1/cmdline` works is
+  incomplete. The shared PID namespace makes the process nameable through
+  `/proc`; the unshared mount namespace means its files are elsewhere. Both
+  observations follow from the same pair of facts.
+
+
+  **3. Find the route that already exists.** `/proc/<pid>/root` is a symlink
+  into that process's mount namespace, and the kernel resolves paths through it
+  for anyone allowed to look:
+
+
+  ```sh
+  cat /proc/1/root/etc/api/config.yaml
+  ls -l /proc/1/root/etc/api/
+  openssl x509 -noout -dates -in /proc/1/root/etc/api/tls/server.crt
+  ```
+
+
+  No new image, no restart, no shell added to production. The namespace was
+  never a wall — it was a directory the engineer had not been shown.
+
+
+  **4. Then go back to the actual incident.** The log line was there the whole
+  time: an expired certificate, one request in fifty, which is one backend in a
+  pool of fifty. Reading the cert's dates through `/proc/1/root` confirms it in
+  one command.
+
+resolution: >-
+  Read the target's files through its `/proc` entry, and reject the
+  add-a-shell-to-production proposal.
+
+
+  ```sh
+  kubectl debug -it pod/api --image=nicolaka/netshoot --target=api -- sh
+  ls -l /proc/1/root/etc/api/
+  openssl x509 -noout -dates -in /proc/1/root/etc/api/tls/server.crt
+  ```
+
+
+  Adding a shell to the distroless image would not have helped with the thing
+  that was actually blocked, and it would permanently enlarge the production
+  attack surface to solve a problem that was a misunderstanding about which
+  namespaces `--target` joins. It is worth saying that plainly in the channel
+  before the pull request exists, because "we couldn't debug it" is a durable
+  argument and hard to reverse later.
+
+
+  For the underlying incident: the certificate on one backend has expired, which
+  matches one-in-fifty failures across a fifty-member pool. Rotate it, then add
+  an expiry check to monitoring — a certificate that expires without warning is
+  a monitoring gap, not a TLS problem.
+
+
+  Two things worth writing down while it is fresh. Put `kubectl debug --target`
+  and the `/proc/1/root` trick in the team's runbook, since the next person will
+  hit the same wall. And note in the same entry that `--target` joins pid, net
+  and uts but not mnt — that one sentence is what turned a fifteen-minute
+  argument into a one-line command.

@@ -1,0 +1,482 @@
+id: quiz.hashing-and-passwords
+topic: topic.hashing-and-passwords
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.1.1]
+    stem: What is the digest length of SHA-256 for a one-gigabyte input?
+    options:
+      - id: a
+        text: 32 bytes — the same as for a one-byte input
+        correct: true
+      - id: b
+        text: Proportional to the input, so considerably more than 32 bytes
+        note: >-
+          Fixed output size is the defining property. If it grew with input it
+          would not be a hash.
+      - id: c
+        text: It depends on the file's content
+        note: >-
+          The content changes the digest's value, never its length.
+      - id: d
+        text: 256 bytes — one per bit of the name
+        note: >-
+          The 256 is bits of output, which is 32 bytes.
+    explanation: >-
+      A hash maps any input to a fixed-size output — 32 bytes for SHA-256,
+      written as 64 hex characters. That is why the digest carries no information
+      about length, and why most of a large input is irretrievably discarded.
+      It is also the intuition behind why the function cannot be reversed:
+      a gigabyte did not fit into 32 bytes.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.1.1]
+    stem: >-
+      Two digests differ in only the last four characters. What does that tell
+      you about the two inputs?
+    options:
+      - id: a
+        text: Nothing — digests are only ever compared for equality
+        correct: true
+      - id: b
+        text: The inputs are nearly identical
+        note: >-
+          The avalanche property means a one-bit change alters about half the
+          output bits. Similar digests do not imply similar inputs.
+      - id: c
+        text: The inputs differ near their end
+        note: >-
+          A hash consumes the whole input into a single state. Position is not
+          recoverable from the digest.
+      - id: d
+        text: One input is slightly longer than the other
+        note: >-
+          Digest length is fixed and reveals nothing about input length.
+    explanation: >-
+      There is no such thing as a near match. The avalanche property guarantees
+      that a single bit of difference changes roughly half the output bits, so
+      "close" digests are simply two unrelated values that happen to share a few
+      characters. This is why comparison is always equality and never distance,
+      and why nobody diffs digests.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.1.2]
+    stem: You find `cGFzc3dvcmQxMjM=` in a configuration file. What is it?
+    options:
+      - id: a
+        text: A base64-encoded value — a plaintext secret with a transport wrapper
+        correct: true
+      - id: b
+        text: An encrypted secret, safe to commit
+        note: >-
+          Encryption requires a key. Nothing here needs one — `base64 -d` is
+          sufficient and available to everyone.
+      - id: c
+        text: A hashed secret, which cannot be recovered
+        note: >-
+          Hashes are not reversible and do not end in `=`. The padding character
+          is a base64 giveaway.
+      - id: d
+        text: A checksum of the configuration file
+        note: >-
+          Checksums are hex or base64 of fixed length, and would not decode to
+          readable text.
+    explanation: >-
+      Base64 is an encoding: a representation change with no key, reversible by
+      anybody. It gets mistaken for protection because the output looks
+      scrambled. `base64 -d` returns `password123`, so this value is stored in
+      plaintext, and the trailing `=` padding is the tell. Kubernetes Secrets are
+      base64 by default for exactly this reason and are frequently misread as
+      encrypted.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.1.2]
+    stem: A service can email you your forgotten password. What does that prove?
+    options:
+      - id: a
+        text: The password is recoverable, so it is stored in plaintext or encrypted — not hashed
+        correct: true
+      - id: b
+        text: They store a strong hash and reversed it for you
+        note: >-
+          No hash can be reversed. That is the defining property, not a matter
+          of algorithm strength.
+      - id: c
+        text: Nothing — any storage scheme allows this
+        note: >-
+          Correctly hashed storage makes it impossible. The service does not
+          have the password.
+      - id: d
+        text: They keep a separate copy for support purposes only
+        note: >-
+          Which is still plaintext storage, whatever it is called or wherever it
+          sits.
+    explanation: >-
+      A password reset that sends a *link* is normal. One that sends the
+      *password* proves the service can recover it, and recovery is exactly what
+      hashing prevents. This is a one-line test you can apply to any service, and
+      it is the single most reliable external signal that password storage is
+      wrong.
+
+  - id: q5
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.1.3]
+    stem: >-
+      `sha256sum -c SHA256SUMS` reports `FAILED` for one file. What has been
+      established?
+    options:
+      - id: a
+        text: The file's bytes differ from the bytes that were hashed — and nothing about why
+        correct: true
+      - id: b
+        text: The file was deliberately tampered with
+        note: >-
+          A hash cannot distinguish tampering from corruption. Both produce an
+          identical mismatch.
+      - id: c
+        text: The download was interrupted
+        note: >-
+          Possible, but not established. Same evidence, different cause.
+      - id: d
+        text: The SHA256SUMS file is out of date
+        note: >-
+          Also possible, and also not established. The check reports difference,
+          not blame.
+    explanation: >-
+      A mismatch is a fact about bytes and carries no intent. Corruption,
+      tampering and a stale sums file all produce the same result, and guessing
+      which is a waste of time — the action is the same either way. What matters
+      more is the converse: a *match* only proves the file agrees with the sums
+      file, and whoever could replace the file could replace that too.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.4]
+    stem: >-
+      Why is a salt stored in plain sight next to the hash it salts, rather than
+      kept secret?
+    options:
+      - id: a
+        text: It is needed to verify a login, and its job does not depend on secrecy
+        correct: true
+      - id: b
+        text: An oversight in the crypt format that modern schemes have fixed
+        note: >-
+          Argon2id and bcrypt both store the salt in the hash string too. It is
+          the design, not a legacy compromise.
+      - id: c
+        text: Because it is derived from the username, which is public anyway
+        note: >-
+          A salt must be random per record. Deriving it from the username
+          restores exactly the amortisation it exists to prevent.
+      - id: d
+        text: It is secret in properly configured systems
+        note: >-
+          A secret value mixed into every hash is a *pepper*, which is a
+          different thing kept outside the database.
+    explanation: >-
+      Verification means recomputing the hash from the submitted password and the
+      stored salt, so the salt has to be available wherever verification happens.
+      Its job — removing precomputation and cross-account amortisation — does not
+      require secrecy at all. A secret mixed into every hash is a pepper, stored
+      outside the database, and it is a different control answering a different
+      question.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.4]
+    stem: >-
+      A database uses a unique random salt per user and SHA-256. An attacker
+      steals it and targets one specific executive. How much has the salt helped?
+    options:
+      - id: a
+        text: Almost nothing — there is no shared work to remove against a single account
+        correct: true
+      - id: b
+        text: A great deal, because each guess now costs far more
+        note: >-
+          A salted hash computes at exactly the same rate as an unsalted one. The
+          salt costs an attacker no measurable time.
+      - id: c
+        text: Completely — a salted hash cannot be attacked
+        note: >-
+          It can, at full speed, by hashing candidates with that user's salt.
+      - id: d
+        text: It doubles the work, since both salt and password must be guessed
+        note: >-
+          The salt is not guessed. It is stored beside the hash and read
+          directly.
+    explanation: >-
+      Salts remove *amortisation*: rainbow tables, duplicate-hash grouping, and
+      one guess tested against every row at once. Against a single targeted
+      account there is no amortisation to remove, so the attacker hashes
+      candidates with that user's salt at the full SHA-256 rate. Salt defeats
+      bulk; only the work factor defeats guessing, and the two are answers to
+      different questions.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.5]
+    stem: How should a work factor be chosen?
+    options:
+      - id: a
+        text: The largest cost the login path can absorb, measured on your own hardware
+        correct: true
+      - id: b
+        text: The value recommended by the algorithm's documentation
+        note: >-
+          Those recommendations age. A figure published in 2015 is worth a
+          fraction of that now against current hardware.
+      - id: c
+        text: Whatever keeps login under one millisecond
+        note: >-
+          That target optimises for the attacker. One millisecond is a thousand
+          guesses a second per core.
+      - id: d
+        text: It does not need choosing — the algorithm default is calibrated
+        note: >-
+          sha512crypt's default is 5,000 rounds, which measures at a few hundred
+          hashes a second. Defaults are usually set for compatibility.
+    explanation: >-
+      It is a budget rather than a number. Around 250ms is a common target:
+      imperceptible to a person logging in, and a crushing tax on someone doing
+      it a billion times. It must be measured on your own hardware and revisited,
+      because it is the only security parameter that silently decays on a fixed
+      schedule as hardware improves.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.5]
+    stem: >-
+      Why does memory hardness matter in a password hash, when rounds already
+      make it slow?
+    options:
+      - id: a
+        text: It removes the attacker's GPU advantage, because GPU cores have very little memory each
+        correct: true
+      - id: b
+        text: It makes the hash mathematically harder to invert
+        note: >-
+          Inversion is already infeasible. Memory hardness targets the
+          attacker's hardware, not the mathematics.
+      - id: c
+        text: It stops the hash being precomputed into a table
+        note: >-
+          That is the salt's job, and it is already handled.
+      - id: d
+        text: It reduces the memory the defender needs at login time
+        note: >-
+          It increases it. That cost is the point, and it is why the parameter
+          has to be tuned against the login path's budget.
+    explanation: >-
+      Rounds buy time, and time is what a GPU parallelises best — thousands of
+      small cores each running the same arithmetic. Requiring a large working
+      memory per hash breaks that: giving every one of thousands of cores tens of
+      megabytes is not something a graphics card can do. This is why Argon2id and
+      scrypt are preferred over bcrypt and sha512crypt, which are slow but not
+      memory-hard.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.6]
+    stem: "In `$6$rounds=1000000$xK2pLm9Q$Vqq...`, what is `xK2pLm9Q`?"
+    options:
+      - id: a
+        text: The salt
+        correct: true
+      - id: b
+        text: The work factor
+        note: >-
+          That is `rounds=1000000`, in the optional parameters field before the
+          salt.
+      - id: c
+        text: The digest
+        note: >-
+          The digest is the final field, after the last `$`.
+      - id: d
+        text: The algorithm identifier
+        note: >-
+          That is the leading `6`, meaning sha512crypt.
+    explanation: >-
+      The crypt format is `$id$[params$]salt$digest`. Here the algorithm is
+      sha512crypt, the work factor is a million rounds, the salt is `xK2pLm9Q`
+      and the digest follows. Everything needed to verify a password is in the
+      string, which is what lets you raise the work factor for new passwords
+      while old hashes still verify.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.6]
+    stem: >-
+      Two accounts in `/etc/shadow` read `$6$k2Lp$...` and
+      `$6$rounds=1000000$k2Lp$...`. What is the practical difference?
+    options:
+      - id: a
+        text: The same algorithm at defaults versus a tuned one — a difference of a hundredfold or more in attack cost
+        correct: true
+      - id: b
+        text: No practical difference — both are SHA-512
+        note: >-
+          Both are sha512crypt, and the parameter is worth more than the
+          difference between algorithms.
+      - id: c
+        text: The second is a different, stronger algorithm
+        note: >-
+          Same algorithm — the `6` is identical. Only the parameter differs.
+      - id: d
+        text: The second uses a longer salt
+        note: >-
+          The salts are the same. `rounds=` is a separate parameter field.
+    explanation: >-
+      sha512crypt's default is 5,000 rounds, which measures at a few hundred
+      hashes a second; a million rounds measures at around two. Same algorithm,
+      same file, and a difference that decides whether the database survives.
+      This is why "we use SHA-512" answers nothing — the question is always the
+      work factor, and it is in the string.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.7]
+    stem: Why is `sha256(secret + message)` not an acceptable message authentication code?
+    options:
+      - id: a
+        text: An attacker who sees the output can extend the message and produce a valid tag without the secret
+        correct: true
+      - id: b
+        text: SHA-256 is too fast to be used with a key
+        note: >-
+          Speed is not the issue here — HMAC-SHA-256 is equally fast and is
+          correct.
+      - id: c
+        text: The secret and message must be hashed separately and combined
+        note: >-
+          HMAC does hash twice, but the reason is the construction's structure,
+          not a rule about separation.
+      - id: d
+        text: Concatenation makes the output predictable
+        note: >-
+          The output is not predictable. It is *resumable*, which is a different
+          and more specific flaw.
+    explanation: >-
+      SHA-2 is a Merkle–Damgård construction: the digest it emits is its internal
+      state after consuming the input. An attacker who sees `H(secret‖message)`
+      can resume from that state and compute a valid tag for
+      `message‖padding‖anything` without ever learning the secret. That is a
+      length extension attack, and HMAC's two-pass structure exists specifically
+      to prevent it.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.7]
+    stem: >-
+      Why must a received HMAC be compared with a constant-time comparison rather
+      than `==`?
+    options:
+      - id: a
+        text: An ordinary comparison returns early on the first mismatch, and the timing leaks the tag byte by byte
+        correct: true
+      - id: b
+        text: Because `==` on binary data can produce false positives
+        note: >-
+          Byte comparison is exact. Correctness is not the problem; timing is.
+      - id: c
+        text: Because the tags may have different lengths
+        note: >-
+          Length is fixed by the algorithm, and a length check alone would not
+          address the timing channel.
+      - id: d
+        text: It is a style convention rather than a security requirement
+        note: >-
+          It is a real attack with practical exploits against network services.
+    explanation: >-
+      A normal string comparison stops at the first differing byte, so a tag
+      sharing more leading bytes takes measurably longer to reject. An attacker
+      who can time responses recovers a valid tag one byte at a time — around
+      4,000 attempts for a 32-byte tag rather than 2^256. Every language provides
+      a constant-time comparison for exactly this, and it always compares the
+      full length.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.8]
+    stem: >-
+      An analytics team stores `sha256(email_address)` and calls the dataset
+      anonymised. Are they right?
+    options:
+      - id: a
+        text: No — the input space is enumerable, so each digest is recoverable and still joins across datasets
+        correct: true
+      - id: b
+        text: Yes — hashing is one-way, so the addresses cannot be recovered
+        note: >-
+          One-wayness only helps when the attacker cannot guess the input. Email
+          addresses are guessable in bulk.
+      - id: c
+        text: Yes, provided they use a salt
+        note: >-
+          A per-record salt would break the joins they need the field for. A
+          shared salt is enumerable alongside the addresses.
+      - id: d
+        text: No, but only because SHA-256 is too fast — a slow hash would fix it
+        note: >-
+          A slow hash raises the cost of enumeration but leaves the identifier
+          deterministic and linkable, which is the actual problem.
+    explanation: >-
+      Hashing a low-entropy identifier produces a pseudonym, not an
+      anonymisation. There are on the order of four billion email addresses in
+      circulation, enumerable on one core in about an hour. And because the
+      function is deterministic, the digest still joins across datasets exactly
+      as the address would — which is usually the property the team wanted, and
+      is precisely what makes it not anonymous. The fix is tokenisation with the
+      mapping held separately, or not collecting the field.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.1.8]
+    stem: >-
+      Which single question would have caught a fast hash for passwords, a
+      hand-rolled MAC, and a hashed email used as an anonymous id?
+    options:
+      - id: a
+        text: "What is the job, and what property does it need?"
+        correct: true
+      - id: b
+        text: "Is the algorithm approved by a recognised standards body?"
+        note: >-
+          SHA-256 is approved and is the wrong choice in all three cases. The
+          approval says nothing about fitness for a job.
+      - id: c
+        text: "Is the hash long enough?"
+        note: >-
+          All three used a 256-bit digest. Length was never the failure.
+      - id: d
+        text: "Are we using a well-known library?"
+        note: >-
+          Necessary and not sufficient — a standard SHA-256 implementation was
+          used correctly in every case.
+    explanation: >-
+      All three teams gave true statements about SHA-256 — it is fast, it is
+      approved, it is one-way — and none of them mentioned what the service
+      needed. Speed, collision resistance, slowness, memory hardness, key binding
+      and unlinkability are six different properties, and the algorithm is chosen
+      last. Naming it first is how each of these decisions was made.

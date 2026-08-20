@@ -1,0 +1,149 @@
+id: topic.how-a-line-becomes-a-command
+slug: how-a-line-becomes-a-command
+title: "How a Line Becomes a Command"
+summary: >-
+  A shell does not run what you typed. It rewrites the line through eight stages
+  in a fixed order, and one of them chops your variables into words. This topic
+  measures each stage, shows the two commands that reveal exactly what a program
+  received, and treats quoting as what it is — the control on the order, not a
+  matter of taste.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.environment-and-shell-startup
+    hardness: required
+  - topic: topic.processes
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B08.1.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify the order in which the shell performs its expansions, and which
+      stage produces word boundaries.
+    assessed_by: [quiz.q1, quiz.q2, lab.watch-the-line-change, exercise.e1]
+
+  - id: OBJ-B08.1.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe what single quotes, double quotes and no quotes each suppress.
+    assessed_by: [quiz.q3, quiz.q4, lab.watch-the-line-change]
+
+  - id: OBJ-B08.1.3
+    level: L2
+    verb: predict
+    statement: >-
+      Predict the exact list of arguments a command receives from a given line.
+    assessed_by: [quiz.q5, quiz.q6, quiz.q7, lab.count-the-arguments, exercise.e2]
+
+  - id: OBJ-B08.1.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why word splitting applies to variable expansions but not to the
+      results of globbing.
+    assessed_by: [quiz.q8, quiz.q9, lab.count-the-arguments, exercise.e3]
+
+  - id: OBJ-B08.1.5
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret the difference between "$@", $@ and "$*" when forwarding
+      arguments.
+    assessed_by: [quiz.q10, quiz.q11, lab.forwarding-arguments, exercise.e4]
+
+  - id: OBJ-B08.1.6
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a failure caused by an unquoted expansion, using the tools that
+      show the real argument list.
+    assessed_by: [quiz.q12, quiz.q13, lab.the-filename-that-broke-it, troubleshooting.the-cleanup-that-cleaned-too-much]
+
+  - id: OBJ-B08.1.7
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish behaviour that is guaranteed by POSIX sh from behaviour that
+      requires bash.
+    assessed_by: [quiz.q14, lab.the-filename-that-broke-it, troubleshooting.the-script-that-changed-shells]
+
+  - id: OBJ-B08.1.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a quoting rule for a team, naming what it prevents and what it
+      costs.
+    assessed_by: [quiz.q15, lab.forwarding-arguments, exercise.e5, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: expansion
+    definition: >-
+      The shell's rewriting of a line before running anything. Eight stages, in a
+      fixed order, and the order is the whole subject.
+  - term: word splitting
+    definition: >-
+      Splitting the *result* of an expansion into separate words at characters in
+      IFS. It happens after the variable is substituted, which is why the
+      variable's contents change the argument count.
+  - term: IFS
+    definition: >-
+      Internal Field Separator — the characters word splitting breaks on. Space,
+      tab and newline by default.
+  - term: globbing
+    definition: >-
+      Filename expansion — `*`, `?`, `[...]` replaced by matching filenames. It
+      runs after word splitting, and its results are never re-split.
+  - term: nullglob
+    definition: >-
+      A bash option deciding what an unmatched pattern becomes. Off by default,
+      so `*.log` with no matches stays the literal text `*.log`.
+  - term: quote removal
+    definition: >-
+      The final stage, where the quotes you typed are deleted. They were never
+      arguments — they were instructions to the earlier stages.
+  - term: single quotes
+    definition: >-
+      Suppress every expansion. What is inside is literal, including `$`, and no
+      escape works — not even for a single quote.
+  - term: double quotes
+    definition: >-
+      Suppress word splitting and globbing, but allow parameter expansion,
+      command substitution and arithmetic. The usual correct choice.
+  - term: command substitution
+    definition: >-
+      `$(...)` — replaced by the command's output, with all trailing newlines
+      removed. The result is then word-split unless quoted.
+  - term: "\"$@\""
+    definition: >-
+      The positional parameters, each preserved as its own word. The only correct
+      way to forward arguments.
+  - term: "\"$*\""
+    definition: >-
+      All positional parameters joined into one word, separated by the first
+      character of IFS. Almost never what you want.
+  - term: set -x
+    definition: >-
+      Trace mode. Prints each command after expansion, quoting any word that
+      needs it — the fastest way to see what a program actually received.
+  - term: printf %q
+    definition: >-
+      Prints a value quoted so it could be reused as shell input. Makes word
+      boundaries and invisible characters visible.
+  - term: POSIX sh
+    definition: >-
+      The portable subset. `/bin/sh` is dash on Debian, which has no `[[`, no
+      arrays and no here-strings — so a `#!/bin/sh` script using them fails.
+
+foreshadows:
+  - "B08.2's pipes and redirection are applied to lines this topic teaches you to read."
+  - "B08.5's `set -euo pipefail` protects scripts whose quoting this topic makes correct."
+  - "B08.3's find and xargs exist largely to handle the filenames this topic shows breaking."
+  - "D22's templating engines generate shell lines, and inherit every rule here."
+
+tags: [shell, bash, quoting, expansion, scripting, fundamentals]

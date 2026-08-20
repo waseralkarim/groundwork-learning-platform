@@ -1,0 +1,8 @@
+id: module.hashing
+slug: hashing
+title: Hashing
+summary: >-
+  The one-way function underneath integrity checks, password storage, signatures
+  and content addressing — and the reason the same word covers four jobs that
+  need four different algorithms.
+order: 1

@@ -1,0 +1,460 @@
+id: quiz.certificates-and-tls
+topic: topic.certificates-and-tls
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.3.1]
+    stem: What does a certificate assert?
+    options:
+      - id: a
+        text: That an issuer vouches for a particular name being bound to a particular public key
+        correct: true
+      - id: b
+        text: That the site holding it is safe and operated honestly
+        note: >-
+          Phishing sites obtain valid certificates routinely. The padlock is
+          about the connection, not the destination.
+      - id: c
+        text: That the connection cannot be intercepted
+        note: >-
+          That is a consequence of the key exchange, not of the certificate's
+          claim.
+      - id: d
+        text: That the organisation's identity has been verified in person
+        note: >-
+          Most certificates are domain-validated: proof of control over a
+          hostname, and nothing about the organisation.
+    explanation: >-
+      A certificate is a public key, some names, a validity window and some
+      constraints, signed by an issuer. Everything above the signature is a
+      claim; the signature is somebody staking their reputation on it. It says
+      nothing about whether the operator is honest, competent, or the company you
+      intended to visit.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.3.1]
+    stem: >-
+      Why is a self-signed root certificate trusted, given nothing vouches for
+      it?
+    options:
+      - id: a
+        text: Because it is in the client's trust store — a decision made in advance, not a mathematical property
+        correct: true
+      - id: b
+        text: Because self-signing proves possession of the private key
+        note: >-
+          It does prove that, and anyone can do it for any name. It confers no
+          authority.
+      - id: c
+        text: Because root certificates use stronger keys
+        note: >-
+          Key strength is unrelated. A root is trusted because it was
+          distributed, not because of its size.
+      - id: d
+        text: Because certificate authorities are licensed by a central body
+        note: >-
+          There is no such licence. Inclusion in trust stores is decided by each
+          store's operator.
+    explanation: >-
+      Trust here comes from a list, not from cryptography. Roots are trusted
+      because someone put them in the trust store that ships with your operating
+      system or image. You can build a structurally identical root in one
+      command — as the lab does — and it is worth nothing, because nobody has it.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.3.2]
+    stem: Which field determines the hostnames a certificate is valid for?
+    options:
+      - id: a
+        text: The Subject Alternative Name extension
+        correct: true
+      - id: b
+        text: The Common Name in the subject
+        note: >-
+          Legacy. Browsers ignore it entirely; only OpenSSL still falls back to
+          it when no SAN is present.
+      - id: c
+        text: The Issuer field
+        note: >-
+          That names who signed the certificate, not what it covers.
+      - id: d
+        text: The Key Usage extension
+        note: >-
+          That constrains what the key may be used for, not which names it
+          covers.
+    explanation: >-
+      SAN is a list, so one certificate can cover several names. The Common Name
+      is a legacy human-readable label that held one value, which is why SAN
+      replaced it. `openssl x509 -noout -ext subjectAltName` is the first command
+      to run on any "the browser says it is invalid" report — `No extensions in
+      certificate` is frequently the whole answer.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A04.3.2]
+    stem: What does `CA:FALSE` in a leaf certificate prevent?
+    options:
+      - id: a
+        text: The holder using it to issue certificates for other names
+        correct: true
+      - id: b
+        text: The certificate being used by a certificate authority's servers
+        note: >-
+          It constrains what the certificate may sign, not who may deploy it.
+      - id: c
+        text: The private key being exported
+        note: >-
+          Nothing in a certificate constrains handling of the private key.
+      - id: d
+        text: The certificate being renewed
+        note: >-
+          Renewal is unrelated to basic constraints.
+    explanation: >-
+      Without it, anyone issued a certificate could sign certificates for any
+      name at all — every customer would become a certificate authority. Basic
+      constraints are what make a hierarchy a hierarchy, and `pathlen:0` on an
+      intermediate similarly stops it creating further CAs beneath itself.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.3]
+    stem: Why do public CAs issue from an intermediate rather than directly from the root?
+    options:
+      - id: a
+        text: So the root's key can stay offline — it cannot be rotated without updating every trust store
+        correct: true
+      - id: b
+        text: Because roots are not permitted to sign end-entity certificates
+        note: >-
+          They are technically capable. The separation is operational, not a
+          protocol rule.
+      - id: c
+        text: To make the chain longer and therefore harder to forge
+        note: >-
+          Chain length adds no cryptographic strength.
+      - id: d
+        text: Because roots expire more quickly than intermediates
+        note: >-
+          The opposite — roots typically have far longer lifetimes.
+    explanation: >-
+      A compromised root is unrecoverable in practice: replacing it means
+      updating every trust store on earth. So it is used a handful of times a
+      decade and kept offline, while intermediates do the daily issuing and can
+      be revoked and replaced. The operational consequence is the one that bites:
+      clients have the root and not your intermediate, so **the server must send
+      it**.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.3]
+    stem: >-
+      An `s_client` connection shows only `depth=0` before its verdict. What does
+      that tell you?
+    options:
+      - id: a
+        text: The server sent one certificate and the chain could not be walked further
+        correct: true
+      - id: b
+        text: The certificate is self-signed
+        note: >-
+          Possible, but a self-signed certificate reports code 18. A single
+          depth line with code 20 or 21 is a missing intermediate.
+      - id: c
+        text: The connection used TLS 1.3, which does not send chains
+        note: >-
+          TLS 1.3 sends the chain exactly as earlier versions do.
+      - id: d
+        text: Verification succeeded at the first attempt
+        note: >-
+          A successful chain to a root shows every level it walked.
+    explanation: >-
+      The `depth=` lines are the chain the server actually sent, walked outward.
+      A complete chain to a root reaches `depth=2` in a typical hierarchy.
+      Counting those lines diagnoses an incomplete chain in about a second,
+      before reading any error text — which is faster than any other method.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.4]
+    stem: >-
+      `error 20 at 0 depth lookup: unable to get local issuer certificate`. What
+      is the fix?
+    options:
+      - id: a
+        text: Configure the server to send its intermediate alongside the leaf
+        correct: true
+      - id: b
+        text: Renew the certificate
+        note: >-
+          Expiry is code 10. Renewing changes nothing here.
+      - id: c
+        text: Reissue with the correct hostname
+        note: >-
+          A name mismatch is code 62 and is a separate fault.
+      - id: d
+        text: Add `--insecure` to the client
+        note: >-
+          That disables verification entirely rather than fixing the chain.
+    explanation: >-
+      The verifier read the Issuer field and could not find that issuer — not in
+      what the server sent, not in the trust store. Almost always the server is
+      serving only its leaf. In nginx the fix is leaf then intermediate
+      concatenated into the file named by `ssl_certificate`; ACME clients write
+      `fullchain.pem` for exactly this, and pointing at `cert.pem` is the usual
+      cause.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.4]
+    stem: >-
+      A chain fault works in every browser and fails in `curl`, health checks and
+      a partner's Java client. Why?
+    options:
+      - id: a
+        text: Browsers cache intermediates from other sites and may fetch missing ones; other clients verify only what was sent
+        correct: true
+      - id: b
+        text: Browsers use a larger trust store that includes the intermediate
+        note: >-
+          Trust stores hold roots. The intermediate is cached from previous
+          browsing, not shipped.
+      - id: c
+        text: Browsers fall back to unencrypted HTTP when verification fails
+        note: >-
+          They show a warning interstitial; they do not silently downgrade.
+      - id: d
+        text: The other clients have out-of-date root certificates
+        note: >-
+          They have the root. What they lack is the intermediate the server
+          should have sent.
+    explanation: >-
+      Browsers cache intermediates across sites and some fetch a missing one
+      using the Authority Information Access extension in the leaf. So a broken
+      chain works for anyone who has recently visited another site using the same
+      CA — most people. `curl`, health checks and language runtimes verify
+      exactly what arrived. This is why "it works in my browser" is worth nothing
+      as evidence about a chain.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.4]
+    stem: >-
+      `curl` returns exit 60. How much has that narrowed the problem?
+    options:
+      - id: a
+        text: Barely at all — expiry, self-signed, unknown issuer and hostname mismatch all return 60
+        correct: true
+      - id: b
+        text: Completely — 60 means the certificate has expired
+        note: >-
+          Expiry is one of at least four faults that produce it.
+      - id: c
+        text: It means the chain is incomplete specifically
+        note: >-
+          One possibility among several.
+      - id: d
+        text: It means the server does not support TLS
+        note: >-
+          That is closer to 35, or 7 if nothing is listening.
+    explanation: >-
+      Four distinct OpenSSL codes and the hostname check all collapse into curl's
+      60. The *message* is the diagnosis — `certificate has expired`,
+      `self-signed certificate`, `unable to get local issuer certificate`, `no
+      alternative certificate subject name matches target hostname`. A monitoring
+      check that records only the exit status has discarded everything useful,
+      which is a common and quiet failure of TLS alerting.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.5]
+    stem: >-
+      `openssl verify -CAfile root.crt cert.crt` returns `OK`. Will every client
+      accept this certificate?
+    options:
+      - id: a
+        text: No — that command does not check the hostname unless asked
+        correct: true
+      - id: b
+        text: Yes, `OK` means the certificate is fully valid
+        note: >-
+          It means the chain verified. The name check is separate and off by
+          default.
+      - id: c
+        text: Yes, provided the client has the same root
+        note: >-
+          Even then, a certificate for a different name will be rejected.
+      - id: d
+        text: Only if the client also supports TLS 1.3
+        note: >-
+          Protocol version is unrelated to certificate validity.
+    explanation: >-
+      The chain check and the name check are independent, and `openssl verify`
+      performs only the first unless given `-verify_hostname`. Every real client
+      always checks the name, so a verification that omits it is not testing what
+      your users experience — which is exactly how a hostname mismatch survives a
+      careless test.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.5]
+    stem: >-
+      What is the security consequence of a trust store containing around 150
+      certificate authorities?
+    options:
+      - id: a
+        text: Any one of them can issue a valid certificate for any name, so your TLS is as strong as the least careful
+        correct: true
+      - id: b
+        text: Nothing — each CA can only issue for domains it has been delegated
+        note: >-
+          There is no such technical restriction. Name constraints exist and are
+          rarely applied.
+      - id: c
+        text: Verification becomes slower as the store grows
+        note: >-
+          Lookup cost is negligible and is not the concern.
+      - id: d
+        text: Certificates from smaller CAs are treated as lower assurance
+        note: >-
+          Clients treat all trusted roots equally.
+    explanation: >-
+      This is a real structural weakness rather than a hypothetical. Two
+      mitigations help and neither is pinning: Certificate Transparency, which
+      logs every publicly-trusted certificate to public append-only logs so
+      misissuance for your domain can at least be noticed, and CAA records, which
+      name in DNS which CAs may issue for you — one record, and rarely present.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.6]
+    stem: >-
+      A certificate has `CN=api.example.com` and no SAN. Who accepts it?
+    options:
+      - id: a
+        text: OpenSSL and curl, which fall back to the CN — but no browser
+        correct: true
+      - id: b
+        text: Everyone, since the CN names the host correctly
+        note: >-
+          Browsers have required a SAN since 2017 and ignore the CN entirely.
+      - id: c
+        text: Nobody, since a SAN is mandatory in the standard
+        note: >-
+          OpenSSL still falls back to the CN, so it verifies successfully there.
+      - id: d
+        text: Only clients configured with `--insecure`
+        note: >-
+          It verifies normally in OpenSSL without any such flag.
+    explanation: >-
+      The same certificate is valid and invalid depending on who asks, and
+      neither verifier is broken — their policies differ. It produces the
+      characteristic report of green monitoring and complaining users, and
+      nothing in a `curl` or `openssl verify` result will ever reveal it. Only an
+      explicit check that a SAN exists will.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.7]
+    stem: >-
+      Certificates are public and copyable. What stops an attacker presenting
+      someone else's certificate?
+    options:
+      - id: a
+        text: The server must sign the handshake transcript with the matching private key
+        correct: true
+      - id: b
+        text: Certificates are bound to an IP address
+        note: >-
+          They are bound to names, and the same certificate legitimately serves
+          many addresses.
+      - id: c
+        text: The client checks a revocation list for stolen certificates
+        note: >-
+          Revocation is for compromised keys, works poorly, and is not what
+          prevents this.
+      - id: d
+        text: The certificate is encrypted in transit
+        note: >-
+          It is sent in the clear during the handshake, by design.
+    explanation: >-
+      The certificate says "this name uses this public key"; the transcript
+      signature proves "I hold the matching private key", which never leaves the
+      server. Both are needed and neither is sufficient. This is the step people
+      most often omit when describing TLS, and it is the one that makes copying a
+      certificate useless.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.8]
+    stem: What does `verify=False` actually do?
+    options:
+      - id: a
+        text: Accepts any certificate from anyone, permanently, on that connection
+        correct: true
+      - id: b
+        text: Trusts the specific certificate the server is currently presenting
+        note: >-
+          It pins nothing. The next certificate, from anyone, is equally
+          accepted.
+      - id: c
+        text: Disables encryption, sending the request in plaintext
+        note: >-
+          Encryption still happens — to whoever answered, which is the problem.
+      - id: d
+        text: Falls back to verifying only the hostname
+        note: >-
+          It disables the hostname check too.
+    explanation: >-
+      The traffic remains encrypted; it is encrypted to whoever answered. The
+      assurance about *who* that is — the part actually protecting you — is gone.
+      It is reasonable for sixty seconds while testing a hypothesis and a
+      disaster when it survives into a manifest, because it fails silently
+      forever: everything works and nothing alerts.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A04.3.8]
+    stem: >-
+      Which certificate-expiry alert is most likely to catch a real problem?
+    options:
+      - id: a
+        text: Connecting to the live endpoint from outside and reading the served certificate's dates
+        correct: true
+      - id: b
+        text: Watching the modification time of the certificate file on disk
+        note: >-
+          A renewed file with a process still serving the old certificate from
+          memory passes this check perfectly.
+      - id: c
+        text: A calendar reminder set when the certificate was issued
+        note: >-
+          It depends on the person still being there and still owning it.
+      - id: d
+        text: Checking the CA's dashboard for issued certificates
+        note: >-
+          It tells you what was issued, not what is being served.
+    explanation: >-
+      The failure that catches people is renewal succeeding while the process
+      keeps serving the old certificate from memory — every file-based check
+      passes and the endpoint is broken. Only a real connection sees what clients
+      see. Check the whole chain's dates too, since an expiring intermediate
+      leaves the leaf looking healthy, and alert at 30 and 14 days rather than 2.

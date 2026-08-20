@@ -1,0 +1,171 @@
+id: lab.make-a-zombie
+topic: topic.processes
+title: Make a zombie, then get rid of it
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A01.2.4, OBJ-A01.2.8]
+
+intro: >-
+  Zombies are the process failure people most reliably misdiagnose, because the
+  instinct — kill it — is exactly the thing that cannot work.
+
+
+  You will create one deliberately, confirm that `kill -9` does nothing to it,
+  and then remove it the only way that works. Doing this once means you will
+  never spend an hour on it in production.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Create a zombie. Run /opt/lab/make-zombie in the background — it forks a
+      child, the child exits immediately, and the parent deliberately never calls
+      wait().
+
+
+      Give it a couple of seconds, then find the zombie.
+    hint: >-
+      `ps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/'` lists every process in state
+      Z. A zombie's command is usually shown as `<defunct>`.
+    walkthrough: |
+      nohup /opt/lab/make-zombie >/dev/null 2>&1 &
+      sleep 3
+      ps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/'
+    verify:
+      - type: process_running
+        pattern: "make-zombie"
+        describe: The parent process is running
+      - type: command_output
+        command: "ps -eo stat= | grep -c '^Z' || true"
+        pattern: '^[1-9]'
+        describe: At least one zombie exists
+
+  - id: s2
+    instruction: >-
+      Record the zombie's PID and its PPID to /tmp/answer-zombie in the form
+      `zombie=<pid> parent=<ppid>`.
+    hint: "`ps -eo pid,ppid,stat | awk '$3 ~ /^Z/ {print $1, $2}'`"
+    walkthrough: |
+      ps -eo pid,ppid,stat | awk '$3 ~ /^Z/ {print "zombie=" $1 " parent=" $2}' > /tmp/answer-zombie
+    verify:
+      - type: file_matches
+        path: /tmp/answer-zombie
+        pattern: 'zombie=\d+\s+parent=\d+'
+        describe: Both PIDs were recorded
+
+  - id: s3
+    instruction: >-
+      Now try the instinctive thing. Send `kill -9` to the zombie's PID, wait a
+      second, and check whether it is still there.
+
+
+      Write `still-there` or `gone` to /tmp/answer-kill-zombie.
+    hint: >-
+      It will still be there. Ask yourself what SIGKILL is supposed to do to a
+      process that has already exited.
+    walkthrough: |
+      ZPID=$(ps -eo pid,stat | awk '$2 ~ /^Z/ {print $1; exit}')
+      kill -9 "$ZPID" 2>/dev/null || true
+      sleep 1
+      ps -p "$ZPID" >/dev/null 2>&1 && echo still-there > /tmp/answer-kill-zombie
+    verify:
+      - type: file_matches
+        path: /tmp/answer-kill-zombie
+        pattern: '^still-there$'
+        describe: You confirmed that killing a zombie does nothing
+
+  - id: s4
+    instruction: >-
+      Check how much memory the zombie is using. Write its RSS in kilobytes to
+      /tmp/answer-zombie-rss.
+
+
+      The number should tell you something about what a zombie actually is.
+    hint: "`ps -p <zombie-pid> -o rss=`"
+    walkthrough: |
+      ZPID=$(ps -eo pid,stat | awk '$2 ~ /^Z/ {print $1; exit}')
+      ps -p "$ZPID" -o rss= | tr -d ' ' > /tmp/answer-zombie-rss
+    verify:
+      - type: file_matches
+        path: /tmp/answer-zombie-rss
+        pattern: '^\s*0\s*$'
+        describe: The zombie occupies no memory at all
+
+  - id: s5
+    instruction: >-
+      Get rid of it properly: signal the **parent**. Kill the make-zombie
+      process, wait a moment, then confirm no zombies remain.
+
+
+      Write the number of zombies remaining to /tmp/answer-after.
+    hint: >-
+      When the parent exits, the zombie is reparented to PID 1 — which reaps it
+      immediately. That is the fix, and it never involves the zombie itself.
+    walkthrough: |
+      pkill -f make-zombie || true
+      sleep 2
+      ps -eo stat= | grep -c '^Z' > /tmp/answer-after || echo 0 > /tmp/answer-after
+    verify:
+      - type: file_matches
+        path: /tmp/answer-after
+        pattern: '^0$'
+        describe: No zombies remain
+      - type: command_output
+        command: "ps -eo stat= | grep -c '^Z' || true"
+        equals: "0"
+        describe: The process table is clean
+
+solution: |
+  ```bash
+  /opt/lab/make-zombie &
+  sleep 2
+
+  ps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/'
+  ps -eo pid,ppid,stat | awk '$3 ~ /^Z/ {printf "zombie=%s parent=%s\n", $1, $2}' \
+    > /tmp/answer-zombie
+
+  ZPID=$(ps -eo pid,stat | awk '$2 ~ /^Z/ {print $1; exit}')
+  kill -9 "$ZPID"
+  sleep 1
+  ps -p "$ZPID" >/dev/null 2>&1 && echo still-there > /tmp/answer-kill-zombie
+
+  ps -p "$ZPID" -o rss= | tr -d ' ' > /tmp/answer-zombie-rss   # 0
+
+  pkill -f make-zombie
+  sleep 2
+  ps -eo stat= | grep -c '^Z' > /tmp/answer-after              # 0
+  ```
+
+  **What a zombie actually is.**
+
+  Its RSS was **0**. No memory, no open files, no code running, no CPU. What it
+  holds is one entry in the process table and one integer — the exit status its
+  parent has not collected.
+
+  That is why `kill -9` did nothing. SIGKILL removes a running process; this one
+  finished long ago. There is nothing left to signal.
+
+  **Why the fix is the parent.** A dead child's entry is only released when its
+  parent calls `wait()` to collect the exit status. `make-zombie` never does. So
+  either the parent starts reaping, or the parent exits — and then the kernel
+  reparents the orphan to PID 1, which reaps immediately, which is what you just
+  watched happen.
+
+  **Why anyone cares.** One zombie is harmless. The failure mode is
+  *accumulation*: a long-lived parent that forks constantly and never reaps.
+  Each zombie holds a PID, and PIDs are finite — often 32,768 on a host, 256 in
+  this lab's cgroup. When they run out, nothing can start: not a worker, not your
+  shell, not the command you were about to diagnose with.
+
+  And it is invisible on a dashboard until that moment, because zombies use no
+  memory and no CPU. Every graph looks healthy right up to `fork: Resource
+  temporarily unavailable`.
+
+  **Where this goes.** In a container, PID 1 is your application, and your
+  application almost certainly does not reap orphans. Any process it spawns whose
+  parent dies becomes its problem — and it does not know it has one. That is the
+  second half of the PID 1 problem, and why `docker run --init` exists (**C14**).

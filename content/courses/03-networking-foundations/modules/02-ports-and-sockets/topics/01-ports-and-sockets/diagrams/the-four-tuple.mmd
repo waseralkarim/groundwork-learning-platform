@@ -1,0 +1,8 @@
+graph TD
+    A["<b>One listening socket</b><br/>0.0.0.0:443"] --> B["Connection 1<br/><i>203.0.113.9:51001 → 10.0.1.5:443</i>"]
+    A --> C["Connection 2<br/><i>203.0.113.9:51002 → 10.0.1.5:443</i>"]
+    A --> D["Connection 3<br/><i>198.51.100.4:33771 → 10.0.1.5:443</i>"]
+    B --> E["<b>A connection is four numbers</b><br/>source IP · source port ·<br/>destination IP · destination port"]
+    C --> E
+    D --> E
+    E --> F["<i>All three share a destination.<br/>Each is distinct because the<br/>source side differs.</i><br/>One port, 65535 clients each"]

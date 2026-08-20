@@ -1,0 +1,60 @@
+[project]
+name = "groundwork-api"
+version = "0.1.0"
+description = "Groundwork API — content, progress, assessment"
+requires-python = ">=3.13"
+
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.34,<1.0",
+    "pydantic[email]>=2.10,<3.0",
+    "pydantic-settings>=2.7,<3.0",
+    "sqlalchemy[asyncio]>=2.0.36,<3.0",
+    "asyncpg>=0.30,<1.0",
+    "alembic>=1.14,<2.0",
+    "redis>=5.2,<7.0",
+    "arq>=0.26,<1.0",
+    "structlog>=24.4,<26.0",
+    "pyyaml>=6.0,<7.0",
+    "argon2-cffi>=23.1,<26.0",
+    # Telemetry. Present in the image but inert unless an OTLP endpoint is set,
+    # so the default stack pays for the import and nothing else.
+    "opentelemetry-sdk>=1.29,<2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.29,<2.0",
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.50b0",
+    "opentelemetry-instrumentation-httpx>=0.50b0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.25,<2.0",
+    "httpx>=0.28,<1.0",
+    "ruff>=0.9,<1.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF"]
+ignore = ["B008"]  # FastAPI's Depends() in defaults is the documented idiom
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+# The repo has a local `alembic/` directory, which would otherwise make ruff
+# classify the installed `alembic` package as first-party and demand a section
+# split that contradicts itself.
+known-third-party = ["alembic"]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic's generated revision files have their own conventions.
+"alembic/versions/*" = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"

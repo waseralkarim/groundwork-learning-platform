@@ -1,0 +1,13 @@
+id: course.virtualization-and-cloud
+slug: virtualization-and-cloud
+code: A05
+title: Virtualization and Cloud Foundations
+summary: >-
+  What is actually underneath a running process — silicon, a hypervisor, a
+  kernel it did not boot, a cgroup it cannot see — and what each of those layers
+  provides, costs and leaks. Then the commercial layer on top: what "the cloud"
+  sells, where the responsibility boundary sits, and how the bill is computed.
+track: Foundations
+levels: [L1, L2]
+estimated_hours: 10
+order: 5

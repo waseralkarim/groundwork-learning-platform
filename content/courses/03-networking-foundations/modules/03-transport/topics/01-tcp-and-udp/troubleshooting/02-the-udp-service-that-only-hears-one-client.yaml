@@ -1,0 +1,228 @@
+id: troubleshooting.the-udp-service-that-only-hears-one-client
+topic: topic.tcp-and-udp
+title: The syslog collector works perfectly for one machine
+level: L2
+objectives: [OBJ-A03.3.8, OBJ-A03.3.4]
+reveal_policy: progressive
+
+situation: >-
+  A small in-house syslog collector replaced rsyslog on a utility host last
+  week. It receives UDP syslog from about sixty machines and writes to a file.
+
+
+  It works. The file fills up steadily, entries are well-formed, nothing errors.
+  But every line in it comes from one machine — `app-07` — and nothing from the
+  other fifty-nine has appeared since the deployment.
+
+
+  The team have verified from three separate senders that syslog is configured
+  correctly and that the messages are being sent; `logger` returns success every
+  time. They have checked the firewall, checked the collector is bound to
+  `0.0.0.0`, and confirmed it is receiving traffic.
+
+
+  The current theory is that the other machines' syslog daemons are silently
+  failing.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "The collector receives and writes messages continuously"
+  - "Every message is from app-07 and no other host"
+  - "Senders report success; `logger` never errors"
+  - "The collector is bound to 0.0.0.0 and is receiving traffic"
+  - "It worked in testing, with one test sender"
+  - "Restarting the collector changes which host it hears from"
+
+artifacts:
+  - type: command_output
+    label: The collector's socket
+    content: |
+      $ ss -uanp | grep :514
+      ESTAB  0  0    10.0.4.9:514    10.0.4.31:38112   users:(("collectord",pid=2841,fd=4))
+
+  - type: command_output
+    label: For comparison, the rsyslog it replaced
+    content: |
+      # from an archived support bundle, same host, before the change
+      UNCONN 0  0     0.0.0.0:514      0.0.0.0:*        users:(("rsyslogd",pid=901,fd=6))
+
+  - type: command_output
+    label: Who is 10.0.4.31?
+    content: |
+      $ getent hosts 10.0.4.31
+      10.0.4.31   app-07.internal
+
+  - type: command_output
+    label: UDP counters on the collector host
+    content: |
+      $ awk '/^Udp:/ { n++; if (n==2) print }' /proc/net/snmp
+      Udp: 41882 0 0 12 0 0 0 0 0
+      #    InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors ...
+
+  - type: config
+    label: The collector's receive loop, abridged
+    content: |
+      n, addr, _ := conn.ReadFromUDP(buf)
+      if !connected {
+          conn.Connect(addr)      // "so we can reply with send() later"
+          connected = true
+      }
+      writeLine(buf[:n])
+
+  - type: log
+    label: What restarting does
+    content: |
+      # collector restarted 14:02
+      14:02:11  first message after restart: from 10.0.4.44 (app-19)
+      14:02:11 onwards: every subsequent message is from 10.0.4.44
+
+diagnostic_questions:
+  - "What state is the collector's socket in, and what state should a server's socket be in?"
+  - "Whose address is in the peer column, and how did it get there?"
+  - "Why is RcvbufErrors zero if messages are being lost?"
+  - "Why does restarting change which host it hears from?"
+  - "Why did testing with one sender pass?"
+
+hints:
+  - "Compare the two `ss` outputs — the current one and the archived rsyslog one."
+  - "A UDP socket showing ESTAB has had something done to it."
+  - "Read the receive loop, particularly the line inside the `if`."
+  - "If the datagrams are dropped before the application sees them, which counter would record it?"
+
+root_cause: >-
+  The collector calls `Connect()` on its receiving socket after the first
+  datagram. That is a purely local operation — no packet is sent — and it does
+  two things: the socket can use `send()` instead of `sendto()`, and **the kernel
+  delivers only datagrams from that peer**, discarding everything from any other
+  address or port before the application ever sees them.
+
+
+  `ss` shows it directly: `ESTAB` with a peer of `10.0.4.31:38112` on a protocol
+  that has no connections. The archived rsyslog socket shows what a server's
+  socket should look like — `UNCONN` with a wildcard peer.
+
+
+  Whichever machine sends the first datagram after start-up becomes the only
+  machine the collector will ever hear from, which is exactly what the restart
+  log shows: before the restart it was app-07, and after it was app-19.
+
+
+  `RcvbufErrors` is zero because the buffer is not overflowing. The datagrams are
+  being discarded by the peer filter, and that is not counted anywhere useful —
+  which is why the counters look healthy and why this is harder to find than a
+  buffer problem.
+
+
+  Every sender reports success because `sendto()` returns when the kernel accepts
+  the datagram. It has never meant anything more than that, and there is no
+  connection on which a failure could be reported back.
+
+
+  Testing passed because testing used one sender. One client is precisely the
+  case that works.
+
+method: >-
+  **1. Compare the socket against a known-good one.** The support bundle has
+  rsyslog's socket from the same host: `UNCONN` with `0.0.0.0:*`. The current one
+  is `ESTAB` with a specific peer. Two lines, side by side, and the difference is
+  the whole diagnosis.
+
+
+  Even without the archive, `ESTAB` on a UDP socket serving many clients is
+  wrong on its face — there is nothing to have established.
+
+
+  **2. Identify the peer.** `10.0.4.31` resolves to `app-07`, which is the one
+  host whose messages are arriving. That is not a coincidence to be explained
+  later; it is the mechanism.
+
+
+  **3. Read `RcvbufErrors` and take the zero seriously.** Messages are being lost
+  and no counter records it, which rules out buffer overflow and points at
+  something discarding datagrams *before* they are queued. The peer filter is
+  that something.
+
+
+  **4. Use the restart behaviour as confirmation.** "Restarting changes which
+  host it hears from" is a strange symptom that becomes obvious once you know
+  the socket connects to the first sender. Any theory that does not explain it
+  is incomplete.
+
+
+  **5. Read the code, and notice the comment.** `conn.Connect(addr)` with
+  "so we can reply with `send()` later" is a reasonable-sounding convenience
+  that is correct for a client and wrong for a server. The intent was replies;
+  the effect was a filter.
+
+
+  The habit worth taking: **a service that works with one client and fails with
+  many has a shared-state or filtering bug, and testing will not find it unless
+  the test has two concurrent clients.**
+
+resolution: >-
+  **Remove the `Connect()` call.** A receiving socket on a multi-client server
+  must stay unconnected:
+
+
+  ```go
+  n, addr, _ := conn.ReadFromUDP(buf)
+  writeLine(addr, buf[:n])        // addr comes from every read; keep it
+  ```
+
+
+  `ReadFromUDP` already returns the sender's address on every datagram, so
+  nothing is lost by not connecting — the address is available per message,
+  which is more useful than a single fixed peer anyway.
+
+
+  If replies are genuinely needed, use `WriteToUDP(reply, addr)` on the same
+  socket, or create a **separate** socket for replying. Never connect the
+  listener.
+
+
+  Confirm the fix with the same command that found the bug:
+
+
+  ```bash
+  ss -uanp | grep :514
+  # expect: UNCONN 0 0 0.0.0.0:514 0.0.0.0:*
+  ```
+
+
+  **Then check what was lost.** Fifty-nine machines have been sending syslog into
+  nothing for a week. If any of it mattered — audit trails, security events —
+  that gap needs recording explicitly rather than quietly closing once the fix is
+  deployed.
+
+
+  **Add a test with two concurrent senders.** This is the structural fix, and it
+  is a two-line test:
+
+
+  ```
+  send from source A; send from source B; assert both were received
+  ```
+
+
+  One client is the passing case, so no amount of care in a single-sender test
+  would have caught this. The test only exists if somebody knows this failure
+  mode is possible — which is the argument for writing it down in the collector's
+  README as well.
+
+
+  **And add a check that would catch it in production.** A UDP service cannot be
+  health-checked at the transport layer, but this particular failure has a
+  signature that is easy to alert on:
+
+
+  ```bash
+  # distinct source addresses seen in the last five minutes
+  # if a collector with 60 senders reports 1, something is filtering
+  ```
+
+
+  Counting distinct sources is a better health signal for a collector than
+  message volume, because volume from one chatty host looks exactly like a
+  healthy fleet.

@@ -1,0 +1,270 @@
+topic: topic.identity-and-least-privilege
+
+exercises:
+  - id: e1
+    title: Sort five failures into two categories
+    level: L1
+    objectives: [OBJ-A04.4.1]
+    kind: interpretation
+    prompt: >-
+      Classify each as authentication or authorization, and give the first thing
+      you would check:
+
+
+      1. `Permission denied (publickey)` from `ssh`
+
+      2. `EACCES` opening a config file
+
+      3. HTTP 401 on an API call
+
+      4. HTTP 403 on an API call with a token that worked yesterday
+
+      5. `Operation not permitted` binding to port 443
+    answer: >-
+      1. **Authentication.** SSH never established who you are. Check that the
+         right key is being offered — `ssh -v` prints each one it tries — and the
+         key file's permissions, since SSH ignores one that is world-readable.
+
+
+      2. **Authorization.** The kernel knows who you are and refused. Check
+         `namei -l` on the full path, because the refusal often comes from a
+         directory rather than the file the error names.
+
+
+      3. **Authentication.** No valid identity presented. Check whether the token
+         is present, correctly formatted and unexpired.
+
+
+      4. **Authorization.** The identity is fine and the action is not permitted.
+         Check what changed in the *permissions* — a role, a scope, a policy —
+         not the credential. Rotating the token here wastes an hour.
+
+
+      5. **Authorization**, and specifically a capability. Ports below 1024 need
+         `CAP_NET_BIND_SERVICE`. Check `/proc/self/status` — and prefer binding a
+         high port with the proxy doing the mapping, rather than granting it.
+    explanation: >-
+      Item 4 is the one that costs real time. A token that worked yesterday and
+      returns 403 today feels like a credential problem, and the credential is
+      demonstrably fine — the server accepted it and made a decision. The change
+      is on the permission side.
+
+
+      Item 5 is worth recognising as its own category. It is authorization, but
+      the permission bits have nothing to do with it: the answer is in the
+      capability set, which is invisible to every file-oriented check.
+
+  - id: e2
+    title: Predict access from a path
+    level: L2
+    objectives: [OBJ-A04.4.3]
+    kind: interpretation
+    prompt: >-
+      You are `uid=1000(app) gid=1000(app)`, in no other groups. Predict whether
+      you can read `/srv/data/reports/q3.csv`:
+
+
+      ```text
+      drwxr-xr-x  root root  /srv
+      drwxr-x---  root ops   /srv/data
+      drwxr-xr-x  app  app   /srv/data/reports
+      -rw-r--r--  app  app   /srv/data/reports/q3.csv
+      ```
+
+
+      Give the answer, the reason, and the minimal fix.
+    answer: >-
+      **No.**
+
+
+      `/srv/data` is `drwxr-x---` owned `root:ops`. You are not root and not in
+      `ops`, so the **other** class applies: `---`. No execute, so the path
+      cannot be traversed and nothing beneath it is reachable — regardless of the
+      fact that you own both the directory below and the file itself.
+
+
+      The error will name `q3.csv`, which is mode 644, owned by you, and entirely
+      readable. That is what makes it confusing.
+
+
+      **Minimal fix:** grant traversal on `/srv/data` without granting listing —
+      `chmod o+x /srv/data`, giving `drwxr-x--x`. You can then resolve a path
+      through it while still being unable to enumerate what else is in there.
+
+
+      Better, if the intent is that `app` should have access to this subtree: add
+      `app` to the `ops` group, or change the directory's group. That expresses
+      the intent rather than poking a hole.
+
+
+      **Not** `chmod -R 755 /srv/data`, which is where this usually ends up and
+      which exposes everything else under it.
+    explanation: >-
+      This is the standard shape of the problem: the file is fine, an ancestor is
+      not, and the error names the file. `namei -l` renders the whole thing in
+      one line each and turns it into a five-second diagnosis.
+
+
+      The `o+x` fix is worth knowing as a distinct tool. Execute-without-read on
+      a directory is a real and useful permission — it says "you may pass through
+      if you know where you are going, and you may not look around" — and it is
+      how `/home` is commonly configured.
+
+  - id: e3
+    title: Justify or remove three privileges
+    level: L2
+    objectives: [OBJ-A04.4.5]
+    kind: short_answer
+    prompt: >-
+      For each, say whether it is justified and what you would do instead:
+
+
+      1. A web service running as root so it can bind port 443.
+
+      2. A backup agent with `CAP_DAC_READ_SEARCH` so it can read all users'
+         files.
+
+      3. A CI runner in a privileged container so it can build images.
+    answer: >-
+      1. **Not justified.** Binding a low port needs `CAP_NET_BIND_SERVICE`, not
+         root — and better still, bind a high port and let the load balancer or
+         ingress map 443 to it, which needs no capability at all. Running the
+         whole request-handling surface as root to satisfy one bind at startup is
+         the worst possible trade.
+
+
+      2. **Justified, with the uid lowered.** Reading files owned by many users
+         genuinely requires bypassing the permission check, and
+         `CAP_DAC_READ_SEARCH` is precisely that capability — note it is
+         read-only, where `CAP_DAC_OVERRIDE` would also grant write. The
+         capability should replace root rather than accompany it, so the agent
+         runs as a non-root uid with only that capability.
+
+
+      3. **Justified only if nothing else is available, and something usually
+         is.** Rootless builders — BuildKit rootless, Kaniko, Buildah — build
+         images without a privileged container. A privileged container is not a
+         hardened root; container isolation is not a boundary at that point, so
+         this is root on the node. And whatever the build needs, it does not need
+         the registry push credential and the cloud admin key mounted alongside
+         it.
+    explanation: >-
+      Item 2 is the pattern worth internalising, because it is the common
+      half-migration: someone adds the narrow capability that was supposed to
+      *replace* root, and nobody goes back to lower the uid. The result carries
+      both, and a review that sees the capability concludes the work was done.
+
+
+      Item 3 makes the wider point. The privilege question and the credential
+      question are separate, and a justification for one is routinely used to
+      wave through the other. "It needs to build images" argues about the
+      container's privilege and says nothing about what secrets are mounted next
+      to it.
+
+  - id: e4
+    title: Trace the blast radius of one credential
+    level: L2
+    objectives: [OBJ-A04.4.8]
+    kind: interpretation
+    prompt: >-
+      One deploy key is mounted into: the CI runner, the nightly cleanup cron,
+      the log shipper, and a developer's laptop for local testing. It has push
+      access to every repository and deploy access to staging and production.
+
+
+      State the blast radius, identify the weakest holder, and give the fix in
+      order of what you would do first.
+    answer: >-
+      **Blast radius:** compromising **any one** of the four yields push access
+      to every repository and deploy access to staging and production. The reach
+      of a shared credential is the union of everything it opens, granted to
+      every holder — so the security of production equals the security of the
+      *weakest* holder.
+
+
+      **Weakest holder: the developer's laptop.** It is outside the estate's
+      controls, not monitored, subject to physical loss and to everything else
+      that runs on a personal machine. The nightly cron is a close second — a job
+      that deletes old files should not be able to deploy, and nobody would grant
+      that deliberately.
+
+
+      **In order:**
+
+
+      1. **Remove it from the laptop today.** Local testing does not need
+         production deploy access, and this is the one holder you cannot monitor.
+
+      2. **Give the cron its own credential**, scoped to deleting files in one
+         location.
+
+      3. **Give the log shipper its own**, scoped to writing to the log backend.
+
+      4. **Split the CI key by environment**, so a staging pipeline cannot deploy
+         to production.
+
+      5. **Then rotate the original**, which is only meaningful once the copies
+         are gone — rotating first just redistributes a new shared key.
+    explanation: >-
+      The ordering is the exercise. Rotation is the instinctive first move and is
+      close to useless while four copies exist, because you end up distributing a
+      fresh shared key to the same four places.
+
+
+      The general rule: **shared credentials multiply blast radius**, and the
+      multiplication is invisible in any single manifest. Each of those four
+      workloads looks fine on its own; the fault only appears when you ask what
+      else holds the same key — which is a question no per-service review asks.
+
+  - id: e5
+    title: Write the review requirements
+    level: L2
+    objectives: [OBJ-A04.4.8]
+    kind: short_answer
+    prompt: >-
+      Write five requirements for a workload manifest review that would have
+      caught: a cloud admin key on a build runner, a log shipper running as uid 0
+      alongside a capability that already sufficed, and a cron job holding a
+      shared deploy key.
+
+
+      For each, say which of the three it catches.
+    answer: >-
+      1. **Every mounted secret names its consumer in the code.** Catches the
+         cloud admin key on the build runner and the shared key on the cron —
+         neither can name a line of code that uses it. An unnamed secret is
+         removed.
+
+
+      2. **Every capability and every non-default uid carries a stated reason,
+         recorded next to the grant.** Catches the log shipper: the reason given
+         covers the capability and says nothing about uid 0. Recording it next to
+         the grant is what allows it to be revisited when the reason expires.
+
+
+      3. **`runAsNonRoot: true` by default, exceptions argued individually.**
+         Catches the log shipper directly.
+
+
+      4. **List every other holder of each mounted credential.** Catches the
+         shared deploy key — the fault is invisible in any single manifest and
+         appears immediately when you ask what else holds it.
+
+
+      5. **Egress restricted by default.** Catches none of the three, and reduces
+         all three: it turns a stolen credential from a loss into an attempt.
+
+
+      Plus the verification step: check the **running workload**, not the
+      manifest — `kubectl exec` and read `id` and `/proc/self/status`.
+    explanation: >-
+      Requirement 4 is the one almost nobody has, and it is the only one that
+      catches a shared-credential problem, because that fault does not exist
+      within any single manifest. It is a property of the set.
+
+
+      Requirement 5 is included deliberately even though it catches nothing on
+      its own. Not every control has to be a detector — some reduce the value of
+      what an attacker obtains, and egress restriction is the cheapest of those.
+      A review that only accepts controls which catch a named fault will miss
+      that category entirely.

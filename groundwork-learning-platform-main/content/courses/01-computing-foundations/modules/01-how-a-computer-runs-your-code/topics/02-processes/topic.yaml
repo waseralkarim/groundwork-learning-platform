@@ -1,0 +1,152 @@
+id: topic.processes
+slug: processes
+title: "Processes: How Linux Runs, Tracks and Kills Programs"
+summary: >-
+  Where a process comes from, what the kernel remembers about it, and the three
+  ways it can die. The topic that makes "a container is just a process" mean
+  something.
+order: 2
+levels: [L1, L2, L3]
+estimated_minutes: 110
+status: published
+
+prerequisites:
+  - topic: topic.the-machine
+    hardness: required
+
+objectives:
+  - id: OBJ-A01.2.1
+    level: L1
+    verb: describe
+    statement: >-
+      Describe what the kernel tracks about a running process: its PID, its
+      parent, its state, its user, and its open files.
+    assessed_by: [quiz.q1, quiz.q2, lab.watch-a-process-be-born]
+
+  - id: OBJ-A01.2.2
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why creating a process takes two system calls rather than one, and
+      what fork and exec each contribute.
+    assessed_by: [quiz.q3, quiz.q4, lab.watch-a-process-be-born, assessment.A]
+
+  - id: OBJ-A01.2.3
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret a process tree, identifying parents, children and which process
+      adopted an orphan.
+    assessed_by: [quiz.q5, quiz.q6, exercise.e1]
+
+  - id: OBJ-A01.2.4
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish the process states shown by ps, and explain what a process in
+      state D or Z is actually doing.
+    assessed_by: [quiz.q7, quiz.q8, exercise.e2, lab.make-a-zombie]
+
+  - id: OBJ-A01.2.5
+    level: L2
+    verb: predict
+    statement: >-
+      Predict which signals a process can catch and which it cannot, and what
+      happens to in-flight work in each case.
+    assessed_by: [quiz.q9, quiz.q10, lab.signals-in-practice]
+
+  - id: OBJ-A01.2.6
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose why a process refuses to stop, and distinguish an ignored signal
+      from a process that cannot receive one.
+    assessed_by: [quiz.q11, quiz.q12, troubleshooting.service-wont-stop, assessment.B]
+
+  - id: OBJ-A01.2.7
+    level: L3
+    verb: explain
+    statement: >-
+      Explain why PID 1 is treated differently by the kernel, and what goes
+      wrong when an ordinary program is given that role.
+    assessed_by: [quiz.q13, lab.the-pid-1-problem, exercise.e3]
+
+  - id: OBJ-A01.2.8
+    level: L3
+    verb: troubleshoot
+    statement: >-
+      Troubleshoot a machine accumulating zombie processes, and identify which
+      process is at fault.
+    assessed_by: [quiz.q14, quiz.q15, troubleshooting.zombie-pile-up, exercise.e4, assessment.C]
+
+terminology:
+  - term: PID
+    definition: >-
+      Process identifier. A number the kernel assigns to a process, unique among
+      running processes on that machine at that moment.
+  - term: PPID
+    definition: >-
+      Parent process identifier. Every process except PID 1 has a parent — the
+      process that created it.
+  - term: fork
+    definition: >-
+      The system call that creates a new process by duplicating the calling one.
+      The child differs from the parent only in its PID and its return value
+      from the call.
+  - term: exec
+    definition: >-
+      The system call family that replaces a process's program with a different
+      one, keeping the same PID. Together with fork, this is how every process
+      on a Linux system is started.
+  - term: orphan
+    definition: >-
+      A process whose parent has exited. The kernel immediately reparents it to
+      PID 1, so it is never actually parentless.
+  - term: zombie
+    definition: >-
+      A process that has exited but whose parent has not yet collected its exit
+      status. It holds no memory and runs no code — only a slot in the process
+      table and its exit code.
+  - term: reaping
+    definition: >-
+      A parent calling wait() to collect a dead child's exit status, which lets
+      the kernel finally discard the process entry. A parent that never reaps
+      accumulates zombies.
+  - term: signal
+    definition: >-
+      An asynchronous notification the kernel delivers to a process, either from
+      another process or from the kernel itself. Most can be caught, blocked or
+      ignored; two cannot.
+  - term: SIGTERM
+    definition: >-
+      Signal 15. The polite request to stop. It can be caught, which is what
+      lets a program finish in-flight work, flush buffers and close connections
+      before exiting.
+  - term: SIGKILL
+    definition: >-
+      Signal 9. Cannot be caught, blocked or ignored — the kernel removes the
+      process without informing it. No cleanup happens, ever.
+  - term: uninterruptible sleep
+    definition: >-
+      Process state D. The process is waiting on something the kernel will not
+      let it be interrupted for, almost always I/O. A process in state D cannot
+      be killed, not even with SIGKILL, until the wait ends.
+  - term: file descriptor
+    definition: >-
+      A small integer a process uses to refer to something it has open — a file,
+      a socket, a pipe. Descriptors 0, 1 and 2 are stdin, stdout and stderr by
+      convention.
+  - term: PID 1
+    definition: >-
+      The first process the kernel starts, and the ancestor of all others. The
+      kernel treats it specially: it adopts orphans, and signals with no
+      installed handler are not applied to it by default.
+
+foreshadows:
+  - "PID namespaces make a container's first process PID 1, which is why the PID 1 problem is a container problem (C14)."
+  - "`docker stop` sends SIGTERM then SIGKILL after a grace period — this topic is why the grace period exists (C14)."
+  - "Kubernetes terminationGracePeriodSeconds and preStop hooks are the same mechanism with a longer name (E26)."
+  - "systemd is PID 1 on a real machine, and its job is largely the reaping and signalling described here (B07)."
+  - "Zombie accumulation and processes stuck in state D reappear as node-level troubleshooting in E31."
+
+tags: [processes, signals, linux, kernel, fundamentals, troubleshooting]

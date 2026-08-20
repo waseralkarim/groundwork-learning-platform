@@ -1,0 +1,310 @@
+id: assessment.functions-and-scope
+topic: topic.functions-and-scope
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a report that disagrees with the disk
+    kind: explain
+    objectives: [OBJ-B08.6.5, OBJ-B08.6.7]
+    prompt: >-
+      A nightly archiver reports `archived 0 files (0 bytes)` every night. The
+      archive bucket grows by 40 GB a night and every file is present.
+
+
+      A guard added six months ago — `[ "$copied" -gt 0 ] || alert "archiver did
+      nothing"` — has paged every night since and was muted after a week. Last
+      night the archiver genuinely failed and nobody was paged.
+
+
+      ```bash
+      copied=0
+      find "$SRC" -type f -name '*.csv' -mtime -1 | while read -r f; do
+        cp "$f" "$DEST/"
+        copied=$((copied + 1))
+      done
+      echo "archived $copied files"
+      ```
+
+
+      In about 250 words: explain the count, and say what you would change.
+    rubric:
+      - "States that the right-hand stage of a pipeline runs in a subshell"
+      - "Distinguishes the filesystem (shared) from variables (per-process) as why cp survived"
+      - "Says the loop ran correctly — the result was discarded, not the work"
+      - "Proposes < <(find …) and gives a reason to prefer it over lastpipe or mapfile"
+      - "Identifies the guard as CORRECT and the mute as the organisational fault"
+      - "Proposes asserting the count against an independently derived number"
+    model_answer: >-
+      **The `while` loop is the right-hand stage of a pipeline, so it runs in a
+      forked shell.** `cp` writes to the **filesystem**, which is shared between
+      processes, so the copies survive. `copied=` writes to a **variable**, which
+      is per-process, so it dies when the subshell exits at the end of the loop.
+
+
+      The loop was never failing — counted from inside, it reaches the right
+      number. The work happened and the result was discarded, which is why the
+      symptom is always "it does the job and reports nothing".
+
+
+      **Fix:** `done < <(find "$SRC" -type f -name '*.csv' -mtime -1)`. The loop
+      body does not move and `find` keeps streaming. `mapfile` is right when the
+      list is needed twice. `shopt -s lastpipe` also fixes it and I would not
+      ship it: it changes every pipeline in the file and silently does nothing
+      when job control is on, so it works in the script and not when a colleague
+      pastes the loop into a terminal to debug it.
+
+
+      **But the expensive fault is the mute.** The guard was **correct** — it
+      reported that `copied` was 0, and `copied` was 0. It was accurate about the
+      variable and wrong about the world, and that gap was exactly where the bug
+      was. Muting removed the only control that could distinguish "the count is
+      broken" from "the archiver did nothing", and six months later those became
+      different. An alert that is always wrong trains people to ignore it and
+      leaves something on the dashboard that looks like coverage. **An alert is
+      either fixed or deleted.**
+
+
+      Finally, assert the outcome rather than the counter: compare `copied`
+      against `find … | wc -l` and fail if they differ. The original compared a
+      number to itself.
+
+  - id: B
+    title: Find every defect in a sourced library
+    kind: diagnose
+    objectives: [OBJ-B08.6.1, OBJ-B08.6.2, OBJ-B08.6.4, OBJ-B08.6.8]
+    prompt: >-
+      This file is `source`d by nine operational scripts.
+
+
+      ```bash
+      # lib/deploy.sh
+      RESULT=""
+
+      cp() { command cp -v "$@"; }
+
+      count_files() {
+        n=0
+        find "$1" -type f | while read -r f; do n=$((n+1)); done
+        RESULT=$n
+      }
+
+      is_ready() {
+        local host=$1
+        curl -sf "http://$host/health" > /dev/null
+        echo "checked $host"
+      }
+
+      deploy_all() {
+        for i in $(seq 3); do
+          count_files "/srv/rel/$i"
+          echo "release $i has $RESULT files"
+        done
+        if is_ready "$TARGET"; then echo "ready"; else exit 1; fi
+      }
+      ```
+
+
+      List every defect, say which are silent, and give the corrected file.
+    rubric:
+      - "count_files always reports 0 — the piped while loop is a subshell"
+      - "n is not local, so it becomes a global that clobbers every caller"
+      - "is_ready always returns 0 because its last command is an echo — names this as the most serious"
+      - "Notes the cp redefinition is inherited by every sourcing script, and that a sourced function persists in the caller's shell"
+      - "RESULT is a hard-coded global name that nested calls would collide on"
+      - "TARGET is read but never declared, defaulted or documented — the dynamic-scope hazard"
+      - "exit 1 in a sourced library kills the calling script; return is correct"
+      - "Corrected file uses < <( ), locals everywhere, and returns statuses rather than printing them"
+    model_answer: >-
+      **Seven defects; three are silent.**
+
+
+      **1. `count_files` always reports 0** *(silent)*. The `while` loop is the
+      right stage of a pipeline, so `n` never leaves the subshell. Every "release
+      N has 0 files" line has been wrong since it was written.
+
+
+      **2. `n` is not `local`** *(silent)*. It is a global, so every caller now
+      has an `n` it did not declare — and any caller using `n` itself is
+      corrupted. The same applies to `i` in `deploy_all`.
+
+
+      **3. `is_ready` always returns 0** *(silent, and the worst)*. Its last
+      command is `echo "checked $host"`, so `curl`'s status is discarded and the
+      `if` in `deploy_all` always takes the ready branch. The health check exists,
+      runs, and **cannot fail**.
+
+
+      **4. `cp` is redefined for every script that sources this file.** A
+      function defined at the top level of a sourced file lives in the *caller's*
+      shell for the rest of its life, so nine unrelated scripts silently got a
+      verbose `cp`, changing their output and anything parsing it. It does use
+      `command`, so at least it does not recurse.
+
+
+      **5. `RESULT` is a hard-coded global.** Two nested calls collide, and the
+      name is generic enough that a caller may have its own. A nameref
+      (`local -n _out=$2`) or plain stdout is better; `deploy_all` reads it
+      immediately, so stdout would do.
+
+
+      **6. `$TARGET` is read but never declared, defaulted or documented.** This
+      is the dynamic-scope hazard: a caller that sets `TARGE` or `target` gets
+      whatever else happens to be in scope, and `set -u` will not help if any
+      `TARGET` exists anywhere in the process.
+
+
+      **7. `exit 1` in a library kills the calling script**, taking its cleanup
+      with it. A library function returns; only `main`, `usage` and `die` exit.
+
+
+      **Corrected:**
+
+
+      ```bash
+      # lib/deploy.sh — no top-level side effects, no shadowed tools
+
+      count_files() {                    # producer: prints one value
+        local dir=$1 n=0 f
+        while read -r f; do
+          n=$((n + 1))
+        done < <(find "$dir" -type f)
+        printf '%s\n' "$n"
+      }
+
+      is_ready() {                       # question: returns a status, prints nothing
+        local host=$1
+        curl -sf "http://$host/health" > /dev/null
+      }
+
+      deploy_all() {
+        local target=$1 i count
+        for i in 1 2 3; do
+          count=$(count_files "/srv/rel/$i")
+          echo "release $i has $count files"
+        done
+        is_ready "$target" || return 1
+        echo "ready"
+      }
+      ```
+
+
+      `cp` is gone — shadowing a standard tool in a shared library is not a
+      decision the caller made. `TARGET` became a parameter, so a misspelling is
+      now a wrong argument rather than an invisible non-effect. `count_files`
+      prints and `is_ready` returns a status, and neither does both.
+
+
+      Note that `count=$(count_files …)` forks — which is fine here, because
+      `count_files` has no side effect the caller needs. That is the question
+      that decides the mechanism.
+
+  - id: C
+    title: Write a function-writing standard, and say what it cannot enforce
+    kind: reason
+    objectives: [OBJ-B08.6.8]
+    prompt: >-
+      Your team has about sixty shell functions across a dozen operational
+      scripts and two sourced libraries. Write the standard for how functions
+      are written.
+
+
+      Give the rules, say what each one prevents, state which can be enforced
+      mechanically and which cannot, and name one rule you would deliberately
+      *not* impose.
+    rubric:
+      - "Gives concrete rules rather than principles"
+      - "Ties each rule to a specific failure, not to style"
+      - "Includes local on its own line, and explains SC2155"
+      - "Includes question-vs-producer as the central rule"
+      - "Includes command in wrappers, and exit only in main/usage/die"
+      - "Separates what shellcheck enforces (SC2155, SC2031) from what only review catches"
+      - "Names a rule deliberately not imposed, with a reason"
+      - "Addresses sourced libraries specifically — definitions and exits reach the caller"
+    model_answer: >-
+      **The rules.**
+
+
+      **1. Every variable `local`, on its own line.**
+
+
+      ```bash
+      local file=$1
+      local sum
+      sum=$(sha256sum "$file" | cut -d' ' -f1)
+      ```
+
+
+      `local` because scope is dynamic — an undeclared `i`, `n`, `count` or
+      `line` in a helper silently corrupts any caller using that name, and there
+      is no warning. On its own line because `local sum=$(cmd)` reports `local`'s
+      status, not `cmd`'s, and discards the failure. `local file=$1` on one line
+      is fine: `$1` is not a command, so there is no status to lose.
+
+
+      **2. Parameters named in locals on the first lines.** The function's
+      signature becomes readable without scanning the body, and `$3` twenty lines
+      down stops being a puzzle.
+
+
+      **3. A function is a question or a producer, never both.** A question
+      returns a status and prints nothing, so a caller writes `if`. A producer
+      prints **one** thing to stdout and its diagnostics to stderr, so `$( )`
+      captures the value and not the commentary. This is the central rule: the
+      health-check bug — an `if`/`else` that turns a probe's status into the word
+      `DOWN`, after which nothing can act on it — is a violation of exactly this.
+
+
+      **4. Never end a function with a bare `echo`** if its status matters. Add
+      an explicit `return`. A function ending in `echo` always succeeds.
+
+
+      **5. Wrappers use `command` (or `builtin`), and `"$@"` goes last.** Without
+      `command` the wrapper calls itself, and `FUNCNEST` is unset by default so
+      that is unbounded. `"$@"` last so a caller's flags override the default
+      rather than the reverse. And a wrapper must not change the exit status of
+      what it wraps, or it cannot be used in an `if`.
+
+
+      **6. `exit` only in `main`, `usage` and `die`.** Everything else `return`s.
+      A library function that exits takes the caller's cleanup with it — and in a
+      sourced file it kills a script the author never saw.
+
+
+      **7. Rules specific to sourced libraries**, because a sourced file runs in
+      the caller's shell: no top-level side effects, no shadowing standard tool
+      names, no globals without a shared prefix, and no `exit`. Anything defined
+      at the top level lives in the caller for the rest of its life.
+
+
+      **What can be enforced mechanically.** `shellcheck -S warning` in CI
+      catches rule 1 (**SC2155**) and flags variables modified in a subshell
+      (**SC2031**), which is the piped-loop bug. It also catches unquoted
+      expansions and about two hundred other things. That is the highest-value
+      gate available and I would land it at `-S error` first, fix what it finds,
+      then tighten.
+
+
+      **What cannot.** Rules 3, 4 and 6 are **semantic** — shellcheck cannot know
+      whether a function was meant to be a question, whether a trailing `echo` is
+      deliberate, or whether an `exit` is in `main`. Rule 2 is style. Rule 7 needs
+      to know how a file is used. Those are review rules, which is exactly why
+      they are worth writing down: an unwritten convention is enforced by whoever
+      happens to review, and inconsistently.
+
+
+      **A rule I would deliberately not impose: "never read a variable you were
+      not passed."** It sounds right and it would ban the thing dynamic scope is
+      genuinely good for — a `log` helper reading `$LOG_LEVEL`, and scoped
+      overrides like `run_quietly() { local LOG_LEVEL=error; "$@"; }`, which
+      lexical scope cannot express and which beat threading a parameter through
+      forty calls. What I would require instead is that **a function reading
+      something it was not passed says so in a comment**. That keeps the useful
+      case and kills the dangerous one, which is the undocumented read that
+      quietly picks up a global default instead of the argument somebody thought
+      they were passing.
+
+
+      The general test for the whole standard: **each rule names a failure it
+      prevents.** A rule that only expresses a preference gets argued about in
+      every review and eventually dropped, taking the load-bearing rules with it.

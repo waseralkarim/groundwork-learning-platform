@@ -1,0 +1,475 @@
+id: lab.retry-what-is-safe
+topic: topic.concurrency-and-locking
+title: Retry a charge three times and count the money
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.8.5, OBJ-B08.8.6]
+
+intro: >-
+  `/tmp/lock/charge.sh` reports that it failed after three attempts. The ledger
+  has three entries.
+
+
+  You will find out what a non-zero status actually tells you, what `timeout`
+  guarantees and does not, and how to build a retry loop that is safe to use on
+  something that moves money.
+
+setup:
+  - /opt/lab/seed-lock.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Run charge.sh once and reconcile what it says against what it did. Save to
+      /tmp/answer-charges.
+    walkthrough: |
+      : > /tmp/lock/ledger.txt
+      {
+        echo "one invocation:"
+        bash /tmp/lock/charge.sh cust-001 2>&1 | sed 's/^/    /'
+        echo "    exit status: $(bash /tmp/lock/charge.sh cust-002 >/dev/null 2>&1; echo $?)"
+        echo
+        : > /tmp/lock/ledger.txt
+        bash /tmp/lock/charge.sh cust-001 >/dev/null 2>&1
+        echo "  the ledger after ONE invocation that reported failure:"
+        sed 's/^/    /' /tmp/lock/ledger.txt
+        echo "    charges recorded: $(wc -l < /tmp/lock/ledger.txt)"
+        echo
+        echo "the script says it gave up. the customer was charged THREE TIMES."
+        echo
+        echo "the function:"
+        sed -n '/^charge_once/,/^}/p' /tmp/lock/charge.sh | sed 's/^/    /'
+        echo
+        echo "the charge is APPLIED and then the response is LOST. that is not an"
+        echo "exotic failure - it is what a timeout, a dropped connection or a"
+        echo "load-balancer restart looks like from the caller's side."
+        echo
+        echo "A NON-ZERO STATUS MEANS 'I DID NOT HEAR THAT IT WORKED', NOT 'IT DID NOT"
+        echo "WORK'. those are different claims, and a retry loop treats them as the"
+        echo "same one."
+      } > /tmp/answer-charges
+      cat /tmp/answer-charges
+    verify:
+      - type: file_matches
+        path: /tmp/answer-charges
+        pattern: '(?i)giving up on cust-001 after 3 attempts'
+        describe: The script reports failure
+      - type: file_matches
+        path: /tmp/answer-charges
+        pattern: 'charges recorded: 3'
+        describe: While recording three charges
+      - type: file_matches
+        path: /tmp/answer-charges
+        pattern: 'exit status: 1'
+        describe: And exiting non-zero
+      - type: file_matches
+        path: /tmp/answer-charges
+        pattern: "(?i)DID NOT HEAR THAT IT WORKED"
+        describe: You stated what a non-zero status means
+
+  - id: s2
+    instruction: >-
+      Sort a list of operations into safe and unsafe to retry, and say what makes
+      the difference. Save to /tmp/answer-idempotent.
+    walkthrough: |
+      mkdir -p /tmp/idem && cd /tmp/idem
+      {
+        echo "measured, by running each one twice:"
+        echo
+        rm -rf d f l counter appended
+        printf '  %-34s ' 'mkdir -p d  (twice)'
+        mkdir -p d && mkdir -p d && echo "both succeeded - SAFE"
+        printf '  %-34s ' 'mkdir d     (twice)'
+        rm -rf d; mkdir d 2>/dev/null && { mkdir d 2>/dev/null && echo "both ok" || echo "second FAILED - unsafe to retry blindly"; }
+        printf '  %-34s ' 'ln -sfn /etc l  (twice)'
+        ln -sfn /etc l && ln -sfn /etc l && echo "both succeeded - SAFE"
+        printf '  %-34s ' 'echo x >> appended (twice)'
+        echo x >> appended; echo x >> appended; echo "file now has $(wc -l < appended) lines - NOT idempotent"
+        printf '  %-34s ' 'echo x > f  (twice)'
+        echo x > f; echo x > f; echo "file has $(wc -l < f) line - SAFE"
+        echo
+        echo "SAFE TO RETRY                       NOT SAFE"
+        echo "  GET, HEAD                           POST that creates something"
+        echo "  PUT to a fixed path                 appending to a file or a queue"
+        echo "  mkdir -p, ln -sfn                   mkdir without -p"
+        echo "  rsync -a --delete                   tar --append"
+        echo "  setting a value                     incrementing a counter"
+        echo "  DELETE by id                        charging, emailing, paging"
+        echo
+        echo "WHAT MAKES THE DIFFERENCE: whether the operation describes a DESIRED"
+        echo "STATE or a CHANGE."
+        echo
+        echo "  'make this directory exist'  is a state - applying it twice is the"
+        echo "  same as applying it once."
+        echo
+        echo "  'add one to this'  is a change - applying it twice is different from"
+        echo "  applying it once, and no amount of care in the retry loop fixes that."
+        echo
+        echo "which is the same distinction B08.5 used for idempotency, arriving here"
+        echo "as the property that decides whether a retry is allowed at all."
+      } > /tmp/answer-idempotent
+      cat /tmp/answer-idempotent
+    verify:
+      - type: file_matches
+        path: /tmp/answer-idempotent
+        pattern: 'mkdir -p d  \(twice\) +both succeeded - SAFE'
+        describe: mkdir -p is idempotent
+      - type: file_matches
+        path: /tmp/answer-idempotent
+        pattern: '(?i)second FAILED - unsafe to retry blindly'
+        describe: And plain mkdir is not
+      - type: file_matches
+        path: /tmp/answer-idempotent
+        pattern: 'file now has 2 lines - NOT idempotent'
+        describe: And appending is not
+      - type: file_matches
+        path: /tmp/answer-idempotent
+        pattern: '(?i)DESIRED\s+STATE or a CHANGE'
+        describe: You named the property that decides it
+
+  - id: s3
+    instruction: >-
+      Fix charge.sh so a retry cannot charge twice. Write /tmp/safe-charge.sh and
+      save your reasoning to /tmp/answer-key.
+    hint: >-
+      Generate something before the first attempt that identifies *this*
+      operation, and send it with every attempt.
+    walkthrough: |
+      cat > /tmp/safe-charge.sh <<'S'
+      #!/bin/bash
+      # Charge a customer, safely retryable.
+      set -uo pipefail
+
+      LEDGER=/tmp/lock/ledger2.txt
+      : > "$LEDGER" 2>/dev/null || true
+
+      # the "remote" side: refuses a key it has already applied
+      charge_once() {
+        local customer=$1 key=$2
+        if grep -q " $key\$" "$LEDGER" 2>/dev/null; then
+          echo "  (server: key $key already applied - ignoring duplicate)"
+          return 0                      # already done IS success
+        fi
+        echo "charged $customer $key" >> "$LEDGER"
+        return 1                        # ...and the response is still lost
+      }
+
+      customer=${1:-cust-001}
+      # ONE key for the whole operation, generated BEFORE the first attempt
+      key="idem-$$-$(date +%s%N)"
+
+      for attempt in 1 2 3; do
+        if charge_once "$customer" "$key"; then
+          echo "charge confirmed for $customer on attempt $attempt"
+          exit 0
+        fi
+        echo "  attempt $attempt: no response, retrying"
+        sleep 0.1
+      done
+
+      echo "no confirmation for $customer after 3 attempts" >&2
+      exit 1
+      S
+      chmod 0755 /tmp/safe-charge.sh
+
+      {
+        echo "the same lost-response failure, with an idempotency key:"
+        bash /tmp/safe-charge.sh cust-001 2>&1 | sed 's/^/    /'
+        echo "    exit status: $(bash /tmp/safe-charge.sh cust-003 >/dev/null 2>&1; echo $?)"
+        echo
+        echo "  charges actually recorded: $(grep -c charged /tmp/lock/ledger2.txt)"
+        echo
+        echo "ONE CHARGE, and the script now exits 0 - because the second attempt got"
+        echo "a definite answer: 'already applied'."
+        echo
+        echo "the key is generated ONCE, BEFORE the first attempt, and sent with every"
+        echo "attempt. that is the whole mechanism:"
+        echo
+        echo "  - generating it inside the loop would give each attempt a different"
+        echo "    key and change nothing"
+        echo "  - the far side has to store applied keys and treat a repeat as"
+        echo "    SUCCESS rather than as an error - 'already done' is the answer the"
+        echo "    caller wanted"
+        echo
+        echo "WHEN YOU CANNOT DO THIS - no API support, no shared store - the fallback"
+        echo "is to RECORD THAT THE STEP HAPPENED BEFORE DOING THE NEXT THING, and"
+        echo "check that record on the way in. it is the same idea with your own"
+        echo "storage instead of theirs, and it is why a job that charges and then"
+        echo "emails must write down the charge before it emails."
+      } > /tmp/answer-key
+      cat /tmp/answer-key
+    verify:
+      - type: file_exists
+        path: /tmp/safe-charge.sh
+        describe: You wrote the safe version
+      - type: file_matches
+        path: /tmp/answer-key
+        pattern: '(?i)already applied - ignoring duplicate'
+        describe: The retry is recognised as a duplicate
+      - type: file_matches
+        path: /tmp/answer-key
+        pattern: 'charges actually recorded: 1'
+        describe: And only one charge is made
+      - type: file_matches
+        path: /tmp/answer-key
+        pattern: 'exit status: 0'
+        describe: And the script now reports success
+      - type: file_matches
+        path: /tmp/answer-key
+        pattern: '(?i)BEFORE the first attempt'
+        describe: You explained when the key must be generated
+      - type: file_matches
+        path: /tmp/answer-key
+        pattern: '(?i)RECORD THAT THE STEP HAPPENED'
+        describe: And the fallback when there is no key support
+
+  - id: s4
+    instruction: >-
+      Find out what `timeout` guarantees. Run /tmp/lock/watchdog.sh, then read
+      the importer's log. Save to /tmp/answer-timeout.
+    hint: >-
+      The importer installs a TERM handler. Read its log after the watchdog has
+      already reported.
+    walkthrough: |
+      : > /tmp/lock/importer.log
+      {
+        echo "the watchdog, with a 1-second limit:"
+        bash /tmp/lock/watchdog.sh 1 2>&1 | sed 's/^/    /'
+        echo "    watchdog exit status: 124"
+        echo
+        sleep 3
+        echo "  what the importer actually did:"
+        sed 's/^/    /' /tmp/lock/importer.log
+        echo
+        echo "THE WATCHDOG REPORTED A TERMINATION THAT DID NOT HAPPEN. it wrote every"
+        echo "batch and finished."
+        echo
+        echo "timeout sends SIGTERM, which is a REQUEST. the importer installs a"
+        echo "handler - a reasonable thing for something mid-batch to do - and carries"
+        echo "on. timeout waits, gives up, and reports 124 regardless."
+        echo
+        echo "now with -k, which sends SIGKILL after a grace period:"
+        : > /tmp/lock/importer.log
+        timeout -k 0.2 1 /tmp/lock/importer 2>/dev/null; echo "    exit status: $?"
+        sleep 3
+        echo "  the importer's log this time:"
+        sed 's/^/    /' /tmp/lock/importer.log
+        echo
+        echo "137 is 128 + 9 - killed by SIGKILL, which cannot be caught or ignored."
+        echo "the importer stopped partway through."
+        echo
+        echo "  timeout LIMIT            is a REQUEST"
+        echo "  timeout -k GRACE LIMIT   is a GUARANTEE"
+        echo
+        echo "the grace period is the point: a well-behaved process gets time to"
+        echo "finish its batch and exit cleanly, and a badly-behaved one still stops."
+        echo
+        echo "and the statuses matter to whatever reads them:"
+        echo "  124  the time limit was reached"
+        echo "  137  we had to kill it (128+9)"
+        echo "  any other non-zero  the command's own failure"
+        echo "a wrapper that cannot tell 124 from 1 cannot tell 'too slow' from"
+        echo "'tried and failed', and those usually deserve different responses."
+      } > /tmp/answer-timeout
+      cat /tmp/answer-timeout
+    verify:
+      - type: file_matches
+        path: /tmp/answer-timeout
+        pattern: '(?i)did not finish in 1s - terminated \(rc=124\)'
+        describe: The watchdog reports a termination
+      - type: file_matches
+        path: /tmp/answer-timeout
+        pattern: 'FINISHED WRITING ALL BATCHES'
+        describe: While the importer completed all its work
+      - type: file_matches
+        path: /tmp/answer-timeout
+        pattern: 'exit status: 137'
+        describe: And -k gives 128+9
+      - type: file_matches
+        path: /tmp/answer-timeout
+        pattern: '(?i)is a GUARANTEE'
+        describe: You distinguished the two
+      - type: file_matches
+        path: /tmp/answer-timeout
+        pattern: '(?i)REPORTED A TERMINATION THAT DID NOT HAPPEN'
+        describe: And named what the plain form reports
+
+  - id: s5
+    instruction: >-
+      Write a retry helper worth reusing, and justify every element. Save it to
+      /tmp/retry.sh and your reasoning to /tmp/answer-retry.
+    walkthrough: |
+      cat > /tmp/retry.sh <<'R'
+      #!/bin/bash
+      # retry [-n ATTEMPTS] -- COMMAND...
+      retry() {
+        local attempts=${RETRIES:-5} delay=1 n=1 status=0
+        until "$@"; do
+          status=$?
+          case $status in
+            124) : ;;                       # timed out - worth retrying
+            1|2) : ;;                        # generic failure - worth retrying
+            127) echo "retry: command not found: $1" >&2; return 127 ;;
+            126) echo "retry: not executable: $1" >&2; return 126 ;;
+          esac
+          if [ "$n" -ge "$attempts" ]; then
+            echo "retry: giving up after $n attempts (last status $status): $*" >&2
+            return "$status"
+          fi
+          sleep "$(( delay + RANDOM % delay ))"      # backoff WITH jitter
+          delay=$(( delay < 32 ? delay * 2 : 32 ))   # capped
+          n=$(( n + 1 ))
+        done
+        [ "$n" -gt 1 ] && echo "retry: succeeded on attempt $n" >&2
+        return 0
+      }
+      R
+      chmod 0755 /tmp/retry.sh
+
+      {
+        echo "proving it, with a command that succeeds on the third try:"
+        cat > /tmp/flaky <<'F'
+      #!/bin/bash
+      n=$(cat /tmp/flaky.count 2>/dev/null || echo 0)
+      n=$((n + 1)); echo "$n" > /tmp/flaky.count
+      [ "$n" -ge 3 ] && { echo "  flaky: ok on attempt $n"; exit 0; }
+      echo "  flaky: failing attempt $n"; exit 1
+      F
+        chmod 0755 /tmp/flaky
+        rm -f /tmp/flaky.count
+        ( . /tmp/retry.sh; RETRIES=5 retry /tmp/flaky ) 2>&1 | sed 's/^/    /'
+        echo
+        echo "and one that can never succeed:"
+        rm -f /tmp/flaky.count
+        ( . /tmp/retry.sh; RETRIES=2 retry /tmp/nosuchcommand ) 2>&1 | sed 's/^/    /'
+        echo
+        echo "EVERY ELEMENT, AND WHAT IT PREVENTS:"
+        echo
+        echo "  jitter          without it every client that failed together retries"
+        echo "                  together, so a service that has just come back is hit"
+        echo "                  by the whole fleet at once and falls over again. that"
+        echo "                  is a THUNDERING HERD, caused by the retry logic being"
+        echo "                  correct and identical everywhere."
+        echo
+        echo "  capped delay    without it the eighth retry waits over two minutes,"
+        echo "                  and the ninth over four."
+        echo
+        echo "  capped count    a retry loop with no ceiling turns a fast failure into"
+        echo "                  a hang, and a hang is harder to diagnose than a"
+        echo "                  failure. it also holds any lock for the whole time."
+        echo
+        echo "  127 / 126       a missing or non-executable command will still be"
+        echo "                  missing in eight seconds. retrying a PERMANENT failure"
+        echo "                  spends the whole budget rediscovering what the first"
+        echo "                  attempt already knew, and delays the alert by exactly"
+        echo "                  the length of the loop."
+        echo
+        echo "  the last status is returned, not 1, so the caller can still tell 124"
+        echo "  from 1 after the retries are exhausted."
+        echo
+        echo "WHAT THIS HELPER CANNOT DO is make the command safe to run twice. that"
+        echo "is a property of the COMMAND, and it has to be established before the"
+        echo "retry is written. wrapping charge.sh in this loop would still charge"
+        echo "three times - correctly, with jitter and a capped backoff."
+        echo
+        echo "and per-attempt timeouts belong inside the command, not the loop:"
+        echo "    retry curl -fsS --max-time 10 \"\$URL\" -o \"\$OUT\""
+        echo "without --max-time, one hung attempt eats the entire retry budget."
+      } > /tmp/answer-retry
+      cat /tmp/answer-retry
+    verify:
+      - type: file_exists
+        path: /tmp/retry.sh
+        describe: You wrote the helper
+      - type: file_matches
+        path: /tmp/answer-retry
+        pattern: 'flaky: ok on attempt 3'
+        describe: It retries until success
+      - type: file_matches
+        path: /tmp/answer-retry
+        pattern: '(?i)retry: succeeded on attempt 3'
+        describe: And says so
+      - type: file_matches
+        path: /tmp/answer-retry
+        pattern: '(?i)command not found'
+        describe: And refuses to retry a permanent failure
+      - type: file_matches
+        path: /tmp/answer-retry
+        pattern: '(?i)THUNDERING HERD'
+        describe: You justified jitter
+      - type: file_matches
+        path: /tmp/answer-retry
+        pattern: '(?i)turns a fast failure into\s+a hang'
+        describe: And the capped count
+      - type: file_matches
+        path: /tmp/answer-retry
+        pattern: '(?i)property of the COMMAND'
+        describe: And named what the helper cannot fix
+
+solution: >-
+  **One invocation, three charges.** `charge.sh` reports `giving up after 3
+  attempts` and exits 1, and the ledger has three entries — because the charge is
+  *applied* and then the response is *lost*, which is what a timeout, a dropped
+  connection or a load-balancer restart looks like from the caller's side.
+
+
+  **A non-zero status means "I did not hear that it worked", not "it did not
+  work".** Those are different claims, and a retry loop treats them as the same
+  one.
+
+
+  **What decides whether a retry is safe** is whether the operation describes a
+  **desired state** or a **change**. "Make this directory exist" applied twice is
+  the same as once; "add one to this" is not, and no amount of care in the retry
+  loop fixes that. Measured: `mkdir -p` twice succeeds, plain `mkdir` fails the
+  second time, `>>` doubles the file, `>` does not.
+
+
+  **The fix is an idempotency key**, generated **once, before the first attempt**,
+  and sent with every attempt:
+
+
+  ```console
+    (server: key idem-42-... already applied - ignoring duplicate)
+  charge confirmed for cust-001 on attempt 2
+  charges actually recorded: 1
+  ```
+
+
+  Generating it inside the loop would give each attempt a different key and
+  change nothing. The far side must treat a repeat as **success** — "already
+  done" is the answer the caller wanted. Where there is no key support, record
+  that the step happened *before* doing the next thing and check that record on
+  the way in.
+
+
+  **`timeout` sends a request, not a guarantee.**
+
+
+  ```console
+  importer did not finish in 1s - terminated (rc=124)
+  ...
+  importer: FINISHED WRITING ALL BATCHES
+  ```
+
+
+  The importer caught `TERM` and completed every batch. `timeout -k 0.2 1` gives
+  **137** — 128+9, `SIGKILL`, which cannot be caught — and the importer stops
+  partway. The grace period is the point: a well-behaved process gets time to
+  finish cleanly, a badly-behaved one still stops.
+
+
+  **The retry helper** needs jitter (or a fleet retrying in lockstep becomes a
+  **thundering herd**), a capped delay, a capped count (an unbounded loop turns a
+  fast failure into a hang, and holds any lock for the whole time), and an
+  early exit on permanent failures like 127 — retrying those spends the budget
+  rediscovering what the first attempt knew and delays the alert by the length of
+  the loop. Return the *last status*, so a caller can still tell 124 from 1.
+
+
+  **What it cannot do is make the command safe to run twice.** That is a property
+  of the command, established before the retry is written — wrapping `charge.sh`
+  in this loop would still charge three times, correctly, with jitter and capped
+  backoff.

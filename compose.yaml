@@ -1,0 +1,364 @@
+# Groundwork — base topology.
+#
+# Production-shaped on purpose: only the proxy publishes a host port, the
+# database and cache are unreachable from the host, and services are split
+# across three networks. compose.override.yaml layers development conveniences
+# on top and is applied automatically by `docker compose up`.
+
+name: groundwork
+
+x-api-env: &api-env
+  GROUNDWORK_ENV: ${GROUNDWORK_ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required — copy .env.example to .env}
+  POSTGRES_USER: ${POSTGRES_USER:-groundwork}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  POSTGRES_DB: ${POSTGRES_DB:-groundwork}
+  POSTGRES_HOST: db
+  POSTGRES_PORT: 5432
+  VALKEY_HOST: cache
+  VALKEY_PORT: 6379
+  CONTENT_DIR: /content
+  # Empty unless the observability profile is running, which is what keeps the
+  # OTel SDK inert on a default `docker compose up` — no exporters, no retry
+  # loops against a collector that does not exist.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-groundwork-api}
+  # Emit the stable HTTP semantic conventions
+  # (http.server.request.duration, in seconds) rather than the legacy
+  # http.server.duration in milliseconds. Without this the instrumentation
+  # ships the old names and every dashboard query silently returns nothing.
+  OTEL_SEMCONV_STABILITY_OPT_IN: http
+
+services:
+  # ---------------------------------------------------------------- ingress --
+  proxy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "${PUBLIC_PORT:-8080}:8080"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    networks: [edge]
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ------------------------------------------------------------ application --
+  web:
+    build:
+      context: ./services/web
+      target: runtime
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_INTERNAL_URL: http://api:8000
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    networks: [edge, app]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  api:
+    build:
+      context: ./services/api
+      target: runtime
+    restart: unless-stopped
+    environment: *api-env
+    volumes:
+      - ./content:/content:ro
+    networks: [edge, app, data]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+        required: false
+      cache:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  worker:
+    build:
+      context: ./services/api
+      target: runtime
+    restart: unless-stopped
+    # Our own entrypoint, not the `arq` CLI — see app/workers/main.py.
+    command: ["python", "-m", "app.workers.main"]
+    environment:
+      <<: *api-env
+      OTEL_SERVICE_NAME: groundwork-worker
+    volumes:
+      - ./content:/content:ro
+    networks: [app, data]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      cache:
+        condition: service_healthy
+
+  # Migrations run once, from one place. Never from N replicating API pods.
+  migrate:
+    build:
+      context: ./services/api
+      target: runtime
+    command: ["alembic", "upgrade", "head"]
+    environment: *api-env
+    networks: [data]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # Projects `content/` into the database, once, after migrations.
+  #
+  # Without this, `docker compose up` produces a running platform with an empty
+  # curriculum: migrations applied, API healthy, home page rendering, and every
+  # roadmap request a 404. The development workflow hid it completely, because
+  # anyone working here had ingested content by hand weeks ago.
+  #
+  # `required: false` on the API's side of this dependency is the important
+  # detail: Compose then knows this service is expected to run once and exit —
+  # without it, `up --wait` reports a clean exit as a failure — while content
+  # that fails to lint stays a visible error rather than becoming an outage. The
+  # API starts either way and serves what it has.
+  seed:
+    build:
+      context: ./services/api
+      target: runtime
+    command: ["python", "-m", "app.content.cli", "ingest"]
+    environment: *api-env
+    volumes:
+      - ./content:/content:ro
+    networks: [data]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # ------------------------------------------------------------------ state --
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-groundwork}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-groundwork}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      # PostgreSQL 18 changed the recommended mount point. The volume goes at
+      # /var/lib/postgresql (not .../data) so the data lives in a
+      # major-version-named subdirectory and `pg_upgrade --link` can work across
+      # a major upgrade without crossing a mount boundary.
+      # See docs/development/VERSIONS.md.
+      - pgdata:/var/lib/postgresql
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-groundwork} -d ${POSTGRES_DB:-groundwork}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  cache:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ["valkey-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - valkeydata:/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ------------------------------------------------------------- profile: labs
+  #
+  # Opt-in on purpose. This is the only service in the stack that touches a
+  # container runtime, so the default topology does not include it and the risk
+  # simply is not present unless you ask for it.
+  #
+  # docs/architecture/06-lab-architecture.md §6.4 states the trade honestly:
+  # a socket reachable from a network service is a privilege-escalation path.
+  # It is narrowed here (read-only mount, non-root user, narrow API) and it is
+  # still a real risk. Anything beyond a single trusted operator must point the
+  # broker at a dedicated remote lab host instead.
+  lab-broker:
+    build:
+      context: ./services/lab-broker
+      target: runtime
+    profiles: [labs]
+    restart: unless-stopped
+    environment:
+      GROUNDWORK_ENV: ${GROUNDWORK_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_INTERNAL_URL: http://api:8000
+      PROVISIONER: ${LAB_PROVISIONER:-docker}
+      DOCKER_SOCKET: /var/run/docker.sock
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: groundwork-lab-broker
+      OTEL_SEMCONV_STABILITY_OPT_IN: http
+    volumes:
+      # Read-only: the broker creates and destroys containers, which the Docker
+      # API permits over a read-only socket mount. It cannot modify the socket
+      # file itself.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # The socket is mode 0660. The broker runs as UID 10002 and needs to be in
+    # the socket's *group* to open it — which is meaningfully narrower than
+    # running the service as root.
+    #
+    # The right GID depends on the host: Docker Desktop's socket is root:root
+    # (gid 0), while a Linux host is usually root:docker. Find yours with:
+    #   docker compose exec lab-broker ls -ln /var/run/docker.sock
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
+    networks: [edge, app]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health/live',timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+
+
+  # -------------------------------------------------- profile: observability
+  #
+  # The platform instruments itself, and these signals become the worked
+  # examples in the Observability track. Everything here is opt-in: without
+  # `--profile observability` there is no collector, the OTLP endpoint is unset,
+  # and the services carry the SDK without exporting anything.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    profiles: [observability]
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./infra/observability/otel-collector.yaml:/etc/otel/config.yaml:ro
+    networks: [app, observability]
+    depends_on:
+      - tempo
+      - loki
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    profiles: [observability]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./infra/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observability/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheusdata:/prometheus
+    networks: [observability]
+
+  tempo:
+    image: grafana/tempo:2.7.0
+    profiles: [observability]
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    user: "0:0"
+    volumes:
+      - ./infra/observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempodata:/var/tempo
+    networks: [observability]
+
+  loki:
+    image: grafana/loki:3.3.2
+    profiles: [observability]
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yaml"]
+    user: "0:0"
+    volumes:
+      - ./infra/observability/loki.yaml:/etc/loki/config.yaml:ro
+      - lokidata:/loki
+    networks: [observability]
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    profiles: [observability]
+    restart: unless-stopped
+    environment:
+      # Anonymous admin is acceptable because this profile is local-only and
+      # publishes nothing a learner could reach from outside the host. Any
+      # deployment that exposes Grafana must set real credentials.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks: [observability]
+    depends_on:
+      - prometheus
+
+  # ------------------------------------------------------------ profile: tools
+  adminer:
+    image: adminer:5
+    profiles: [tools]
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    ports:
+      - "8081:8080"
+    networks: [data]
+
+networks:
+  edge:
+  app:
+  data:
+  # Backends talk to each other and to the collector, and to nothing else. The
+  # collector is the only service on both this network and the app network,
+  # which is what keeps a telemetry backend from reaching Postgres.
+  observability:
+
+volumes:
+  pgdata:
+  valkeydata:
+  caddydata:
+  caddyconfig:
+  prometheusdata:
+  tempodata:
+  lokidata:
+  grafanadata:

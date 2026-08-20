@@ -1,0 +1,291 @@
+id: lab.three-that-cannot-talk
+topic: topic.addresses-subnets-and-routes
+title: "Challenge: three hosts on one switch, and two of them are wrong"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A03.1.8]
+
+intro: >-
+  Three hosts are plugged into the same switch. Under /tmp/hosts you have each
+  one's addresses, each one's routing table, what each reports when it tries the
+  others, and a note about what its users see.
+
+
+  Every failure between them presents as a timeout, which tells you nothing. One
+  host is configured correctly. Work out what is wrong with the other two — the
+  faults are different — and give the exact change each one needs.
+
+setup:
+  - /opt/lab/seed.sh
+  - /opt/lab/seed-network.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before opening anything, write to /tmp/hypotheses at least three distinct
+      configuration mistakes that would stop two hosts on one switch from
+      talking.
+    hint: >-
+      One is about the mask. One is about routes. One is about the addresses
+      themselves.
+    walkthrough: |
+      printf 'one host has the wrong prefix length, so it thinks the other is remote\na host has no default route and cannot reach anything off its own subnet\nthe two hosts are configured on subnets that do not overlap at all\na firewall is dropping the traffic\n' > /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You recorded hypotheses before looking
+      - type: command_output
+        command: "wc -l < /tmp/hypotheses"
+        pattern: "[3-9]"
+        describe: At least three hypotheses
+
+  - id: s2
+    instruction: >-
+      Collect the addresses. Save each host's eth0 CIDR, one per line labelled
+      by host, to /tmp/answer-addresses.
+    walkthrough: |
+      for h in alpha bravo charlie; do
+        printf '%s %s\n' "$h" "$(awk '/eth0/ {print $3}' /tmp/hosts/$h/addr.txt)"
+      done > /tmp/answer-addresses
+      cat /tmp/answer-addresses
+    verify:
+      - type: file_matches
+        path: /tmp/answer-addresses
+        pattern: '^alpha 10.20.4.10/24$'
+        describe: alpha has a /24
+      - type: file_matches
+        path: /tmp/answer-addresses
+        pattern: '^bravo 10.20.4.200/25$'
+        describe: bravo has a /25 — the only host whose prefix differs
+      - type: file_matches
+        path: /tmp/answer-addresses
+        pattern: '^charlie 10.20.4.60/24$'
+        describe: And charlie has a /24
+
+  - id: s3
+    instruction: >-
+      Compute the network each host believes it is on, and save it with the host
+      name to /tmp/answer-networks.
+    hint: >-
+      Same arithmetic as the previous lab: block size is 2^(32-prefix), and the
+      network is the address rounded down to a multiple of it.
+    walkthrough: |
+      for h in alpha bravo charlie; do
+        cidr=$(awk '/eth0/ {print $3}' /tmp/hosts/$h/addr.txt)
+        awk -v h="$h" -v cidr="$cidr" '
+          function dotted(n) { return int(n/16777216)"."int(n%16777216/65536)"."int(n%65536/256)"."(n%256) }
+          BEGIN {
+            split(cidr, p, "/"); split(p[1], o, ".")
+            ip = o[1]*16777216 + o[2]*65536 + o[3]*256 + o[4]
+            size = 2 ^ (32 - p[2]); net = int(ip / size) * size
+            printf "%s %s-%s\n", h, dotted(net), dotted(net + size - 1)
+          }'
+      done > /tmp/answer-networks
+      cat /tmp/answer-networks
+    verify:
+      - type: file_matches
+        path: /tmp/answer-networks
+        pattern: '^alpha 10.20.4.0-10.20.4.255$'
+        describe: alpha believes the network runs from .0 to .255
+      - type: file_matches
+        path: /tmp/answer-networks
+        pattern: '^bravo 10.20.4.128-10.20.4.255$'
+        describe: bravo believes it starts at .128 — a different network
+
+  - id: s4
+    instruction: >-
+      Now say what bravo concludes about each of the others. Write to
+      /tmp/answer-bravo-view whether bravo treats alpha and charlie as local or
+      remote, with the reason.
+    hint: >-
+      Compare alpha's and charlie's addresses against the range bravo believes
+      it is on.
+    walkthrough: |
+      {
+        echo "alpha 10.20.4.10 remote: below bravo's network start of 10.20.4.128"
+        echo "charlie 10.20.4.60 remote: also below 10.20.4.128"
+        echo "so bravo sends to its default gateway for both, instead of arping for them directly on the wire they share"
+      } > /tmp/answer-bravo-view
+      cat /tmp/answer-bravo-view
+    verify:
+      - type: file_matches
+        path: /tmp/answer-bravo-view
+        pattern: 'alpha .* remote'
+        describe: bravo treats alpha as off-subnet
+      - type: file_matches
+        path: /tmp/answer-bravo-view
+        pattern: "gateway|router"
+        describe: And therefore sends to a router rather than directly
+
+  - id: s5
+    instruction: >-
+      Charlie's failure is different and its note gives it away. Save charlie's
+      routing table and the distinguishing phrase from its note to
+      /tmp/answer-charlie.
+    hint: >-
+      Compare charlie's route list with alpha's. Then read what charlie's users
+      say about *how long* the failure takes.
+    walkthrough: |
+      {
+        cat /tmp/hosts/charlie/route.txt
+        grep -i 'instantly' /tmp/hosts/charlie/notes.txt
+      } > /tmp/answer-charlie
+      cat /tmp/answer-charlie
+    verify:
+      - type: command_exit
+        command: "grep -q '^default' /tmp/answer-charlie"
+        exit_code: 1
+        describe: charlie has no default route
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "instantly"
+        describe: And its off-subnet failures are instant, not timeouts
+
+  - id: s6
+    instruction: >-
+      Confirm it from the attempts file. Save the line describing charlie
+      reaching the internet to /tmp/answer-charlie-proof, and say what the exact
+      wording proves.
+    walkthrough: |
+      {
+        grep 'charlie -> 1.1.1.1' /tmp/hosts/attempts.txt
+        echo "network is unreachable means no route matched, so the packet never left charlie; that is a local configuration failure and rules out the switch, the gateway and anything beyond them"
+      } > /tmp/answer-charlie-proof
+      cat /tmp/answer-charlie-proof
+    verify:
+      - type: file_matches
+        path: /tmp/answer-charlie-proof
+        pattern: "Network is unreachable"
+        describe: The exact message, which is not a timeout
+      - type: file_matches
+        path: /tmp/answer-charlie-proof
+        pattern: "never left|local"
+        describe: And you read it as a purely local failure
+
+  - id: s7
+    instruction: >-
+      Write your three verdicts to /tmp/answer-diagnosis — one line per host,
+      including the one that is configured correctly.
+    walkthrough: |
+      {
+        echo "alpha: correct. /24, a default route, and it can reach charlie and the internet; its failure to bravo is bravo's fault"
+        echo "bravo: wrong prefix. /25 instead of /24 puts its network start at 10.20.4.128, so it treats both neighbours as remote and sends their traffic to the gateway"
+        echo "charlie: no default route. Local subnet works, everything else fails instantly with network is unreachable"
+      } > /tmp/answer-diagnosis
+      cat /tmp/answer-diagnosis
+    verify:
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "alpha:.*(correct|fine|right)"
+        describe: You identified alpha as correctly configured
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "bravo:.*(prefix|mask|/25)"
+        describe: bravo as a prefix-length mistake
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "charlie:.*(default|route)"
+        describe: And charlie as a missing default route
+
+  - id: s8
+    instruction: >-
+      Write the exact change each broken host needs to /tmp/answer-fixes, as a
+      command.
+
+
+      Then add one line saying why alpha's symptom was misleading.
+    walkthrough: |
+      {
+        echo "bravo: ip addr replace 10.20.4.200/24 dev eth0"
+        echo "charlie: ip route add default via 10.20.4.1 dev eth0"
+        echo "alpha's timeout to bravo pointed at alpha, and alpha is correct; a one-directional failure means you should compare the two hosts' masks before investigating either one on its own"
+      } > /tmp/answer-fixes
+      cat /tmp/answer-fixes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: 'bravo:.*10.20.4.200/24'
+        describe: bravo needs the correct prefix
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: 'charlie:.*default via 10.20.4.1'
+        describe: charlie needs a default route
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "one.direction|compare|both"
+        describe: And you named why a one-way failure misdirects
+
+solution: |
+  **The three hosts.**
+
+  | | alpha | bravo | charlie |
+  |---|---|---|---|
+  | Address | 10.20.4.10/24 | 10.20.4.200/**25** | 10.20.4.60/24 |
+  | Believes its network is | .0 – .255 | **.128 – .255** | .0 – .255 |
+  | Default route | yes | yes | **none** |
+  | Verdict | Correct | Wrong prefix | Missing default route |
+
+  **bravo has a /25 where everything else has a /24.** That moves its network
+  start to `10.20.4.128`, so both of its neighbours — at .10 and .60 — fall
+  *below* its own network and are treated as remote. Instead of ARPing for them
+  on the wire they all share, bravo hands their traffic to the default gateway,
+  which has no reason to route it back onto the subnet it came from.
+
+  The asymmetry is what makes it hard to see. alpha and charlie both have /24s,
+  so they consider bravo local and send to it directly — and those packets
+  arrive and are answered. bravo's answers go to the gateway and vanish. So alpha
+  reports a timeout, bravo's own logs show requests arriving and being served
+  normally, and each host's evidence points at the other.
+
+  **charlie has no default route at all.** Its local subnet works perfectly —
+  which is why it reaches alpha — and everything else fails. The tell is in the
+  wording rather than the fact:
+
+  ```text
+  charlie -> 1.1.1.1  : connect: Network is unreachable
+  ```
+
+  Not a timeout. "Network is unreachable" means no route matched, so the packet
+  never left charlie. That single message rules out the switch, the gateway,
+  the firewall and everything beyond them, and it does so instantly rather than
+  after thirty seconds — which is the other tell, and the one users report
+  without realising it is diagnostic.
+
+  charlie's timeout to bravo is a *second* fault it is a victim of, not a cause:
+  charlie is on the same /24 as alpha and does exactly the right thing, and
+  bravo's reply goes to the gateway.
+
+  **alpha is correct, and saying so matters.** Its only failing destination is
+  bravo, and the fault is entirely bravo's. The instinct during an incident is to
+  change something on the host that reported the problem, and here that would
+  make things worse.
+
+  **The fixes:**
+
+  ```bash
+  # bravo — correct the prefix
+  ip addr replace 10.20.4.200/24 dev eth0
+
+  # charlie — add the default route
+  ip route add default via 10.20.4.1 dev eth0
+  ```
+
+  Both are runtime changes; making them survive a reboot means editing whatever
+  configures the interface — netplan, NetworkManager, systemd-networkd, or the
+  cloud's own configuration — and the fact that these hosts drifted apart at all
+  suggests that is where the real defect is.
+
+  **Two rules worth taking away.**
+
+  **A one-directional failure means compare the masks.** When A reaches B and B
+  cannot reach A, the two hosts disagree about who is a neighbour, and the
+  disagreement is in the prefix. Nothing else produces that shape as reliably.
+
+  **Read the exact error and how long it took.** "Network is unreachable"
+  (instant, no route), "No route to host" (route existed, ARP failed),
+  "Connection refused" (arrived, actively rejected) and a timeout (unknown) are
+  four different diagnoses. Only the last one is ambiguous, and treating all four
+  as "it doesn't work" throws away the most useful evidence you will get for
+  free.

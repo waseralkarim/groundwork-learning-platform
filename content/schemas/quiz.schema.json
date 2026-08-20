@@ -1,0 +1,158 @@
+{
+  "$defs": {
+    "Level": {
+      "description": "The difficulty ladder. See docs/architecture/01-vision-and-principles.md.",
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5"
+      ],
+      "title": "Level",
+      "type": "string"
+    },
+    "QuizOption": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z]$",
+          "title": "Id",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 400,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "correct": {
+          "default": false,
+          "title": "Correct",
+          "type": "boolean"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "title": "QuizOption",
+      "type": "object"
+    },
+    "QuizQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^q\\d+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "single_choice",
+            "multi_choice",
+            "ordering",
+            "fill_command"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "level": {
+          "$ref": "#/$defs/Level"
+        },
+        "objectives": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Objectives",
+          "type": "array"
+        },
+        "stem": {
+          "maxLength": 1200,
+          "minLength": 10,
+          "title": "Stem",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/QuizOption"
+          },
+          "maxItems": 8,
+          "minItems": 2,
+          "title": "Options",
+          "type": "array"
+        },
+        "explanation": {
+          "maxLength": 1500,
+          "minLength": 20,
+          "title": "Explanation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "level",
+        "objectives",
+        "stem",
+        "options",
+        "explanation"
+      ],
+      "title": "QuizQuestion",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "topic": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "title": "Topic",
+      "type": "string"
+    },
+    "pass_score": {
+      "default": 70,
+      "maximum": 100,
+      "minimum": 50,
+      "title": "Pass Score",
+      "type": "integer"
+    },
+    "questions": {
+      "items": {
+        "$ref": "#/$defs/QuizQuestion"
+      },
+      "minItems": 3,
+      "title": "Questions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "topic",
+    "questions"
+  ],
+  "title": "Quiz",
+  "type": "object"
+}

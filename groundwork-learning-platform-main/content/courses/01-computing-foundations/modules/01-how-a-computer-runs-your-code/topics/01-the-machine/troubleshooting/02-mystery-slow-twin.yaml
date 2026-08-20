@@ -1,0 +1,162 @@
+id: troubleshooting.mystery-slow-twin
+topic: topic.the-machine
+title: Two servers, same spec, one is four times slower
+level: L3
+objectives: [OBJ-A01.1.3, OBJ-A01.1.7]
+reveal_policy: progressive
+
+situation: >-
+  Your team runs the same service on two hosts behind a load balancer. On paper
+  they are identical: 8 vCPU, 16GB RAM, same image, same configuration, same
+  version, deployed by the same pipeline within a minute of each other.
+
+
+  `web-a` serves requests at 45ms p50. `web-b` serves the same requests at
+  190ms p50. Neither is erroring. Both pass health checks. The team has already
+  restarted `web-b` twice and rebuilt it once, with no change.
+
+
+  Find the difference.
+
+symptoms:
+  - "web-a p50: 45ms · web-b p50: 190ms, consistently, for three days"
+  - "Identical instance type, image tag and configuration"
+  - "No errors on either host"
+  - "Restarting and rebuilding web-b changed nothing"
+  - "web-b's CPU utilisation is consistently higher for the same request rate"
+
+artifacts:
+  - type: command_output
+    label: "web-a: uname -m && nproc"
+    content: |
+      $ uname -m && nproc
+      x86_64
+      8
+
+  - type: command_output
+    label: "web-b: uname -m && nproc"
+    content: |
+      $ uname -m && nproc
+      aarch64
+      8
+
+  - type: command_output
+    label: "web-a: file /app/server"
+    content: |
+      /app/server: ELF 64-bit LSB executable, x86-64, version 1 (SYSV),
+      dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, not stripped
+
+  - type: command_output
+    label: "web-b: file /app/server"
+    content: |
+      /app/server: ELF 64-bit LSB executable, x86-64, version 1 (SYSV),
+      dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, not stripped
+
+  - type: command_output
+    label: "web-b: ps -eo pid,comm,args | grep -v grep | grep server"
+    content: |
+        814 qemu-x86_64     /usr/bin/qemu-x86_64-static /app/server
+
+  - type: command_output
+    label: "web-b: vmstat 1 3"
+    content: |
+      procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+       r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+       6  0      0 892000 210000 4100000    0    0    12    30  980 2400 71 12 17  0  0
+       5  0      0 889000 210000 4100000    0    0     8    24  960 2350 73 11 16  0  0
+       6  0      0 885000 209000 4100000    0    0    10    28  975 2380 74 10 16  0  0
+
+diagnostic_questions:
+  - "Is this a CPU, memory or I/O problem? What rules the other two out?"
+  - "The two hosts report different values for one command. Which, and what does it mean?"
+  - "The binary is byte-identical on both hosts. So why does it run at all on web-b?"
+  - "What is `qemu-x86_64-static` and how did it get involved?"
+  - "Why did rebuilding web-b not fix it?"
+  - "Why did nothing error, given the architecture mismatch?"
+
+hints:
+  - >-
+    Compare the two hosts line by line before looking at anything else. Exactly
+    one pair of outputs differs in a way that is not a number.
+  - >-
+    `uname -m` says `aarch64` on web-b. The binary says `x86-64`. By the rules in
+    this topic, that combination should produce `Exec format error`. It did not.
+    Something is bridging the gap — find it in the process list.
+  - >-
+    vmstat shows `us` at ~72% with no swap and no I/O wait. That is a
+    CPU-bound workload. The question is why the *same* work costs more CPU here.
+
+root_cause: >-
+  `web-b` is an arm64 host. The application binary is amd64. It runs only because
+  `qemu-x86_64-static` is installed and registered with the kernel's binfmt_misc
+  handler, which transparently intercepts amd64 binaries and emulates them
+  instruction by instruction.
+
+
+  Emulation is correct but expensive — typically 2× to 10× slower depending on
+  workload. Every amd64 instruction is translated to a sequence of arm64
+  instructions at runtime, which is why `web-b` burns far more CPU for identical
+  work and why its latency is roughly 4× worse.
+
+
+  The provisioning that created `web-b` selected an arm64 instance type — most
+  likely a cheaper Graviton family — while the build pipeline produces only
+  amd64 images. Rebuilding did not help because the rebuild produced the same
+  amd64 binary. Nothing errored because emulation made it work, just slowly:
+  the failure was converted from loud to quiet.
+
+method: |
+  **1. "Identical" is a claim, not a fact.** The first move when two supposedly
+  identical hosts behave differently is to *verify* the claim, mechanically,
+  field by field. Architecture, kernel version, instance type, storage class,
+  CPU model, NUMA layout. One of them is different, and this is faster than
+  theorising.
+
+  **2. Classify the bottleneck anyway.** `us` at 72%, `si/so` at 0, `wa` at 0 —
+  CPU-bound, no memory or I/O involvement. That does not solve it, but it tells
+  you the extra cost is *computation*, which narrows what kind of difference to
+  look for.
+
+  **3. Notice what should have failed but did not.** This is the key move. An
+  amd64 binary on an arm64 kernel should produce `Exec format error`. It did
+  not. When something works that should not, find the thing making it work —
+  because that thing is usually your answer.
+
+  **4. Read the actual process, not the expected one.** `ps` shows the real
+  command line: `qemu-x86_64-static /app/server`. The process running is not the
+  process anyone thought was running.
+
+  **5. Ask why the fix did not fix it.** "We rebuilt and nothing changed" is
+  information. It rules out corruption and configuration drift, and points at
+  something the build cannot influence — which is the platform.
+
+  The transferable lesson: **a silent fallback is more dangerous than a failure.**
+  A hard `Exec format error` would have been caught in minutes at deploy time.
+  Emulation turned an obvious, immediate failure into three days of degraded
+  service that nobody could explain.
+
+resolution: |
+  **Immediate:** remove `web-b` from the load balancer. Latency returns to 45ms
+  for all traffic while capacity drops.
+
+  **Fix:** build a native arm64 image and deploy that, or replace `web-b` with an
+  amd64 instance. If the fleet is to be mixed, the pipeline must produce a
+  multi-architecture image:
+
+  ```bash
+  docker buildx build --platform linux/amd64,linux/arm64 -t app:1.4.0 --push .
+  ```
+
+  **Prevention, in order of value:**
+
+  1. Have the application log its own architecture at startup, and alert if it
+     does not match the host. Two lines of code that would have caught this in
+     minutes.
+  2. Do not install emulation on production hosts. It converts a loud failure
+     into a silent one — useful on a developer laptop, actively harmful here.
+  3. Assert the architecture in the deployment pipeline rather than trusting it.
+  4. Alert on per-host latency divergence, not just on aggregate p50. The
+     aggregate hid this: mixing 45ms and 190ms produced an unremarkable average.
+
+  **C14 Containers** covers multi-architecture builds; **F35 Prometheus** covers
+  why per-instance alerting catches what aggregates hide.

@@ -1,0 +1,130 @@
+id: topic.the-machine
+slug: the-machine
+title: "The Machine: CPU, Memory, Storage"
+summary: >-
+  What a computer physically does when it runs your program, and why every
+  DevOps failure you will ever debug traces back to one of four resources.
+order: 1
+levels: [L1, L2, L3]
+estimated_minutes: 100
+status: published
+
+prerequisites: []
+
+objectives:
+  - id: OBJ-A01.1.1
+    level: L1
+    verb: explain
+    statement: >-
+      Explain the distinct roles of CPU, RAM and persistent storage, and predict
+      what survives a process exit, a reboot and a power loss.
+    assessed_by: [quiz.q1, quiz.q2, exercise.e1, assessment.A]
+
+  - id: OBJ-A01.1.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe the fetch-decode-execute cycle and what a machine instruction is.
+    assessed_by: [quiz.q3, quiz.q4]
+
+  - id: OBJ-A01.1.3
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose why a binary built for one CPU architecture will not run on
+      another, and identify the architecture of both a machine and a binary.
+    assessed_by: [quiz.q5, lab.wrong-architecture, troubleshooting.mystery-slow-twin]
+
+  - id: OBJ-A01.1.4
+    level: L2
+    verb: compare
+    statement: >-
+      Compare the levels of the memory hierarchy by latency, with the correct
+      order of magnitude for each.
+    assessed_by: [quiz.q6, quiz.q7, exercise.e2]
+
+  - id: OBJ-A01.1.5
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish a program from a process, and describe what happens between
+      typing a command and code executing.
+    assessed_by: [quiz.q8, quiz.q9, lab.program-to-process, assessment.A]
+
+  - id: OBJ-A01.1.6
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret the output of free(1) correctly, explaining the difference
+      between free and available memory and the role of the page cache.
+    assessed_by: [quiz.q10, quiz.q11, lab.inspect-the-machine, exercise.e3]
+
+  - id: OBJ-A01.1.7
+    level: L3
+    verb: classify
+    statement: >-
+      Given vmstat or top output, classify a workload as CPU-bound,
+      memory-bound or I/O-bound and cite the specific evidence.
+    assessed_by: [quiz.q12, quiz.q13, troubleshooting.slow-server, assessment.B]
+
+  - id: OBJ-A01.1.8
+    level: L3
+    verb: estimate
+    statement: >-
+      Estimate whether a given workload fits on a given machine and predict the
+      failure mode, and its order, if it does not.
+    assessed_by: [quiz.q14, quiz.q15, exercise.e4, lab.where-did-memory-go, assessment.C]
+
+terminology:
+  - term: instruction cycle
+    definition: >-
+      The loop a CPU repeats forever: fetch the next instruction from memory,
+      decode what it means, execute it. Also called fetch-decode-execute.
+  - term: instruction set architecture
+    definition: >-
+      The vocabulary of machine instructions a CPU understands, along with its
+      registers and how it is addressed. amd64 and arm64 are different
+      vocabularies, which is why a binary built for one cannot run on the other.
+  - term: volatile
+    definition: >-
+      Loses its contents when power is removed. RAM is volatile; an SSD is not.
+  - term: process
+    definition: >-
+      A program that is currently running, together with everything the kernel
+      tracks about it: its memory, its open files, its CPU state, its identity.
+  - term: virtual memory
+    definition: >-
+      The illusion, maintained by the CPU and kernel together, that each process
+      has a large private address space of its own. Addresses a process uses are
+      translated to physical RAM locations behind its back.
+  - term: page cache
+    definition: >-
+      RAM the kernel is using to hold recently read or written file data. It
+      looks like "used" memory but is released the instant a process needs it,
+      which is why "free memory" is a misleading number.
+  - term: resident set size
+    definition: >-
+      RSS. How much physical RAM a process is actually occupying right now, as
+      opposed to how much address space it has reserved.
+  - term: system call
+    definition: >-
+      A request from a program asking the kernel to do something the program is
+      not privileged to do itself, such as reading a file or allocating memory.
+  - term: swap
+    definition: >-
+      Disk space used to hold memory pages that do not fit in RAM. Reading them
+      back is roughly a thousand times slower than RAM, which is why a swapping
+      machine feels broken rather than merely slow.
+  - term: OOM killer
+    definition: >-
+      The kernel subsystem that picks a process and kills it when the system
+      cannot satisfy a memory allocation. It is a last resort, not an error
+      handler, and it does not ask politely.
+
+foreshadows:
+  - "Container memory limits and OOMKilled pods are this topic's memory model with a cgroup around it (C14, E26)."
+  - "Multi-architecture container images exist because of the architecture problem introduced here (C14)."
+  - "Volumes and PersistentVolumes exist because of the volatile/persistent distinction here (C15, E27)."
+  - "User space vs kernel space becomes namespaces and capabilities in the container tracks (C14, C16)."
+
+tags: [hardware, cpu, memory, storage, fundamentals, troubleshooting]

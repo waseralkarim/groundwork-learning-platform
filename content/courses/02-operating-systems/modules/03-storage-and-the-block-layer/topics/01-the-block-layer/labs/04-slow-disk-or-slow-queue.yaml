@@ -1,0 +1,306 @@
+id: lab.slow-disk-or-slow-queue
+topic: topic.the-block-layer
+title: "Challenge: three storage tickets, one of them is the dashboard's fault"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A02.4.8]
+
+intro: >-
+  Three storage tickets landed this week. Under /tmp/incident you have what was
+  collected for each: `/proc/PID/io`, mount information, `io.pressure`, and
+  whatever else the responder thought to grab.
+
+
+  One workload writes at full speed for forty minutes and then stalls. One is
+  perfectly healthy and was escalated because a graph turned red. One does a
+  migration in forty minutes that takes ninety seconds on a laptop.
+
+
+  Work out which is which, and say what single change fixes each — including the
+  one where the change is to the monitoring.
+
+setup:
+  - /opt/lab/seed.sh
+  - /opt/lab/seed-blockdev.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before opening anything, write to /tmp/hypotheses at least three distinct
+      ways a storage problem can present when the device itself is fine.
+    hint: >-
+      One of them is about memory rather than disk. One is about the
+      filesystem layer. One is about the measurement.
+    walkthrough: |
+      printf 'dirty pages crossed the throttle threshold and writers now block\nthe filesystem layer is writing far more than the application asked for\nthe metric is measuring the wrong thing and nothing is actually wrong\nthe device is at a provisioned IOPS cap rather than a hardware limit\n' > /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You recorded hypotheses before looking
+      - type: command_output
+        command: "wc -l < /tmp/hypotheses"
+        pattern: "[3-9]"
+        describe: At least three hypotheses
+
+  - id: s2
+    instruction: >-
+      Start with the one measurement that sorts all three: for each workload,
+      compare what it asked for against what a device did.
+
+
+      Save the ratio of write_bytes to wchar for each to /tmp/answer-ratios, in
+      the form `alpha 0.48`.
+    walkthrough: |
+      for w in alpha bravo charlie; do
+        f=/tmp/incident/$w/proc-io.txt
+        if [ -f "$f" ]; then
+          awk -v w="$w" '/^wchar/{c=$2} /^write_bytes/{b=$2} END { printf "%s %.2f\n", w, b/c }' "$f"
+        else
+          echo "$w no-proc-io"
+        fi
+      done > /tmp/answer-ratios
+      cat /tmp/answer-ratios
+    verify:
+      - type: file_matches
+        path: /tmp/answer-ratios
+        pattern: '^alpha 0\.4[0-9]$'
+        describe: Alpha has written about half of what it asked for — the rest is still in memory
+      - type: file_matches
+        path: /tmp/answer-ratios
+        pattern: '^charlie 12\.00$'
+        describe: Charlie's device did twelve times the work it was asked for
+
+  - id: s3
+    instruction: >-
+      Alpha's gap means dirty pages are accumulating. Find out how close it is
+      to the threshold: compute Dirty as a percentage of MemTotal and save it
+      with the two ratios to /tmp/answer-alpha-dirty.
+    hint: >-
+      /tmp/incident/alpha/meminfo.txt and
+      /tmp/incident/alpha/vm-sysctls.txt.
+    walkthrough: |
+      {
+        awk '/^MemTotal/{t=$2} /^Dirty:/{d=$2} END { printf "dirty_pct %.1f\n", d*100/t }' \
+          /tmp/incident/alpha/meminfo.txt
+        grep -E 'dirty_ratio|dirty_background_ratio' /tmp/incident/alpha/vm-sysctls.txt
+      } > /tmp/answer-alpha-dirty
+      cat /tmp/answer-alpha-dirty
+    verify:
+      - type: file_matches
+        path: /tmp/answer-alpha-dirty
+        pattern: 'dirty_pct 1[0-9]\.[0-9]'
+        describe: Dirty pages are between the background threshold and the throttle
+      - type: file_matches
+        path: /tmp/answer-alpha-dirty
+        pattern: 'vm.dirty_ratio = 20'
+        describe: And the throttle fires at 20%
+
+  - id: s4
+    instruction: >-
+      Now bravo. Compute its %util, aqu-sz and r_await from
+      /tmp/incident/bravo/diskstats.txt — the two lines are ten seconds apart —
+      and save all three to /tmp/answer-bravo.
+    walkthrough: |
+      awk '!/^#/ { if (!p) { for (i=1;i<=NF;i++) a[i]=$i; p=1; next }
+                   printf "util %.0f\naqu-sz %.1f\nr_await %.2f\n",
+                     ($13-a[13])/10000*100, ($14-a[14])/10000, ($7-a[7])/($4-a[4]) }' \
+        /tmp/incident/bravo/diskstats.txt > /tmp/answer-bravo
+      cat /tmp/answer-bravo
+      cat /tmp/incident/bravo/io.pressure
+    verify:
+      - type: file_matches
+        path: /tmp/answer-bravo
+        pattern: '^util 100$'
+        describe: The alert was right that utilisation is 100%
+      - type: file_matches
+        path: /tmp/answer-bravo
+        pattern: '^aqu-sz 0\.[0-9]$'
+        describe: But the queue is not even one request deep
+      - type: file_matches
+        path: /tmp/answer-bravo
+        pattern: '^r_await 0\.20$'
+        describe: And reads complete in two hundred microseconds
+
+  - id: s5
+    instruction: >-
+      Charlie's device did twelve times the work it was asked for. Find the
+      mechanism and save the evidence to /tmp/answer-charlie.
+    hint: >-
+      Look at what its data directory is mounted on, and at its read counters
+      as well as its write counters.
+    walkthrough: |
+      {
+        cat /tmp/incident/charlie/mount.txt
+        grep -E '^(rchar|read_bytes|wchar|write_bytes)' /tmp/incident/charlie/proc-io.txt
+      } > /tmp/answer-charlie
+      cat /tmp/answer-charlie
+    verify:
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: 'overlay on /var/lib/postgresql/data'
+        describe: Its data directory is on an overlay, not a volume
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: 'read_bytes: 21[0-9]+'
+        describe: And it read two terabytes off the device to write one gigabyte
+
+  - id: s6
+    instruction: >-
+      Write your three diagnoses to /tmp/answer-diagnosis — one line each,
+      naming the mechanism rather than the symptom.
+    walkthrough: |
+      {
+        echo "alpha: dirty pages have reached 17.9 percent against a dirty_ratio of 20, so writers are about to be throttled from memory speed down to cloud volume speed in one step"
+        echo "bravo: healthy; 100 percent util only means something was in flight, and the queue depth of 0.7 with 0.2ms reads says the device is nowhere near its limit"
+        echo "charlie: overlayfs copy-up on its data directory, reading whole files from the lower layer before each first write, so a 1 GiB migration moved 2 TiB"
+      } > /tmp/answer-diagnosis
+      cat /tmp/answer-diagnosis
+    verify:
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "alpha:.*(dirty|throttl)"
+        describe: You diagnosed alpha as dirty-page throttling
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "bravo:.*(health|fine|not|no problem)"
+        describe: You recognised bravo is not broken
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "charlie:.*(copy.up|overlay)"
+        describe: And charlie as copy-up amplification
+
+  - id: s7
+    instruction: >-
+      Check your work against the one signal all three have in common. Save each
+      workload's io.pressure `some avg60` figure to /tmp/answer-pressure.
+
+
+      It should agree with your ranking.
+    walkthrough: |
+      for w in alpha bravo charlie; do
+        printf '%s %s\n' "$w" "$(awk '/^some/ { for (i=1;i<=NF;i++) if ($i ~ /^avg60=/) print $i }' /tmp/incident/$w/io.pressure)"
+      done > /tmp/answer-pressure
+      cat /tmp/answer-pressure
+    verify:
+      - type: file_matches
+        path: /tmp/answer-pressure
+        pattern: 'alpha avg60=5[0-9]\.'
+        describe: Alpha's tasks are stalled on I/O over half the time
+      - type: file_matches
+        path: /tmp/answer-pressure
+        pattern: 'bravo avg60=0\.'
+        describe: Bravo's are stalled essentially never, despite 100% utilisation
+      - type: file_matches
+        path: /tmp/answer-pressure
+        pattern: 'charlie avg60=2[0-9]\.'
+        describe: And charlie's are stalled about a fifth of the time
+
+  - id: s8
+    instruction: >-
+      Write the single change you would make for each, to /tmp/answer-fixes.
+
+
+      For the healthy one, the change is not to the workload.
+    walkthrough: |
+      {
+        echo "alpha: set vm.dirty_bytes and vm.dirty_background_bytes to a few seconds of the volume's real write rate instead of percentages of 128 GiB, so writeback is continuous rather than a cliff"
+        echo "bravo: change the alert; util saturates on any device that serves requests concurrently, so alert on io.pressure stall time or on await instead"
+        echo "charlie: mount the data directory as a volume so writes bypass overlayfs entirely, which is a performance fix as much as a durability one"
+      } > /tmp/answer-fixes
+      cat /tmp/answer-fixes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "alpha:.*dirty"
+        describe: Alpha's fix is on the writeback thresholds
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "bravo:.*(alert|monitor|pressure|await)"
+        describe: Bravo's fix is to the monitoring, not the workload
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "charlie:.*volume"
+        describe: And charlie needs a volume
+
+solution: |
+  **The three verdicts.**
+
+  | | alpha | bravo | charlie |
+  |---|---|---|---|
+  | write_bytes ÷ wchar | 0.48 | — | **12.00** |
+  | Dirty as % of RAM | **17.9%** (throttle at 20) | — | — |
+  | %util | — | **100%** | — |
+  | aqu-sz | — | 0.7 | — |
+  | r_await | — | 0.20 ms | — |
+  | io.pressure some avg60 | **58.4** | 0.38 | 21.9 |
+  | Verdict | About to fall off the dirty cliff | Healthy; the alert is wrong | Copy-up amplification |
+
+  **alpha — the cliff, caught just before it.** It has written 88 GB and sent 42
+  GB to the device; the other 46 GB is dirty pages, and `Dirty` is at 17.9% of
+  memory against a `dirty_ratio` of 20.
+
+  That is the whole explanation of "fast for forty minutes, then stalls". Below
+  10% nothing is written back at all. Between 10% and 20% kernel threads write
+  back in the background and **nobody blocks** — the application still sees
+  memory speed, and the throughput graph is flat and healthy. Above 20% the
+  writer is throttled and `write()` blocks until pages are clean, so it drops
+  from memory speed to cloud-volume speed in one step.
+
+  The `io.pressure` figure of 58 confirms it is already painful.
+
+  On a 128 GiB node, `dirty_ratio: 20` permits about 25 GiB of dirty pages —
+  minutes of writeback on a network volume, all of it lost on a crash. Percentages
+  of memory were a reasonable default when machines had a gigabyte.
+
+  **bravo — nothing is wrong, and that is the finding.** 100% utilisation, and:
+
+  - average queue depth **0.7** — requests are barely waiting for each other
+  - `r_await` **0.20 ms**
+  - `io.pressure some avg60` **0.38** — tasks essentially never stall on I/O
+
+  `%util` measures the fraction of time at least one request was in flight. A
+  device that serves thousands concurrently reaches 100% at a small fraction of
+  its capability, so the number saturates and stops carrying information. It was
+  a fair proxy for a spinning disk serving one request at a time; it has been
+  misleading on everything else for a decade.
+
+  Escalating a healthy service costs a real afternoon. The change belongs to the
+  alert, and being willing to say so is part of the job.
+
+  **charlie — twelve times the writes, and two terabytes of reads to explain
+  it.** `wchar` 1 GiB against `write_bytes` 12 GiB is amplification. The reads
+  are the giveaway: `read_bytes` of 2 TiB during a migration that wrote 1 GiB.
+
+  That is overlayfs copy-up. The data directory is on an overlay, so the first
+  write to any file that lives in a lower layer copies the entire file up first —
+  reading all of it, then writing all of it, before applying the change. A
+  migration touching many previously untouched files pays for every one of them.
+
+  It also explains the shape nobody could account for: **fine for weeks, then a
+  migration that takes forty minutes instead of ninety seconds.** Steady-state
+  writes hit files already copied up and are merely slow; the migration touched
+  files that had never been written.
+
+  "It is only a cache" is not an argument against a volume, because this is a
+  performance problem as much as a durability one.
+
+  **What the three have in common.** `io.pressure` ranked them correctly — 58,
+  0.4, 22 — with no knowledge of what any of them were doing. Stall time is
+  about the work rather than the device, which is why it survives cases where
+  `%util` and throughput both mislead.
+
+  **The order to read storage evidence in.**
+
+  ```bash
+  grep -E 'wchar|write_bytes|rchar|read_bytes' /proc/1/io   # amplification?
+  awk '$2=="/" || $2 ~ /data/ {print $2, $3}' /proc/mounts  # overlay? tmpfs?
+  grep -E '^(Dirty|Writeback):' /proc/meminfo               # near the cliff?
+  cat /sys/fs/cgroup/io.pressure                            # is anyone stalled?
+  # only now: diskstats, await, queue depth
+  ```
+
+  Four commands before any device counter, and they separate "wrote to memory",
+  "wrote far more than asked", "about to be throttled" and "nothing is wrong" —
+  which is three of this week's three tickets.

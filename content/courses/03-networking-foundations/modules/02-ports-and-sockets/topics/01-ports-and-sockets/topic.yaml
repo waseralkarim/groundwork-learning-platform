@@ -1,0 +1,152 @@
+id: topic.ports-and-sockets
+slug: ports-and-sockets
+title: "Ports and Sockets: What a Connection Actually Is"
+summary: >-
+  An address gets a packet to a machine. A port gets it to a process. This topic
+  is about the second half — what a listening socket is, why one port serves
+  thousands of clients, and why a service can be running perfectly and be
+  unreachable.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.addresses-subnets-and-routes
+    hardness: required
+  - topic: topic.user-space-and-the-kernel
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A03.2.1
+    level: L1
+    verb: explain
+    statement: >-
+      Explain what a port identifies, and why an address alone cannot deliver a
+      packet to a process.
+    assessed_by: [quiz.q1, quiz.q2, lab.what-is-listening]
+
+  - id: OBJ-A03.2.2
+    level: L1
+    verb: identify
+    statement: >-
+      Identify what is listening on a machine — on which addresses and ports,
+      and which process owns each socket.
+    assessed_by: [quiz.q3, quiz.q4, lab.what-is-listening, exercise.e1]
+
+  - id: OBJ-A03.2.3
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish binding to a loopback address from binding to all addresses,
+      and predict who can connect in each case.
+    assessed_by: [quiz.q5, quiz.q6, lab.bound-to-the-wrong-address, assessment.A]
+
+  - id: OBJ-A03.2.4
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret a connection's four-tuple, and explain how one listening port
+      serves many simultaneous clients.
+    assessed_by: [quiz.q7, quiz.q8, lab.one-port-many-connections, exercise.e2]
+
+  - id: OBJ-A03.2.5
+    level: L2
+    verb: explain
+    statement: >-
+      Explain where ephemeral ports come from, and what bounds the number of
+      connections a client can hold open.
+    assessed_by: [quiz.q9, quiz.q10, lab.one-port-many-connections, exercise.e3]
+
+  - id: OBJ-A03.2.6
+    level: L2
+    verb: trace
+    statement: >-
+      Trace a TCP connection through its states, and say what a build-up in each
+      state indicates.
+    assessed_by: [quiz.q11, quiz.q12, lab.one-port-many-connections, assessment.B]
+
+  - id: OBJ-A03.2.7
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish connection refused, timeout and connection reset, and say what
+      each one proves about the path.
+    assessed_by: [quiz.q13, lab.bound-to-the-wrong-address, exercise.e4]
+
+  - id: OBJ-A03.2.8
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a service that is running and unreachable, from the socket table
+      and a connection attempt.
+    assessed_by: [quiz.q14, quiz.q15, lab.running-and-unreachable, troubleshooting.works-on-the-box-only, troubleshooting.the-port-that-was-already-taken, assessment.C]
+
+terminology:
+  - term: port
+    definition: >-
+      A 16-bit number identifying which socket on a machine a packet is for.
+      Ports 0–65535, per protocol — TCP 80 and UDP 80 are different things.
+  - term: socket
+    definition: >-
+      The kernel object an application reads and writes to communicate. A
+      listening socket waits for connections; each accepted connection gets its
+      own.
+  - term: four-tuple
+    definition: >-
+      Source address, source port, destination address, destination port. What
+      uniquely identifies a connection — which is why one listening port can
+      serve thousands at once.
+  - term: bind
+    definition: >-
+      Claiming an address and port for a socket. The address chosen decides who
+      can reach it, and is the single commonest cause of "it works locally".
+  - term: wildcard address
+    definition: >-
+      `0.0.0.0` for IPv4 — binding to every address the machine has, including
+      ones added later.
+  - term: ephemeral port
+    definition: >-
+      The source port the kernel picks for an outbound connection, from
+      `ip_local_port_range` — usually 32768–60999.
+  - term: LISTEN
+    definition: >-
+      A socket waiting for connections. It has a local address and port and no
+      peer.
+  - term: ESTABLISHED
+    definition: >-
+      A connection with both ends agreed and open. It has a full four-tuple.
+  - term: TIME-WAIT
+    definition: >-
+      Held for about 60 seconds by whichever side closed first, so that late
+      duplicate packets cannot be mistaken for part of a new connection.
+  - term: CLOSE-WAIT
+    definition: >-
+      The peer closed and this side has not. A build-up of these is an
+      application that is not calling `close()`.
+  - term: accept queue
+    definition: >-
+      Completed connections waiting for the application to accept them. Its
+      length is the `backlog` argument to `listen()`, capped by
+      `net.core.somaxconn`.
+  - term: connection refused
+    definition: >-
+      A TCP RST in reply to a SYN. The packet arrived and nothing was listening
+      on that port — the network worked perfectly.
+  - term: connection reset
+    definition: >-
+      An RST on an established connection. The other end tore it down abruptly,
+      or something in the middle did.
+  - term: privileged port
+    definition: >-
+      Historically, ports below 1024 required root or CAP_NET_BIND_SERVICE.
+      `net.ipv4.ip_unprivileged_port_start` moves that line, and containers
+      often set it to 0.
+
+foreshadows:
+  - "B12's TCP deep dive starts from these states and adds windows, retransmission and congestion control."
+  - "E29's Services map a stable address and port onto a changing set of pod addresses and ports."
+  - "C15's health checks and readiness probes are connections to a port, and they fail in the ways listed here."
+  - "F34 alerts on connection resets and accept-queue overflow, both of which are counters this topic reads."
+
+tags: [networking, tcp, ports, sockets, connections, linux, fundamentals]

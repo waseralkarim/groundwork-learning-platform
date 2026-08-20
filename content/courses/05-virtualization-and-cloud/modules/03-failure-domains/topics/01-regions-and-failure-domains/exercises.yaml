@@ -1,0 +1,251 @@
+topic: topic.regions-and-failure-domains
+
+exercises:
+  - id: e1
+    title: Match the failure to the boundary
+    level: L1
+    objectives: [OBJ-A05.3.1]
+    kind: interpretation
+    prompt: >-
+      For each event, say the smallest boundary that contains it, and whether a
+      three-zone single-region deployment survives it:
+
+
+      1. A top-of-rack switch fails
+
+      2. A datacentre loses power
+
+      3. A regional control plane cannot schedule pods
+
+      4. A bad release ships to production
+
+      5. Your DNS registrar suspends the domain
+    answer: >-
+      1. **Rack.** Survived — replicas in other racks and zones are unaffected,
+         provided the scheduler spread them.
+
+
+      2. **Zone.** Survived, if quorum is placed across three zones, capacity
+         covers `n−1`, and nothing has a single-zone dependency.
+
+
+      3. **Region.** *Partly.* The data plane keeps serving — pods already
+         running continue — but nothing can be deployed, scaled or rescheduled.
+         Frozen rather than down, which is survivable unless the incident needs a
+         deploy to fix.
+
+
+      4. **No boundary at all.** Redundancy provides zero protection; the release
+         reaches every replica in every zone within minutes.
+
+
+      5. **Global.** Not survived by anything in the region, and typically not
+         listed as a dependency anywhere.
+    explanation: >-
+      Items 4 and 5 are the point of the exercise. Placement decisions address
+      1–3 and are entirely irrelevant to 4 and 5 — yet placement is where nearly
+      all the design attention goes.
+
+
+      Item 3 is worth being precise about, because "the region failed" sounds
+      total and usually is not. A control-plane failure leaves a statically
+      stable data plane serving; what is lost is the ability to *change* things,
+      which matters most at exactly the moment you want to change things.
+
+  - id: e2
+    title: Compose a real stack
+    level: L2
+    objectives: [OBJ-A05.3.3]
+    kind: calculation
+    prompt: >-
+      A request touches: a load balancer (99.99%), a Kubernetes control plane
+      (99.95%), the application's compute across zones (99.99%), a managed
+      database (99.95%), a secrets manager (99.99%) and object storage (99.999%).
+      All are required.
+
+
+      Compute the composite and the monthly downtime. Then compute what happens
+      if you add one more required service at 99.9%.
+    answer: >-
+      **Composite:** 0.9999 × 0.9995 × 0.9999 × 0.9995 × 0.9999 × 0.99999 ≈
+      **99.8690%**.
+
+
+      Monthly downtime: 30 × 24 × 60 × (1 − 0.998690) ≈ **56.6 minutes**.
+
+
+      **Adding one service at 99.9%:** 0.998690 × 0.999 ≈ **99.7692%**, which is
+      about **99.7 minutes** a month.
+
+
+      One additional dependency, promising three nines, added roughly **43
+      minutes of expected downtime per month** — nearly doubling it.
+    explanation: >-
+      The second calculation is the one worth internalising, because it puts a
+      number on something usually treated as free. A new integration is not
+      neutral; it is a permanent reduction in availability, and here a single
+      99.9% dependency cost more downtime than the entire original stack had.
+
+
+      This is the argument to bring when a feature adds "just one more service".
+      It is not an objection to the feature — it is the cost of the feature,
+      stated in the same units as the availability target somebody has already
+      promised.
+
+  - id: e3
+    title: Decide whether redundancy is real
+    level: L2
+    objectives: [OBJ-A05.3.4]
+    kind: interpretation
+    prompt: >-
+      For each, say whether the components are genuinely in parallel and what the
+      correct model is:
+
+
+      1. Two replicas, no scheduling constraints, on a two-node cluster
+
+      2. Two replicas in different zones, both reading config from one service
+
+      3. Two database replicas in different zones, synchronous replication
+
+      4. Two replicas in different zones, both running the release deployed
+         five minutes ago
+    answer: >-
+      1. **Probably not.** Two nodes and two replicas often means one each, and
+         often does not — the scheduler may place both on one. Without a
+         constraint you cannot claim parallel. Verify with `kubectl get pods -o
+         wide` rather than assuming.
+
+
+      2. **No.** The config service is in series with both, so the composite is
+         approximately the config service's availability. The replicas are
+         parallel with respect to node and zone failure and not with respect to
+         the thing they both need.
+
+
+      3. **Yes for zone failure**, and note that synchronous replication couples
+         them for *latency* — a slow secondary slows the primary. Independent for
+         availability, coupled for performance.
+
+
+      4. **No, for the failure that matters most.** Both run identical code, so
+         a bad release fails both simultaneously. They are parallel for
+         infrastructure failure and perfectly correlated for change-induced
+         failure.
+    explanation: >-
+      Item 4 is the one people never model, and it is the most common cause of
+      real downtime. Two replicas are genuinely independent with respect to
+      hardware and completely dependent with respect to code.
+
+
+      Which means an availability calculation covering only infrastructure
+      failure is modelling the smaller term. The mitigation is not more replicas
+      — it is progressive rollout, so the two replicas are *not* running the same
+      new code at the same time, which converts a correlated failure into a
+      partial one.
+
+  - id: e4
+    title: Price a second region
+    level: L2
+    objectives: [OBJ-A05.3.7]
+    kind: short_answer
+    prompt: >-
+      A team with a correctly placed three-zone single-region deployment proposes
+      a second region for higher availability.
+
+
+      List what they would gain, what it costs, and what you would do first
+      instead.
+    answer: >-
+      **Gain:** survival of a regional failure — including a regional
+      control-plane failure, which is much more common than a datacentre being
+      destroyed. Also a path to serving users closer to them, which is often the
+      real motivation and should be stated if so.
+
+
+      **Costs:** a second copy of all infrastructure. A data model that tolerates
+      asynchronous lag (which becomes your RPO) or resolves conflicting writes
+      (much harder). A failover procedure that is itself a common cause of
+      outages. Doubled deployment surface. And roughly doubled operational
+      attention, permanently.
+
+
+      **First instead:**
+
+
+      1. **Progressive rollout and fast rollback.** Addresses the most likely
+         cause of downtime, costs far less, and a second region does nothing for
+         it.
+
+      2. **Move CI outside the region**, so a regional event does not also
+         prevent deploying the fix.
+
+      3. **Test the zone failure** by cordoning a zone. Confirms the redundancy
+         they already paid for actually works.
+
+      4. **Test the restore.** Recovery from data loss is more likely to be
+         needed than a regional failover.
+
+
+      All four together cost less than a second region and address more of what
+      actually happens.
+    explanation: >-
+      The recommendation is not "never build multi-region" — sometimes latency or
+      a regulatory requirement decides it, and then it is not an availability
+      decision at all.
+
+
+      What makes the answer useful is ordering by expected value rather than by
+      how serious the failure sounds. A second region addresses a rare event and
+      introduces a failover path that is a fresh source of common ones. The four
+      alternatives address frequent events and add no new failure modes.
+
+  - id: e5
+    title: Write the placement justification
+    level: L2
+    objectives: [OBJ-A05.3.8]
+    kind: short_answer
+    prompt: >-
+      Write the paragraph justifying a three-zone single-region placement for a
+      customer-facing API — including what it does not survive.
+    answer: >-
+      *The API runs six replicas, two per zone across three availability zones,
+      with topology spread constraints so the scheduler cannot pack them. The
+      database is multi-AZ with a replica in each zone; the load balancer spans
+      all three. Capacity is provisioned so that two zones carry full load, so
+      losing a zone requires no scaling and therefore no control-plane action —
+      it keeps serving rather than being rescued.*
+
+
+      *This survives: a process failure, a node failure, and the loss of any one
+      availability zone. Composed availability across our required dependencies
+      is 99.87%, about 57 minutes a month, and that is the figure we should
+      commit to rather than any single vendor number.*
+
+
+      *This does not survive: a regional failure, including a regional
+      control-plane failure — we would be frozen rather than down, unable to
+      deploy or scale. It does not survive a bad release, which reaches all six
+      replicas within minutes; that is addressed by progressive rollout and
+      rollback rather than by placement. And it does not survive a DNS or
+      certificate-authority failure, which sit above the region entirely.*
+
+
+      *We chose not to build multi-region because the two most likely causes of
+      downtime — changes and the regional control plane — are addressed more
+      cheaply by rollout controls and by keeping CI outside the region. We would
+      revisit if we take a latency or data-residency requirement in another
+      geography.*
+    explanation: >-
+      Three properties make this worth writing rather than decorative.
+
+
+      It **states what is not survived**, which is what makes it reviewable — a
+      justification listing only strengths cannot be argued with. It **gives the
+      composed number** rather than a vendor's, so the commitment is one that can
+      be met. And it **names the reversal conditions**, so somebody who was not
+      there can tell whether the decision still holds.
+
+
+      Note also that it explains a decision *not* to do something, with reasons.
+      Absent that, the next reviewer assumes multi-region was never considered.

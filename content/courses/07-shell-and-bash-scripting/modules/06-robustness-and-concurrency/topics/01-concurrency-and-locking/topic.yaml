@@ -1,0 +1,141 @@
+id: topic.concurrency-and-locking
+slug: concurrency-and-locking
+title: "Overlapping Runs, Locks and Safe Retries"
+summary: >-
+  A lock lives on the **inode**, not the path — so the tidy-looking
+  `trap 'rm -f $LOCK' EXIT` lets the next two runs both acquire and proceed.
+  A PID file outlives the process that wrote it; a `flock` does not, even on
+  SIGKILL. And `timeout` without `-k` reports 124 for a process that ignored
+  the signal and finished its work anyway.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.set-euo-pipefail
+    hardness: required
+  - topic: topic.functions-and-scope
+    hardness: required
+  - topic: topic.processes
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B08.8.1
+    level: L2
+    verb: describe
+    statement: >-
+      Describe what happens when two runs of the same script overlap, and how
+      the damage shows up.
+    assessed_by: [quiz.q1, quiz.q2, lab.watch-two-runs-collide, exercise.e1]
+
+  - id: OBJ-B08.8.2
+    level: L2
+    verb: configure
+    statement: >-
+      Configure a `flock` guard — the file-descriptor idiom, `-n`, `-w`, and the
+      exit status each produces.
+    assessed_by: [quiz.q3, quiz.q4, lab.watch-two-runs-collide, exercise.e2]
+
+  - id: OBJ-B08.8.3
+    level: L3
+    verb: explain
+    statement: >-
+      Explain why a lock belongs to an open file description rather than a path,
+      and what removing the lock file does.
+    assessed_by: [quiz.q5, quiz.q6, lab.the-lock-that-stopped-locking, troubleshooting.the-job-that-ran-twice]
+
+  - id: OBJ-B08.8.4
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish `flock`, a PID file, `mkdir` and test-then-create as mutual
+      exclusion, and say which failures each survives.
+    assessed_by: [quiz.q7, quiz.q8, quiz.q9, lab.the-stale-lock, exercise.e3]
+
+  - id: OBJ-B08.8.5
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what `timeout` guarantees, what its exit statuses mean, and what
+      `-k` changes.
+    assessed_by: [quiz.q10, quiz.q11, lab.retry-what-is-safe, troubleshooting.the-timeout-that-killed-nothing]
+
+  - id: OBJ-B08.8.6
+    level: L2
+    verb: predict
+    statement: >-
+      Predict whether an operation is safe to retry, and what a naive retry loop
+      does when it is not.
+    assessed_by: [quiz.q12, quiz.q13, lab.retry-what-is-safe, exercise.e4]
+
+  - id: OBJ-B08.8.7
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a job that ran twice, a lock nobody holds, or a timeout that
+      stopped nothing.
+    assessed_by: [quiz.q14, troubleshooting.the-job-that-ran-twice, troubleshooting.the-timeout-that-killed-nothing]
+
+  - id: OBJ-B08.8.8
+    level: L3
+    verb: justify
+    statement: >-
+      Justify a concurrency strategy for a scheduled job, naming what each
+      choice prevents and what it still allows.
+    assessed_by: [quiz.q15, lab.the-stale-lock, exercise.e5, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: flock
+    definition: >-
+      An advisory lock held on an **open file description**. Released by the
+      kernel when the last descriptor closes — including when the process is
+      killed — so it cannot go stale.
+  - term: advisory lock
+    definition: >-
+      A lock only honoured by processes that ask for it. Nothing stops a program
+      that does not check from writing to the file anyway.
+  - term: open file description
+    definition: >-
+      The kernel object behind a file descriptor, pointing at an inode. Two
+      processes that opened the *same path* after an `rm` hold descriptions of
+      **different inodes**, and neither lock sees the other.
+  - term: stale lock
+    definition: >-
+      A lock that outlives the process holding it — a PID file left behind by a
+      crash. The next run either refuses forever or has to guess whether the
+      recorded PID is real.
+  - term: TOCTOU
+    definition: >-
+      Time-of-check to time-of-use. `[ -e lock ] || touch lock` has a window
+      between the test and the creation in which another process does the same,
+      and both proceed.
+  - term: atomic operation
+    definition: >-
+      One that either happens completely or not at all, with no state visible in
+      between. `mkdir` and `rename` are; check-then-act is not.
+  - term: idempotent
+    definition: >-
+      Safe to apply more than once with the same result. The property that makes
+      a retry safe and a duplicate delivery harmless.
+  - term: "timeout"
+    definition: >-
+      Run a command with a time limit. Sends `TERM` and exits **124**; the
+      process may ignore it, so `-k` is needed to guarantee anything.
+  - term: exponential backoff
+    definition: >-
+      Doubling the wait between retries, with jitter, so a recovering dependency
+      is not hit by every client at the same moment.
+  - term: thundering herd
+    definition: >-
+      Many clients retrying in lockstep after a failure, so the recovering
+      service is knocked down again by the retry storm. Jitter is what prevents
+      it.
+
+foreshadows:
+  - "B08.9's testing topic exercises the failure paths this topic creates, which are the hardest to test by hand."
+  - "C15's container orchestration replaces the lock with a scheduler that guarantees a single replica."
+  - "D22's configuration management runs are themselves guarded this way."
+  - "F35's incident work turns on whether an operation could safely be retried."
+
+tags: [shell, bash, concurrency, locking, flock, idempotency, reliability]

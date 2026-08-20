@@ -1,0 +1,9 @@
+graph TD
+    subgraph T["A cgroup with four tasks, over one second"]
+        A["Task 1 stalled ▓▓░░░░░░░░"]
+        B["Task 2 stalled ░░▓▓▓░░░░░"]
+        C["Task 3 stalled ░░▓▓░░░░░░"]
+        D["Task 4 stalled ░░▓▓░░░░░░"]
+    end
+    T --> S["<b>some</b> = 50%<br/><i>at least one task stalled</i><br/>work is being delayed"]
+    T --> F["<b>full</b> = 20%<br/><i>every task stalled</i><br/>no work is happening at all"]

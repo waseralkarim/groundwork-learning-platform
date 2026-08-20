@@ -1,0 +1,177 @@
+id: assessment.certificates-and-tls
+topic: topic.certificates-and-tls
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain what makes a chain valid
+    kind: explain
+    objectives: [OBJ-A04.3.3, OBJ-A04.3.1]
+    prompt: >-
+      A colleague has built an internal CA and issued a certificate for
+      `payments.internal`. It verifies against their root on their machine. They
+      ask why clients across the estate still reject it.
+
+
+      In about 200 words: explain what a client needs in order to accept it, what
+      the server must send, and why their own machine is not evidence.
+    rubric:
+      - "States that the root must be in the client's trust store, and that trust is distribution rather than mathematics"
+      - "States that the server must send the intermediate, because clients have roots and not intermediates"
+      - "Identifies that their machine already has the root, which is why it works there"
+      - "Notes the hostname must appear in the SAN, separately from the chain being valid"
+      - "Distinguishes adding that CA to trust stores from disabling verification"
+    model_answer: >-
+      Three separate things have to be true, and their machine only demonstrates
+      the first.
+
+
+      **The root must be in each client's trust store.** That is where authority
+      comes from — a list distributed in advance, not a property of the
+      certificate. Their machine accepts it because they added their root there;
+      every other machine has never heard of it. Distributing that root to the
+      workloads that need it is the actual task, and it is a deployment problem
+      rather than a cryptographic one.
+
+
+      **The server must send the intermediate.** Clients are given roots; they
+      are not given your intermediates. A server configured with only its leaf
+      produces `error 20 — unable to get local issuer certificate`, and this is
+      the most common TLS misconfiguration there is. Leaf first, then
+      intermediate.
+
+
+      **The hostname must be in the SAN.** The chain check and the name check are
+      independent — `openssl verify` skips the name unless asked — so a
+      certificate with a perfect chain still fails with code 62 if the name is
+      wrong or absent. If it was signed without `-extfile` it has no SAN at all,
+      which OpenSSL tolerates and browsers do not.
+
+
+      And their machine is not evidence for a further reason: laptops and browsers
+      accumulate intermediates from ordinary use. Test in a clean container.
+
+
+      The fix is distributing the root, not `--insecure` — those are opposites,
+      not degrees.
+    common_failures:
+      - "Treating the certificate as valid or invalid in itself, rather than relative to a client's trust store"
+      - "Omitting that the server must supply the intermediate"
+      - "Accepting the colleague's machine as a test, when it holds both the root and cached intermediates"
+      - "Recommending `--insecure` as an interim measure, which trusts everyone rather than their CA"
+
+  - id: B
+    title: Diagnose from the verification output
+    kind: diagnose
+    objectives: [OBJ-A04.3.4]
+    prompt: >-
+      Four endpoints, tested identically:
+
+
+      ```text
+      A  depth=0 only              Verify return code: 21
+      B  depth=2,1,0               Verify return code: 10
+      C  depth=2,1,0               Verify return code: 0    (curl 200; users see warnings)
+      D  depth=2,1,0               Verify return code: 62
+      ```
+
+
+      Diagnose each, give the fix, and say which one your monitoring would most
+      likely miss and why.
+    rubric:
+      - "A: incomplete chain — the server is not sending its intermediate; fix server-side"
+      - "B: expired certificate; fix is renewal, and checking whether reload occurred"
+      - "C: no SAN — OpenSSL falls back to CN, browsers do not; reissue with a SAN"
+      - "D: hostname mismatch; connect by a name in the SAN or reissue"
+      - "Identifies C as the one monitoring misses, because the monitor uses the permissive verifier"
+    model_answer: >-
+      **A — incomplete chain.** One `depth` line means the server sent one
+      certificate; a complete chain reaches depth 2. Code 21 is the client's view
+      of error 20. Fix server-side: serve leaf plus intermediate — typically
+      `fullchain.pem` rather than `cert.pem`. Browsers hide this by caching
+      intermediates, so it arrives as a partner complaint.
+
+
+      **B — expired.** The chain is fine and the dates are not. Fix is renewal —
+      but before assuming renewal failed, compare the **served** certificate's
+      serial against the file on disk. If they differ, renewal worked and nothing
+      reloaded the process, which is a different fix and the more common one.
+
+
+      **C — no SAN.** Everything passes and users still see warnings, which is
+      the signature of a CN-only certificate: OpenSSL and curl fall back to the
+      Common Name, browsers have required a SAN since 2017. Confirm with
+      `openssl x509 -noout -ext subjectAltName`; reissue with `-extfile`.
+
+
+      **D — hostname mismatch.** Chain valid, wrong name. Usually a request by IP
+      address, or a wildcard that does not match — `*.example.com` does not cover
+      `example.com` itself.
+
+
+      **Monitoring misses C**, and structurally rather than by oversight: the
+      monitor uses the same permissive verifier that accepts it. No exit status
+      or verify code will ever reveal it. Only an explicit assertion that a SAN
+      exists and contains the hostname will.
+    common_failures:
+      - "Reading code 21 as a trust-store problem rather than a chain the server failed to send"
+      - "Treating B as automatically a renewal failure without checking whether a reload happened"
+      - "Missing C entirely, since every code shown is a success"
+      - "Naming a monitoring gap without explaining that the verifier's policy is what causes it"
+
+  - id: C
+    title: Reason about the handshake
+    kind: reason
+    objectives: [OBJ-A04.3.7, OBJ-A04.3.5]
+    prompt: >-
+      Certificates are sent in the clear during the handshake and anyone can copy
+      one. A colleague argues this means TLS can be defeated by presenting a
+      copied certificate for a site you want to impersonate.
+
+
+      In about 250 words: explain why it does not work, name each primitive
+      involved, and describe what an attacker would actually need.
+    rubric:
+      - "Identifies that the server signs the handshake transcript with the private key"
+      - "States that the private key never leaves the server and is not in the certificate"
+      - "Names the primitives: signature over a digest, ephemeral key exchange, AEAD encryption"
+      - "Explains that the certificate binds name to key and the signature proves possession"
+      - "Says what an attacker needs instead — the private key, or a certificate from a trusted CA"
+    model_answer: >-
+      Copying the certificate gets you the public half of the pair and nothing
+      else, and the handshake requires the private half.
+
+
+      After presenting its chain, the server **signs the handshake transcript**
+      with the private key matching the certificate's public key. The client
+      verifies that signature using the key in the certificate. An attacker with
+      a copied certificate cannot produce it — the private key was never
+      transmitted and is not in the certificate.
+
+
+      So the two things do different jobs and both are required. The certificate
+      says *this name uses this public key*, vouched for by a CA. The signature
+      says *I hold the matching private key*. Neither alone establishes anything:
+      a certificate without the signature is a public document anyone can wave; a
+      signature without a certificate proves possession of a key nobody has
+      vouched for.
+
+
+      The primitives, all from earlier topics: the transcript signature is a
+      **signature over a digest**; the session key comes from an **ephemeral
+      Diffie–Hellman exchange**, so nothing secret crosses the wire and stealing
+      the long-term key later does not decrypt recorded traffic; and the traffic
+      itself is protected by an **AEAD mode** such as AES-256-GCM, so tampering
+      fails rather than decrypting to something else.
+
+
+      What an attacker actually needs is the **private key** — from a compromised
+      server, a key committed to a repository, or a backup — or a certificate for
+      that name **issued by a CA the client trusts**. The second is the reason a
+      trust store of ~150 authorities is a real structural weakness, and why
+      Certificate Transparency and CAA records matter.
+    common_failures:
+      - "Claiming the certificate is encrypted in transit, which it is not"
+      - "Omitting the transcript signature, which is the entire reason the attack fails"
+      - "Confusing the public and private halves when describing what was copied"
+      - "Missing that a certificate from any trusted CA is the realistic attack path"

@@ -1,0 +1,328 @@
+id: assessment.set-euo-pipefail
+topic: topic.set-euo-pipefail
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a deploy that reported success after being killed
+    kind: explain
+    objectives: [OBJ-B08.5.7, OBJ-B08.5.8]
+    prompt: >-
+      A deploy was cancelled from the CI UI, which sends SIGTERM. The job is
+      recorded as **successful**, and the released version is a partially copied
+      artifact. The script:
+
+
+      ```bash
+      #!/bin/bash
+      set -euo pipefail
+
+      WORKDIR=$(mktemp -d)
+      cleanup() { rm -rf "$WORKDIR"; }
+      trap cleanup EXIT INT TERM
+
+      build_into "$WORKDIR"
+      cp "$WORKDIR/app.tar" /srv/releases/app.tar
+      echo "deploy complete"
+      ```
+
+
+      In about 200 words: explain how a cancelled job produced a successful
+      record, and say what you would change.
+    rubric:
+      - "States that a trap handler returns and execution resumes at the point of interruption"
+      - "Concludes the script ran the cp after cleanup had removed WORKDIR"
+      - "Notes the handler also runs a second time via EXIT"
+      - "Explains the exit status is 0 because nothing exited non-zero, so CI records success"
+      - "Proposes separate signal handlers that exit 143/130, and an idempotent cleanup"
+      - "Adds an assertion on the released artifact rather than trusting cp's exit status"
+    model_answer: >-
+      **A trap handler returns, and execution resumes where it was interrupted.**
+      SIGTERM ran `cleanup`, which removed `WORKDIR` — and then the script
+      carried straight on to the `cp` and the final `echo`. Nothing exited
+      non-zero, so the shell exited **0** and CI recorded a success.
+
+
+      The released artifact is whatever `cp` managed with its source removed
+      underneath it — a partial file, or a file left from a previous run. Then
+      `cleanup` ran a **second** time on the way out, via EXIT.
+
+
+      Nothing failed in the sense `set -e` understands. The preamble is present
+      and correct and has nothing to act on.
+
+
+      What I would change:
+
+
+      ```bash
+      cleanup() { [ -n "${WORKDIR:-}" ] || return 0; rm -rf "$WORKDIR"; WORKDIR=; }
+      trap cleanup EXIT
+      trap 'cleanup; exit 143' TERM      # 128 + 15
+      trap 'cleanup; exit 130' INT       # 128 + 2
+      ```
+
+
+      A signal handler must **exit**, and the handler must be idempotent because
+      EXIT still fires after it. 128+signal tells the supervisor the job was
+      *cancelled* rather than that it failed, which is what decides whether a
+      retry is appropriate.
+
+
+      And the release itself needs an assertion, not a `cp` exit status:
+      compare the checksum of `/srv/releases/app.tar` against the artifact that
+      was built, and fail if it does not match. The exit status is the command's
+      opinion of itself; the resulting state is evidence.
+
+  - id: B
+    title: Find every masked status in a backup script
+    kind: diagnose
+    objectives: [OBJ-B08.5.4, OBJ-B08.5.5, OBJ-B08.5.8]
+    prompt: >-
+      This runs nightly and has been failing for months. The entire job output is
+
+
+      ```
+      backed up orders (20 bytes)
+      ```
+
+
+      followed by exit status 1. There is no error message, and nobody has been
+      able to say which command failed. Two of the three databases are never
+      mentioned at all.
+
+
+      ```bash
+      #!/bin/bash
+      set -euo pipefail
+
+      backup_db() {
+        local db=$1
+        local out=/srv/backups/$db-$(date +%F).sql.gz
+        local size=$(pg_dump "$db" | gzip > "$out"; stat -c%s "$out")
+        echo "backed up $db ($size bytes)"
+      }
+
+      count=0
+      for db in orders users billing; do
+        if backup_db "$db"; then
+          ((count++))
+        fi
+      done
+
+      echo "backed up $count databases"
+      ```
+
+
+      List every place a failure is lost, in order, and give the corrected
+      script.
+    rubric:
+      - "Identifies local out=... $(date) and local size=$(...) as SC2155 status masks"
+      - "Identifies that the if condition suppresses errexit through the whole function body"
+      - "Identifies ((count++)) as the exit: the then-branch is NOT exempt, and the post-increment's value is 0"
+      - "Explains the silent exit 1 — an arithmetic command has no error message to print"
+      - "Notes pipefail is set, so pg_dump's failure would reach the assignment if the assignment reported it"
+      - "Observes 20 bytes is gzip's output for empty input — the tell that pg_dump produced nothing"
+      - "Corrected script separates declaration from assignment and asserts a plausible size"
+      - "States that the preamble was correct and caught nothing"
+    model_answer: >-
+      **Read the symptom first: one line of output, exit 1, no error.** Two
+      databases were never attempted, so the script left the loop during the
+      first iteration — *after* `backup_db orders` had printed its success line.
+      That is a very short list of candidates.
+
+
+      **The script exits at `((count++))`**, and this is defect 4 below. It is
+      the only command between the `echo` and the second iteration, it exits 1
+      whenever `count` is 0, and — being arithmetic — it has **nothing to print**.
+      A silent exit 1 with no failing command to look for is exactly what an
+      arithmetic status looks like.
+
+
+      **Then read the number: 20 bytes is exactly gzip's output for empty input.**
+      `pg_dump` produced nothing. So there are two independent bugs here, and the
+      loud one has been hiding the quiet one for months.
+
+
+      **Four masks, and they compound.**
+
+
+      **1. `local size=$(...)`** — `local` is a command in its own right, so the
+      line reports whether the declaration succeeded. `pipefail` correctly gives
+      the `pg_dump | gzip` pipeline `pg_dump`'s non-zero status, and `local`
+      throws it away. This is SC2155.
+
+
+      **2. `local out=/srv/backups/$db-$(date +%F).sql.gz`** — the same defect,
+      less dangerous here because `date` rarely fails, but it is the same line to
+      fix and worth flagging so the reviewer learns the shape rather than the
+      instance.
+
+
+      **3. `if backup_db "$db"; then`** — an `if` condition is exempt from
+      errexit, **and the exemption extends through the whole function body**. So
+      even with (1) fixed, a failure inside `backup_db` would not stop the
+      script; it would only make the `if` false. Worse, the function's last
+      command is a successful `echo`, so it returns 0 regardless and the branch
+      is always taken.
+
+
+      **4. `((count++))` — the exit.** `((...))` returns non-zero when the
+      expression's *value* is zero, and a post-increment's value is the **old**
+      count, which on the first iteration is 0. It sits in the `then` branch,
+      and **only the `if` condition is exempt from errexit — the branches are
+      not.** So the script dies on the first database, and
+      `backed up $count databases` has never printed.
+
+
+      Note how differently the two bugs present. The masked `pg_dump` failure is
+      invisible and has produced months of empty backups. The arithmetic failure
+      is loud enough to fail the job every night and still tells you nothing,
+      because there is no failing command and no message — which is why nobody
+      reproduced it.
+
+
+      Corrected:
+
+
+      ```bash
+      #!/bin/bash
+      set -euo pipefail
+
+      backup_db() {
+        local db=$1
+        local out size
+        out=/srv/backups/$db-$(date +%F).sql.gz
+        pg_dump "$db" | gzip > "$out"
+        size=$(stat -c%s "$out")
+        [ "$size" -gt 100000 ] || { echo "$db backup is only $size bytes" >&2; return 1; }
+        echo "backed up $db ($size bytes)"
+      }
+
+      count=0
+      for db in orders users billing; do
+        backup_db "$db"
+        count=$((count + 1))
+      done
+
+      [ "$count" -eq 3 ] || { echo "backed up $count of 3" >&2; exit 1; }
+      echo "backed up $count databases"
+      ```
+
+
+      Declaration separated from assignment; the pipeline on its own line where
+      `pipefail` and errexit can both act; the `if` removed so a failure
+      propagates; `count=$((count + 1))`; and — the part that would actually have
+      caught this — **an assertion on the size**, because a 20-byte backup is not
+      a failed command, it is a successful one producing the wrong result.
+
+
+      **The preamble missed the real failure and fired on a false one.** It never
+      saw `pg_dump` fail, because `local` had already discarded the status; and
+      it stopped the script on a successful increment, because `((...))` encodes
+      an answer rather than an error. Both are documented behaviour. The
+      assertion on the resulting file is what would have caught the failure that
+      mattered.
+
+  - id: C
+    title: Write a preamble standard for a team
+    kind: reason
+    objectives: [OBJ-B08.5.8]
+    prompt: >-
+      Your team maintains about forty operational shell scripts. You are asked to
+      write a one-page standard for how they start.
+
+
+      Give the standard, justify each line in a sentence, name what you
+      deliberately left out and why, and say how it will be enforced.
+    rubric:
+      - "Gives a concrete preamble rather than a description of one"
+      - "Justifies -e, -u, pipefail and -E individually, including why -E is needed with an ERR trap"
+      - "Includes required-input handling with ${VAR:?} and a usage function with a distinct exit status"
+      - "Includes a tool-availability check and says why it belongs at the top"
+      - "Includes cleanup traps with separate signal handlers that exit, and an idempotent handler"
+      - "Includes main \"$@\" and explains the parse-before-run property"
+      - "Names deliberate omissions — at minimum set -x, with the secrets-in-logs reason"
+      - "Proposes mechanical enforcement (shellcheck in CI) rather than review discipline"
+      - "States explicitly what the standard does not catch, and requires outcome assertions"
+    model_answer: >-
+      **The standard.**
+
+
+      ```bash
+      #!/bin/bash
+      set -eEuo pipefail
+
+      usage() { echo "usage: $0 SOURCE DEST" >&2; exit 64; }
+      SOURCE=${1:-}; [ -n "$SOURCE" ] || usage
+      : "${DEPLOY_ENV:?DEPLOY_ENV must be set (staging|production)}"
+
+      for cmd in jq rsync; do
+        command -v "$cmd" >/dev/null || { echo "$cmd is required" >&2; exit 1; }
+      done
+
+      WORKDIR=$(mktemp -d)
+      cleanup() { [ -n "${WORKDIR:-}" ] || return 0; rm -rf "$WORKDIR"; WORKDIR=; }
+      trap cleanup EXIT
+      trap 'cleanup; exit 143' TERM
+      trap 'cleanup; exit 130' INT
+      trap 'echo "failed at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+      main() { ...; }
+      main "$@"
+      ```
+
+
+      **Why each line.** `-e` so an unhandled failure stops rather than
+      continuing into a worse state. `-E` because without it the ERR trap is
+      silent inside functions — and `main` *is* a function, so the trap would
+      never fire at all. `-u` so a misspelled variable fails instead of expanding
+      to nothing, which is what turns `rm -rf "$DIR/$SUBDIR"` into an incident.
+      `pipefail` so `pg_dump | gzip` cannot report gzip's success. `usage` with
+      **64** (`EX_USAGE`) so a wrapper can distinguish "called wrong" from "went
+      wrong" when deciding whether to retry. `${VAR:?message}` so a missing input
+      fails on line 6 with a sentence naming the variable and its legal values,
+      rather than on line 40 with `unbound variable` and exit 127. The tool check
+      at the top because a missing binary found at line 3 is a message and at
+      line 80 is a half-finished operation. `mktemp -d` because a predictable
+      `/tmp` path is a collision and a symlink-attack surface. `trap cleanup
+      EXIT` because it runs on an errexit abort as well as a normal exit.
+      Separate signal handlers **that exit**, because a handler that returns lets
+      the script resume after its working directory has been removed and report
+      success. An idempotent handler because EXIT still fires after them. The ERR
+      trap because it converts errexit's silent exit into a line number and a
+      command. `main "$@"` because the file is **parsed completely before
+      anything runs**, so a truncated download or a file copied mid-write cannot
+      execute half a deploy.
+
+
+      **Deliberately omitted.** `set -x` — it prints commands *after* expansion,
+      so secrets end up in CI logs that are retained, indexed and readable by
+      more people than the secret is; it goes behind
+      `[ -n "${DEBUG:-}" ] && set -x`. `IFS=$'\n\t'` — it treats the symptom of
+      unquoted expansions globally, including in code we did not write, and
+      breaks `read` and anything parsing space-separated output; quote the
+      expansion instead. `shopt -s failglob`/`nullglob` — right per-script where
+      globs are used, wrong as a blanket default. `set -o posix` — enough changed
+      behaviour to be a decision rather than a default.
+
+
+      **Enforcement.** `shellcheck -S warning` in CI, failing the build. It finds
+      SC2155 (`local x=$(cmd)`) mechanically, which is the single highest-value
+      check on a codebase like this, plus unquoted expansions and about two
+      hundred other things. Review discipline does not scale to forty scripts and
+      does not survive staff turnover; a CI gate does. I would land it on the
+      whole repository at `-S error` first, fix what it finds, then tighten to
+      `-S warning`.
+
+
+      **What the standard does not catch, stated in the document itself**, because
+      overselling it is how it gets blamed later: it catches unhandled failures,
+      not wrong behaviour. A `curl` that received a 404 page with status 200, an
+      `rm` on a path built from the wrong variable, a migration applied to the
+      wrong database — all succeed. So every script must additionally **assert
+      its outcome**: that the output is a plausible size, that the count is
+      non-zero, that the version now running is the one deployed. And every
+      script should be **safe to run twice**, because that turns "it failed
+      halfway, now what" into "run it again" — which is worth more at 3am than
+      any set of shell options.

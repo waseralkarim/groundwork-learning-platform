@@ -1,0 +1,233 @@
+id: troubleshooting.priority-inversion-by-accident
+topic: topic.the-scheduler
+title: Fine at night, unusable by ten in the morning
+level: L3
+objectives: [OBJ-A02.3.8, OBJ-A02.3.4]
+reveal_policy: progressive
+
+situation: >-
+  A pricing service has a p99 of 60ms overnight and 3 to 5 seconds between about
+  09:30 and 17:00. It has behaved this way since it was moved off the VM fleet
+  eight months ago, and the team have learned to live with it.
+
+
+  Everything about the service itself is constant across the two regimes. Same
+  request mix — the traffic shape is flatter than you would expect, because most
+  of it is machine-driven. Same memory. Same GC behaviour. No throttling: the
+  team checked `nr_throttled` after reading a blog post about it, and it is
+  essentially zero.
+
+
+  A new engineer has been told "it's a daytime load thing" three times and does
+  not find that satisfying. Neither should you.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "p99 60ms at 03:00, 3-5s at 11:00, transition around 09:30 and 17:00"
+  - "Request rate is only about 30% higher during the day"
+  - "nr_throttled is near zero in both regimes — it is not being throttled"
+  - "Its own CPU usage per request is identical in both regimes"
+  - "Node CPU is 20% overnight and 70% during the working day"
+  - "Restarting the service changes nothing"
+
+artifacts:
+  - type: command_output
+    label: Its scheduler state, taken at 11:00
+    content: |
+      $ grep -E '^policy|^prio|se.load.weight|se.slice' /proc/1/sched
+      policy                                       :                    0
+      prio                                         :                  139
+      se.load.weight                               :                15360
+      se.slice                                     :              3000000
+
+      $ grep -E 'voluntary' /proc/1/sched
+      nr_voluntary_switches                        :                 1022
+      nr_involuntary_switches                      :                87192
+
+  - type: command_output
+    label: Run-queue wait, 600-second windows at 03:00 and at 11:00
+    content: |
+      # 03:00 — totalled across its 4 worker threads
+      on-cpu    3.14s
+      waiting   0.09s
+
+      # 11:00 — same threads, same window length
+      on-cpu    3.17s
+      waiting 248.60s
+
+  - type: command_output
+    label: Its cgroup files, at 11:00
+    content: |
+      $ cat /sys/fs/cgroup/cpu.max
+      200000 100000
+
+      $ cat /sys/fs/cgroup/cpu.stat
+      usage_usec      3170620
+      nr_periods         6000
+      nr_throttled          4
+      throttled_usec    88220
+
+  - type: config
+    label: The image's entrypoint
+    content: |
+      #!/bin/sh
+      # migrated from the VM fleet, 2025 — do not edit without asking ops
+      set -e
+      exec nice -n 19 java -jar /srv/pricing.jar
+
+  - type: log
+    label: What the old VM unit looked like
+    content: |
+      # /etc/systemd/system/pricing.service on the VM fleet
+      [Service]
+      Nice=19
+      ExecStart=/usr/bin/java -jar /srv/pricing.jar
+      # pricing ran alone on a dedicated 8-vCPU VM
+
+diagnostic_questions:
+  - "What nice value does prio 139 correspond to, and what weight does that give?"
+  - "Its CPU time per window is identical at 03:00 and 11:00. What changed, then?"
+  - "Why is nr_throttled near zero, and why does that not mean the CPU is fine?"
+  - "Why did niceing this service to 19 not cause a problem on the VM fleet?"
+  - "Why does the service's own monitoring show nothing at all?"
+
+hints:
+  - "prio is 120 plus the nice value for a normal task. Read it, then look up the weight."
+  - "A weight is a share of contended CPU. What is the denominator, and whose is it?"
+  - "Compare the two run-queue readings. The work did not change; the queue did."
+  - "Read the old VM unit and ask what was different about the machine it ran on."
+
+root_cause: >-
+  The service runs at nice 19, giving it a scheduler weight of 15 against a
+  normal task's 1024 — about one sixty-eighth. `prio 139` is 120 + 19, and
+  `se.load.weight 15360` is 15 scaled; the two confirm each other, and the
+  entrypoint says who did it:
+
+
+  ```sh
+  exec nice -n 19 java -jar /srv/pricing.jar
+  ```
+
+
+  A weight does nothing without contention. Overnight the node is at 20% and
+  nothing is competing, so the nice value is invisible and the service runs at
+  full speed — 3.14 seconds of CPU with 0.09 seconds of queueing. During the
+  working day the node is at 70%, other workloads are runnable, and the same
+  service does 3.17 seconds of work while spending **248 seconds** queued.
+
+
+  Nothing about the service changed between the two readings. Its CPU per
+  request is identical. The number that moved is the *denominator* — the sum of
+  the weights of everything else that is runnable — and that number belongs to
+  other people's workloads and appears in none of this service's own metrics.
+
+
+  `nr_throttled` is near zero, correctly, and that is why the team's check
+  misled them. The container is nowhere near its 2-CPU quota; it is losing
+  every contest for the CPU long before the quota becomes relevant. Throttling
+  and starvation are different failures, and only one of them has a counter in
+  `cpu.stat`.
+
+
+  On the VM fleet the same `Nice=19` was harmless, because the service ran alone
+  on a dedicated 8-vCPU box. There was never any contention for the weight to
+  arbitrate. The line survived the migration into an environment where the whole
+  point is that workloads share a node — so a setting that had been inert for
+  years became decisive, and nobody edited anything.
+
+method: >-
+  **1. Read the two regimes side by side rather than investigating the bad
+  one.** 3.14 seconds of CPU against 3.17 seconds of CPU says the work is
+  identical. 0.09 seconds of waiting against 248 seconds of waiting says the
+  queue is the entire difference. That comparison takes two commands and
+  eliminates the application completely.
+
+
+  **2. Do not let the throttling check close the investigation.** `nr_throttled`
+  near zero is real and means "not hitting our own quota". It does not mean "not
+  a CPU problem" — a task can be starved by competitors while nowhere near its
+  own ceiling. Those are different failures and `cpu.stat` only counts one.
+
+
+  **3. Read the weight, and read it twice.** `prio 139` is 120 + 19.
+  `se.load.weight 15360` is 15 scaled by 1024. Two independent lines saying nice
+  19, which is a 68:1 disadvantage against any normal task on the same run
+  queue.
+
+
+  **4. Find who set it.** The entrypoint is three lines long and one of them is
+  the answer. It is worth noticing that the file carries a comment discouraging
+  edits — the kind of provenance that keeps a defect alive for eight months.
+
+
+  **5. Explain why it was fine before, or the fix will be argued with.** The VM
+  unit had the same `Nice=19` and ran on a dedicated box. No contention, no
+  effect, for years. The migration changed the environment rather than the
+  setting: a shared node is exactly the situation a weight was designed for, and
+  this workload was configured to lose.
+
+
+  **6. Notice why the monitoring could never have caught it.** Every metric this
+  service exports is about itself, and nothing about itself changed. The cause
+  is in a denominator made of other people's workloads. Only run-queue wait —
+  which is about this service and measures the outcome of that denominator —
+  would have shown it, and nobody was collecting it.
+
+
+  The habit worth taking: "our metrics show nothing changed" is compatible with
+  "something changed". Ask what is in the environment that your metrics do not
+  describe.
+
+resolution: >-
+  **Remove the `nice -n 19` from the entrypoint.** That is the whole fix, and
+  the p99 should return to something near the overnight figure immediately.
+
+
+  ```sh
+  #!/bin/sh
+  set -e
+  exec java -jar /srv/pricing.jar
+  ```
+
+
+  **Then grep the fleet, because a wrapper inherited from an old VM estate is
+  never inherited by one service.**
+
+
+  ```bash
+  grep -rn 'nice -n\|^Nice=\|renice' --include=Dockerfile --include='*.sh' .
+  kubectl get pods -A -o name | while read p; do
+    kubectl exec "$p" -- sh -c 'grep -H ^prio /proc/1/sched' 2>/dev/null
+  done | grep -v ': *120$'
+  ```
+
+
+  Anything reporting a `prio` other than 120 is running at a non-default nice
+  value, deliberately or otherwise. On a shared cluster that is worth knowing
+  about every workload, and it takes one pass.
+
+
+  **Decide what, if anything, this service should have instead.** If the
+  original intent was "this is background work, let it yield to the important
+  things", the Kubernetes expression of that is a low CPU **request** — a small
+  weight — and *not* a low CPU limit, which would throttle it even overnight
+  when the node is empty. State the intent explicitly this time, in the manifest
+  where reviewers will see it, rather than in a wrapper script nobody is
+  supposed to edit.
+
+
+  **Add the signal that was missing.** Run-queue wait per workload, or at
+  minimum the cgroup-level version you already have:
+
+
+  ```promql
+  rate(container_pressure_cpu_stalled_seconds_total[5m]) > 0.2
+  ```
+
+
+  Eight months of a service being unusable for seven hours a day, with every
+  dashboard green, is worth a short write-up of its own. The lesson is not "check
+  for nice"; it is that a workload's own metrics cannot see a change in what it
+  is competing against.

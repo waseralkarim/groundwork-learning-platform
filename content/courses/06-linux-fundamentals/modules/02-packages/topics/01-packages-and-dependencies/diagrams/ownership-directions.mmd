@@ -1,0 +1,31 @@
+flowchart LR
+    subgraph managed["Managed by the package system"]
+        PKG["package<br/>openssl 3.5.6-1~deb13u2"]
+        F1["/usr/bin/openssl"]
+        F2["/etc/ssl/openssl.cnf<br/>(conffile, md5 tracked)"]
+        PKG -- "dpkg -L<br/>400 paths" --> F1
+        PKG --> F2
+        F1 -- "dpkg -S" --> PKG
+    end
+
+    subgraph indirect["Owned, but not at the path you asked about"]
+        A1["/usr/bin/awk"]
+        A2["/etc/alternatives/awk"]
+        A3["/usr/bin/mawk"]
+        AP["package: mawk"]
+        A1 -- symlink --> A2
+        A2 -- symlink --> A3
+        A3 -- "dpkg -S" --> AP
+    end
+
+    subgraph unmanaged["Owned by nothing"]
+        U1["/usr/local/bin/acme-agent"]
+        U2["/etc/acme/agent.conf"]
+        NONE["no package<br/>no version, no upgrades,<br/>no integrity check"]
+        U1 --> NONE
+        U2 --> NONE
+    end
+
+    style managed fill:#e8f4ea,stroke:#2f7d4f
+    style indirect fill:#fdf6e3,stroke:#b58900
+    style unmanaged fill:#fdecea,stroke:#c0392b

@@ -1,0 +1,440 @@
+id: lab.make-long-options-work
+topic: topic.arguments-and-options
+title: Make --verbose work three ways and pick one
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.7.5, OBJ-B08.7.6]
+
+intro: >-
+  `getopts` reads `--verbose` as the letters `-`, `v`, `e`, `r`, `b`, `o`, `s`,
+  `e` — and enables any of them that happen to be in the optstring.
+
+
+  You will measure that, then implement long options three ways and argue for
+  one. The seeded `backup.sh` has three defects to find first.
+
+setup:
+  - /opt/lab/seed-args.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Find out exactly what `getopts` does with a long option, an attached
+      value, and an `=`. Save to /tmp/answer-getopts.
+    hint: >-
+      Print `OPT` and `OPTARG` for every iteration, in silent mode so nothing is
+      hidden.
+    walkthrough: |
+      show() {
+        printf '  %-14s ' "$1"; shift
+        bash -c '
+          out=
+          while getopts ":abo:" OPT; do
+            if [ "$OPT" = "?" ]; then out="$out (?$OPTARG)"
+            else out="$out [$OPT${OPTARG:+=$OPTARG}]"; fi
+          done
+          shift $((OPTIND - 1))
+          printf "%s   rest=" "$out"; printf "[%s]" "$@"; echo
+        ' _ "$@"
+      }
+      {
+        show '-a -b'      -a -b
+        show '-ab'        -ab
+        show '-o file'    -o file
+        show '-ofile'     -ofile
+        show '-o=file'    -o=file
+        show '--about'    --about
+        show '-a x -b'    -a x -b
+        show '-a -- -b'   -a -- -b
+        echo
+        echo "row by row:"
+        echo "  -ab       BUNDLING WORKS - two options from one word"
+        echo "  -ofile    an ATTACHED VALUE works"
+        echo "  -o=file   OPTARG is =file. THE EQUALS SIGN IS PART OF THE VALUE."
+        echo "  --about   split into letters: - a b o u t. THE 'a' AND 'b' ARE ENABLED,"
+        echo "            and because -o TAKES AN ARGUMENT it swallows the rest of the"
+        echo "            word: OPTARG becomes 'ut'. one typed word set two flags and"
+        echo "            supplied a value nobody wrote."
+        echo "  -a x -b   stops at x; the -b is left as an operand and never parsed"
+        echo "  -a -- -b  -- ends the options; -b becomes an operand"
+        echo
+        echo "GETOPTS HAS NO CONCEPT OF A LONG OPTION. it sees a word starting with a"
+        echo "dash and reads the rest as bundled single letters. any that match the"
+        echo "optstring are ENABLED; the others produce unknown-option reports."
+        echo
+        echo "which means a help text advertising --about on a script with -a and -b is"
+        echo "not merely wrong - it is an instruction to turn on two features."
+      } > /tmp/answer-getopts
+      cat /tmp/answer-getopts
+    verify:
+      - type: file_matches
+        path: /tmp/answer-getopts
+        pattern: '-ab +\[a\] \[b\]'
+        describe: Bundling works
+      - type: file_matches
+        path: /tmp/answer-getopts
+        pattern: '-ofile +\[o=file\]'
+        describe: An attached value works
+      - type: file_matches
+        path: /tmp/answer-getopts
+        pattern: '-o=file +\[o==file\]'
+        describe: And the equals sign becomes part of the value
+      - type: file_matches
+        path: /tmp/answer-getopts
+        pattern: '--about +\(\?-\) \[a\] \[b\] \[o=ut\]'
+        describe: A long option enables the letters inside it, and -o eats the rest
+      - type: file_matches
+        path: /tmp/answer-getopts
+        pattern: '(?i)NO CONCEPT OF A LONG OPTION'
+        describe: You stated the rule
+      - type: file_matches
+        path: /tmp/answer-getopts
+        pattern: '(?i)turn on two features'
+        describe: And what that means for a help text
+
+  - id: s2
+    instruction: >-
+      Find the three defects in /tmp/args/backup.sh, and say which are silent.
+      Save to /tmp/answer-backup.
+    hint: >-
+      Try `--out` with no value, `--out=file`, and `-- --verbose`.
+    walkthrough: |
+      {
+        echo "the parser:"
+        sed -n '/^while \[/,/^done/p' /tmp/args/backup.sh | sed 's/^/    /'
+        echo
+        echo "working case, for reference:"
+        bash /tmp/args/backup.sh --verbose --out o.tar /srv 2>&1 | sed 's/^/    /'
+        echo
+        echo "DEFECT 1 - a missing value. LOUD:"
+        bash /tmp/args/backup.sh --out 2>&1 | sed 's/^/    /'
+        echo "    it reads \$2 without checking \$#. under set -u that is an unbound"
+        echo "    variable; without set -u it would silently take the empty string."
+        echo
+        echo "DEFECT 2 - --out=FILE. SILENT:"
+        bash /tmp/args/backup.sh --out=file.tar /srv 2>&1 | sed 's/^/    /'
+        echo "    the case has no --out=* branch, so --out=file.tar falls to -*) and is"
+        echo "    reported as unknown - on STDERR. out keeps its default, /srv is still"
+        echo "    parsed as the directory, and the exit status is 0. the operator gets"
+        echo "    a backup written to the wrong file."
+        echo
+        echo "DEFECT 3 - -- is not honoured. SILENT:"
+        bash /tmp/args/backup.sh -- --verbose /srv 2>&1 | sed 's/^/    /'
+        echo "    -- itself is reported as an unknown option, and then --verbose IS"
+        echo "    CONSUMED AS A FLAG. the operator asked for a directory literally named"
+        echo "    --verbose and got verbose mode instead."
+        echo
+        echo "two of the three are silent, exit 0, and produce a plausible-looking line"
+        echo "of output. the loud one is only loud because set -u happens to be on."
+      } > /tmp/answer-backup
+      cat /tmp/answer-backup
+    verify:
+      - type: file_matches
+        path: /tmp/answer-backup
+        pattern: '(?i)unbound variable'
+        describe: The missing value is caught by set -u
+      - type: file_matches
+        path: /tmp/answer-backup
+        pattern: 'verbose=0 out=backup.tar dir=/srv'
+        describe: And --out=FILE silently keeps the default
+      - type: file_matches
+        path: /tmp/answer-backup
+        pattern: 'verbose=1 out=backup.tar dir=/srv'
+        describe: And -- fails to stop option parsing
+      - type: file_matches
+        path: /tmp/answer-backup
+        pattern: '(?i)CONSUMED AS A FLAG'
+        describe: You explained the -- defect
+      - type: file_matches
+        path: /tmp/answer-backup
+        pattern: '(?i)two of the three are silent'
+        describe: And classified them
+
+  - id: s3
+    instruction: >-
+      Implement long options with `getopt(1)`. Write /tmp/opt-getopt.sh and
+      prove it handles the cases getopts cannot. Save to /tmp/answer-getopt.
+    hint: >-
+      `getopt -o … --long … -- "$@"` then `eval set --`. Check its exit status.
+    walkthrough: |
+      cat > /tmp/opt-getopt.sh <<'G'
+      #!/bin/bash
+      set -uo pipefail
+
+      parsed=$(getopt -o vo:h --long verbose,out:,help \
+                      -n "${0##*/}" -- "$@") || exit 64
+      eval set -- "$parsed"
+
+      verbose=0 out=backup.tar
+      while true; do
+        case $1 in
+          -v|--verbose) verbose=1; shift ;;
+          -o|--out)     out=$2;    shift 2 ;;
+          -h|--help)    echo "usage: ${0##*/} [-v] [-o FILE] DIR"; exit 0 ;;
+          --)           shift; break ;;
+          *)            echo "internal error at $1" >&2; exit 70 ;;
+        esac
+      done
+
+      printf 'verbose=%s out=%s rest=' "$verbose" "$out"; printf '[%s]' "$@"; echo
+      G
+      chmod 0755 /tmp/opt-getopt.sh
+
+      t() { printf '  %-26s ' "$*"; bash /tmp/opt-getopt.sh "$@" 2>&1 | tail -1; }
+      {
+        t --verbose --out f.tar /srv
+        t --out=f.tar /srv
+        t --verb --ou=f.tar /srv
+        t /srv --verbose
+        t -- --verbose
+        t "a b"
+        t --nope
+        echo
+        echo "everything getopts could not do:"
+        echo "  --out=f.tar     handled - getopt SPLITS attached values before you see them"
+        echo "  --verb --ou=    UNAMBIGUOUS ABBREVIATIONS are accepted"
+        echo "  /srv --verbose  PERMUTED - the option after the operand is still parsed"
+        echo "  -- --verbose    -- honoured; --verbose is an operand"
+        echo "  \"a b\"           whitespace survives, because getopt REQUOTES its output"
+        echo
+        echo "that requoting is exactly why the eval is safe here: getopt emits"
+        echo "shell-quoted words, so eval set -- rebuilds the list without re-splitting."
+        echo
+        echo "and the || exit 64 is NOT optional. on a bad option getopt exits non-zero"
+        echo "AND STILL PRINTS A USABLE LIST with the bad option removed:"
+        printf '    stdout=[%s] rc=%s\n' "$(getopt -o v --long verbose -n demo -- --nope a b 2>/dev/null)" "$(getopt -o v --long verbose -n demo -- --nope a b >/dev/null 2>&1; echo $?)"
+        echo "    so without the guard the script runs on, having silently discarded the"
+        echo "    flag the operator typed. the status is the only thing that tells you."
+      } > /tmp/answer-getopt
+      cat /tmp/answer-getopt
+    verify:
+      - type: file_exists
+        path: /tmp/opt-getopt.sh
+        describe: You wrote the getopt(1) version
+      - type: file_matches
+        path: /tmp/answer-getopt
+        pattern: '--out=f.tar /srv +verbose=0 out=f.tar rest=\[/srv\]'
+        describe: It handles an attached long value
+      - type: file_matches
+        path: /tmp/answer-getopt
+        pattern: '--verb --ou=f.tar /srv +verbose=1 out=f.tar'
+        describe: And unambiguous abbreviations
+      - type: file_matches
+        path: /tmp/answer-getopt
+        pattern: '/srv --verbose +verbose=1 out=backup.tar rest=\[/srv\]'
+        describe: And permutes an option after an operand
+      - type: file_matches
+        path: /tmp/answer-getopt
+        pattern: '-- --verbose +verbose=0 out=backup.tar rest=\[--verbose\]'
+        describe: And honours --
+      - type: file_matches
+        path: /tmp/answer-getopt
+        pattern: 'a b +verbose=0 out=backup.tar rest=\[a b\]'
+        describe: And preserves whitespace through the eval
+      - type: file_matches
+        path: /tmp/answer-getopt
+        pattern: '(?i)STILL PRINTS A USABLE LIST'
+        describe: And you found why the exit check matters
+
+  - id: s4
+    instruction: >-
+      Implement the same interface by hand, with no external dependency. Write
+      /tmp/opt-manual.sh and run the same cases. Save to /tmp/answer-manual.
+    hint: >-
+      Four branches are easy to forget: `--opt=*`, `--`, a `-*` catch-all, and a
+      count check before taking `$2`.
+    walkthrough: |
+      cat > /tmp/opt-manual.sh <<'M'
+      #!/bin/bash
+      set -uo pipefail
+
+      die() { echo "${0##*/}: $*" >&2; exit 64; }
+
+      verbose=0 out=backup.tar
+      while [ $# -gt 0 ]; do
+        case $1 in
+          -v|--verbose) verbose=1 ;;
+          -o|--out)     [ $# -ge 2 ] || die "$1 requires a value"; out=$2; shift ;;
+          --out=*)      out=${1#*=} ;;
+          -h|--help)    echo "usage: ${0##*/} [-v] [-o FILE] DIR"; exit 0 ;;
+          --)           shift; break ;;
+          -*)           die "unknown option: $1" ;;
+          *)            break ;;
+        esac
+        shift
+      done
+
+      printf 'verbose=%s out=%s rest=' "$verbose" "$out"; printf '[%s]' "$@"; echo
+      M
+      chmod 0755 /tmp/opt-manual.sh
+
+      t() { printf '  %-26s ' "$*"; bash /tmp/opt-manual.sh "$@" 2>&1 | tail -1; }
+      {
+        t --verbose --out f.tar /srv
+        t --out=f.tar /srv
+        t /srv --verbose
+        t -- --verbose
+        t "a b"
+        t --out
+        t --nope
+        echo
+        echo "the four branches people leave out, and what each one costs:"
+        echo
+        echo "  --out=*)   without it, --out=f.tar falls to -*) and is rejected - or"
+        echo "             worse, without a -*) branch, falls to *) and is treated as"
+        echo "             a FILENAME"
+        echo "  --)        without it, a file named --verbose cannot be passed at all"
+        echo "  -*)        the catch-all. without it an unknown option becomes an"
+        echo "             operand, and the script runs on the wrong target"
+        echo "  [ \$# -ge 2 ]  without it, --out with no value takes the empty string"
+        echo "             (or trips set -u), and shift consumes an argument that"
+        echo "             was never there"
+        echo
+        echo "note this version does NOT permute: '/srv --verbose' stops at /srv, the"
+        echo "same as getopts. permutation is a deliberate extra - you would have to"
+        echo "collect operands into an array and keep going."
+      } > /tmp/answer-manual
+      cat /tmp/answer-manual
+    verify:
+      - type: file_exists
+        path: /tmp/opt-manual.sh
+        describe: You wrote the hand-rolled version
+      - type: file_matches
+        path: /tmp/answer-manual
+        pattern: '--out=f.tar /srv +verbose=0 out=f.tar rest=\[/srv\]'
+        describe: It handles --opt=value
+      - type: file_matches
+        path: /tmp/answer-manual
+        pattern: '-- --verbose +verbose=0 out=backup.tar rest=\[--verbose\]'
+        describe: And honours --
+      - type: file_matches
+        path: /tmp/answer-manual
+        pattern: '(?i)--out +.*requires a value'
+        describe: And refuses a missing value by name
+      - type: file_matches
+        path: /tmp/answer-manual
+        pattern: '(?i)--nope +.*unknown option'
+        describe: And an unknown option
+      - type: file_matches
+        path: /tmp/answer-manual
+        pattern: '(?i)does NOT permute'
+        describe: And you named what it gives up
+
+  - id: s5
+    instruction: >-
+      Choose between the three for a real script, and say what decides it. Save
+      to /tmp/answer-choice.
+    walkthrough: |
+      {
+        echo "the three, side by side:"
+        echo
+        printf '  %-22s %-12s %-14s %s\n' '' getopts 'getopt(1)' hand-rolled
+        printf '  %-22s %-12s %-14s %s\n' 'long options'    no       yes            'if you write them'
+        printf '  %-22s %-12s %-14s %s\n' 'dependency'      none     util-linux     none
+        printf '  %-22s %-12s %-14s %s\n' '--opt=value'     no       yes            'if you write it'
+        printf '  %-22s %-12s %-14s %s\n' 'abbreviations'   no       yes            no
+        printf '  %-22s %-12s %-14s %s\n' 'permutes'        no       yes            'your choice'
+        printf '  %-22s %-12s %-14s %s\n' 'needs eval'      no       yes            no
+        printf '  %-22s %-12s %-14s %s\n' 'lines'           '~8'     '~12'          '~12'
+        echo
+        echo "WHAT DECIDES IT: WHO TYPES THE COMMAND."
+        echo
+        echo "  getopts     for a script called by other scripts, by cron, or by a CI"
+        echo "              job. short flags are fine when the caller is a file that"
+        echo "              nobody re-reads. no dependency, portable to any POSIX"
+        echo "              shell, and eight lines is the whole parser. this is most"
+        echo "              operational scripts."
+        echo
+        echo "  getopt(1)   for a script HUMANS type, especially during an incident."
+        echo "              --dry-run is self-documenting in a runbook and -n is not,"
+        echo "              and permutation matches what everyone expects from GNU"
+        echo "              tools. costs an external dependency and an eval - both"
+        echo "              acceptable on an image you control, both worth a thought"
+        echo "              on something that ships to unknown machines."
+        echo
+        echo "  hand-rolled when you want long options with no dependency, or the"
+        echo "              syntax is unusual - subcommands, key=value operands, a"
+        echo "              repeated flag accumulating into an array. barely more code"
+        echo "              than getopt(1) and no eval; you give up abbreviations and"
+        echo "              the guarantee that the normalisation is right."
+        echo
+        echo "THE ONE THAT IS ALWAYS WRONG is getopts with a long option in the help"
+        echo "text. that is not a documentation bug - on a script with matching letters"
+        echo "it is an instruction to enable features the operator did not ask for."
+        echo
+        echo "and the honest note: if i want subcommands, mutually exclusive flags,"
+        echo "enum-validated values and generated help, i am reimplementing argparse"
+        echo "badly in a language with no data structures. that is the signal to stop"
+        echo "writing shell - and the prune incident was, at bottom, a help text that"
+        echo "had drifted away from the code."
+      } > /tmp/answer-choice
+      cat /tmp/answer-choice
+    verify:
+      - type: file_matches
+        path: /tmp/answer-choice
+        pattern: '(?i)WHO TYPES THE COMMAND'
+        describe: You named the deciding question
+      - type: file_matches
+        path: /tmp/answer-choice
+        pattern: '(?i)self-documenting in a runbook'
+        describe: And the case for long options
+      - type: file_matches
+        path: /tmp/answer-choice
+        pattern: '(?i)ALWAYS WRONG'
+        describe: And the combination to refuse
+      - type: file_matches
+        path: /tmp/answer-choice
+        pattern: '(?i)reimplementing argparse'
+        describe: And when to stop writing shell
+
+solution: >-
+  **What `getopts` does with what it was not designed for:**
+
+
+  | Given | Result |
+  |---|---|
+  | `-ab` | two options — bundling works |
+  | `-ofile` | `OPTARG` = `file` |
+  | `-o=file` | `OPTARG` = **`=file`** |
+  | `--about` | `a` and `b` **enabled**, and `-o` swallows `ut` as its value |
+  | `-a x -b` | stops at `x`; the `-b` is never parsed |
+  | `-a -- -b` | `--` ends options; `-b` is an operand |
+
+
+  **`getopts` has no concept of a long option.** So a help text advertising
+  `--about` on a script with `-a` and `-b` is not a documentation bug — it is an
+  instruction to turn on two features.
+
+
+  **`backup.sh` has three defects, two silent.** A missing value after `--out`
+  reads `$2` without checking `$#` (loud only because `set -u` is on).
+  `--out=file.tar` has no branch, so it is reported unknown on *stderr* while
+  `out` keeps its default and the exit status stays 0. And `--` is not honoured —
+  it is reported as unknown and then `--verbose` **is consumed as a flag**, so an
+  operator asking for a directory literally named `--verbose` gets verbose mode.
+
+
+  **`getopt(1)` handles everything `getopts` cannot** — `--out=f.tar`,
+  unambiguous abbreviations (`--verb`), permutation (`/srv --verbose`), `--`, and
+  whitespace, because it **requotes** its output. That requoting is exactly what
+  makes the `eval` safe.
+
+
+  And `|| exit 64` is not optional: on a bad option `getopt` exits non-zero **and
+  still prints a usable list with the bad option removed**, so an unguarded script
+  runs on having silently discarded the operator's flag.
+
+
+  **The hand-rolled version** needs four branches people forget: `--out=*`, `--`,
+  a `-*` catch-all (without which an unknown option becomes a *filename*), and a
+  count check before taking `$2`. It does not permute unless you write that too.
+
+
+  **What decides the choice is who types the command.** `getopts` for scripts
+  called by other scripts and cron; `getopt(1)` for scripts humans type,
+  especially during an incident, where `--dry-run` is self-documenting in a
+  runbook and `-n` is not; hand-rolled for long options without a dependency or
+  an unusual syntax. **`getopts` plus a long option in the help text is always
+  wrong.**

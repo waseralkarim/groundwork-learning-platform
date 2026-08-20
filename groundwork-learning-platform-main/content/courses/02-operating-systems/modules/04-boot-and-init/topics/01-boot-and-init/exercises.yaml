@@ -1,0 +1,222 @@
+topic: topic.boot-and-init
+
+exercises:
+  - id: e1
+    title: Order the boot
+    level: L2
+    objectives: [OBJ-A02.5.1, OBJ-A02.5.3]
+    kind: ordering
+    prompt: >-
+      Put these in the order they happen on a UEFI machine booting Linux from an
+      encrypted LVM volume:
+
+
+      1. `switch_root` frees the RAM disk and executes /sbin/init
+
+      2. Firmware loads a bootloader from the EFI system partition
+
+      3. The kernel unpacks the initramfs and runs /init inside it
+
+      4. systemd starts units until the default target is reached
+
+      5. The initramfs prompts for a passphrase and unlocks the LUKS volume
+
+      6. The bootloader loads the kernel and the initramfs into memory
+    answer: "2, 6, 3, 5, 1, 4"
+    explanation: >-
+      The stage worth dwelling on is 5, because it is the whole reason 3 exists.
+
+
+      The root filesystem is inside a LUKS container on an LVM volume. To mount
+      it the kernel needs `dm-crypt`, `dm-mod` and the LVM tools — all of which
+      live on the filesystem it cannot open yet. So the initramfs carries them,
+      prompts for the passphrase, unlocks the volume, activates the volume
+      group, and only then is the real root mountable.
+
+
+      Note also what is *not* in the list: firmware does not mount anything, and
+      the bootloader does not either. Firmware reads one FAT partition;
+      the bootloader reads enough of a filesystem to load two files. Everything
+      else is the kernel's job.
+
+
+      This ordering is also the failure map. A machine that stops at 3 has a
+      broken initramfs. One that stops at 5 has a passphrase or keyfile problem.
+      One that stops at 4 booted fine and has a unit that will not start — an
+      entirely different investigation, with an entirely different set of tools.
+
+  - id: e2
+    title: Find the race
+    level: L3
+    objectives: [OBJ-A02.5.4]
+    kind: interpretation
+    prompt: >-
+      Three units. Say what order they start in, and identify the one dependency
+      that is not guaranteed.
+
+
+      ```ini
+      # cache.service
+      [Unit]
+      Wants=redis.service
+      After=redis.service
+
+      # api.service
+      [Unit]
+      Requires=cache.service
+      Requires=redis.service
+      After=cache.service
+
+      # redis.service
+      [Service]
+      Type=simple
+      ```
+
+
+      Then say what changes if redis fails to start.
+    answer: >-
+      redis and cache are ordered (cache after redis), and api is ordered after
+      cache — so redis, cache, api. The unguaranteed dependency is api's on
+      redis: it has `Requires=redis.service` with no `After=`, and is only
+      ordered after redis transitively, through cache. If redis fails, api fails
+      too — `Requires=` propagates failure — while cache starts anyway, because
+      it only `Wants=` redis.
+    explanation: >-
+      The transitive ordering is the trap. api is ordered after cache, and cache
+      after redis, so api does happen to start last — today. Remove cache, or
+      change its ordering, and api's relationship with redis silently becomes a
+      race, with nothing in api's own file to explain the new failures.
+
+
+      Ordering that depends on a third unit's declaration is a coincidence with a
+      maintenance schedule, not a dependency. If api needs redis, api should say
+      `After=redis.service` itself.
+
+
+      The failure asymmetry is the second finding, and it is a real design
+      decision rather than an oversight. cache uses `Wants=`, so a broken redis
+      leaves it running and degraded. api uses `Requires=`, so a broken redis
+      takes api down. Whether that is right depends on whether api can serve
+      anything useful without redis — but it should be a decision somebody made,
+      and the two units currently disagree about it.
+
+
+      One more thing worth noticing: redis is `Type=simple`, so even a correct
+      `After=redis.service` would order api after redis was *launched*, not after
+      it accepts connections. Closing that needs `Type=notify`.
+
+  - id: e3
+    title: Pick a unit type
+    level: L3
+    objectives: [OBJ-A02.5.5]
+    kind: short_answer
+    prompt: >-
+      Give the `Type=` you would use for each, and say what would go wrong with
+      the default:
+
+
+      **A** — A database schema migration that must complete before the
+      application starts.
+
+
+      **B** — An HTTP API written in Go that takes about eight seconds to warm
+      its connection pool before it can serve.
+
+
+      **C** — A legacy daemon that forks and writes its PID to
+      `/var/run/legacy.pid`.
+
+
+      **D** — A short script that syncs a config file from object storage every
+      five minutes, driven by a timer.
+    answer: >-
+      A: `Type=oneshot` with `RemainAfterExit=yes` — with `simple`, units after
+      it would wait only for exec and start while the migration ran. B:
+      `Type=notify` with `sd_notify` — with `simple`, `After=` on it promises
+      launch rather than readiness and downstream units hit a cold pool. C:
+      `Type=forking` with `PIDFile=` — with `simple`, systemd would track the
+      parent that exits immediately and think the service died. D:
+      `Type=oneshot` — it runs and exits, and there is nothing to keep active
+      between timer firings.
+    explanation: >-
+      Each case is chosen by what "finished starting" should mean.
+
+
+      **A** needs completion, and `oneshot` is the only type where units ordered
+      after it wait for the process to *exit*. `RemainAfterExit=yes` keeps the
+      unit active afterwards so the dependency stays satisfied and the migration
+      is not re-run.
+
+
+      **B** is the case people get wrong most often, because `simple` appears to
+      work: the service does start, and the failures are intermittent and
+      downstream. Eight seconds of warm-up is eight seconds during which
+      everything ordered after it is talking to a service that is not ready.
+
+
+      **C** is what `forking` exists for. Without `PIDFile=`, systemd watches the
+      parent, sees it exit almost immediately, and concludes the service is gone
+      — usually restarting it in a loop while the real daemon runs happily
+      alongside.
+
+
+      **D** is `oneshot` without `RemainAfterExit`, because there is no state to
+      preserve between runs: the timer starts it, it does its work, it exits, and
+      the unit going inactive is correct.
+
+  - id: e4
+    title: Translate a unit into a pod
+    level: L3
+    objectives: [OBJ-A02.5.7]
+    kind: interpretation
+    prompt: >-
+      Translate this into its Kubernetes equivalent, field by field, and name the
+      one thing that has no direct equivalent:
+
+
+      ```ini
+      [Unit]
+      Requires=postgres.service
+      After=postgres.service
+
+      [Service]
+      Type=notify
+      ExecStart=/usr/local/bin/api
+      Restart=on-failure
+      RestartSec=5
+      WatchdogSec=30
+      ```
+    answer: >-
+      `After=` becomes an initContainer that waits for postgres. `Type=notify`
+      becomes a readinessProbe. `Restart=on-failure` becomes
+      `restartPolicy: Always` at the pod level, with the back-off standing in for
+      `RestartSec`. `WatchdogSec=` becomes a livenessProbe. `Requires=` — start
+      the dependency, and fail if it fails — has no direct equivalent: Kubernetes
+      does not start other workloads on your behalf, and a pod whose dependency
+      is missing simply stays unready.
+    explanation: >-
+      The mapping is close because Kubernetes rebuilt this model, and the two
+      gaps are the interesting part.
+
+
+      **`Requires=` has no equivalent**, and the reason is architectural rather
+      than an omission. systemd manages every unit on one machine and can start
+      one because another asked for it. Kubernetes schedules independent
+      workloads, and a Deployment cannot cause another Deployment to exist. The
+      substitute is that the pod stays unready and its endpoints are removed
+      from the Service, which is a weaker but more decoupled behaviour.
+
+
+      **`RestartSec=5` maps only loosely.** systemd waits a fixed interval and
+      then stops entirely at the start limit. Kubernetes uses exponential
+      back-off — 10s, 20s, 40s, capped at five minutes — and never stops. The
+      practical difference matters during an incident: a fixed systemd service
+      will not recover on its own after `reset-failed` is needed, and a
+      Kubernetes pod will, but possibly not for five minutes.
+
+
+      **The readiness translation is the one worth getting right.** `Type=notify`
+      and a readinessProbe are both the service declaring it can work. A
+      readiness endpoint that returns 200 as soon as the listener is bound is the
+      same lie `Type=simple` tells, and it re-creates the race the translation
+      was supposed to remove.

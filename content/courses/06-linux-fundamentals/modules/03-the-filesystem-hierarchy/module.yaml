@@ -1,0 +1,8 @@
+id: module.the-filesystem-hierarchy
+slug: the-filesystem-hierarchy
+title: The Filesystem Hierarchy
+summary: >-
+  Where things go and who owns them — the directories a package may write to,
+  the three it is forbidden from touching, and what a read-only root filesystem
+  reveals about which of them a running program actually needs.
+order: 3

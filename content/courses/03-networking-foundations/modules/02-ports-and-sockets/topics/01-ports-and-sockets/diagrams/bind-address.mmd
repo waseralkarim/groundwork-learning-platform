@@ -1,0 +1,8 @@
+graph TD
+    A{"What did the service bind to?"} -->|"127.0.0.1:9000"| B["Reachable only from<br/><b>this machine</b>"]
+    A -->|"0.0.0.0:9000"| C["Reachable on <b>every</b><br/>address this machine has"]
+    A -->|"10.0.1.5:9000"| D["Reachable on <b>that one</b><br/>address only"]
+    B --> E["<i>curl localhost:9000</i> ✓<br/><i>curl 10.0.1.5:9000</i> ✗ refused"]
+    C --> F["<i>Both work.</i><br/>Also exposed to anything<br/>that can route to you"]
+    D --> G["Works from the network,<br/>fails from a second interface"]
+    E --> H["<b>'Works locally, not from outside'</b><br/>is this box, almost every time"]

@@ -1,0 +1,161 @@
+id: topic.the-block-layer
+slug: the-block-layer
+title: "The Block Layer: What Happens After write()"
+summary: >-
+  `write()` returns before anything reaches a device. This topic is about the
+  distance between those two events — the dirty pages, the thresholds that
+  decide when they leave, the queues they wait in, and the counters that tell
+  you how long the waiting took.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.files-and-filesystems
+    hardness: required
+  - topic: topic.virtual-memory
+    hardness: required
+  - topic: topic.cgroups
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A02.4.1
+    level: L2
+    verb: trace
+    statement: >-
+      Trace the path a write takes from the system call to the device, naming
+      each queue it waits in.
+    assessed_by: [quiz.q1, quiz.q2, lab.what-your-storage-is, exercise.e1]
+
+  - id: OBJ-A02.4.2
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish logical I/O from physical I/O, and measure both for a running
+      process.
+    assessed_by: [quiz.q3, quiz.q4, lab.logical-and-physical, assessment.A]
+
+  - id: OBJ-A02.4.3
+    level: L2
+    verb: identify
+    statement: >-
+      Identify a device's queue configuration — scheduler, depth, readahead —
+      from sysfs.
+    assessed_by: [quiz.q5, lab.what-your-storage-is]
+
+  - id: OBJ-A02.4.4
+    level: L3
+    verb: explain
+    statement: >-
+      Explain what writeback is, and how the dirty thresholds decide when a
+      write reaches a device and when a writer is blocked.
+    assessed_by: [quiz.q6, quiz.q7, lab.what-your-storage-is, exercise.e2]
+
+  - id: OBJ-A02.4.5
+    level: L3
+    verb: calculate
+    statement: >-
+      Calculate service time, average queue depth and utilisation from two
+      samples of /proc/diskstats.
+    assessed_by: [quiz.q8, quiz.q9, lab.reading-diskstats, exercise.e3, assessment.B]
+
+  - id: OBJ-A02.4.6
+    level: L3
+    verb: distinguish
+    statement: >-
+      Distinguish the I/O schedulers, and say which fits a given device and
+      workload.
+    assessed_by: [quiz.q10, quiz.q11, lab.what-your-storage-is, exercise.e4]
+
+  - id: OBJ-A02.4.7
+    level: L3
+    verb: explain
+    statement: >-
+      Explain why a database on an overlay filesystem behaves differently from
+      one on a volume.
+    assessed_by: [quiz.q12, quiz.q13, lab.logical-and-physical]
+
+  - id: OBJ-A02.4.8
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a storage-related latency problem from counters rather than from
+      throughput.
+    assessed_by: [quiz.q14, quiz.q15, lab.slow-disk-or-slow-queue, troubleshooting.the-disk-is-not-full, troubleshooting.fast-disk-slow-writes, assessment.C]
+
+terminology:
+  - term: block layer
+    definition: >-
+      The kernel layer between filesystems and device drivers. It turns page
+      cache pages into requests, merges and splits them, and hands them to a
+      scheduler.
+  - term: bio
+    definition: >-
+      The block layer's unit of work: a description of some bytes to move
+      between memory and a device. Filesystems build them; the block layer
+      merges them.
+  - term: writeback
+    definition: >-
+      Moving dirty page-cache pages to the device. It happens in the background
+      by default, which is why `write()` returns long before the data is safe.
+  - term: dirty page
+    definition: >-
+      A page-cache page modified in memory and not yet written to the device.
+      Visible in aggregate as `Dirty` in /proc/meminfo.
+  - term: dirty_background_ratio
+    definition: >-
+      The percentage of available memory at which the kernel starts writing
+      dirty pages back in the background. Nothing blocks. Default 10.
+  - term: dirty_ratio
+    definition: >-
+      The percentage at which writers are throttled — `write()` blocks until
+      pages have been cleaned. Default 20, and the cliff most write-latency
+      incidents fall off.
+  - term: fsync
+    definition: >-
+      A request that a file's data be on the device before the call returns. It
+      is what turns a fast buffered write into a slow durable one, and what
+      every database does on commit.
+  - term: rchar and wchar
+    definition: >-
+      Bytes a process asked the VFS for, in /proc/PID/io. They count cache hits,
+      tmpfs and pipes — everything, whether or not a device was involved.
+  - term: read_bytes and write_bytes
+    definition: >-
+      Bytes actually fetched from or sent to a block device on this process's
+      behalf. The gap between these and rchar/wchar is the page cache.
+  - term: diskstats
+    definition: >-
+      /proc/diskstats — per-device counters for completed I/Os, merges, sectors,
+      time spent, and queue occupancy. Everything `iostat` prints is computed
+      from two samples of it.
+  - term: await
+    definition: >-
+      Average time an I/O spent from being queued to being completed. Derived,
+      not measured directly: milliseconds-spent divided by I/Os-completed.
+  - term: nr_requests
+    definition: >-
+      How many requests the scheduler queue will hold for a device. Deeper
+      queues buy throughput and cost latency, which is the trade in one number.
+  - term: readahead
+    definition: >-
+      Speculative reading of blocks after the ones requested, sized by
+      `read_ahead_kb`. It is what makes sequential reads fast and random reads
+      wasteful.
+  - term: mq-deadline
+    definition: >-
+      A scheduler that gives reads a deadline so a stream of writes cannot
+      starve them. Cheap, and the safe default for anything that is not NVMe.
+  - term: copy-up
+    definition: >-
+      Overlayfs copying an entire file from a lower layer to the upper layer on
+      first write. A one-byte change to a large file writes the whole file.
+
+foreshadows:
+  - "C14's image layers are the lower directories a copy-up reads from, and volumes are how a database escapes them."
+  - "E29's PersistentVolumes and StorageClasses choose the device this topic's counters describe, and its access modes decide who queues behind whom."
+  - "B13 tunes PostgreSQL's checkpoints and WAL, which are writeback and fsync under a different vocabulary."
+  - "F34 alerts on saturation; await and queue depth are the storage signals that say it, where throughput does not."
+
+tags: [storage, block-layer, io, writeback, page-cache, linux, kernel]

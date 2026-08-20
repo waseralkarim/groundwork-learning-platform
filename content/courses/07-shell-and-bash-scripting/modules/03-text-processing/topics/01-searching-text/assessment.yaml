@@ -1,0 +1,220 @@
+id: assessment.searching-text
+topic: topic.searching-text
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a health check that fails when healthy
+    kind: explain
+    objectives: [OBJ-B08.3.1, OBJ-B08.3.4]
+    prompt: >-
+      This exits 1 without printing its last line, and exits 1 *sooner* on a log
+      with no errors at all:
+
+
+      ```bash
+      set -euo pipefail
+      echo "checking for server errors..."
+      grep ' 500 ' "$LOG"
+      echo "checking for auth failures..."
+      grep ' 401 ' "$LOG"
+      echo "all checks complete"
+      ```
+
+
+      In about 200 words: explain it and rewrite it.
+    rubric:
+      - "States that grep returns 1 for no match, which is a result rather than a failure"
+      - "Explains that set -e cannot distinguish that from a failure"
+      - "Notes the inversion — the healthier the system, the sooner it exits"
+      - "Rewrites using `if grep -q` so presence is the failure condition"
+      - "Distinguishes an unreadable log (status 2) from a clean one"
+    model_answer: >-
+      **`grep` returns 1 when it finds nothing**, and that is the answer, not a
+      failure. `set -e` exits on any non-zero status and cannot tell the
+      difference, so a search that correctly found no problems ends the script.
+
+
+      Hence the inversion: on a log with no 500s the script dies at the *first*
+      grep, printing one line. **The healthier the system, the sooner it exits.**
+      And because `set -e` exits silently, the symptom is a script stopping
+      partway with no message and status 1 — which reads as an infrastructure
+      problem rather than a bug in the check.
+
+
+      Rewritten so that presence is the failure:
+
+
+      ```bash
+      set -euo pipefail
+      LOG=${1:?LOG required}
+      [ -r "$LOG" ] || { echo "cannot read log: $LOG" >&2; exit 2; }
+
+      fail=0
+      if grep -q ' 500 ' "$LOG"; then
+        echo "FAIL: server errors present" >&2; fail=1
+      else
+        echo "ok: no server errors"
+      fi
+      if grep -q ' 401 ' "$LOG"; then
+        echo "FAIL: auth failures present" >&2; fail=1
+      else
+        echo "ok: no auth failures"
+      fi
+      echo "all checks complete"
+      exit "$fail"
+      ```
+
+
+      `-q` is right here: it stops at the first match and prints nothing. The
+      explicit `-r` check exits **2**, so an unreadable log is distinguished from
+      a clean one — which the original could not do at all.
+    common_failures:
+      - "Adding `|| true` to every grep, which makes a clean log and a missing log identical"
+      - "Not noticing the check fails sooner when the system is healthier"
+      - "Missing that grep's status 2 means something different from 1"
+      - "Disabling set -e for the whole script rather than branching"
+
+  - id: B
+    title: Reason about a search over data
+    kind: reason
+    objectives: [OBJ-B08.3.5, OBJ-B08.3.3]
+    prompt: >-
+      A deploy skips a release it has never shipped:
+
+
+      ```bash
+      if grep -q "$VERSION" releases.txt; then
+        echo "already released"; exit 0
+      fi
+      ```
+
+
+      `VERSION=1.2.3`. The file contains `1.2.30` and `11213`, among others.
+
+
+      In about 250 words: explain it, fix it, and say why it worked for two
+      years.
+    rubric:
+      - "Identifies that dots in the version match any character"
+      - "Notes the pattern is also unanchored, so it matches inside 1.2.30"
+      - "Gives -F and -x, explaining why -F alone is insufficient"
+      - "Observes that the failure direction is skipping work and exiting 0"
+      - "Explains the two-year record as evidence about the data, not the code"
+    model_answer: >-
+      **`$VERSION` is being used as a regular expression.** In a regex `.` matches
+      any character, so `1.2.3` matches `11213` — `1`, any, `2`, any, `3`. And
+      the pattern is **unanchored**, so it also matches the first five characters
+      of `1.2.30`. Either alone makes `grep -q` return 0.
+
+
+      The fix needs both flags:
+
+
+      ```bash
+      if grep -qxF -- "$VERSION" releases.txt; then
+      ```
+
+
+      **`-F`** because the pattern came from data — version strings are made of
+      dots, the most common metacharacter there is. **`-x`** because a version
+      must match a whole line: `-F` alone still matches `1.2.3` inside `1.2.30`,
+      a genuinely plausible neighbouring release. `--` in case a value begins
+      with a hyphen.
+
+
+      I would also add `[ -r releases.txt ]`, because `grep` returns 2 for a
+      missing file, the `if` is false, and the deploy proceeds — safe here, and
+      by accident rather than design.
+
+
+      **The failure direction is what makes this serious.** The check errs toward
+      *skipping work* and exiting 0: no alert, no red build, no artefact. A check
+      that failed toward deploying twice would have been noticed the same day.
+
+
+      **Why it worked for two years:** until recently no line in the file could
+      collide with any version being deployed. The check was never correct — it
+      was **unopposed**. Two unrelated additions created the collision, so a
+      clean record was evidence about the *data*, and everybody read it as
+      evidence about the *code*.
+    common_failures:
+      - "Adding -F but not -x, leaving the 1.2.30 substring collision"
+      - "Blaming the odd entries in the file rather than the pattern"
+      - "Missing that the failure direction is silent skipping"
+      - "Treating the two-year record as evidence the check was correct"
+
+  - id: C
+    title: Diagnose an alert that went quiet
+    kind: diagnose
+    objectives: [OBJ-B08.3.6, OBJ-B08.3.7]
+    prompt: >-
+      After an agent upgrade added a `Node` column on the left, this stopped
+      alerting — including for a filesystem at 97%. It exits 0 and logs
+      `checked 0 filesystems, 0 over threshold`.
+
+
+      ```bash
+      set -euo pipefail
+      agentctl df | tail -n +2 | while read -r line; do
+        n=$((n + 1))
+        pct=$(echo "$line" | awk '{print $5}' | tr -d '%')
+        if [ "$pct" -ge 90 ]; then over=$((over + 1)); echo "ALERT"; fi
+      done
+      echo "checked $n filesystems, $over over threshold"
+      ```
+
+
+      In about 250 words: explain both wrong numbers and what you would change.
+    rubric:
+      - "Identifies the column shift making $5 the Avail value rather than Use%"
+      - "States that `[ 60G -ge 90 ]` errors rather than returning false"
+      - "Explains that an if condition is exempt from set -e"
+      - "Identifies the subshell as the reason the counter is zero"
+      - "Proposes named/structured output plus an assertion that something was checked"
+    model_answer: >-
+      **Two wrong numbers, two different causes.**
+
+
+      **`0 over threshold`:** the new `Node` column shifted every field, so `$5`
+      is now `Avail` (`60G`) rather than `Use%`. `[ 60G -ge 90 ]` is not false —
+      it **errors** with `integer expression expected` and returns 2. So nothing
+      is ever over threshold, including 97%. `set -e` does not fire because a
+      command used as an `if` **condition is exempt**, which means a broken
+      condition and a false one are indistinguishable.
+
+
+      **`0 filesystems`:** `cmd | while read` runs the loop in a **subshell**, so
+      `n` and `over` are incremented in a child that then exits. The parent's
+      copies were never touched.
+
+
+      Together they read as a healthy, quiet system. And the script exits 0
+      because its last command is an `echo`.
+
+
+      What I would change:
+
+
+      ```bash
+      while read -r pct mount; do
+        n=$((n + 1))
+        case "$pct" in ''|*[!0-9]*) echo "unparseable: $pct" >&2; exit 1 ;; esac
+        [ "$pct" -ge 90 ] && { over=$((over+1)); echo "ALERT: $mount ${pct}%"; }
+      done < <(agentctl df --format '{{.UsePercent}} {{.Mounted}}' | tr -d '%')
+
+      echo "checked $n filesystems, $over over threshold"
+      [ "$n" -gt 0 ] || { echo "no filesystems parsed" >&2; exit 1; }
+      ```
+
+
+      Named fields so a column cannot shift anything; process substitution so the
+      counters survive; explicit numeric validation so an unparseable value is
+      loud; and an assertion that something was checked — because **"checked
+      zero" must never look like "nothing wrong"**. Then alert on the absence of
+      evaluations, since a check that has never fired is untested.
+    common_failures:
+      - "Explaining the column shift but not why the comparison errors rather than returns false"
+      - "Missing the subshell as the cause of the zero count"
+      - "Fixing the field number to $6 rather than removing positional parsing"
+      - "Not adding an assertion that the check evaluated anything"

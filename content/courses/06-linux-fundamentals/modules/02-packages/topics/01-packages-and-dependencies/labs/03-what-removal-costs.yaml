@@ -1,0 +1,310 @@
+id: lab.what-removal-costs
+topic: topic.packages-and-dependencies
+title: Simulate removals until the system refuses
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B06.2.5, OBJ-B06.2.8]
+
+intro: >-
+  "Can I remove this?" has four different answers on a Linux system, and you can
+  get all four in the next twenty minutes without changing anything, as an
+  unprivileged user.
+
+
+  `apt-get -s` runs the dependency solver and prints its plan without touching
+  the machine. You will use it to find a leaf, a cascade, a package the system
+  argues about, and one it refuses outright — and then work out what
+  `autoremove` is actually promising.
+
+setup:
+  - /opt/lab/seed-packages.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before simulating anything, find out who depends on the OpenSSL library.
+      Then simulate removing a package you expect to be a leaf. Save both to
+      /tmp/answer-leaf.
+    hint: >-
+      `apt-cache rdepends --installed` asks the reverse question. `apt-get -s
+      remove` simulates — the `-s` means nothing is changed and no root is
+      needed.
+    walkthrough: |
+      {
+        echo "who needs libssl3t64?"
+        apt-cache rdepends --installed libssl3t64 2>/dev/null | sed -n '2,10p'
+        echo
+        echo "now simulate removing a leaf:"
+        apt-get -s remove openssh-client 2>&1 | tail -3
+        echo
+        echo "exit code: $(apt-get -s remove openssh-client >/dev/null 2>&1; echo $?)"
+        echo
+        echo "one package, nothing else. openssh-client is a leaf: things it needs, nothing needs it. that is the easy case and it is worth confirming rather than assuming, because the assumption is wrong more often than it feels."
+      } > /tmp/answer-leaf
+      cat /tmp/answer-leaf
+    verify:
+      - type: file_matches
+        path: /tmp/answer-leaf
+        pattern: "1 to remove"
+        describe: You confirmed the leaf removes exactly one package
+      - type: file_matches
+        path: /tmp/answer-leaf
+        pattern: "exit code: 0"
+        describe: And that the simulation succeeded
+      - type: file_matches
+        path: /tmp/answer-leaf
+        pattern: "(?i)openssl|libcurl"
+        describe: And found what depends on the TLS library
+
+  - id: s2
+    instruction: >-
+      Now simulate removing two packages that are not leaves, and record exactly
+      what each one takes with it. Save to /tmp/answer-cascade.
+    hint: >-
+      Try `openssl` and `binutils`. Read the "will be REMOVED" list, not just the
+      count.
+    walkthrough: |
+      {
+        for p in openssl binutils; do
+          echo "removing $p would take:"
+          apt-get -s remove "$p" 2>&1 | grep -A1 'will be REMOVED' | tail -1 | sed 's/^/  /'
+          apt-get -s remove "$p" 2>&1 | grep 'to remove' | sed 's/^/  /'
+          echo
+        done
+        echo "binutils is the instructive one. it is the assembler and the linker, and removing it removes GCC - because a compiler that cannot assemble or link is not a compiler, and the packaging says so."
+        echo
+        echo "note this is the reverse direction from step 1. rdepends told me who NEEDS a package; the simulation tells me what actually GOES if it leaves. they usually agree and the simulation is the one that accounts for the whole graph."
+      } > /tmp/answer-cascade
+      cat /tmp/answer-cascade
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cascade
+        pattern: "ca-certificates"
+        describe: You found what openssl takes with it
+      - type: file_matches
+        path: /tmp/answer-cascade
+        pattern: "binutils gcc gcc-14"
+        describe: And that removing the linker removes the compiler
+      - type: file_matches
+        path: /tmp/answer-cascade
+        pattern: "3 to remove"
+        describe: And recorded the size of that cascade
+
+  - id: s3
+    instruction: >-
+      Find a package the system argues about, and one it refuses outright. Save
+      both, with their exit codes, to /tmp/answer-refused.
+    hint: >-
+      Try `bash` for the argument and `libc6` for the refusal. Compare what each
+      prints and what each returns.
+    walkthrough: |
+      {
+        echo "=== bash ==="
+        apt-get -s remove bash 2>&1 | tail -6
+        echo "exit code: $(apt-get -s remove bash >/dev/null 2>&1; echo $?)"
+        echo
+        echo "=== libc6 ==="
+        apt-get -s remove libc6 2>&1 | tail -6
+        echo "exit code: $(apt-get -s remove libc6 >/dev/null 2>&1; echo $?)"
+        echo
+        echo "two different mechanisms, and the difference matters."
+        echo
+        echo "bash is Essential. the solver produces a plan and shouts about it - performing it needs an explicit --allow-remove-essential. it is a policy flag, so it can be overridden, and the warning exists because somebody will."
+        echo
+        echo "libc6 is not refused by policy. it is arithmetically impossible: things Pre-Depend on it, so the solver reaches two contradictory conclusions and gives up with exit 100. there is no override for this, because there is no valid end state to reach."
+        echo
+        echo "so 'cannot be removed' has two meanings. one is a rule i am allowed to break; the other is a graph with no solution."
+      } > /tmp/answer-refused
+      cat /tmp/answer-refused
+    verify:
+      - type: file_matches
+        path: /tmp/answer-refused
+        pattern: "(?i)essential packages will be removed"
+        describe: You found the warning for an Essential package
+      - type: file_matches
+        path: /tmp/answer-refused
+        pattern: "(?i)conflicting decisions|Unable to satisfy"
+        describe: And the refusal for one that is pre-depended upon
+      - type: file_matches
+        path: /tmp/answer-refused
+        pattern: "exit code: 100"
+        describe: And that the refusal returns a distinct exit code
+      - type: file_matches
+        path: /tmp/answer-refused
+        pattern: "(?i)two meanings|no solution"
+        describe: And distinguished a policy rule from an impossible graph
+
+  - id: s4
+    instruction: >-
+      List the packages that carry the Essential flag, and work out what the set
+      has in common. Save to /tmp/answer-essential.
+    hint: >-
+      `dpkg-query -W -f='${Package} ${Essential}\n'` gives you the flag for every
+      package. Also count the priorities while you are there.
+    walkthrough: |
+      {
+        echo "essential packages: $(dpkg-query -W -f='${Package} ${Essential}\n' | grep -c ' yes$')"
+        dpkg-query -W -f='${Package} ${Essential}\n' | grep ' yes$' | cut -d' ' -f1 |
+          tr '\n' ' ' | fold -s -w 66 | sed 's/^/  /'
+        echo
+        echo "priorities across all 162:"
+        dpkg-query -W -f='${Priority}\n' | sort | uniq -c | sed 's/^/  /'
+        echo
+        echo "what the essential set has in common: it is everything the rest of the system assumes without declaring. no package declares a dependency on bash or coreutils or tar, because doing so would be noise - they are axioms."
+        echo
+        echo "dpkg itself is on the list, which is the package system stating that it cannot uninstall itself."
+        echo
+        echo "and Priority is a softer, separate axis. required marks the base system, important marks what a competent administrator expects anywhere, optional is everything else. none of it is enforced the way Essential is - it is advice to the installer, not a rule."
+      } > /tmp/answer-essential
+      cat /tmp/answer-essential
+    verify:
+      - type: file_matches
+        path: /tmp/answer-essential
+        pattern: "essential packages: 22"
+        describe: You counted the Essential set
+      - type: file_matches
+        path: /tmp/answer-essential
+        pattern: "dpkg"
+        describe: And noticed dpkg is in it
+      - type: file_matches
+        path: /tmp/answer-essential
+        pattern: "(?i)assumes without declaring|axiom"
+        describe: And identified what the set has in common
+      - type: file_matches
+        path: /tmp/answer-essential
+        pattern: "(?i)not enforced|softer|advice"
+        describe: And that Priority is a separate and softer axis
+
+  - id: s5
+    instruction: >-
+      Simulate an autoremove, then write to /tmp/answer-autoremove what it is
+      actually promising and when that promise stops being true.
+    hint: >-
+      Ask what autoremove would take here, then think about what the automatic
+      mark means and what could make it wrong.
+    walkthrough: |
+      {
+        echo "what autoremove would take here:"
+        apt-get -s autoremove 2>&1 | grep 'to remove' | sed 's/^/  /'
+        echo
+        echo "nothing, because every automatic package still has something depending on it. this image was built in one apt-get invocation, so the record is perfectly accurate."
+        echo
+        echo "what autoremove promises: 'this package was never asked for, and nothing that was asked for needs it any more, so removing it cannot break anything anybody wanted.'"
+        echo
+        echo "that reasoning is sound. its premise decays."
+        echo
+        echo "how it decays, in the order it usually happens:"
+        echo "  1. something i install pulls in jq as a dependency."
+        echo "  2. jq is marked automatic. correctly - i did not ask for it."
+        echo "  3. a script i write starts calling jq directly."
+        echo "  4. nothing updates the record. jq is still automatic, and no package"
+        echo "     anywhere declares that my script needs it."
+        echo "  5. the thing that pulled jq in gets removed."
+        echo "  6. autoremove takes jq, and a script nobody was thinking about stops working."
+        echo
+        echo "the fix is one command, and it is the point of this step:"
+        echo "  apt-mark manual jq      # 'we rely on this directly now'"
+        echo
+        echo "so autoremove is safe exactly as far as the record is accurate, and the record only describes what the PACKAGE SYSTEM knows about. everything i wrote myself is invisible to it - which is the same blind spot as an unowned file, arriving from the other direction."
+      } > /tmp/answer-autoremove
+      cat /tmp/answer-autoremove
+    verify:
+      - type: file_matches
+        path: /tmp/answer-autoremove
+        pattern: "0 to remove"
+        describe: You confirmed autoremove would take nothing here
+      - type: file_matches
+        path: /tmp/answer-autoremove
+        pattern: "apt-mark manual"
+        describe: And named the command that keeps the record true
+      - type: file_matches
+        path: /tmp/answer-autoremove
+        pattern: "(?i)as far as the record is accurate"
+        describe: And stated the condition autoremove's safety depends on
+      - type: file_matches
+        path: /tmp/answer-autoremove
+        pattern: "(?i)blind spot|invisible"
+        describe: And connected it to the unowned-file problem
+
+solution: >-
+  **Four answers to "can I remove this".**
+
+
+  | Package | Outcome | Exit | Why |
+  |---|---|---|---|
+  | `openssh-client` | 1 removed | 0 | a leaf — nothing depends on it |
+  | `openssl` | 2 removed | 0 | cascade — takes `ca-certificates` |
+  | `binutils` | 3 removed | 0 | cascade — takes `gcc` and `gcc-14` |
+  | `bash` | 1 removed, loud warning | 0 | `Essential` — policy, overridable |
+  | `libc6` | refused | **100** | pre-depended upon — no valid end state |
+
+
+  **`binutils` is the instructive cascade.** It is the assembler and the linker,
+  and removing it removes GCC, because a compiler that cannot assemble or link is
+  not a compiler and the packaging says so.
+
+
+  **The last two rows are different mechanisms, and the distinction is worth
+  keeping.** `bash` is `Essential`: the solver produces a plan and shouts, and
+  performing it needs an explicit `--allow-remove-essential`. It is a policy flag,
+  so it can be overridden — the warning exists precisely because somebody will.
+
+
+  `libc6` is not refused by policy. It is **arithmetically impossible**: things
+  pre-depend on it, the solver reaches two contradictory conclusions, and it exits
+  100. There is no override, because there is no valid end state to reach.
+
+
+  So "cannot be removed" has two meanings: a rule you are allowed to break, and a
+  graph with no solution.
+
+
+  **The Essential set — 22 packages.**
+
+
+  ```text
+  base-files base-passwd bash bsdutils coreutils dash debianutils diffutils
+  dpkg findutils grep gzip hostname init-system-helpers libc-bin ncurses-base
+  ncurses-bin perl-base sed sysvinit-utils tar util-linux
+  ```
+
+
+  What they have in common: they are **what the rest of the system assumes
+  without declaring**. No package declares a dependency on `bash` or `tar`,
+  because that would be noise — they are axioms. `dpkg` is on the list, which is
+  the package system stating that it cannot uninstall itself.
+
+
+  `Priority` is a separate, softer axis — 33 required, 7 important, 3 standard,
+  119 optional. It is advice to the installer rather than a rule, and nothing
+  enforces it the way `Essential` is enforced.
+
+
+  **What `autoremove` promises.**
+
+
+  > This package was never asked for, and nothing that was asked for needs it any
+  > more, so removing it cannot break anything anybody wanted.
+
+
+  Sound reasoning, decaying premise. The decay is always the same sequence:
+  something pulls in `jq` as a dependency; `jq` is marked automatic, correctly; a
+  script starts calling `jq` directly; nothing updates the record; the thing that
+  pulled it in gets removed; `autoremove` takes `jq`; a script nobody was thinking
+  about stops working.
+
+
+  ```bash
+  apt-mark manual jq
+  ```
+
+
+  One command, and the record is true again.
+
+
+  Which leaves the general point: **`autoremove` is safe exactly as far as the
+  record is accurate, and the record only describes what the package system knows
+  about.** Everything you wrote yourself is invisible to it — the same blind spot
+  as an unowned file, arriving from the other direction.

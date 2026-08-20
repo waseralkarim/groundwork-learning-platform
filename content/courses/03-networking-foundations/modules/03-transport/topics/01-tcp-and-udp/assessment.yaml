@@ -1,0 +1,179 @@
+id: assessment.tcp-and-udp
+topic: topic.tcp-and-udp
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain what each protocol promises, and what it costs
+    kind: explain
+    objectives: [OBJ-A03.3.2]
+    prompt: >-
+      A developer asks why anyone would use UDP when TCP "does the same thing but
+      reliably".
+
+
+      In about 200 words: correct the framing, name at least three things TCP
+      provides and the specific cost of each, give one workload where that cost
+      makes UDP the better choice, and explain what a successful UDP send
+      actually proves.
+    rubric:
+      - "States that IP is best-effort and TCP's guarantees are additions with costs, not free"
+      - "Names at least three guarantees with a specific cost each — handshake latency, head-of-line blocking, window-bound throughput, congestion backoff"
+      - "Gives a workload where the cost dominates, with the reason"
+      - "States that a successful UDP send proves only that the kernel accepted the datagram"
+      - "Frames choosing UDP as choosing a failure mode rather than tolerating a defect"
+    model_answer: >-
+      They do not do the same thing. IP is best-effort — packets may be lost,
+      duplicated or reordered, and nobody is told. TCP adds repairs, and each one
+      costs something.
+
+
+      **A connection** costs a full round trip before any data moves, plus state
+      on both ends. On a 50ms path that is 50ms achieving nothing, which is why
+      connection reuse matters.
+
+
+      **Ordering** costs head-of-line blocking: one lost segment stalls
+      everything behind it, already arrived and undeliverable, until it is
+      retransmitted.
+
+
+      **Flow control** bounds throughput by window divided by round-trip time,
+      which is why long-distance transfers need window scaling.
+
+
+      For a live video call those costs dominate. A retransmitted 20ms audio
+      sample arrives after the moment it was needed, so the repair helps nobody
+      and the delay hurts — UDP is correct there, and the loss is the property
+      being bought rather than a defect being tolerated.
+
+
+      And the thing to be clear about: a successful UDP send proves the kernel
+      accepted the datagram for sending. Not that it arrived, not that anything
+      is listening, not that the address is reachable. Every reliable protocol
+      built on UDP exists because of that sentence.
+    common_failures:
+      - "Describing UDP as 'TCP without the checks', which misses that the checks have costs"
+      - "Listing guarantees without naming any cost, which leaves the question unanswered"
+      - "Treating loss as an unfortunate side effect rather than the chosen failure mode"
+      - "Omitting what a successful send proves, which is the practically important half"
+
+  - id: B
+    title: Diagnose a partially deaf UDP server
+    kind: diagnose
+    objectives: [OBJ-A03.3.4, OBJ-A03.3.8]
+    prompt: >-
+      A collector receives UDP from sixty hosts and every message in its output
+      is from one of them. All senders report success. On the collector:
+
+
+      ```text
+      $ ss -uanp | grep :514
+      ESTAB 0 0 10.0.4.9:514 10.0.4.31:38112 users:(("collectord",pid=2841,fd=4))
+
+      $ awk '/^Udp:/ { n++; if (n==2) print }' /proc/net/snmp
+      Udp: 41882 0 0 12 0 0 0 0 0
+      #    InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors
+      ```
+
+
+      Restarting the collector changes which host it hears from.
+
+
+      Diagnose it, explain why `RcvbufErrors` being zero is consistent with
+      messages being lost, explain the restart behaviour, and give the fix.
+    rubric:
+      - "Identifies that the socket has been connected, so the kernel filters datagrams to one peer"
+      - "Notes that ESTAB on UDP is the giveaway, versus UNCONN with a wildcard peer"
+      - "Explains that RcvbufErrors is zero because the datagrams are discarded by the peer filter, not by buffer overflow, and that filtering is counted nowhere"
+      - "Explains the restart behaviour as connecting to whichever host sends first after start-up"
+      - "Fix: do not connect the receiving socket; use recvfrom/ReadFromUDP and reply with sendto/WriteToUDP or a separate socket"
+    model_answer: >-
+      The collector called `connect()` on its receiving socket. That sends no
+      packets — it is purely local — and it makes the kernel deliver only
+      datagrams from the recorded peer, discarding all others before the
+      application sees them.
+
+
+      `ss` shows it: `ESTAB` with a specific peer, on a protocol with no
+      connections. A server's socket should be `UNCONN` with a wildcard peer.
+      `10.0.4.31` is the one host whose messages arrive, which is not a
+      coincidence — it is the mechanism.
+
+
+      `RcvbufErrors` being zero is consistent, and it is the detail that makes
+      this hard to find. The buffer is not overflowing; the datagrams are dropped
+      by the peer filter *before* being queued, and that filtering is counted
+      nowhere useful. Healthy counters and lost messages are exactly what this
+      bug looks like.
+
+
+      Restarting changes which host it hears from because the socket connects to
+      whichever machine sends the first datagram after start-up. That symptom is
+      inexplicable under any other theory, which makes it strong confirmation.
+
+
+      The fix is to leave the receiving socket unconnected. `ReadFromUDP` already
+      returns the sender's address on every datagram, which is more useful than a
+      fixed peer; if replies are needed, use `WriteToUDP(reply, addr)` or a
+      separate socket. And add a test with two concurrent senders — one client is
+      the passing case.
+    common_failures:
+      - "Blaming the senders or a firewall, which the ESTAB peer already rules out"
+      - "Expecting RcvbufErrors to be non-zero and concluding nothing is being lost"
+      - "Missing the restart behaviour, leaving the strongest confirmation unused"
+      - "Fixing it by restarting on a schedule, which changes which host works rather than fixing anything"
+
+  - id: C
+    title: Review a proposal to switch a pipeline to TCP
+    kind: reason
+    objectives: [OBJ-A03.3.7, OBJ-A03.3.8]
+    prompt: >-
+      A team has measured 4% loss on a UDP metrics pipeline and proposes moving
+      400 services to TCP so that "no metric is ever lost". Their evidence:
+      `Udp: RcvbufErrors` is large and rising, and loss correlates with peak
+      traffic.
+
+
+      Write your review — about 200 words. Reach a decision, explain what their
+      own evidence actually shows, say what TCP would change, and give the fixes
+      you would make instead in order.
+    rubric:
+      - "Reaches a clear decision rather than listing considerations"
+      - "Interprets RcvbufErrors correctly: the receiver is too slow, and the loss is inside the collector host, not the network"
+      - "States that TCP replaces silent loss with backpressure into 400 production services"
+      - "Gives ordered alternatives: raise rmem_max and SO_RCVBUF together, then scale or aggregate at the source"
+      - "Notes that a bigger buffer buys burst tolerance rather than throughput"
+    model_answer: >-
+      Rejecting this as written, and their measurement is good — it just points
+      somewhere else.
+
+
+      `RcvbufErrors` rising, correlated with peak traffic, means the collector's
+      socket receive buffer is overflowing: datagrams arrive correctly and are
+      dropped because the application has not read the previous ones. The loss is
+      entirely inside the collector host. The network is fine, which is why the
+      provider's tests are clean.
+
+
+      TCP does not make the collector read faster. It replaces silent loss with
+      backpressure: a slow collector shrinks its receive window, senders' buffers
+      fill, and then `write()` blocks or queues grow until something is
+      OOM-killed. That converts a monitoring inaccuracy into a production outage,
+      across 400 services, to fix a problem in one.
+
+
+      What I would do instead, in order: raise `net.core.rmem_max` **and** have
+      the collector request a larger `SO_RCVBUF` — both, or nothing changes — and
+      confirm with `ss -uanm`. That buys burst tolerance rather than throughput,
+      so if loss persists at peak, scale the collector horizontally or aggregate
+      in the client library so a hundred increments become one datagram.
+      Aggregation is usually the largest win and the least discussed.
+
+
+      Then alert on `RcvbufErrors`. It was free and nobody was reading it.
+    common_failures:
+      - "Approving because the measurement is sound, without checking what it measures"
+      - "Rejecting without explaining what their evidence actually shows"
+      - "Raising rmem_max without noting the application must also request it"
+      - "Missing that a bigger buffer helps bursts and not a persistently slow reader"

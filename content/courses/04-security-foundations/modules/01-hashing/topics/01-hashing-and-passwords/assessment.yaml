@@ -1,0 +1,185 @@
+id: assessment.hashing-and-passwords
+topic: topic.hashing-and-passwords
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain what the salt did not do
+    kind: explain
+    objectives: [OBJ-A04.1.4]
+    prompt: >-
+      A review comment says: *"We already fixed this — every password now has a
+      unique random salt, so the hashes can't be cracked."* The storage is
+      `sha256(salt + password)`.
+
+
+      In about 200 words: explain what the salt did fix, what it did not, and
+      what evidence you would bring to make the case.
+    rubric:
+      - "States that a salt removes shared work — precomputation, duplicate grouping, one guess against all rows"
+      - "States that a salt does not change the rate of a single guess at all"
+      - "Concludes that a targeted account is no better protected than before"
+      - "Identifies the work factor as the missing parameter, not the salt"
+      - "Proposes a measurement — hashes per second — as the evidence rather than an assertion"
+    model_answer: >-
+      The salt fixed a real problem and left the one that decides the outcome.
+
+
+      What it fixed is **shared work**. Precomputed tables are now useless against
+      this database. Identical passwords no longer produce identical rows, so an
+      attacker can no longer sort the column, find forty thousand accounts on one
+      value and know it is `123456`. And one guess is no longer tested against
+      every row at once — each account has to be attacked separately.
+
+
+      What it did not fix is the **rate**. A salted SHA-256 computes at exactly
+      the same speed as an unsalted one; the salt is free for the defender and
+      free for the attacker. So for any single targeted account — an
+      administrator, an executive, anyone worth choosing — there was never
+      amortisation to remove, and the salt has bought almost nothing. Candidates
+      are hashed with that user's salt at full speed.
+
+
+      The missing parameter is the **work factor**, and the evidence should be a
+      measurement rather than an adjective. Time the current scheme and a
+      password hashing function on your own hardware: something like four million
+      hashes a second against a few hundred, or two at a tuned setting. Then state
+      it as time-to-exhaust a wordlist — minutes against decades.
+
+
+      "Our hash is ten thousand times faster to attack than it should be" is an
+      argument. "SHA-256 is insecure" is false and will lose the room.
+    common_failures:
+      - "Agreeing the problem is fixed, because salting is the well-known advice"
+      - "Claiming the salt makes cracking slower, which no measurement supports"
+      - "Recommending a longer salt or more entropy, which changes nothing"
+      - "Arguing that SHA-256 is broken, which is untrue and damages the case"
+
+  - id: B
+    title: Reason about a signing scheme
+    kind: reason
+    objectives: [OBJ-A04.1.7]
+    prompt: >-
+      An internal service signs API requests as
+      `signature = sha256(shared_secret + request_body)`, sent in a header. The
+      receiver recomputes it and compares with `==`. It has worked for three
+      years and 40 partners use it.
+
+
+      In about 200 words: identify every flaw, say what an attacker can do with
+      each, and give the fix.
+    rubric:
+      - "Identifies length extension: the digest is SHA-2's resumable internal state"
+      - "States the consequence — a valid tag for an extended message, without the secret"
+      - "Identifies the `==` comparison as a timing side channel"
+      - "States the consequence — tag recovery in roughly thousands of attempts, not 2^256"
+      - "Gives HMAC from a standard library plus a constant-time comparison as the fix"
+    model_answer: >-
+      Two flaws, and both are exploitable rather than theoretical.
+
+
+      **Length extension.** SHA-2 is a Merkle–Damgård construction: the digest it
+      outputs *is* its internal state after consuming the input. Any partner who
+      has seen one legitimately signed request can resume the hash from that tag
+      and compute a valid signature for `body ‖ padding ‖ whatever they append` —
+      without ever learning the shared secret. Whether that is exploitable depends
+      on how the receiver parses a body with trailing content, and for JSON and
+      form encodings it frequently is.
+
+
+      So the justification — "the secret is mixed in, so only we can produce the
+      value" — is simply false, and it is false for 40 partners at once.
+
+
+      **The comparison.** `==` returns as soon as two bytes differ, so a tag
+      sharing more leading bytes takes measurably longer to reject. An attacker
+      who can time responses recovers a valid tag one byte at a time: on the
+      order of a few thousand requests for a 32-byte tag, rather than 2^256.
+      Across a network it needs averaging over repeated samples, which is a
+      practical amount of traffic for someone with an account.
+
+
+      **The fix** is one line each. `HMAC-SHA-256` from the standard library —
+      its two-pass structure means the visible output is not a resumable state.
+      And `hmac.compare_digest` or the language equivalent, which always compares
+      the full length.
+
+
+      Three years without incident is not evidence the scheme is sound; it is
+      evidence nobody has looked.
+    common_failures:
+      - "Naming only the missing HMAC and not the timing comparison"
+      - "Saying HMAC is 'more standard' without explaining what breaks without it"
+      - "Proposing a longer secret, which addresses neither flaw"
+      - "Treating three years of uneventful operation as evidence of soundness"
+
+  - id: C
+    title: Choose for four jobs and defend it
+    kind: diagnose
+    objectives: [OBJ-A04.1.8, OBJ-A04.1.2]
+    prompt: >-
+      Four proposals reach you in the same week, each defended with a true
+      statement about SHA-256:
+
+
+      1. Store user passwords as SHA-256 — *"NIST-approved and modern."*
+
+      2. Name build artefacts by SHA-256 of their contents — *"fast enough for
+         4 GB outputs."*
+
+      3. Sign partner requests as SHA-256 of secret and body — *"the secret is
+         mixed in."*
+
+      4. Replace emails with SHA-256 in an analytics export — *"one-way, so they
+         cannot be recovered."*
+
+
+      Say which is correct, what each of the others should use instead, and what
+      single question would have caught all three mistakes.
+    rubric:
+      - "Identifies 2 as the only correct choice, and says why content addressing wants speed and collision resistance"
+      - "Corrects 1 to a password hashing function, naming slowness and memory hardness as the required properties"
+      - "Corrects 3 to HMAC, naming length extension as the specific flaw"
+      - "Recognises 4 needs tokenisation rather than a different hash, and that linkability is the defect"
+      - "Names the general question — what is the job and what property does it need"
+    model_answer: >-
+      **2 is the only correct one.** Naming an artefact by the hash of its
+      contents is content addressing, and the job wants speed over large inputs
+      and collision resistance — exactly what SHA-256 provides. The name becomes a
+      proof: fetch it, hash what arrived, compare, and you need not trust whatever
+      served it. It is the only proposal whose justification mentions the job.
+
+
+      **1 wants the opposite property.** Password storage assumes the database is
+      already stolen, so the only question is guesses per second — around four
+      million per core with SHA-256, which exhausts a realistic wordlist in
+      minutes. It needs Argon2id, or bcrypt or scrypt, with a per-user salt and a
+      work factor measured against the login path. NIST approval is true and says
+      nothing about fitness for this job.
+
+
+      **3 is not a keyed hash.** SHA-2's digest is its resumable internal state,
+      so anyone who has seen a tag can produce a valid one for an extended body
+      without the secret. It needs HMAC-SHA-256 and a constant-time comparison.
+
+
+      **4 cannot be fixed by changing the hash**, and that is the important one.
+      Email addresses are enumerable, so digests are recoverable — but the real
+      defect is that the function is deterministic, so the field still joins
+      across datasets exactly as the plaintext would. That linkability is
+      generally the property they wanted, and it is what makes it not anonymous.
+      Salting breaks the joins; a slower hash leaves the linkability intact. It
+      needs tokenisation with the mapping held separately, or not collecting the
+      field.
+
+
+      **The question that catches all three: what is the job, and what property
+      does it need?** Speed, collision resistance, slowness, memory hardness, key
+      binding, unlinkability — six properties, and the algorithm is chosen last.
+      Every justification here was a true statement about SHA-256, and not one of
+      them mentioned what the service needed.
+    common_failures:
+      - "Marking 4 as fixable with a slow hash or a salt, which addresses recoverability and not linkability"
+      - "Rejecting 2 along with the rest, on the assumption that SHA-256 is always the wrong answer"
+      - "Naming HMAC for 3 without being able to say what breaks without it"
+      - "Giving four separate answers without identifying the pattern they share"

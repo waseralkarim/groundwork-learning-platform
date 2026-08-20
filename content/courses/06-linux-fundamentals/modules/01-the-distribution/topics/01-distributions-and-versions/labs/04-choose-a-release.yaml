@@ -1,0 +1,286 @@
+id: lab.choose-a-release
+topic: topic.distributions-and-versions
+title: "Challenge: four situations, and the one where the usual answer is wrong"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B06.1.6, OBJ-B06.1.8]
+
+intro: >-
+  Four situations in /tmp/choices. Choose a distribution and release model for
+  each, and say what the choice commits you to — including work the alternatives
+  would not have required.
+
+
+  One of them has a constraint that makes the usual answer wrong, and it is not
+  the one with the longest lifetime.
+
+setup:
+  - /opt/lab/seed-distro.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read all four situations. Before analysing, commit to a release model for
+      each — fixed, rolling, or LTS — in /tmp/hypotheses.
+    hint: >-
+      For each, ask how often they can tolerate being surprised, and how long it
+      has to run without a major upgrade.
+    walkthrough: |
+      cat /tmp/choices/*.txt
+      {
+        echo "alpha   LTS fixed - 400 servers, 5+ years, low change appetite, audit needs a supported OS"
+        echo "bravo   rolling - workstations, reimaged freely, engineers want current tools"
+        echo "charlie fixed with frequent point updates - rebuilt 20+ times a day, wants small images"
+        echo "delta   LTS fixed, longest available - 7 years in the field, near-zero change appetite"
+      } > /tmp/hypotheses
+      cat /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You committed to an answer before analysing
+      - type: command_exit
+        command: "test $(wc -l < /tmp/hypotheses) -ge 4"
+        exit_code: 0
+        describe: With a line for each situation
+
+  - id: s2
+    instruction: >-
+      Take alpha and bravo. For each, name the release model, the deciding line
+      in the description, and what the choice commits them to. Save to
+      /tmp/answer-alpha-bravo.
+    walkthrough: |
+      {
+        echo "ALPHA - 400 application servers, 5+ years, 3 platform engineers"
+        echo "  model: a fixed LTS release."
+        echo "  the deciding line: 'every upgrade is a change-managed event' plus 'annual audit requires a supported OS with security updates'."
+        echo "  the audit line is the one that decides it. a rolling release has no named support lifetime to put in an audit response, and 'we are always current' is not the same claim."
+        echo "  commits them to: a major upgrade project every few years, deferred until it is large. three engineers for 400 servers means that project needs automating before it is needed, not during."
+        echo
+        echo "BRAVO - developer workstations, reimaged whenever they break"
+        echo "  model: rolling, or a fixed release with very short cycles."
+        echo "  the deciding line: 'reimaged whenever it breaks' - the lifetime is so short that stability across years buys nothing, and 'they want current versions of everything' is the actual requirement."
+        echo "  commits them to: breakage as a normal event, which is acceptable precisely because the recovery is a reimage. and to no support lifetime claim, which is fine because there is no audit."
+        echo
+        echo "these two are the easy pair: opposite lifetimes and opposite change appetites give opposite answers, and neither is more serious than the other."
+      } > /tmp/answer-alpha-bravo
+      cat /tmp/answer-alpha-bravo
+    verify:
+      - type: file_matches
+        path: /tmp/answer-alpha-bravo
+        pattern: "(?i)audit"
+        describe: You identified the audit requirement as decisive for alpha
+      - type: file_matches
+        path: /tmp/answer-alpha-bravo
+        pattern: "(?i)reimaged"
+        describe: And the short lifetime as decisive for bravo
+      - type: file_matches
+        path: /tmp/answer-alpha-bravo
+        pattern: "(?i)major upgrade|deferred"
+        describe: And what alpha's choice commits them to
+
+  - id: s3
+    instruction: >-
+      Charlie is a container base image. Say which model, and what two decisions
+      matter more than the distribution name. Save to /tmp/answer-charlie.
+    walkthrough: |
+      {
+        echo "CHARLIE - base image for 60 microservices, rebuilt 20+ times a day"
+        echo "  model: a fixed release with frequent point updates. debian stable slim or similar."
+        echo
+        echo "the deciding line: 'rebuilt on every deploy, 20+ per day'. lifetime collapses - the image does not need a five year support commitment, it needs the base to be CURRENT AT BUILD TIME. that argues for a fixed release with frequent point updates rather than for the longest LTS available, which is the opposite of alpha's answer for the same distribution family."
+        echo
+        echo "two decisions that matter more than the distribution name:"
+        echo "1. SLIM VS FULL. slim strips documentation, including the changelogs used to prove a backport shipped. with 'images are scanned; findings must be actionable', that matters directly - they will be triaging version-based findings and the local evidence is not in the image. the answer is a scanner that reads distribution security data, not a bigger image."
+        echo "2. GLIBC VS MUSL. alpine is smaller and replaces glibc with musl, which is a compatibility decision rather than a size optimisation. 'mostly static go binaries' is fine on musl; 'two python services' is where it bites, because wheels are commonly built against glibc."
+        echo
+        echo "and a third that is not about the distribution at all: TAG VERSUS DIGEST. debian:13-slim moves as point releases ship, so two builds a month apart differ. that is what they want for patching and it is not reproducible - track the tag in ci, pin the digest in release manifests."
+      } > /tmp/answer-charlie
+      cat /tmp/answer-charlie
+    verify:
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "(?i)current at build time"
+        describe: You identified that lifetime collapses for a rebuilt image
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "(?i)musl"
+        describe: And that Alpine's libc is a compatibility decision
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "(?i)actionable|scanner"
+        describe: And connected slim images to the scanning requirement
+
+  - id: s4
+    instruction: >-
+      Delta is the one where the usual answer is wrong. Identify the constraint
+      that overrides the release model, and say what it forces. Save to
+      /tmp/answer-delta.
+    walkthrough: |
+      {
+        echo "DELTA - an appliance in the field for 7 years, updated over a slow link, sometimes never"
+        echo
+        echo "the usual answer is 'the longest LTS available', and the lifetime seems to confirm it. that is not the constraint that decides this one."
+        echo
+        echo "the deciding line is 'a kernel module for custom hardware'."
+        echo
+        echo "a kernel module is built against a specific kernel version and its internal interfaces, which are not stable between releases. so every kernel update - including a security update within the same LTS release - can require rebuilding and re-testing that module. the distribution's release model does not protect them, because the thing they depend on is below it."
+        echo
+        echo "what that forces:"
+        echo "- pinning the kernel, and therefore NOT taking kernel security updates automatically, which is a security decision made by a hardware constraint"
+        echo "- or a DKMS-style rebuild on the appliance, which needs a toolchain in the field and can fail there"
+        echo "- or paying a vendor for a kernel with a stable module interface, which is what commercial distributions actually sell into this situation"
+        echo
+        echo "so the release model is chosen last here. the sequence is: the kernel module constrains the kernel, the kernel constrains the distribution, and only then does the support lifetime matter - and a 7 year lifetime whose kernel updates you cannot take is a shorter commitment than it appears."
+        echo
+        echo "and 'sometimes never updated' means the field population will span years of releases simultaneously, so whatever they ship must keep working unpatched. that is a design constraint on the application, not a distribution choice."
+      } > /tmp/answer-delta
+      cat /tmp/answer-delta
+    verify:
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)kernel module"
+        describe: You identified the kernel module as the deciding constraint
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)not stable between releases|rebuilt"
+        describe: And why it constrains kernel updates
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)chosen last|constrains the distribution"
+        describe: And that the release model is decided by it rather than the reverse
+
+  - id: s5
+    instruction: >-
+      Write the decision record to /tmp/answer-record: your four answers, the
+      question that decided most of them, and what you would write down so the
+      choice survives the person who made it.
+    walkthrough: |
+      {
+        echo "alpha   -> fixed LTS            (audit needs a named support lifetime)"
+        echo "bravo   -> rolling              (reimaged freely; currency is the requirement)"
+        echo "charlie -> fixed, slim, pinned  (rebuilt daily; current at build time)"
+        echo "delta   -> decided by the kernel module, release model chosen last"
+        echo
+        echo "the question that decided three of the four: HOW LONG MUST THIS RUN WITHOUT A MAJOR UPGRADE, AND HOW OFTEN CAN IT BE SURPRISED?"
+        echo "those two together separate alpha from bravo and place charlie, because they are the properties a release policy actually sells."
+        echo
+        echo "delta is the exception and the lesson: a hard dependency BELOW the distribution overrides the release model entirely. look for those first, because they eliminate options rather than trading them off - the same shape as hostile tenancy in the layers topic."
+        echo
+        echo "what to write down so the choice outlives me:"
+        echo "  distribution and release, and why"
+        echo "  the support end date, and what is actually supported (usually security fixes only)"
+        echo "  everything running OUTSIDE the archive, with an owner each - third party repos, vendor debs, anything compiled into /usr/local, anything pip or npm installed system-wide"
+        echo "  what would change the decision"
+        echo
+        echo "the outside-the-archive list is the one that matters most and is almost never written. each entry is software the distribution is not patching and nobody has recorded is now ours - the failure arrives years later as a CVE against something nobody remembers installing."
+      } > /tmp/answer-record
+      cat /tmp/answer-record
+    verify:
+      - type: command_exit
+        command: "test $(grep -c '\\->' /tmp/answer-record) -ge 4"
+        exit_code: 0
+        describe: You recorded an answer for each situation
+      - type: file_matches
+        path: /tmp/answer-record
+        pattern: "(?i)without a major upgrade"
+        describe: And named the question that decided most of them
+      - type: file_matches
+        path: /tmp/answer-record
+        pattern: "(?i)outside the archive"
+        describe: And that what runs outside the archive needs recording
+      - type: file_matches
+        path: /tmp/answer-record
+        pattern: "(?i)eliminate|overrides"
+        describe: And that a dependency below the distribution eliminates options
+
+solution: >-
+  **The four answers.**
+
+
+  ```text
+  alpha    fixed LTS             audit needs a named support lifetime
+  bravo    rolling               reimaged freely; currency is the requirement
+  charlie  fixed, slim, pinned   rebuilt daily; current at build time
+  delta    decided by the kernel module
+  ```
+
+
+  **Alpha and bravo are the easy pair**, and they are opposite for the same
+  reason. Alpha's deciding line is the audit requiring a supported OS — a rolling
+  release has no named support lifetime to put in an audit response, and "we are
+  always current" is a different claim. It commits them to a major upgrade every
+  few years, deferred until it is large, which three engineers for 400 servers
+  need to automate *before* it is needed.
+
+
+  Bravo's lifetime is so short that stability across years buys nothing.
+  Breakage is acceptable precisely because recovery is a reimage.
+
+
+  **Charlie shows lifetime collapsing.** An image rebuilt 20+ times a day does
+  not need a five-year commitment; it needs the base to be **current at build
+  time**. That argues for frequent point updates rather than the longest LTS —
+  the opposite conclusion to alpha, from the same distribution family.
+
+
+  Two decisions matter more than the distribution name. **Slim versus full**:
+  slim strips the changelogs used to prove a backport, which bites directly
+  against "findings must be actionable" — the fix is a scanner that reads
+  distribution security data, not a bigger image. And **glibc versus musl**:
+  Alpine's size saving is a compatibility decision, fine for static Go binaries
+  and where Python wheels built against glibc start hurting.
+
+
+  Plus one that is not about the distribution at all: `debian:13-slim` moves as
+  point releases ship. Track the tag for patches, pin the digest for
+  reproducibility.
+
+
+  **Delta is the one where the usual answer is wrong.**
+
+
+  The seven-year lifetime points at the longest LTS available, and that is not
+  the constraint that decides it. **The kernel module is.**
+
+
+  A kernel module is built against a specific kernel and internal interfaces that
+  are not stable between releases, so every kernel update — *including a security
+  update inside the same LTS* — can require rebuilding and re-testing it. The
+  release model does not protect them, because the thing they depend on sits
+  below it.
+
+
+  What it forces: pinning the kernel and therefore **not taking kernel security
+  updates automatically** — a security decision made by a hardware constraint —
+  or a DKMS-style rebuild needing a toolchain in the field that can fail there,
+  or paying for a distribution that sells a stable module interface, which is
+  exactly what commercial vendors sell into this situation.
+
+
+  So the sequence runs downward: the module constrains the kernel, the kernel
+  constrains the distribution, and the support lifetime matters last. **A
+  seven-year commitment whose kernel updates you cannot take is shorter than it
+  appears.**
+
+
+  **The question that decided three of four:** *how long must this run without a
+  major upgrade, and how often can it be surprised?* Those two properties are
+  what a release policy actually sells.
+
+
+  **And the exception is the lesson.** A hard dependency *below* the distribution
+  overrides the release model entirely. Look for those first, because they
+  eliminate options rather than trading them off — the same shape as hostile
+  tenancy deciding the layer in A05.1.
+
+
+  **What to write down** so the choice outlives whoever made it: the release and
+  why, the support end date and what is actually covered, what would change the
+  decision — and, most importantly, **everything running outside the archive with
+  an owner against each**. Third-party repositories, vendor `.deb`s, anything
+  compiled into `/usr/local`, anything `pip` or `npm` installed system-wide. Each
+  is software the distribution is not patching and nobody has recorded is now
+  yours, and the failure arrives years later as a CVE against something nobody
+  remembers installing.

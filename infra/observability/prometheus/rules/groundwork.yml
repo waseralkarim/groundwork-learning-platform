@@ -1,0 +1,96 @@
+# Alert rules, in git, with a runbook on every one.
+#
+# Deliberately small. A rule nobody has written a runbook for is a rule that
+# will be silenced the first time it fires at 3am, and a page with no documented
+# response is worse than no page at all — it trains people to ignore alerts.
+#
+# Each `runbook_url` points at docs/runbooks/, which the SRE track later uses as
+# its worked examples.
+groups:
+  - name: groundwork-api
+    rules:
+      - alert: ApiErrorRateHigh
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+            /
+          sum(rate(http_server_request_duration_seconds_count[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "More than 5% of API requests are failing"
+          description: "5xx rate is {{ $value | humanizePercentage }} over 5 minutes."
+          runbook_url: "https://github.com/groundwork/docs/runbooks/api-error-rate.md"
+
+      - alert: ApiLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(http_server_request_duration_seconds_bucket[5m]))
+          ) > 1.5
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "API p99 latency above 1.5s"
+          description: "p99 is {{ $value }}s. The reading path is the product; this is a real degradation."
+          runbook_url: "https://github.com/groundwork/docs/runbooks/api-latency.md"
+
+  - name: groundwork-content
+    rules:
+      - alert: ContentIngestFailing
+        expr: increase(content_ingest_errors_total[30m]) > 0
+        for: 1m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Content ingest failed"
+          description: "Ingest is the riskiest job in the system: it rewrites the curriculum projection."
+          runbook_url: "https://github.com/groundwork/docs/runbooks/content-ingest.md"
+
+  - name: groundwork-labs
+    rules:
+      - alert: LabProvisioningSlow
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(lab_provision_duration_seconds_bucket[10m]))
+          ) > 8
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Labs are taking more than 8s to start at p95"
+          description: "Slow lab start is the most reliable way to lose a learner, and it degrades gradually."
+          runbook_url: "https://github.com/groundwork/docs/runbooks/lab-provisioning.md"
+
+      - alert: LabProvisioningFailing
+        expr: |
+          sum(rate(lab_sessions_total{outcome="failed"}[10m]))
+            /
+          clamp_min(sum(rate(lab_sessions_total[10m])), 0.001) > 0.1
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "More than 10% of lab starts are failing"
+          description: "Usually the container runtime: socket permissions, disk, or image pulls."
+          runbook_url: "https://github.com/groundwork/docs/runbooks/lab-provisioning.md"
+
+  - name: groundwork-content-quality
+    rules:
+      # Not an infrastructure alert. A step almost everyone fails is an
+      # instruction that does not say what it means, and this is the only way
+      # that ever becomes visible.
+      - alert: LabStepFailingForEveryone
+        expr: |
+          sum by (lab, step) (rate(lab_check_results_total{passed="false"}[6h]))
+            /
+          clamp_min(sum by (lab, step) (rate(lab_check_results_total[6h])), 0.001) > 0.8
+        for: 1h
+        labels:
+          severity: content
+        annotations:
+          summary: "Lab step {{ $labels.lab }}/{{ $labels.step }} fails for over 80% of learners"
+          description: "Read the instruction as though you did not write it. This is a content bug."
+          runbook_url: "https://github.com/groundwork/docs/runbooks/failing-lab-step.md"

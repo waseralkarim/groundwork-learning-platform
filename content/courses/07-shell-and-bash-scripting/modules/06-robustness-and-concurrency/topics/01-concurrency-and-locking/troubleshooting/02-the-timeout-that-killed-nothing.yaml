@@ -1,0 +1,278 @@
+id: troubleshooting.the-timeout-that-killed-nothing
+topic: topic.concurrency-and-locking
+title: The watchdog that reported killing a job that finished anyway
+level: L2
+objectives: [OBJ-B08.8.5, OBJ-B08.8.7]
+reveal_policy: progressive
+
+situation: >-
+  A nightly importer is wrapped in a watchdog so it cannot hang the pipeline. The
+  watchdog gives it thirty minutes and reports a termination if it overruns.
+
+
+  For six weeks the watchdog has reported `importer did not finish in 1800s -
+  terminated (rc=124)` on about a third of nights. The team treats those nights
+  as failed imports and re-runs them the following morning.
+
+
+  This week the data team asks why some records appear **twice**.
+
+
+  The duplicated records are all from nights the watchdog reported as
+  terminated — and the re-run the next morning is the second copy.
+
+
+  The importer's own log, which nobody had been reading because the watchdog
+  already said what happened, shows the import completing on those nights.
+
+
+  Work out how a job that was terminated finished its work.
+
+symptoms:
+  - "The watchdog reports rc=124 and a termination on about a third of nights"
+  - "Records from those nights are duplicated"
+  - "The importer's own log shows those imports completing"
+  - "The morning re-run is the source of the second copy"
+  - "The watchdog itself has no bug anyone can find"
+
+artifacts:
+  - type: config
+    label: The watchdog
+    content: |
+      #!/bin/bash
+      set -uo pipefail
+
+      LIMIT=${1:-1800}
+
+      timeout "$LIMIT" /opt/jobs/importer
+      status=$?
+
+      if [ "$status" -eq 0 ]; then
+        echo "importer finished cleanly"
+      else
+        echo "importer did not finish in ${LIMIT}s - terminated (rc=$status)"
+      fi
+      exit "$status"
+
+  - type: config
+    label: The importer's signal handling
+    content: |
+      # from /opt/jobs/importer
+      trap 'log "ignoring TERM, batch in progress"' TERM
+
+      # ...added two years ago, after a deploy killed an importer mid-batch
+      # and left a partially written table.
+
+  - type: log
+    label: The watchdog's output on an affected night
+    content: |
+      02:00:00  importer did not finish in 1800s - terminated (rc=124)
+
+  - type: log
+    label: The importer's own log, the same night
+    content: |
+      02:00:01  importer: started pid 4471
+      02:00:01  importer: batch 1 written
+      ...
+      02:30:00  importer: ignoring TERM, batch in progress
+      02:30:01  importer: batch 58 written
+      ...
+      02:41:19  importer: FINISHED WRITING ALL BATCHES
+
+  - type: command_output
+    label: The same shape, reduced
+    content: |
+      $ timeout 1 ./importer; echo "rc=$?"
+      rc=124
+      $ sleep 3; tail -1 importer.log
+      importer: FINISHED WRITING ALL BATCHES
+
+      $ timeout -k 0.2 1 ./importer; echo "rc=$?"
+      rc=137
+      $ sleep 3; tail -1 importer.log
+      importer: batch 2 written
+
+  - type: log
+    label: The runbook entry
+    content: |
+      ### Importer reported terminated
+
+      The import did not complete. Re-run it in the morning:
+
+          /opt/jobs/importer
+
+diagnostic_questions:
+  - "What signal does `timeout` send, and what can a process do about it?"
+  - "The importer logged 'ignoring TERM'. What does that tell you about what happened next?"
+  - "What does 124 actually mean — that the process stopped, or something narrower?"
+  - "Which of the two logs is evidence about what the importer did?"
+  - "Why did the runbook make the problem worse rather than better?"
+
+hints:
+  - "Compare the two reduced runs in the artifacts. Only one flag differs."
+  - "`SIGTERM` is a request. Which signal is not?"
+  - "The watchdog reports on `timeout`'s status, not the importer's outcome."
+
+root_cause: >-
+  **`timeout` sends `SIGTERM`, which is a request, and the importer refuses it.**
+
+
+  Status **124** means *the time limit was reached* — not that the process
+  stopped. `timeout` signalled, waited, gave up waiting, and reported 124. The
+  importer caught `TERM`, logged that it was ignoring it, and carried on to write
+  every remaining batch.
+
+
+  So on those nights the import **succeeded**, roughly eleven minutes late, and
+  the watchdog reported a termination that never happened.
+
+
+  **The `TERM` handler is not a mistake either.** It was added deliberately, two
+  years ago, because a deploy killed an importer mid-batch and left a partially
+  written table. Both components are behaving as designed and as their authors
+  intended — and the combination reports the opposite of what occurred.
+
+
+  **The duplication comes from the runbook.** It reads the watchdog's status as
+  fact, instructs a re-run, and the re-run imports the same records a second
+  time. The watchdog was wrong; the runbook was faithful to it; and the
+  operator did exactly the right thing according to the documentation.
+
+
+  **Nobody read the importer's log** because the watchdog already said what
+  happened. That is the quiet part: a wrapper that reports on an outcome it
+  cannot observe becomes the authoritative account, and the component that
+  actually knows is ignored.
+
+
+  `timeout -k GRACE LIMIT` follows `TERM` with `SIGKILL`, which cannot be caught
+  or ignored — status **137**, 128+9. That is the difference between a request
+  and a guarantee.
+
+method: >-
+  **1. Notice that two logs disagree, and work out which one is evidence.** The
+  watchdog reports on `timeout`'s exit status. The importer reports on what it
+  did. Only one of those is an observation of the outcome, and it is not the one
+  the team had been reading.
+
+
+  **2. Read what 124 means precisely.** "The time limit was reached" is a
+  narrower claim than "the process was terminated", and the whole incident lives
+  in the gap. Any status that is produced by a *wrapper* describes the wrapper's
+  experience, not the wrapped thing's fate.
+
+
+  **3. Follow the signal.** `timeout` sends `TERM` by default. `TERM` is
+  catchable. The importer's log says, in words, that it caught it. There is no
+  inference left to make after that.
+
+
+  **4. Reduce it.** One importer that traps `TERM`, one `timeout`, one
+  `timeout -k`, and a `tail` of the log a few seconds later. Two commands, and
+  the contrast — 124 with the work completed, 137 with it stopped partway — is
+  the entire diagnosis.
+
+
+  **5. Check whether the handler is wrong before removing it.** It was added for
+  a reason that is still valid: an importer killed mid-batch leaves a partial
+  table. The fix is not to stop handling `TERM` — it is to make the handler
+  *finish and exit*, and to make the watchdog able to enforce a limit when it
+  does not.
+
+
+  **6. Read the runbook as part of the system.** It converted a wrong status into
+  a duplicate import automatically, every time. A runbook that instructs an
+  action based on a signal nobody has validated is a defect with the same
+  standing as a code defect — and this one had been executed about a third of
+  nights for six weeks.
+
+
+  The habit: **a wrapper's status describes the wrapper.** Before trusting it,
+  ask what the wrapper could actually observe.
+
+resolution: >-
+  **Immediately:** identify the duplicated records — every night the watchdog
+  reported 124 — and de-duplicate. Change the runbook *today*, before anything
+  else, so no further re-runs are triggered: it should say to check the
+  importer's own log for completion before re-running anything.
+
+
+  **Make the limit a guarantee:**
+
+
+  ```bash
+  timeout -k 60 "$LIMIT" /opt/jobs/importer
+  ```
+
+
+  `TERM` first, then `SIGKILL` sixty seconds later. The grace period is the
+  point — it lets the importer finish its current batch and exit cleanly, while
+  guaranteeing that a genuinely stuck one stops.
+
+
+  **Make the handler exit.** A trap handler *returns*, and execution resumes
+  where it was interrupted — which is why the importer kept going after logging.
+  It should finish the batch it is in and then stop:
+
+
+  ```bash
+  stop_requested=0
+  trap 'stop_requested=1; log "TERM received, will stop after this batch"' TERM
+
+  while read -r batch; do
+    import_one "$batch"
+    [ "$stop_requested" -eq 1 ] && { log "stopping cleanly after batch $n"; exit 143; }
+  done
+  ```
+
+
+  Exit **143** (128+15), so the watchdog can tell "asked to stop and did" from
+  "had to be killed" (137) and from "ran out of time and ignored us" (124).
+
+
+  **Report on the outcome, not the wrapper's status:**
+
+
+  ```bash
+  timeout -k 60 "$LIMIT" /opt/jobs/importer
+  status=$?
+
+  case $status in
+    0)   echo "importer finished cleanly" ;;
+    143) echo "importer stopped cleanly on request after $LIMIT s" >&2 ;;
+    137) echo "importer had to be KILLED after ignoring TERM" >&2 ;;
+    124) echo "importer exceeded ${LIMIT}s; state unknown - CHECK ITS LOG" >&2 ;;
+    *)   echo "importer failed with status $status" >&2 ;;
+  esac
+
+  # and the only real check: did it do the work?
+  grep -q 'FINISHED WRITING ALL BATCHES' /var/log/importer.log \
+    || echo "importer did not complete - safe to re-run" >&2
+  ```
+
+
+  The last two lines matter most. **The watchdog cannot observe whether the
+  import completed, so it must not claim to** — and something must assert the
+  outcome, exactly as this course has done for backups, health checks and
+  migrations.
+
+
+  **Make the re-run safe regardless.** The duplication was possible because the
+  import is not idempotent. An import keyed by batch identifier — recording which
+  batches are already loaded and skipping them — makes an unnecessary re-run
+  harmless, which is worth more than any improvement to the watchdog.
+
+
+  **Audit:** `grep -rn 'timeout [0-9]' /opt/jobs/` finds every other bare
+  `timeout`. Each one is a limit that a process can decline.
+
+
+  **For the postmortem:** three components each behaved correctly and as
+  intended. `timeout` sent the signal it documents and reported the status it
+  documents; the importer's `TERM` handler was added deliberately to prevent a
+  real failure; the runbook faithfully followed the watchdog. The defect is that
+  **a wrapper reported on an outcome it could not observe**, and a runbook turned
+  that report into an action. Two findings to carry: `timeout` without `-k` is a
+  request rather than a guarantee, and any component that reports success or
+  failure on another's behalf must either observe the outcome or say that it
+  cannot.

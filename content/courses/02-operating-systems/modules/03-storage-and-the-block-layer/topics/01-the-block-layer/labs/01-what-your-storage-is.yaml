@@ -1,0 +1,288 @@
+id: lab.what-your-storage-is
+topic: topic.the-block-layer
+title: Read what your storage actually is, before arguing about it
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A02.4.1, OBJ-A02.4.3, OBJ-A02.4.4, OBJ-A02.4.6]
+
+intro: >-
+  Most storage discussions happen without anyone having read the configuration.
+  This lab is the reading.
+
+
+  Which devices exist and what kind they are; which scheduler each one is using
+  and which it could use; how deep the queues are; how far ahead the kernel
+  reads; and the two thresholds that decide whether a `write()` is a memcpy or a
+  block. All of it is in files, and none of it needs privilege.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      List the block devices this kernel can see, and save the listing to
+      /tmp/answer-devices.
+
+
+      Note the RO column, and note that several of them are loop devices.
+    hint: "`lsblk > /tmp/answer-devices`"
+    walkthrough: |
+      lsblk > /tmp/answer-devices
+      cat /tmp/answer-devices
+    verify:
+      - type: file_matches
+        path: /tmp/answer-devices
+        pattern: "MAJ:MIN"
+        describe: The device listing was captured
+      - type: command_ran
+        pattern: "lsblk"
+        describe: You used lsblk rather than guessing
+
+  - id: s2
+    instruction: >-
+      Find out what your own root filesystem is. Save the line for `/` from
+      /proc/mounts to /tmp/answer-root.
+
+
+      The answer is not a device, which is the point.
+    hint: "`awk '$2 == \"/\" {print $1, $3}' /proc/mounts > /tmp/answer-root`"
+    walkthrough: |
+      awk '$2 == "/" {print $1, $3}' /proc/mounts > /tmp/answer-root
+      cat /tmp/answer-root
+    verify:
+      - type: file_matches
+        path: /tmp/answer-root
+        pattern: "overlay"
+        describe: Your root is an overlay filesystem, not a block device
+
+  - id: s3
+    instruction: >-
+      Now read one real device's queue configuration. Pick any device under
+      /sys/block that is not a loop or ram device, and save its scheduler,
+      nr_requests, rotational, read_ahead_kb and write_cache to
+      /tmp/answer-queue — each labelled.
+    hint: >-
+      `d=sda; for f in scheduler nr_requests rotational read_ahead_kb
+      write_cache; do echo "$f $(cat /sys/block/$d/queue/$f)"; done >
+      /tmp/answer-queue`
+    walkthrough: |
+      d=$(ls /sys/block | grep -Ev '^(loop|ram)' | head -1)
+      echo "device $d" > /tmp/answer-queue
+      for f in scheduler nr_requests rotational read_ahead_kb write_cache; do
+        echo "$f $(cat /sys/block/$d/queue/$f)"
+      done >> /tmp/answer-queue
+      cat /tmp/answer-queue
+    verify:
+      - type: file_matches
+        path: /tmp/answer-queue
+        pattern: 'scheduler .*\[[a-z-]+\]'
+        describe: The active scheduler is the one in brackets
+      - type: file_matches
+        path: /tmp/answer-queue
+        pattern: 'nr_requests [0-9]+'
+        describe: The scheduler queue depth was captured
+      - type: file_matches
+        path: /tmp/answer-queue
+        pattern: 'read_ahead_kb [0-9]+'
+        describe: And how far ahead the kernel reads speculatively
+
+  - id: s4
+    instruction: >-
+      Write the name of the active scheduler — just the word, no brackets — to
+      /tmp/answer-active.
+    hint: "The bracketed entry in the scheduler line is the active one."
+    walkthrough: |
+      grep '^scheduler' /tmp/answer-queue | grep -o '\[[a-z-]*\]' | tr -d '[]' > /tmp/answer-active
+      cat /tmp/answer-active
+    verify:
+      - type: file_matches
+        path: /tmp/answer-active
+        pattern: '^(none|mq-deadline|kyber|bfq)$'
+        describe: You extracted the active scheduler from the list of available ones
+
+  - id: s5
+    instruction: >-
+      Two block sizes matter and they are not always the same. Survey every real
+      device on this machine, saving one line each — device, logical block size,
+      physical block size — to /tmp/answer-blocksize.
+
+
+      Read the result before moving on: they do not all agree, and that is the
+      point.
+    hint: >-
+      Loop over /sys/block, skipping loop and ram devices, and read
+      `queue/logical_block_size` and `queue/physical_block_size` for each.
+    walkthrough: |
+      for d in $(ls /sys/block | grep -Ev '^(loop|ram)'); do
+        l=$(cat /sys/block/$d/queue/logical_block_size)
+        p=$(cat /sys/block/$d/queue/physical_block_size)
+        echo "$d logical=$l physical=$p"
+      done > /tmp/answer-blocksize
+      cat /tmp/answer-blocksize
+    verify:
+      - type: file_matches
+        path: /tmp/answer-blocksize
+        pattern: 'logical=512 physical=[0-9]+'
+        describe: Every device accepts 512-byte addressing, for compatibility
+      - type: command_exit
+        command: "test $(wc -l < /tmp/answer-blocksize) -ge 2"
+        exit_code: 0
+        describe: You surveyed more than one device rather than assuming they match
+      - type: command_exit
+        command: "awk -F'physical=' '{print $2}' /tmp/answer-blocksize | sort -u | wc -l | grep -qv '^0$'"
+        exit_code: 0
+        describe: The physical sizes were captured and can be compared
+
+  - id: s6
+    instruction: >-
+      Now the two thresholds that decide what a `write()` costs. Save
+      dirty_ratio, dirty_background_ratio and dirty_expire_centisecs to
+      /tmp/answer-dirty.
+    hint: "They are under /proc/sys/vm/."
+    walkthrough: |
+      for f in dirty_ratio dirty_background_ratio dirty_expire_centisecs; do
+        echo "$f $(cat /proc/sys/vm/$f)"
+      done > /tmp/answer-dirty
+      cat /tmp/answer-dirty
+    verify:
+      - type: file_matches
+        path: /tmp/answer-dirty
+        pattern: 'dirty_background_ratio [0-9]+'
+        describe: The threshold at which background writeback starts
+      - type: file_matches
+        path: /tmp/answer-dirty
+        pattern: 'dirty_ratio [0-9]+'
+        describe: And the threshold at which writers are blocked
+
+  - id: s7
+    instruction: >-
+      Read how much is dirty right now. Save the Dirty and Writeback lines from
+      /proc/meminfo to /tmp/answer-meminfo.
+
+
+      Compare the figure with the threshold you just read as a percentage of
+      memory.
+    hint: "`grep -E '^(Dirty|Writeback):' /proc/meminfo > /tmp/answer-meminfo`"
+    walkthrough: |
+      grep -E '^(Dirty|Writeback):' /proc/meminfo > /tmp/answer-meminfo
+      cat /tmp/answer-meminfo
+      grep -E '^MemTotal' /proc/meminfo
+    verify:
+      - type: file_matches
+        path: /tmp/answer-meminfo
+        pattern: 'Dirty:\s+[0-9]+ kB'
+        describe: Dirty pages — written, not yet on a device
+      - type: file_matches
+        path: /tmp/answer-meminfo
+        pattern: 'Writeback:\s+[0-9]+ kB'
+        describe: And pages in flight to a device right now
+
+  - id: s8
+    instruction: >-
+      Last one. Given the scheduler you found active and the `rotational` value
+      you read, write to /tmp/answer-fit one sentence saying whether that pairing
+      makes sense and why.
+    hint: >-
+      `none` suits devices that reorder better than the kernel can.
+      `mq-deadline` exists to stop a stream of writes starving reads.
+    walkthrough: |
+      cat /tmp/answer-queue
+      echo "none does no reordering and suits a device with deep hardware queues that reorders internally; on a device without them mq-deadline would be safer because it gives reads a deadline so a write stream cannot starve them" > /tmp/answer-fit
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fit
+        pattern: "reorder|deadline|starv|queue"
+        describe: You reasoned about the device rather than naming a preference
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-fit) -ge 15"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+solution: |
+  ```bash
+  lsblk
+  awk '$2 == "/" {print $1, $3}' /proc/mounts          # overlay overlay
+
+  d=$(ls /sys/block | grep -Ev '^(loop|ram)' | head -1)
+  for f in scheduler nr_requests rotational read_ahead_kb write_cache \
+           logical_block_size physical_block_size; do
+    echo "$f $(cat /sys/block/$d/queue/$f)"
+  done
+
+  for f in dirty_ratio dirty_background_ratio dirty_expire_centisecs; do
+    echo "$f $(cat /proc/sys/vm/$f)"
+  done
+  grep -E '^(Dirty|Writeback):' /proc/meminfo
+  ```
+
+  **What you just established.**
+
+  **Your root filesystem is not a device.** `overlay overlay` — the assembled
+  image layers you read in Foundations. Writes to it go through overlayfs before
+  they reach any filesystem that has a device, which is where copy-up lives and
+  is why databases in containers need volumes.
+
+  **The scheduler list shows what is possible, the brackets show what is
+  active.**
+
+  ```text
+  scheduler [none] mq-deadline kyber
+  ```
+
+  `none` does no reordering — correct for NVMe, whose device-side queues reorder
+  with knowledge the kernel does not have. On anything slower, `mq-deadline` is
+  the safer default, because without a read deadline a stream of writes can
+  starve reads indefinitely: merging writes is the efficient thing to do, and a
+  scheduler with no deadline will keep doing it.
+
+  **`nr_requests` is the throughput-latency trade as one integer.** More
+  requests queued means more opportunity to merge and reorder, so more
+  throughput — and more time each individual request spends waiting, so worse
+  latency. There is no correct value, only a choice about which you are being
+  paid for.
+
+  **`read_ahead_kb` decides whether sequential reads are nearly free.** At 128,
+  a 4 KiB sequential read arrives with the next 128 KiB already fetched. For
+  random access that is 124 KiB of wasted device work per read, every time —
+  which is why databases doing point lookups often want it far lower.
+
+  **The block sizes are not the same on every device, and that is worth having
+  seen.** On this host some report `logical=512 physical=512` and others
+  `logical=512 physical=4096`.
+
+  Every device accepts 512-byte addressing, because decades of software assumes
+  it. A device whose *physical* unit is 4096 works internally in 4 KiB blocks,
+  so a 512-byte write to it becomes read-modify-write: fetch 4 KiB, change part
+  of it, write 4 KiB back. The same write to a genuinely 512-byte device costs
+  one operation.
+
+  Two consequences. Partition and filesystem alignment matters on the 4 KiB
+  devices — a misaligned filesystem can lose a large fraction of write
+  performance while every health check reports the hardware as fine. And you
+  cannot assume: the value has to be read per device, which is why this step
+  surveyed them rather than checking one.
+
+  **The two dirty thresholds are the shape of every write-latency incident.**
+
+  | Threshold | Default | What happens |
+  |---|---|---|
+  | `dirty_background_ratio` | 10 | Kernel threads start writing back. **Nothing blocks** |
+  | `dirty_ratio` | 20 | Writers are throttled. `write()` blocks until pages are clean |
+
+  Below the second, `write()` runs at memory speed. Above it, at device speed.
+  That is a cliff rather than a slope, which is why the symptom is always "it
+  was fine and then it broke" rather than a gradual decline.
+
+  **On a large node these percentages are dangerous.** 20% of a 128 GiB machine
+  is around 25 GiB of dirty pages — minutes of writeback on a cloud volume, all
+  of it lost on a crash, and a violent stall for whoever crosses the line.
+  `vm.dirty_bytes` and `vm.dirty_background_bytes` set absolute limits instead,
+  and on big machines they are the better control.
+
+  **Where this goes.** Every number here becomes a review question later:
+  **E29**'s StorageClasses choose the device whose `rotational` and scheduler
+  you just read, and **B13** tunes PostgreSQL checkpoints, which are these
+  thresholds under a different vocabulary.

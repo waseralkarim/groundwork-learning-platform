@@ -1,0 +1,10 @@
+graph TD
+    A["<b>IP</b> gives you: best-effort delivery<br/>of individual packets to an address.<br/><i>May be lost, duplicated, reordered</i>"]
+    A --> B["<b>UDP</b> adds only:<br/>ports, and a checksum"]
+    A --> C["<b>TCP</b> adds:"]
+    C --> C1["a <b>connection</b> — both ends agree it exists"]
+    C --> C2["<b>ordering</b> — bytes arrive as sent"]
+    C --> C3["<b>retransmission</b> — loss is repaired"]
+    C --> C4["<b>flow control</b> — a fast sender cannot drown a slow receiver"]
+    C --> C5["<b>congestion control</b> — and cannot drown the network"]
+    B --> D["<i>Everything TCP adds costs a round trip,<br/>state on both ends, and head-of-line blocking.<br/>Sometimes that is the wrong trade.</i>"]

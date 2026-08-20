@@ -1,0 +1,212 @@
+id: troubleshooting.the-leak-that-was-not-encrypted
+topic: topic.hashing-and-passwords
+title: The breach notice says the passwords were encrypted
+level: L2
+objectives: [OBJ-A04.1.6, OBJ-A04.1.2]
+reveal_policy: progressive
+
+situation: >-
+  A database backup from `accounts-prod` was found in a public object storage
+  bucket. It had been reachable for eleven days.
+
+
+  The incident channel has agreed a holding statement: *"User passwords were
+  encrypted and we have no evidence of misuse."* Legal want to send it in an
+  hour. The engineer who wrote that line is confident, and points out that
+  nobody can read the password column.
+
+
+  You have been asked to confirm the wording before it goes out.
+
+
+  A sample of the users table and the application's verification code are
+  attached. Work out whether the statement is accurate before reading on.
+
+symptoms:
+  - "A production database backup was publicly readable for eleven days"
+  - "The password column is not human-readable"
+  - "The proposed statement describes the passwords as encrypted"
+  - "No key management system is referenced anywhere in the authentication code"
+  - "The security team have not yet been asked what the storage scheme actually is"
+
+artifacts:
+  - type: command_output
+    label: A sample of the users table
+    content: |
+      id | email             | password_hash
+      ---+-------------------+------------------------------------------------------------------
+       1 | ana@example.com   | 5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8
+       2 | ben@example.com   | 8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92
+       3 | cara@example.com  | 5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8
+       4 | dev@example.com   | ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f
+       5 | eve@example.com   | 5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8
+
+  - type: config
+    label: The verification path
+    content: |
+      def verify(submitted: str, stored: str) -> bool:
+          return hashlib.sha256(submitted.encode()).hexdigest() == stored
+
+      # No salt column exists in the schema.
+      # No KMS, no key material, no encryption library imported anywhere.
+
+  - type: command_output
+    label: Column statistics
+    content: |
+      SELECT count(*) AS accounts,
+             count(DISTINCT password_hash) AS distinct_hashes
+      FROM users;
+
+       accounts | distinct_hashes
+      ----------+-----------------
+        2412886 |         1104233
+
+      -- most common single value, and how many accounts share it
+       occurrences | password_hash
+      -------------+------------------------------------------------------------------
+            94120  | 5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8
+
+  - type: log
+    label: The bucket's access log, summarised
+    content: |
+      11 days of GET requests on the backup object.
+      4 distinct source addresses, none of them ours.
+      Total bytes transferred: 3 x the object size.
+
+diagnostic_questions:
+  - "Is the password column encrypted, hashed, or something else — and what in the evidence settles it?"
+  - "What does the ratio of accounts to distinct hashes tell you before any cracking is attempted?"
+  - "How long would recovering most of these passwords take, and what would you need to know to answer?"
+  - "Does 'no evidence of misuse' mean anything here, given the access log?"
+  - "What is the one number missing from the notice that would let a reader judge the severity?"
+
+hints:
+  - "Count the characters in one of those values. What algorithm produces exactly that length, and what does the absence of a `$` prefix rule out?"
+  - "Three of the five sampled accounts share a value. What has to be true of the storage for that to happen?"
+  - "The verification function is four lines. Read what it does and does not do."
+  - "The bucket was downloaded three times by four addresses that are not yours."
+
+root_cause: >-
+  **The passwords are not encrypted. They are hashed with bare SHA-256, unsalted,
+  and they are recoverable in bulk.**
+
+
+  Three pieces of evidence settle it, and none of them require a specialist.
+
+
+  *The format.* Each value is 64 hex characters with no `$` prefix, which is a
+  raw SHA-256 digest. Encrypted data would need a key, and there is no key
+  management anywhere in the code path — the verification function imports
+  `hashlib` and nothing else. "Encrypted" is not a loose description of what is
+  happening; it is a different thing that is not happening.
+
+
+  *The duplicates.* 2.4 million accounts hold only 1.1 million distinct values,
+  and 94,120 accounts share a single one. That can only happen if identical
+  passwords produce identical stored values, which means **no salt**. The
+  attacker does not need to crack anything to learn this — they sort the column.
+  The 94,120-account value is `5e884898...`, the SHA-256 of `password`.
+
+
+  *The verification code.* `sha256(submitted) == stored`. No salt, no work
+  factor, and an `==` comparison. It is the whole scheme, and it is four lines.
+
+
+  The consequence: an attacker runs one wordlist pass at roughly four million
+  guesses per second per core, and every guess is tested against all 2.4 million
+  accounts at once because there is no salt to separate them. The bulk of this
+  database is recoverable in hours, not years.
+
+
+  And the access log removes the remaining comfort. The object was fetched three
+  times by four addresses that are not the company's. "No evidence of misuse" is
+  true only in the sense that nobody has looked — the evidence of *acquisition*
+  is right there.
+
+method: >-
+  **1. Read the format before accepting the description.** 64 hex characters and
+  no `$` prefix is a bare SHA-256. A crypt-format hash begins `$1$`, `$5$`, `$6$`
+  or `$2b$`; encrypted data needs a key and something to manage it. Thirty
+  seconds of looking, and it contradicts the proposed statement.
+
+
+  **2. Count distinct values.** This is the highest-value query in the
+  investigation and it needs no cracking at all. A ratio meaningfully below one
+  distinct hash per account proves the scheme is unsalted, and the size of the
+  largest group tells you how bad it is. 94,120 accounts sharing one value is a
+  finding you can put in a sentence.
+
+
+  **3. Read the verification path.** It is short, it is the ground truth, and it
+  settles arguments that the schema alone leaves open. Salt columns can exist and
+  go unused; a peppered scheme looks identical in the table. The code says.
+
+
+  **4. Convert to a time.** "Weak hashing" is a category. "The wordlist completes
+  in about ninety seconds per core, against every account simultaneously" is a
+  severity assessment, and it is what decides whether this is a forced reset or a
+  disclosure.
+
+
+  **5. Separate acquisition from misuse.** The access log shows the object was
+  taken. Whether it has been *used* is unknown and unknowable from here, and a
+  statement that conflates the two misleads the reader about what is established.
+
+
+  The general habit: **when someone describes a security property, go and read
+  the format.** Every claim in that holding statement was checkable in under five
+  minutes, and the person who wrote it was not lying — they had simply never
+  looked at the column.
+
+resolution: >-
+  **Correct the notice first, because it is about to be wrong in public.**
+
+
+  Replace "encrypted" with what is true, and include the number that lets a
+  reader judge it:
+
+
+  > User passwords were stored as unsalted SHA-256 hashes. This is not adequate
+  > protection, and we assume passwords in this database are recoverable. All
+  > passwords have been invalidated. If you reused this password on another
+  > service, change it there now.
+
+
+  That last sentence is the one that matters most to the people affected, and it
+  is missing from most notices. The damage from an unsalted fast hash is
+  overwhelmingly to *other* services where the password was reused, and no
+  control on your side helps them — only telling them does.
+
+
+  **Then, in order:**
+
+
+  **Invalidate every password and every session.** Not a prompt on next login — a
+  forced reset. The attacker has the database and needs no session.
+
+
+  **Ship a correct scheme before the resets land**, or people will set new
+  passwords into the same storage. Argon2id with a per-user random salt and a
+  work factor measured against your own login path, targeting around 250ms.
+
+
+  **Fix the comparison while you are there.** `==` on a digest leaks timing.
+  Use `hmac.compare_digest`.
+
+
+  **Preserve the bucket access log** — the four source addresses and the request
+  timestamps are the only evidence that exists about who took it, and these logs
+  frequently have short retention.
+
+
+  **Then ask the question the incident is really about.** A public bucket holding
+  a production backup is a separate failure from the hashing, and it is the one
+  that will happen again. Why was the backup written somewhere public, what else
+  is in that bucket, and what would have detected it before day eleven?
+
+
+  **What not to do.** Do not migrate by hashing the existing digests with Argon2
+  and calling it done *without* forcing resets — wrapping is a legitimate
+  technique for a database that has not leaked, but this one has, and the
+  plaintext passwords are already recoverable from the copy the attacker took.
+  Wrapping protects future theft, not past.

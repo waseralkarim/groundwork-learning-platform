@@ -1,0 +1,263 @@
+topic: topic.distributions-and-versions
+
+questions:
+  - id: i1
+    level: L1
+    question: How would you identify what Linux distribution a system is running?
+    model_answer: >-
+      `/etc/os-release`, and I would source it rather than parse it:
+
+
+      ```bash
+      . /etc/os-release
+      echo "$ID $VERSION_ID ($VERSION_CODENAME)"
+      ```
+
+
+      The file is deliberately written as shell assignments, so sourcing gives
+      you the fields as variables with no parsing at all. `ID` and `VERSION_ID`
+      are the machine-readable ones; `PRETTY_NAME` is for humans and its format
+      is not guaranteed.
+
+
+      The alternatives all fail somewhere specific, which is worth knowing
+      because they all appear in real scripts. **`lsb_release` is a package
+      rather than a guarantee** — absent on minimal images, on Alpine, and by
+      default on RHEL derivatives. **`/etc/debian_version` reports a Debian
+      codename on Ubuntu**, because Ubuntu is built from Debian; it is telling
+      the truth about lineage and answering a different question. And **`uname`
+      reports the kernel**, which in a container is the *host's* kernel — so a
+      script branching on it branches on the machine underneath rather than the
+      userland it is operating against. That is a wrong answer that looks right.
+
+
+      For a script that must handle several families I would match on `$ID` and
+      `$ID_LIKE` together, so Ubuntu is handled through `ID_LIKE=debian` without
+      naming it. A hand-maintained list of derivatives is permanently out of
+      date.
+    signal: >-
+      Naming `/etc/os-release` is the baseline. The discriminator is knowing why
+      each alternative fails — particularly that `uname` reports the host kernel
+      in a container, which is the one that produces a plausible wrong answer.
+      Using `ID_LIKE` rather than enumerating derivatives shows they have
+      maintained something like this.
+    follow_ups:
+      - "What would that give you on a rolling release?"
+      - "How would you handle a distribution your script has never seen?"
+      - "Why is sourcing it safe?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A scanner says your OpenSSL is vulnerable. The installed version is
+      `3.5.6-1~deb13u2` and the CVE is fixed upstream in `3.5.9`. What do you
+      say?
+    model_answer: >-
+      That the scanner is comparing upstream version numbers, and that does not
+      work against a stable distribution.
+
+
+      Debian **backports**: it takes the fix from the newer upstream release and
+      applies it to the older one. The bug goes away and the upstream number does
+      not move — what moves is the part after the hyphen. `-1~deb13u2` says
+      Debian has revised this package at least twice, and security fixes are
+      exactly what those revisions are for.
+
+
+      So version-based vulnerability scanning against a stable distribution is
+      **wrong by default**, and that is the single largest source of noise in
+      most container scanning pipelines.
+
+
+      What I would actually do before replying: check the distribution's security
+      tracker, which states authoritatively which package version carries the
+      fix. On a full system the changelog says so too, with the CVE named — but
+      on a slim container image there are no changelogs at all, because the slim
+      variant strips documentation. That is worth knowing before a triage rather
+      than during one.
+
+
+      Two more checks before I close the ticket. **Did this package come from the
+      archive?** Something installed from a third-party repository has a version
+      string that looks the same and receives none of Debian's backports. And
+      **is it in the supported subset?** LTS commitments often cover less than
+      the whole archive.
+
+
+      And I would push on the tooling, because the reply does not scale: a
+      scanner that cannot consume distribution security data will produce this
+      class of finding for every package forever, and unactionable findings train
+      people to ignore the actionable ones.
+    signal: >-
+      Knowing what a backport is and that scanning is wrong by default is the
+      core. The discriminator is the caution in both directions — checking rather
+      than asserting "stable therefore patched", and specifically checking
+      whether the package came from the archive at all. Knowing that slim images
+      have no changelogs is a detail you only have from looking.
+    follow_ups:
+      - "How would you check whether the fix shipped?"
+      - "What if the package came from a third-party repository?"
+      - "What would you change about the scanning pipeline?"
+
+  - id: i3
+    level: L2
+    question: >-
+      A rollback to an older package version reports success and changes
+      nothing. Where do you look?
+    model_answer: >-
+      At the exact installed version against the exact requested one, and I would
+      expect to find an epoch.
+
+
+      An epoch is a number before a colon — `1:2.1.0-1`. It is compared **before
+      anything else and decisively**, so a package with one beats a package
+      without one regardless of the rest of the string. `1:2.1.0-1` is newer than
+      `2024.11.3-1`, and nothing after the colon is ever examined.
+
+
+      So the package manager is asked to install something older than what is
+      present, correctly concludes there is nothing to do, and says *already the
+      newest version*. That message is not boilerplate — it is the answer, and
+      the word "newest" is the tell.
+
+
+      `dpkg --compare-versions '1:2.1.0-1' gt '2024.11.3-1'` settles it in ten
+      seconds.
+
+
+      Epochs usually appear for one reason: **upstream versioning went
+      backwards**, typically a move from date-based numbering to semantic
+      versioning. The epoch is what makes the *upgrade* work, and it also makes
+      rollback across that boundary impossible by the normal route. It can never
+      be removed either, because dropping it would make the next release compare
+      as older.
+
+
+      The fix is to roll back to a version on the same side of the boundary — one
+      that also carries the epoch — or to publish a new build containing the old
+      behaviour.
+
+
+      The bigger finding is usually the tooling. A rollback task that checks
+      `state: present` cannot tell a no-op from a downgrade, because the package
+      *is* present either way. It needs to assert the installed version equals
+      the requested one, or it will silently do nothing during an incident and
+      report success — which is what makes this worth catching before you need
+      it.
+    signal: >-
+      Going to the epoch is the discriminator; it is invisible in the version
+      anybody quotes so it has to be actively suspected. Reading "already the
+      newest version" as informative rather than as noise is the diagnostic
+      habit. The point about `state: present` not distinguishing a no-op is the
+      part that generalises beyond packages.
+    follow_ups:
+      - "Why can the epoch not just be removed?"
+      - "How would you make the rollback fail loudly instead?"
+      - "What else in your tooling cannot tell a no-op from success?"
+
+  - id: i4
+    level: L2
+    question: >-
+      Why does a stable distribution ship old software, and when is that the
+      wrong choice?
+    model_answer: >-
+      It is the product rather than neglect. A fixed release freezes versions at
+      release day and changes them only for security fixes and grave bugs, so a
+      system tested in January behaves identically in November and upgrades are
+      events you schedule rather than things that happen to you.
+
+
+      What it costs: software genuinely behind upstream, features unavailable
+      without stepping outside the archive, and an eventual upgrade made large by
+      deferral.
+
+
+      The framing I find most useful is that **a distribution is a kernel, a
+      userland, an archive and a policy** — and the first two are largely common
+      property. Debian and Ubuntu share an enormous amount of code. The archive
+      and the policy are the product, so "which distribution" is really "whose
+      release policy do we want to live under", and that is answerable from two
+      properties: how long must this run without a major upgrade, and how often
+      can it be surprised.
+
+
+      When it is wrong: a workstation whose owner needs this month's toolchain. A
+      container image rebuilt twenty times a day, where lifetime collapses and
+      what matters is being current *at build time* rather than supported for
+      years — which argues for frequent point releases rather than the longest
+      LTS, the opposite conclusion for the same distribution family.
+
+
+      And the case that overrides all of it: a **hard dependency below the
+      distribution**. A kernel module built against specific internal interfaces
+      means every kernel update, including a security update within the same LTS,
+      can require rebuilding and re-testing. The release model does not protect
+      you there, and a seven-year support commitment whose kernel updates you
+      cannot take is a much shorter commitment than it appears.
+
+
+      Those constraints eliminate options rather than trading them off, so I look
+      for them first.
+    signal: >-
+      "The archive and the policy are the distribution" is the framing that makes
+      the choice decidable rather than tribal. The container observation — that
+      short rebuild cycles argue *against* the longest LTS — shows they have
+      thought it through rather than applied a rule. The kernel module point is
+      the senior answer, because it inverts the usual reasoning.
+    follow_ups:
+      - "How would you choose a base image for a service rebuilt daily?"
+      - "What does an LTS commitment actually promise?"
+      - "When would a rolling release be the responsible choice?"
+
+  - id: i5
+    level: L2
+    question: >-
+      Two builds from the same commit produced different images. Where do you
+      start?
+    model_answer: >-
+      By stopping work on the application, because identical source producing
+      different artefacts means an input from outside the repository changed.
+
+
+      I would compare the images rather than the code — `dpkg-query -W` inside
+      each, and `/etc/os-release` or `/etc/debian_version`. That usually names it
+      immediately: different point releases of the base distribution.
+
+
+      The cause is nearly always that **`FROM debian:13-slim` is a tag, not a
+      version**. It moves as point releases ship, by design, so images pick up
+      security fixes. What it resolves to depends on when the *builder* last
+      pulled it — which is a property of the build environment, not of the
+      repository. A CI runner with a persistent cache and no `--pull` can be
+      building from a `FROM` layer cached months earlier, and the build log says
+      `Using cache` with a date on it.
+
+
+      That produces failures with a very misleading shape. I have seen it look
+      like a race condition: an old client library could not negotiate TLS with
+      some database replicas but not others, so it failed on roughly half of
+      connections and succeeded on retry. Deterministic incompatibility sampled
+      across a heterogeneous fleet looks exactly like timing, and "only in
+      staging" reads as an environment problem rather than as a difference to go
+      and find.
+
+
+      The fix depends on which property you want, and you generally want both in
+      different places. **Track the tag** — with `--pull` — where you want
+      patches. **Pin the digest** in release manifests where you need
+      reproducibility, with a bot raising a pull request when the tag moves, so
+      the drift becomes a reviewable change instead of a silent one.
+
+
+      And I would put the base version in a label, so the next person diagnoses
+      it in seconds rather than in a week.
+    signal: >-
+      "Identical source, different artefact means an outside input" is the
+      reframe that solves it. Knowing the tag/digest split and wanting both in
+      different places is the mature answer rather than picking one. Recognising
+      that a deterministic fault sampled across a fleet mimics a race condition
+      is a debugging instinct that transfers well beyond this case.
+    follow_ups:
+      - "What would make the build reproducible?"
+      - "How do you still get security patches if you pin a digest?"
+      - "Why did it look intermittent?"

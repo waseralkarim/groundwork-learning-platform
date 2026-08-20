@@ -1,0 +1,283 @@
+id: lab.counting-connections
+topic: topic.tcp-and-udp
+title: Move the kernel's counters on purpose, and check the arithmetic
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A03.3.5, OBJ-A03.3.6]
+
+intro: >-
+  The kernel counts every connection outcome, and the counters compose exactly.
+  Once you have moved them deliberately and watched the arithmetic hold, they
+  stop being a wall of numbers and become a way of asking what happened.
+
+
+  You will take a baseline, make three connections that succeed and one that
+  fails, and confirm that the numbers add up. Then you will do the equivalent
+  over UDP and find that they do not — because there is nothing to count on the
+  sending side.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Take a baseline of the TCP counters. Save `ActiveOpens`, `PassiveOpens`,
+      `AttemptFails` and `OutRsts` to /tmp/answer-before.
+    hint: >-
+      `/proc/net/snmp` has a `Tcp:` header line and a `Tcp:` values line. On the
+      values line the fields are 6, 7, 8 and 15.
+    walkthrough: |
+      awk '/^Tcp:/ { n++; if (n==2) printf "ActiveOpens=%s PassiveOpens=%s AttemptFails=%s OutRsts=%s\n", $6, $7, $8, $15 }' /proc/net/snmp > /tmp/answer-before
+      cat /tmp/answer-before
+    verify:
+      - type: file_matches
+        path: /tmp/answer-before
+        pattern: 'ActiveOpens=[0-9]+ PassiveOpens=[0-9]+ AttemptFails=[0-9]+ OutRsts=[0-9]+'
+        describe: All four baseline values captured
+
+  - id: s2
+    instruction: >-
+      Start a TCP listener on port 9500, make three connections to it that
+      succeed, and one connection to port 9501 where nothing is listening.
+
+
+      Then save the counters again to /tmp/answer-after.
+    hint: >-
+      `nc -z` connects and closes. Run it three times against 9500 and once
+      against 9501.
+    walkthrough: |
+      nohup nc -l -k 127.0.0.1 9500 >/dev/null 2>&1 &
+      sleep 1
+      for i in 1 2 3; do nc -z -w 2 127.0.0.1 9500 >/dev/null 2>&1; done
+      nc -z -w 2 127.0.0.1 9501 >/dev/null 2>&1
+      sleep 1
+      awk '/^Tcp:/ { n++; if (n==2) printf "ActiveOpens=%s PassiveOpens=%s AttemptFails=%s OutRsts=%s\n", $6, $7, $8, $15 }' /proc/net/snmp > /tmp/answer-after
+      cat /tmp/answer-after
+    verify:
+      - type: file_matches
+        path: /tmp/answer-after
+        pattern: 'ActiveOpens=[0-9]+'
+        describe: The counters were read again after the traffic
+
+  - id: s3
+    instruction: >-
+      Compute the deltas — after minus before, for all four — and save them to
+      /tmp/answer-deltas.
+    hint: >-
+      Both files have the same `name=value` shape. `awk` with `-F'[= ]'` can
+      take them apart.
+    walkthrough: |
+      awk -F'[= ]' 'NR==1 { a1=$2; p1=$4; f1=$6; r1=$8 }
+                    NR==2 { printf "ActiveOpens=%d PassiveOpens=%d AttemptFails=%d OutRsts=%d\n", $2-a1, $4-p1, $6-f1, $8-r1 }' \
+        /tmp/answer-before /tmp/answer-after > /tmp/answer-deltas
+      cat /tmp/answer-deltas
+    verify:
+      - type: file_matches
+        path: /tmp/answer-deltas
+        pattern: 'ActiveOpens=4'
+        describe: Four outbound attempts — three good, one to a closed port
+      - type: file_matches
+        path: /tmp/answer-deltas
+        pattern: 'AttemptFails=1'
+        describe: One of them failed
+      - type: file_matches
+        path: /tmp/answer-deltas
+        pattern: 'PassiveOpens=3'
+        describe: And the listener accepted exactly three
+
+  - id: s4
+    instruction: >-
+      Check the arithmetic. Write the relationship between the three connection
+      counters to /tmp/answer-arithmetic, and say why it holds here.
+    hint: >-
+      Both ends of every connection are on this one machine, so every accepted
+      connection is also an attempt made.
+    walkthrough: |
+      echo "ActiveOpens minus AttemptFails equals PassiveOpens: 4 - 1 = 3, and it holds because both ends of every connection are on this machine, so each successful outbound attempt is also an inbound acceptance counted by the same kernel" > /tmp/answer-arithmetic
+    verify:
+      - type: file_matches
+        path: /tmp/answer-arithmetic
+        pattern: "4 - 1 = 3|4-1=3"
+        describe: The arithmetic checks out
+      - type: file_matches
+        path: /tmp/answer-arithmetic
+        pattern: "same machine|both ends|one machine"
+        describe: And you said why it holds in this particular setup
+
+  - id: s5
+    instruction: >-
+      One counter moved that has not been mentioned. Explain the `OutRsts` delta
+      in /tmp/answer-rsts.
+    hint: >-
+      Something had to tell the client that port 9501 was closed. What did the
+      kernel send?
+    walkthrough: |
+      grep -o 'OutRsts=[0-9]*' /tmp/answer-deltas > /tmp/answer-rsts
+      echo "this machine sent a tcp reset because a connection arrived for port 9501 with nothing bound, and that reset is what the client saw as connection refused" >> /tmp/answer-rsts
+      cat /tmp/answer-rsts
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rsts
+        pattern: 'OutRsts=[1-9]'
+        describe: At least one reset was sent
+      - type: file_matches
+        path: /tmp/answer-rsts
+        pattern: "refus|reset"
+        describe: And you connected it to the refusal the client saw
+
+  - id: s6
+    instruction: >-
+      Now the UDP equivalent. Take a baseline of `InDatagrams`, `NoPorts` and
+      `OutDatagrams`, send two datagrams to ports with nothing bound, and save
+      the deltas to /tmp/answer-udp.
+    hint: >-
+      On the `Udp:` values line the fields are 2, 3 and 5. Same delta technique
+      as before.
+    walkthrough: |
+      udp() { awk '/^Udp:/ { n++; if (n==2) printf "InDatagrams=%s NoPorts=%s OutDatagrams=%s\n", $2, $3, $5 }' /proc/net/snmp; }
+      udp > /tmp/udp-before
+      printf 'x' | nc -u -w 1 127.0.0.1 9998 >/dev/null 2>&1
+      printf 'x' | nc -u -w 1 127.0.0.1 9997 >/dev/null 2>&1
+      sleep 1
+      udp > /tmp/udp-after
+      awk -F'[= ]' 'NR==1 { i1=$2; n1=$4; o1=$6 }
+                    NR==2 { printf "InDatagrams=%d NoPorts=%d OutDatagrams=%d\n", $2-i1, $4-n1, $6-o1 }' \
+        /tmp/udp-before /tmp/udp-after > /tmp/answer-udp
+      cat /tmp/answer-udp
+    verify:
+      - type: file_matches
+        path: /tmp/answer-udp
+        pattern: 'NoPorts=2'
+        describe: Both datagrams arrived at ports with nothing bound
+      - type: file_matches
+        path: /tmp/answer-udp
+        pattern: 'OutDatagrams=[2-9]'
+        describe: And both were counted as successfully sent
+
+  - id: s7
+    instruction: >-
+      Compare the two protocols' behaviour on a closed port. Write to
+      /tmp/answer-asymmetry what the sender learned in each case, and what
+      counter proves the kernel knew.
+    hint: >-
+      TCP moved a counter on the *sending* side as well as the receiving side.
+      UDP moved only one.
+    walkthrough: |
+      {
+        echo "tcp: the kernel sent a reset counted in OutRsts, the sender's connect failed and was counted in AttemptFails, so the sender knew within milliseconds"
+        echo "udp: the kernel counted NoPorts on arrival, but sendto had already returned success and there is no connection to report a failure on, so the sender was never told and nothing on the sending side records the loss"
+      } > /tmp/answer-asymmetry
+      cat /tmp/answer-asymmetry
+    verify:
+      - type: file_matches
+        path: /tmp/answer-asymmetry
+        pattern: 'AttemptFails'
+        describe: TCP records the failure on the sending side
+      - type: file_matches
+        path: /tmp/answer-asymmetry
+        pattern: 'NoPorts'
+        describe: UDP records it only on the receiving side
+      - type: file_matches
+        path: /tmp/answer-asymmetry
+        pattern: "never|not told|no connection"
+        describe: And the sender is not informed
+
+  - id: s8
+    instruction: >-
+      Last one. Name the UDP counter that records datagrams lost because the
+      receiving application was too slow, and save its current value with a
+      one-line explanation to /tmp/answer-rcvbuf.
+    hint: >-
+      It is on the same `Udp:` line, field 6. It is the answer to most "we are
+      losing metrics" questions.
+    walkthrough: |
+      {
+        awk '/^Udp:/ { n++; if (n==2) print "RcvbufErrors=" $6 }' /proc/net/snmp
+        echo "datagrams that arrived correctly and were dropped because the socket receive buffer was full, meaning the application was not reading fast enough; the sender saw success and the network was fine, so the loss is entirely inside the receiving machine"
+      } > /tmp/answer-rcvbuf
+      cat /tmp/answer-rcvbuf
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rcvbuf
+        pattern: 'RcvbufErrors=[0-9]+'
+        describe: The counter was read
+      - type: file_matches
+        path: /tmp/answer-rcvbuf
+        pattern: "buffer|too slow|not reading"
+        describe: And you identified it as a slow reader rather than a network fault
+
+solution: |
+  ```bash
+  tcp() { awk '/^Tcp:/ { n++; if (n==2) printf "ActiveOpens=%s PassiveOpens=%s AttemptFails=%s OutRsts=%s\n", $6, $7, $8, $15 }' /proc/net/snmp; }
+
+  tcp                                              # baseline
+  nohup nc -l -k 127.0.0.1 9500 >/dev/null 2>&1 &
+  for i in 1 2 3; do nc -z -w 2 127.0.0.1 9500; done
+  nc -z -w 2 127.0.0.1 9501                        # nothing there
+  tcp                                              # after
+  ```
+
+  **The deltas, and the arithmetic:**
+
+  ```text
+  ActiveOpens   4      # all four attempts this machine made
+  AttemptFails  1      # the one to a closed port
+  PassiveOpens  3      # the three the listener accepted
+  OutRsts       1      # the reset this machine sent to itself
+  ```
+
+  `ActiveOpens − AttemptFails = PassiveOpens`, exactly. It holds here because
+  both ends are on this machine, so every successful outbound attempt is also an
+  inbound acceptance counted by the same kernel. On a real server the two sides
+  live on different machines and the relationship is between *their* counters —
+  which is exactly how you check whether the connections a client thinks it made
+  are the ones a server thinks it accepted.
+
+  **`OutRsts` is the refusal, counted.** The client's "connection refused" and
+  the server's `OutRsts` are two views of the same TCP reset. On a production
+  server, `OutRsts` rising steadily usually means connection attempts to ports
+  with nothing bound — a scanner, or a client with stale configuration pointing
+  at a service that moved.
+
+  **The UDP side is shorter, and the asymmetry is the point:**
+
+  ```text
+  OutDatagrams  2      # both sent successfully
+  NoPorts       2      # both arrived where nothing was bound
+  InDatagrams   0      # nothing was delivered to any application
+  ```
+
+  The kernel *knew*, both times. `NoPorts` counted it. But `sendto()` had
+  already returned success — it returns when the datagram is accepted for
+  sending, long before delivery — and there is no connection on which to report
+  a later failure. So nothing on the sending side records anything.
+
+  | | TCP | UDP |
+  |---|---|---|
+  | Receiver notices | `OutRsts` | `NoPorts` |
+  | Sender notices | `AttemptFails` | **nothing** |
+  | Application learns | immediately | **never** |
+
+  **The counters worth putting on a dashboard**, in order of usefulness:
+
+  ```promql
+  rate(node_netstat_Udp_RcvbufErrors[5m]) > 0     # receiver too slow — the usual cause
+  rate(node_netstat_Udp_NoPorts[5m]) > 0          # collector down, or wrong port
+  rate(node_netstat_Tcp_RetransSegs[5m])
+    / rate(node_netstat_Tcp_OutSegs[5m]) > 0.02   # genuine network loss
+  rate(node_netstat_Tcp_AttemptFails[5m])         # outbound connections failing
+  ```
+
+  `RcvbufErrors` is the one almost nobody watches and the one that explains most
+  "we are losing about 3% of our metrics" reports. The loss is not in the
+  network — it is datagrams that arrived correctly and were thrown away because
+  the application had not read the previous ones. `RetransSegs` over `OutSegs`
+  is its TCP counterpart and one of the few numbers that genuinely separates a
+  network problem from an application one.
+
+  **Remember to take deltas.** These counters grow from boot, so an absolute
+  value means nothing. Two samples and a subtraction — which is what `nstat`
+  does for you if it is installed.

@@ -1,0 +1,9 @@
+id: module.functions-and-arguments
+slug: functions-and-arguments
+title: Functions and Arguments
+summary: >-
+  Shell functions look like functions in every other language and behave like
+  almost none of them. Scope is dynamic, so a helper reads variables it was
+  never passed; a value returned on stdout costs you every side effect; and the
+  exit status is one byte, so `exit 256` is a success.
+order: 5

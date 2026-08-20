@@ -1,0 +1,229 @@
+id: troubleshooting.works-on-boot-not-on-restart
+topic: topic.boot-and-init
+title: It comes up fine on reboot and fails when we restart it
+level: L3
+objectives: [OBJ-A02.5.8, OBJ-A02.5.4]
+reveal_policy: progressive
+
+situation: >-
+  A payments reconciliation service comes up cleanly every time the node is
+  rebooted. It has never once failed a boot.
+
+
+  It fails roughly one time in three when someone runs `systemctl restart` on it
+  — after a config change, after a deploy, during an incident. The failure is
+  always the same: a connection error to the local message broker, followed by
+  the service exiting.
+
+
+  The team's working theory is that the broker is slow to accept new connections
+  and that `systemctl restart` is somehow "too fast". They have proposed adding
+  `ExecStartPre=/bin/sleep 15` and the change is in review.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "Never fails during a full boot — hundreds of reboots, no failures"
+  - "Fails about one restart in three"
+  - "The error is always a connection refused to the local broker on 127.0.0.1:5672"
+  - "Restarting it a second time usually works"
+  - "The broker is running the whole time, as far as anyone has checked"
+  - "It fails more often on busy nodes"
+
+artifacts:
+  - type: config
+    label: The unit file
+    content: |
+      # systemctl cat recon.service
+      [Unit]
+      Description=Payments reconciliation
+      Requires=rabbitmq.service
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/recon
+      Restart=on-failure
+      RestartSec=10
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - type: config
+    label: A neighbouring unit on the same node
+    content: |
+      # systemctl cat metrics-shipper.service
+      [Unit]
+      Description=Metrics shipper
+      Requires=rabbitmq.service
+      After=rabbitmq.service
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - type: log
+    label: A failing restart
+    content: |
+      Aug 16 11:04:22 node-3 systemd[1]: Stopping Payments reconciliation...
+      Aug 16 11:04:22 node-3 systemd[1]: recon.service: Deactivated successfully.
+      Aug 16 11:04:22 node-3 systemd[1]: Starting Payments reconciliation...
+      Aug 16 11:04:22 node-3 recon[80114]: connecting to amqp://127.0.0.1:5672
+      Aug 16 11:04:22 node-3 recon[80114]: FATAL: dial tcp 127.0.0.1:5672: connect: connection refused
+      Aug 16 11:04:22 node-3 systemd[1]: recon.service: Main process exited, code=exited, status=1
+
+  - type: command_output
+    label: What was happening on the node at the same moment
+    content: |
+      $ journalctl -b --since '11:04:20' --until '11:04:32' -u rabbitmq.service
+      Aug 16 11:04:22 node-3 systemd[1]: Stopping RabbitMQ broker...
+      Aug 16 11:04:22 node-3 systemd[1]: Starting RabbitMQ broker...
+      Aug 16 11:04:29 node-3 rabbitmq[80120]: started with 3 plugins
+      Aug 16 11:04:29 node-3 systemd[1]: Started RabbitMQ broker.
+
+  - type: command_output
+    label: Resolved dependencies
+    content: |
+      $ systemctl show -p After -p Before -p Requires -p WantedBy recon.service
+      After=network-online.target systemd-journald.socket basic.target sysinit.target
+      Before=multi-user.target shutdown.target
+      Requires=rabbitmq.service
+      WantedBy=multi-user.target
+
+diagnostic_questions:
+  - "What ordering does recon.service declare with respect to rabbitmq?"
+  - "Why would a full boot always work if no ordering is declared?"
+  - "What does Requires= do when the unit it names is already running and you restart yours?"
+  - "Why does the neighbouring unit not have this problem?"
+  - "Why does a second restart usually succeed?"
+
+hints:
+  - "Read the resolved `After=` line. Which unit is conspicuously absent from it?"
+  - "During a boot, what else decides the order things happen in, even without an explicit edge?"
+  - "Requires= is not only a start-up relationship. Look at the broker's journal timestamps."
+  - "The two unit files differ by exactly one directive."
+
+root_cause: >-
+  `recon.service` declares `Requires=rabbitmq.service` and **no `After=`**. The
+  requirement pulls rabbitmq in; nothing orders recon after it.
+
+
+  During a boot that never matters. rabbitmq is pulled in by
+  `multi-user.target` early and gets several seconds of head start while dozens
+  of other units are still being processed, so by the time recon is reached the
+  broker has long been ready. Hundreds of clean boots is not evidence of a
+  correct unit file — it is evidence that the race has a heavy favourite.
+
+
+  `systemctl restart recon` removes the head start. `Requires=` is not only a
+  start-up relationship: satisfying it re-activates rabbitmq as part of the same
+  job, so the broker is restarted alongside recon — and with no ordering edge,
+  both start in the same instant.
+
+
+  The journals line up exactly. rabbitmq stops and starts at 11:04:22, the same
+  second recon starts; recon connects immediately and is refused; rabbitmq
+  reports itself started at 11:04:29, seven seconds after recon had already
+  exited.
+
+
+  "One time in three" and "worse on busy nodes" are what a race looks like from
+  outside, and the second restart usually works because the broker is up by
+  then.
+
+
+  `metrics-shipper.service` does not have the problem because it declares both
+  lines. Two units on one node, one directive apart.
+
+method: >-
+  **1. Read the resolved dependencies, not the unit file.** `systemctl show -p
+  After` prints what systemd actually computed, implicit edges included.
+  rabbitmq appears in `Requires=` and is absent from `After=`, which is the
+  entire diagnosis in one line of output.
+
+
+  **2. Treat "it always works on boot" as evidence about the race, not about
+  correctness.** A missing ordering edge does not produce random order — it
+  produces an order decided by everything else going on. Boot has a great deal
+  else going on and it consistently favours whatever was pulled in first. A
+  restart has none of it, so the race becomes close.
+
+
+  **3. Notice what `Requires=` does on restart.** This is the step people skip,
+  and the broker's journal is the evidence: it was stopped and started at the
+  same second as recon. Restarting one service bounced the other, which is worth
+  flagging on its own — restarting reconciliation should probably not restart the
+  message broker every time.
+
+
+  **4. Compare against something that works.** `metrics-shipper` has the same
+  `Requires=` and also has `After=`. Finding a working neighbour and diffing the
+  two files is faster than any amount of reasoning about broker start-up times.
+
+
+  **5. Test the proposed fix against the theory before approving it.** A
+  fifteen-second sleep would work most of the time. It is a timing guess dressed
+  as a dependency: wrong the moment the broker gets slower, and fifteen seconds
+  added to every restart of a service people restart during incidents. A fix
+  that stops being correct when the numbers change is not the fix.
+
+
+  The habit: when something fails only under one specific trigger, ask what that
+  trigger *removes* rather than what it adds.
+
+resolution: >-
+  **Add the ordering edge.** One line, in recon.service, then
+  `systemctl daemon-reload`:
+
+
+  ```ini
+  [Unit]
+  Requires=rabbitmq.service
+  After=rabbitmq.service
+  ```
+
+
+  Reject the `ExecStartPre=/bin/sleep 15` change, and say why in the review
+  rather than just declining it — the team's observation was good and their model
+  of it was wrong, which is worth correcting explicitly.
+
+
+  **Then decide whether `Requires=` is the right strength.** As written,
+  restarting reconciliation restarts the broker, and a broker that fails to start
+  takes reconciliation down with it. If recon can retry — and a service talking
+  to a message broker generally should — `Wants=` gives the ordering without the
+  coupling:
+
+
+  ```ini
+  Wants=rabbitmq.service
+  After=rabbitmq.service
+  ```
+
+
+  **And close the gap the ordering edge leaves.** rabbitmq is `Type=simple`, so
+  `After=` orders recon after the broker was *launched*, not after it accepts
+  connections. The window shrinks from seven seconds to milliseconds and does
+  not close.
+
+
+  Two ways to finish it, in order of preference: run rabbitmq as `Type=notify`
+  if its packaging supports it, so `After=` waits for genuine readiness; or make
+  recon retry its initial connection with a bounded backoff, which it should do
+  regardless — a service that cannot survive its broker restarting will fail
+  eventually for reasons no unit file can prevent.
+
+
+  **Finally, look for the others.** One unit on this node had the bug and one did
+  not, which means nobody was checking:
+
+
+  ```bash
+  systemctl show '*.service' --property=Id --property=Requires --property=After
+  ```
+
+
+  Any unit whose `Requires=` names something absent from its `After=` is the
+  same race with a different favourite. It is worth one pass across the fleet,
+  because a favourite is not a guarantee.

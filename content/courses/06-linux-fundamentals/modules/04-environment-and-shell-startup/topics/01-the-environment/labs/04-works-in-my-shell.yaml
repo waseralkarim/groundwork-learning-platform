@@ -1,0 +1,414 @@
+id: lab.works-in-my-shell
+topic: topic.environment-and-shell-startup
+title: "Challenge: the job that works for exactly one person"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B06.4.4, OBJ-B06.4.8]
+
+intro: >-
+  `/tmp/env/nightly-report.sh` runs correctly for the engineer who wrote it and
+  fails on a schedule. Their account is not on this machine, so on a bare system
+  it fails every way — which means the first job is to **reconstruct the
+  environment in which it works**, because that is where the fault lives.
+
+
+  Then find both faults, and fix the script so it cannot depend on anybody's
+  shell.
+
+setup:
+  - /opt/lab/seed-environment.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read the script and its notes, then run it once and record how it fails.
+      Save to /tmp/answer-first-run.
+    hint: >-
+      Read the script for what it needs before running it. `set -u` will report
+      the first missing thing and stop, so there may be more than one.
+    walkthrough: |
+      cat /tmp/env/nightly-report.sh
+      {
+        echo "what the script needs, from reading it:"
+        echo "  REPORT_DIR   an output directory   - never declared anywhere"
+        echo "  LEDGER_FILE  an input file         - never declared anywhere"
+        echo "  capsh        a command             - must be on PATH"
+        echo "  awk, date    commands              - everywhere"
+        echo
+        echo "first run:"
+        bash /tmp/env/nightly-report.sh 2>&1 | sed 's/^/  /'
+        echo
+        echo "set -u stopped at the FIRST unbound variable, so there may be more behind it. that is set -u working correctly and it means i cannot see the whole fault list in one run - i have to fix and re-run."
+      } > /tmp/answer-first-run
+      cat /tmp/answer-first-run
+    verify:
+      - type: file_matches
+        path: /tmp/answer-first-run
+        pattern: "(?i)REPORT_DIR"
+        describe: You identified the first missing variable
+      - type: file_matches
+        path: /tmp/answer-first-run
+        pattern: "(?i)unbound variable"
+        describe: And captured how it fails
+      - type: file_matches
+        path: /tmp/answer-first-run
+        pattern: "(?i)more behind it|fix and re-run"
+        describe: And noted that set -u hides the rest
+
+  - id: s2
+    instruction: >-
+      Reconstruct the author's working setup — create the inputs and put their
+      settings where their dotfiles would have had them. Then run the script five
+      ways and record which work. Save to /tmp/answer-five-ways.
+    walkthrough: |
+      mkdir -p /tmp/reports
+      printf 'a 10\nb 20\nc 30\n' > /tmp/ledger.txt
+      cat > ~/.profile <<'P'
+      export PATH="$PATH:/usr/sbin:/sbin"
+      export REPORT_DIR=/tmp/reports
+      export LEDGER_FILE=/tmp/ledger.txt
+      P
+      {
+        echo "reconstructed the author's ~/.profile: PATH with sbin, plus both variables."
+        echo "(this is how these files actually accumulate - a line at a time, years apart.)"
+        echo
+        printf '  %-12s %-38s %s\n' INVOCATION RESULT MEANING
+        for m in "-lic" "-lc" "-ic" "-c"; do
+          out=$(bash $m /tmp/env/nightly-report.sh 2>&1); rc=$?
+          case "$m" in
+            -lic) meaning="their terminal" ;;
+            -lc)  meaning="ssh host 'cmd'" ;;
+            -ic)  meaning="a new terminal tab" ;;
+            -c)   meaning="a script, CI" ;;
+          esac
+          printf '  bash %-7s rc=%-3s %-30s %s\n' "$m" "$rc" "$(echo "$out" | tail -1 | cut -c1-30)" "$meaning"
+        done
+        out=$(env -i PATH=/usr/bin:/bin HOME=$HOME bash /tmp/env/nightly-report.sh 2>&1)
+        printf '  %-12s rc=%-3s %-30s %s\n' "cron-like" "$?" "$(echo "$out" | tail -1 | cut -c1-30)" "cron"
+        echo
+        echo "the dividing line is LOGIN vs NON-LOGIN, exactly - because the settings are in ~/.profile and only login shells read that."
+        echo
+        echo "so the job works in their terminal, works over ssh with a command, and fails in every automated context. that is not a coincidence, it is the shape of the file the settings live in."
+      } > /tmp/answer-five-ways
+      cat /tmp/answer-five-ways
+    verify:
+      - type: file_matches
+        path: /tmp/answer-five-ways
+        pattern: "bash -lic +rc=0"
+        describe: The job works in a login interactive shell
+      - type: file_matches
+        path: /tmp/answer-five-ways
+        pattern: "bash -c +rc=1"
+        describe: And fails in a script's shell
+      - type: file_matches
+        path: /tmp/answer-five-ways
+        pattern: "(?i)LOGIN vs NON-LOGIN"
+        describe: And you identified where the dividing line falls
+      - type: file_matches
+        path: /tmp/answer-five-ways
+        pattern: "(?i)shape of the file"
+        describe: And why the line falls exactly there
+
+  - id: s3
+    instruction: >-
+      Move the author's settings from ~/.profile to ~/.bashrc, re-run the five
+      invocations, and explain what changed. Save to /tmp/answer-moved.
+    walkthrough: |
+      cat > ~/.bashrc <<'B'
+      export PATH="$PATH:/usr/sbin:/sbin"
+      export REPORT_DIR=/tmp/reports
+      export LEDGER_FILE=/tmp/ledger.txt
+      B
+      rm -f ~/.profile
+      {
+        echo "same settings, now in ~/.bashrc instead of ~/.profile:"
+        echo
+        for m in "-lic" "-lc" "-ic" "-c"; do
+          out=$(bash $m /tmp/env/nightly-report.sh 2>&1); rc=$?
+          printf '  bash %-7s rc=%-3s %s\n' "$m" "$rc" "$(echo "$out" | tail -1 | cut -c1-40)"
+        done
+        echo
+        echo "it got WORSE, not different. only ONE invocation works now - the non-login interactive one - where ~/.profile gave me two."
+        echo
+        echo "and the one that broke is the one that matters to the author: bash -lic is their terminal after logging in, and it now fails. so moving the setting to the file most people call 'the shell config' broke it for the person it was working for."
+        echo
+        echo "why: a LOGIN shell does not read ~/.bashrc. bash reads ~/.bashrc only for NON-LOGIN interactive shells. on a normal account it appears to work for login shells because the default ~/.profile explicitly sources it - and i deleted ~/.profile, so nothing does."
+        echo
+        echo "that is the same rule from the first lab, arriving as a consequence instead of a fact. it is also the single most common way people lose their own settings: an installer writes a ~/.bash_profile, or somebody replaces ~/.profile to add a PATH entry, and every login session silently stops reading ~/.bashrc."
+        echo
+        echo "the finding that generalises: WHICH INVOCATIONS WORK IS A PROPERTY OF THE FILE I PUT THE SETTING IN, not of the script. the script never changed once. so 'it works when i run it' is a statement about the reporter's dotfiles, and it is not evidence about the job at all."
+      } > /tmp/answer-moved
+      cat /tmp/answer-moved
+    verify:
+      - type: file_matches
+        path: /tmp/answer-moved
+        pattern: "bash -lic +rc=1"
+        describe: Moving it to ~/.bashrc broke the author's own login shell
+      - type: file_matches
+        path: /tmp/answer-moved
+        pattern: "bash -ic +rc=0"
+        describe: And left only the non-login interactive shell working
+      - type: file_matches
+        path: /tmp/answer-moved
+        pattern: "(?i)does not read ~/.bashrc"
+        describe: And you stated the rule that explains it
+      - type: file_matches
+        path: /tmp/answer-moved
+        pattern: "(?i)property of the file"
+        describe: And the generalisation about which file a setting lives in
+      - type: file_matches
+        path: /tmp/answer-moved
+        pattern: "(?i)not evidence"
+        describe: And what that means for "it works when I run it"
+
+  - id: s4
+    instruction: >-
+      Diff two environments to locate every difference a dotfile is responsible
+      for, then state the second fault — the one about capsh — precisely. Save to
+      /tmp/answer-diff.
+    hint: >-
+      Capture `env` from a working invocation and a failing one and compare. For
+      capsh, ask which shells can find it and where it actually lives.
+    walkthrough: |
+      {
+        bash -ic 'env' 2>/dev/null | sort > /tmp/working.env
+        bash -c  'env' | sort > /tmp/failing.env
+        echo "everything a dotfile is responsible for:"
+        diff /tmp/working.env /tmp/failing.env | grep '^[<>]' | sed 's/^/  /'
+        echo
+        echo "that diff is the whole bug list, and it took one command."
+        echo
+        echo "the second fault, precisely:"
+        printf '  capsh actually lives at: %s\n' "$(ls -d /usr/sbin/capsh 2>/dev/null)"
+        printf '  login shell finds it:    %s\n' "$(bash -lc 'command -v capsh >/dev/null 2>&1 && echo yes || echo NO')"
+        printf '  script shell finds it:   %s\n' "$(bash -c  'command -v capsh >/dev/null 2>&1 && echo yes || echo NO')"
+        printf '  cron-like PATH finds it: %s\n' "$(env -i PATH=/usr/bin:/bin bash -c 'command -v capsh >/dev/null 2>&1 && echo yes || echo NO')"
+        echo
+        echo "so capsh is UNREACHABLE from a login shell - because /etc/profile rewrites PATH for non-root users without any sbin directories - and unreachable from cron, whose PATH is shorter still. it IS reachable from a plain script, which inherits the image PATH untouched."
+        echo
+        echo "that is backwards from the usual story, and it is why the author's ~/.profile had to append /usr/sbin: without that line even THEIR shell could not run the script. the line they added to make it work for themselves is evidence of the fault, sitting in a file nobody else reads."
+      } > /tmp/answer-diff
+      cat /tmp/answer-diff
+    verify:
+      - type: file_matches
+        path: /tmp/answer-diff
+        pattern: "(?i)PATH="
+        describe: Your diff surfaced the PATH difference
+      - type: file_matches
+        path: /tmp/answer-diff
+        pattern: "login shell finds it: +NO"
+        describe: And you showed a login shell cannot find capsh
+      - type: file_matches
+        path: /tmp/answer-diff
+        pattern: "script shell finds it: +yes"
+        describe: While a script can
+      - type: file_matches
+        path: /tmp/answer-diff
+        pattern: "(?i)evidence of the fault"
+        describe: And read the author's PATH line as a symptom
+
+  - id: s5
+    instruction: >-
+      Rewrite the script so it cannot depend on anybody's shell, and write the
+      scheduler configuration to go with it. Save both to /tmp/answer-fixed.
+    walkthrough: |
+      cat > /tmp/answer-fixed <<'FIXED'
+      #!/bin/bash
+      # Nightly reconciliation report.
+      set -euo pipefail
+
+      # Declare, do not inherit. Fails at line 6 with a sentence, instead of at
+      # line 40 with something obscure - or worse, succeeding against /report.txt
+      # because the variable was empty.
+      : "${REPORT_DIR:?REPORT_DIR must be set (see the unit file)}"
+      : "${LEDGER_FILE:?LEDGER_FILE must be set (see the unit file)}"
+
+      # Explicit PATH. Never blank it: bash's fallback ends in '.', the current
+      # directory, so an unset PATH is worse than a wrong one.
+      PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+      export PATH
+
+      # Assert the tools exist before doing any work, so a missing command is a
+      # named failure rather than a half-written report.
+      for cmd in capsh awk date; do
+        command -v "$cmd" >/dev/null || { echo "missing command: $cmd" >&2; exit 1; }
+      done
+
+      [ -r "$LEDGER_FILE" ] || { echo "cannot read LEDGER_FILE: $LEDGER_FILE" >&2; exit 1; }
+      mkdir -p "$REPORT_DIR"
+
+      OUT="${REPORT_DIR}/report-$(date +%F).txt"
+      capsh --print > "$OUT"
+      awk '{ total += $2 } END { print "total:", total }' "$LEDGER_FILE" >> "$OUT"
+      echo "wrote $OUT"
+      FIXED
+      {
+        echo
+        echo "# --- the systemd unit that runs it -------------------------------"
+        echo "# [Service]"
+        echo "# Type=oneshot"
+        echo "# User=reporting"
+        echo "# Environment=REPORT_DIR=/var/lib/reports"
+        echo "# Environment=LEDGER_FILE=/var/lib/ledger/current.txt"
+        echo "# ExecStart=/usr/local/bin/nightly-report"
+        echo "#"
+        echo "# --- or the crontab ----------------------------------------------"
+        echo "# PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        echo "# REPORT_DIR=/var/lib/reports"
+        echo "# LEDGER_FILE=/var/lib/ledger/current.txt"
+        echo "# 0 2 * * * /usr/local/bin/nightly-report"
+        echo "#"
+        echo "# --- and the test that would have caught this --------------------"
+        echo "# run it the way the scheduler will, in CI, not the way a human does:"
+        echo "#   env -i PATH=/usr/bin:/bin HOME=/tmp bash ./nightly-report"
+        echo "# a job that has not been tested this way has not been tested:"
+        echo "# without a human environment it has never run, and the first honest"
+        echo "# run happens at 02:00 on a sunday."
+      } >> /tmp/answer-fixed
+      chmod +x /tmp/answer-fixed
+      echo "verifying the fixed script runs with NO dotfiles at all:"
+      rm -f ~/.bashrc ~/.profile
+      REPORT_DIR=/tmp/reports LEDGER_FILE=/tmp/ledger.txt bash /tmp/answer-fixed
+      echo "and that it refuses cleanly when a variable is missing:"
+      bash /tmp/answer-fixed 2>&1 | tail -1
+      cat /tmp/answer-fixed
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "REPORT_DIR:\\?"
+        describe: Your script declares its required variables
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "PATH=/usr/local/bin"
+        describe: And sets PATH explicitly rather than inheriting it
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "(?i)command -v"
+        describe: And asserts its tools exist before doing work
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "(?i)Environment=REPORT_DIR"
+        describe: And you declared the variables where the scheduler can see them
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "(?i)has not been tested"
+        describe: And named the test that would have caught it
+      - type: command_exit
+        command: "REPORT_DIR=/tmp/reports LEDGER_FILE=/tmp/ledger.txt sh -c 'bash /tmp/answer-fixed >/dev/null 2>&1'"
+        exit_code: 0
+        describe: And the fixed script runs with no dotfiles present
+
+solution: >-
+  **The reconstruction is the diagnosis.**
+
+
+  On a bare machine the script fails every way, so the first job is to rebuild
+  the environment in which it works. The author's `~/.profile` had to contain
+  three things: `REPORT_DIR`, `LEDGER_FILE`, and a PATH with `/usr/sbin` appended.
+
+
+  With those in `~/.profile`:
+
+
+  | Invocation | Result | Meaning |
+  |---|---|---|
+  | `bash -lic` | **works** | their terminal |
+  | `bash -lc` | **works** | `ssh host 'cmd'` |
+  | `bash -ic` | fails | a new terminal tab |
+  | `bash -c` | fails | a script, CI |
+  | `env -i PATH=/usr/bin:/bin` | fails | cron |
+
+
+  The dividing line is **login versus non-login**, exactly — because the settings
+  are in `~/.profile` and only login shells read it.
+
+
+  **Then move the same settings to `~/.bashrc`** and the line moves to
+  **interactive versus non-interactive**. The script never changed.
+
+
+  That is the finding worth carrying: **which invocations work is a property of
+  the file the setting lives in, not of the script.** So "it works when I run it"
+  is a statement about the reporter's dotfiles and is not evidence about the job.
+
+
+  **The diff turns that sentence into a list.**
+
+
+  ```bash
+  bash -ic 'env' | sort > /tmp/working.env
+  bash -c  'env' | sort > /tmp/failing.env
+  diff /tmp/working.env /tmp/failing.env
+  ```
+
+
+  One command, and the output is the whole bug list.
+
+
+  **The second fault is backwards.**
+
+
+  ```text
+  capsh actually lives at: /usr/sbin/capsh
+  login shell finds it:    NO
+  script shell finds it:   yes
+  cron-like PATH finds it: NO
+  ```
+
+
+  `capsh` is unreachable from a **login** shell — `/etc/profile` rewrites PATH for
+  non-root users with no `sbin` in it — and unreachable from cron, whose PATH is
+  shorter still. It is reachable from a plain script, which inherits the image's
+  PATH untouched.
+
+
+  Which explains why the author's `~/.profile` had to append `/usr/sbin`: without
+  that line even *their* shell could not run it. **The line they added to make it
+  work for themselves is the evidence of the fault**, sitting in a file nobody
+  else reads.
+
+
+  **The fix declares instead of inheriting.**
+
+
+  ```bash
+  set -euo pipefail
+
+  : "${REPORT_DIR:?REPORT_DIR must be set (see the unit file)}"
+  : "${LEDGER_FILE:?LEDGER_FILE must be set (see the unit file)}"
+
+  PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  export PATH
+
+  for cmd in capsh awk date; do
+    command -v "$cmd" >/dev/null || { echo "missing command: $cmd" >&2; exit 1; }
+  done
+  ```
+
+
+  `${VAR:?message}` turns an invisible dependency into a one-line failure naming
+  the problem — instead of failing at line 40, or succeeding against `/report.txt`
+  because the variable was empty and the path collapsed.
+
+
+  Set PATH explicitly and **never blank it**: bash's fallback ends in `.`, the
+  current directory, so an unset PATH is worse than a wrong one.
+
+
+  Then declare the variables where the scheduler can see them — `Environment=` in
+  a unit, or a `PATH=` header in the crontab — because no dotfile is consulted
+  there.
+
+
+  **And add the test.** Run it the way the scheduler will:
+
+
+  ```bash
+  env -i PATH=/usr/bin:/bin HOME=/tmp bash ./nightly-report
+  ```
+
+
+  A job that has never been run without a human's environment has not been
+  tested, and the first honest run happens at 02:00 on a Sunday.

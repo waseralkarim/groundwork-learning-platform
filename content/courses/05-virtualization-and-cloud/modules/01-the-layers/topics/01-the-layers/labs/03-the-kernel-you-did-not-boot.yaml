@@ -1,0 +1,296 @@
+id: lab.the-kernel-you-did-not-boot
+topic: topic.the-layers
+title: See the host's kernel from inside, and find what that costs you
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A05.1.3, OBJ-A05.1.7]
+
+intro: >-
+  A container shares the host kernel. That single fact is the whole difference
+  between a container and a virtual machine, and everything about the trade-off
+  follows from it.
+
+
+  You are going to prove the sharing directly — by listing kernel modules you did
+  not load — and then find four things you cannot do because of it. Each one is a
+  case where a VM would have been the answer.
+
+setup:
+  - /opt/lab/seed-layers.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Prove you are sharing a kernel rather than running your own. List the
+      loaded kernel modules and say what they tell you. Save to
+      /tmp/answer-shared.
+    hint: >-
+      `/proc/modules` lists what is loaded in the kernel. You did not load any of
+      it — so whose modules are these?
+    walkthrough: |
+      {
+        echo "modules loaded in the kernel I am running on: $(wc -l < /proc/modules)"
+        echo
+        head -6 /proc/modules | awk '{print "  " $1}'
+        echo
+        echo "i loaded none of these. this container was created seconds ago and has no kernel of its own."
+        echo "several of them are netfilter and iptables modules, which is the container runtime's own networking on the HOST. i am reading the host kernel's module table, because it is the kernel i am running on."
+        echo
+        echo "a virtual machine would show its own modules here, because it booted its own kernel. that is the defining difference between the two layers, and everything else about the trade-off follows from it."
+      } > /tmp/answer-shared
+      cat /tmp/answer-shared
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/^modules loaded in the kernel I am running on: *//p' /tmp/answer-shared) -gt 0"
+        exit_code: 0
+        describe: You listed modules loaded in the kernel you are sharing
+      - type: file_matches
+        path: /tmp/answer-shared
+        pattern: "(?i)i loaded none|did not load"
+        describe: And established that none of them are yours
+      - type: file_matches
+        path: /tmp/answer-shared
+        pattern: "(?i)own kernel|booted its own"
+        describe: And contrasted it with what a VM would show
+
+  - id: s2
+    instruction: >-
+      Find two kernel settings — one that is namespaced per container and one
+      that is a single value for the whole machine — and try to change the second.
+      Save to /tmp/answer-sysctl.
+    hint: >-
+      `net.*` settings live under `/proc/sys/net/` and are per network namespace.
+      `vm.*` settings under `/proc/sys/vm/` are not namespaced at all. Try
+      writing to one.
+    walkthrough: |
+      {
+        echo "namespaced - net.ipv4.ip_local_port_range, one value per network namespace:"
+        echo "  $(cat /proc/sys/net/ipv4/ip_local_port_range)"
+        echo
+        echo "NOT namespaced - vm.swappiness, one value for the entire machine:"
+        echo "  $(cat /proc/sys/vm/swappiness)"
+        echo
+        echo "attempting to change it:"
+        echo 10 > /proc/sys/vm/swappiness 2>&1 | head -1
+        echo
+        echo "refused. two separate reasons stack up here: /proc/sys is mounted read-only in this container, and even if it were not, vm.swappiness is not namespaced - changing it would change it for the host and every other container on it."
+        echo "that is the constraint in one sentence: a container cannot tune anything that is not namespaced, because those settings are not its to tune. if a workload needs a specific vm.* or kernel.* value, it needs a vm."
+      } > /tmp/answer-sysctl
+      cat /tmp/answer-sysctl
+    verify:
+      - type: file_matches
+        path: /tmp/answer-sysctl
+        pattern: "(?i)read-only|permission denied"
+        describe: The write was refused
+      - type: file_matches
+        path: /tmp/answer-sysctl
+        pattern: "(?i)not namespaced"
+        describe: And you identified that the setting is machine-wide
+      - type: file_matches
+        path: /tmp/answer-sysctl
+        pattern: "(?i)needs a vm|needs a virtual machine"
+        describe: And named the layer that would be required instead
+
+  - id: s3
+    instruction: >-
+      Try three more things the shared kernel prevents: loading a module, reading
+      the kernel ring buffer, and running a different kernel version. Save the
+      results to /tmp/answer-cannot.
+    hint: >-
+      Look for `/lib/modules`, try `dmesg`, and ask what would have to happen for
+      `uname -r` to report something else.
+    walkthrough: |
+      {
+        echo "1. load a kernel module:"
+        echo "   /lib/modules: $(ls /lib/modules 2>&1 | head -1)"
+        echo "   there is nothing to load from, and loading needs CAP_SYS_MODULE, which I do not have: $(grep ^CapEff /proc/self/status)"
+        echo
+        echo "2. read the kernel ring buffer:"
+        echo "   dmesg: $(dmesg 2>&1 | head -1)"
+        echo "   /proc/kmsg: $(cat /proc/kmsg 2>&1 | head -1)"
+        echo "   the buffer is the host's and holds every container's messages, so it is not exposed."
+        echo
+        echo "3. run a different kernel version:"
+        echo "   uname -r: $(uname -r)"
+        echo "   this is not configurable. changing it means changing the host's kernel, which changes it for everything on the host."
+        echo
+        echo "4. and the one that is not about permission at all: a container cannot run a different OPERATING SYSTEM. a linux container needs a linux kernel. windows containers need a windows kernel, which is why running them on linux, or linux containers on windows, quietly starts a virtual machine underneath."
+      } > /tmp/answer-cannot
+      cat /tmp/answer-cannot
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cannot
+        pattern: "(?i)No such file|CAP_SYS_MODULE"
+        describe: You established that modules cannot be loaded
+      - type: file_matches
+        path: /tmp/answer-cannot
+        pattern: "(?i)not permitted|Permission denied"
+        describe: And that the kernel ring buffer is not readable
+      - type: file_matches
+        path: /tmp/answer-cannot
+        pattern: "(?i)operating system"
+        describe: And that the kernel decides which OS a container can be
+
+  - id: s4
+    instruction: >-
+      Read /tmp/captures/startup-costs.txt and write to /tmp/answer-trade what a
+      VM buys for its extra cost, and what a container buys by giving that up.
+    hint: >-
+      Read the source column carefully. Two of those numbers were measured and
+      they disagree with each other by more than an order of magnitude.
+    walkthrough: |
+      cat /tmp/captures/startup-costs.txt
+      {
+        echo "what a vm buys with its 256mb-1gb and its tens of seconds:"
+        echo "- its own kernel, so it can run a different version, a different distribution, or a different operating system entirely"
+        echo "- kernel tunables that are actually its own"
+        echo "- modules it can load"
+        echo "- a hardware-assisted boundary, so a compromised guest kernel is still contained by the hypervisor. that is why cloud providers put different customers on one machine."
+        echo
+        echo "what a container buys by giving that up:"
+        echo "- no kernel to boot and no memory duplicated per workload, so density goes from tens per machine to hundreds. this is the commercial argument, and it is the reason containers displaced vms for most workloads."
+        echo "- startup measured in milliseconds to about a second rather than tens of seconds, which is what makes fast autoscaling and 20 deploys a day practical."
+        echo
+        echo "and the number worth noticing in that table: the quoted container startup of 5-50ms describes the runtime creating a process. measured end to end on this host it was about 760ms - more than an order of magnitude more, because of the cli, the daemon round trip, image setup and network attachment."
+        echo "both are true. the second is the one you wait for, and it is why 'why is my pod taking eight seconds to become ready' has a real answer."
+      } > /tmp/answer-trade
+      cat /tmp/answer-trade
+    verify:
+      - type: file_matches
+        path: /tmp/answer-trade
+        pattern: "(?i)own kernel"
+        describe: You named what the VM's overhead buys
+      - type: file_matches
+        path: /tmp/answer-trade
+        pattern: "(?i)density"
+        describe: And density as the container's commercial argument
+      - type: file_matches
+        path: /tmp/answer-trade
+        pattern: "760|end to end"
+        describe: And spotted that the quoted startup figure is not the observed one
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-when-vm the situations where the shared kernel makes a
+      container the wrong choice, and say which single one is not negotiable by
+      configuration.
+    hint: >-
+      Three of your findings were about permissions, which can sometimes be
+      granted. One was about what a kernel fundamentally is.
+    walkthrough: |
+      {
+        echo "when the shared kernel rules a container out:"
+        echo "1. the workload needs a specific kernel version, or a module, or a non-namespaced sysctl. it cannot have any of those, because the kernel is not its to change."
+        echo "2. the workload needs a different operating system. a linux container needs a linux kernel."
+        echo "3. hostile multi-tenancy - running code your customers wrote. the boundary is kernel-enforced, so a kernel vulnerability is a container escape. this is why gvisor, kata containers and firecracker exist and why every function platform runs one."
+        echo "4. hardware access the hypervisor or runtime will not pass through."
+        echo
+        echo "the one that is NOT negotiable by configuration is the operating system. capabilities can be granted, seccomp profiles relaxed, privileged mode enabled - all bad ideas and all possible. but a linux kernel cannot run a windows binary, and no flag changes that. it is the only one of the four that is a property of what a kernel is rather than of what this container is permitted to do."
+        echo
+        echo "the corollary people miss: running linux containers on windows, or windows containers on linux, does not solve it either. it silently starts a virtual machine, which is exactly what this container is running inside."
+      } > /tmp/answer-when-vm
+      cat /tmp/answer-when-vm
+    verify:
+      - type: file_matches
+        path: /tmp/answer-when-vm
+        pattern: "(?i)hostile|multi-tenan"
+        describe: You included hostile multi-tenancy
+      - type: file_matches
+        path: /tmp/answer-when-vm
+        pattern: "(?i)operating system"
+        describe: And identified the OS as the non-negotiable constraint
+      - type: file_matches
+        path: /tmp/answer-when-vm
+        pattern: "(?i)no flag|not negotiable|cannot run"
+        describe: And explained why configuration cannot change it
+
+solution: >-
+  **The proof, in one file.**
+
+
+  `/proc/modules` lists dozens of kernel modules — netfilter, iptables, and
+  whatever else the host has loaded. You loaded none of them; this container was
+  created seconds ago and has no kernel of its own. You are reading **the host
+  kernel's module table**, because it is the kernel you are running on.
+
+
+  A VM would show its own modules here, because it booted its own kernel. That is
+  the entire difference between the two layers, and everything else follows from
+  it.
+
+
+  **Four things the sharing costs you.**
+
+
+  *Kernel tunables.* `net.*` settings are namespaced — each container has its own
+  `ip_local_port_range`. `vm.*` and most `kernel.*` settings are **not**, so
+  there is one value for the entire machine. Writing to `/proc/sys/vm/swappiness`
+  is refused twice over: `/proc/sys` is mounted read-only, and even without that,
+  the value is not this container's to change.
+
+
+  *Modules.* `/lib/modules` does not exist, and loading needs `CAP_SYS_MODULE`,
+  which the effective set does not contain. Nothing to load, and no permission to
+  load it.
+
+
+  *The kernel ring buffer.* `dmesg` returns `Operation not permitted`. The buffer
+  is the host's and holds every container's messages, so it is not exposed —
+  which is also why kernel-level debugging of a container problem usually has to
+  happen on the host.
+
+
+  *The kernel version.* `uname -r` is not configurable. Changing it means
+  changing the host's kernel, for everything on the host.
+
+
+  **What each layer buys.**
+
+
+  A VM's 256 MB–1 GB and tens of seconds buy: its own kernel, its own tunables,
+  its own modules, and a **hardware-assisted boundary** — a compromised guest
+  kernel is still contained by the hypervisor, which is why cloud providers put
+  different customers on one physical machine.
+
+
+  A container buys density and speed by giving all of that up. No kernel to boot
+  and no memory duplicated means tens of VMs per machine becomes hundreds of
+  containers, and that is the commercial argument that decided the industry.
+
+
+  **The number in the reference table worth noticing.** The quoted container
+  startup of 5–50 ms describes the runtime creating a process. Measured end to
+  end on this host it was **~760 ms** — more than an order of magnitude more,
+  once the CLI, the daemon round trip, image setup and network attachment are
+  included. Both figures are true; the second is the one you actually wait for.
+
+
+  **When the shared kernel rules a container out.**
+
+
+  1. A specific kernel version, module, or non-namespaced sysctl.
+
+  2. A different **operating system**.
+
+  3. **Hostile multi-tenancy** — the boundary is kernel-enforced, so a kernel
+     vulnerability is an escape.
+
+  4. Hardware the runtime will not pass through.
+
+
+  Three of those four are about permissions, and permissions can be granted —
+  capabilities added, seccomp relaxed, privileged mode enabled. All bad ideas,
+  all possible.
+
+
+  **The operating system is the one no flag changes.** A Linux kernel cannot run
+  a Windows binary. It is a property of what a kernel *is* rather than of what
+  this container is *allowed to do*, and it is the only genuinely non-negotiable
+  item on the list.
+
+
+  And the corollary people miss: running Linux containers on Windows does not
+  work around it. It quietly starts a virtual machine — which is exactly the one
+  this container is running inside, as the first lab's census showed.

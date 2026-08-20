@@ -1,0 +1,302 @@
+id: lab.waiting-to-run
+topic: topic.the-scheduler
+title: Separate running slowly from waiting for a turn
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A02.3.3, OBJ-A02.3.7]
+
+intro: >-
+  A process that is not making progress is either running and slow, or runnable
+  and waiting. Those need opposite responses, and the kernel counts the second
+  one per task, in nanoseconds, in a file most people have never opened.
+
+
+  You will read that file for a busy process alone, then for the same process
+  with a competitor, and watch the split move. Then you will do the same for
+  context switches — voluntary and involuntary — and find that a container with
+  a CPU quota accumulates involuntary switches with no competitor anywhere,
+  which is the observation that stops you blaming a neighbour who is not there.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before measuring anything, take a baseline. Save both the
+      `sched_schedstats` sysctl and a reading of your own schedstat to
+      /tmp/answer-enabled.
+
+
+      Note the sysctl's value, and note that your own waiting figure is near
+      zero — this shell has barely queued for anything yet. The next step gives
+      it something to queue for.
+    hint: >-
+      `{ echo "sysctl=$(cat /proc/sys/kernel/sched_schedstats)"; echo
+      "schedstat=$(cat /proc/self/schedstat)"; } > /tmp/answer-enabled`
+    walkthrough: |
+      {
+        echo "sysctl=$(cat /proc/sys/kernel/sched_schedstats)"
+        echo "schedstat=$(cat /proc/self/schedstat)"
+      } > /tmp/answer-enabled
+      cat /tmp/answer-enabled
+    verify:
+      - type: file_matches
+        path: /tmp/answer-enabled
+        pattern: 'sysctl=[01]'
+        describe: The sysctl was read
+      - type: file_matches
+        path: /tmp/answer-enabled
+        pattern: 'schedstat=[0-9]+ [0-9]+ [0-9]+'
+        describe: Three fields came back — on-cpu, waiting, timeslices
+
+  - id: s2
+    instruction: >-
+      Run one busy loop for six seconds, pinned to CPU 0, and save its schedstat
+      to /tmp/answer-alone.
+
+
+      Nothing else will be competing with it. Note both of the first two numbers.
+    hint: >-
+      Start it in the background, sleep five, then `cat /proc/$PID/schedstat`
+      before it exits.
+    walkthrough: |
+      taskset -c 0 bash -c 'end=$((SECONDS+6)); while [ $SECONDS -lt $end ]; do :; done' &
+      P=$!
+      sleep 5
+      cat /proc/$P/schedstat > /tmp/answer-alone
+      cat /tmp/answer-alone
+      wait
+    verify:
+      - type: file_matches
+        path: /tmp/answer-alone
+        pattern: '^[0-9]+ [0-9]+ [0-9]+$'
+        describe: Three numbers — time on CPU, time waiting, timeslices
+      - type: command_exit
+        command: "test $(awk '{print ($2 > 100000000) ? 1 : 0}' /tmp/answer-alone) -eq 1"
+        exit_code: 0
+        describe: It waited over 100ms with no competitor — and the counters plainly work
+
+  - id: s3
+    instruction: >-
+      That process had the CPU to itself and still spent time queued. Explain
+      why, in /tmp/answer-why-waited.
+
+
+      You read the reason in the previous topic.
+    hint: >-
+      What else, besides another task, can stop a runnable process from
+      running? Look at cpu.max.
+    walkthrough: |
+      cat /sys/fs/cgroup/cpu.max
+      echo "the cgroup cpu quota: this container may use 50ms of every 100ms period, so at the end of each period the task is stopped while still runnable and queues until the next one begins" > /tmp/answer-why-waited
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-waited
+        pattern: "quota|cpu.max|period|throttl"
+        describe: You attributed the wait to the quota rather than to a competitor
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-why-waited) -ge 12"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+  - id: s4
+    instruction: >-
+      Now add a competitor. Run two busy loops on CPU 0 for ten seconds and
+      save the first one's schedstat to /tmp/answer-contended.
+    hint: >-
+      Same as before, but start a second identical loop pinned to the same CPU
+      first.
+    walkthrough: |
+      taskset -c 0 bash -c 'end=$((SECONDS+10)); while [ $SECONDS -lt $end ]; do :; done' &
+      A=$!
+      taskset -c 0 bash -c 'end=$((SECONDS+10)); while [ $SECONDS -lt $end ]; do :; done' &
+      sleep 9
+      cat /proc/$A/schedstat > /tmp/answer-contended
+      cat /tmp/answer-contended
+      wait
+    verify:
+      - type: file_matches
+        path: /tmp/answer-contended
+        pattern: '^[0-9]+ [0-9]+ [0-9]+$'
+        describe: A second schedstat reading was captured
+      - type: command_exit
+        command: "test $(awk '{print ($2 > $1) ? 1 : 0}' /tmp/answer-contended) -eq 1"
+        exit_code: 0
+        describe: It now spends more time waiting than running
+
+  - id: s5
+    instruction: >-
+      Compute the wait-to-run ratio for both readings — alone and contended —
+      and save them to /tmp/answer-ratios, each to one decimal place.
+    hint: "Field 2 divided by field 1, for each of the two files."
+    walkthrough: |
+      {
+        awk '{ printf "alone %.1f\n", $2/$1 }' /tmp/answer-alone
+        awk '{ printf "contended %.1f\n", $2/$1 }' /tmp/answer-contended
+      } > /tmp/answer-ratios
+      cat /tmp/answer-ratios
+    verify:
+      - type: file_matches
+        path: /tmp/answer-ratios
+        pattern: '^alone [0-9]+\.[0-9]$'
+        describe: The uncontended ratio was computed
+      - type: command_exit
+        command: "awk '/contended/{c=$2} /alone/{a=$2} END{exit (c > a) ? 0 : 1}' /tmp/answer-ratios"
+        exit_code: 0
+        describe: Adding a competitor made the ratio worse
+
+  - id: s6
+    instruction: >-
+      Move to context switches. Run a process that sleeps repeatedly rather than
+      spinning, and save its switch counters to /tmp/answer-sleeper.
+    hint: >-
+      A loop of thirty short `sleep` calls, which then reads its own
+      `nr_voluntary_switches` and `nr_involuntary_switches` at the end — so the
+      reading is not a race against its exit. Use /proc/$$/sched, not
+      /proc/self/sched: inside a `grep`, `self` is grep.
+    walkthrough: |
+      bash -c 'for i in $(seq 30); do sleep 0.05; done
+               grep -E "nr_voluntary_switches|nr_involuntary_switches" /proc/$$/sched > /tmp/answer-sleeper'
+      cat /tmp/answer-sleeper
+    verify:
+      - type: file_matches
+        path: /tmp/answer-sleeper
+        pattern: 'nr_voluntary_switches\s+:\s+[1-9][0-9]'
+        describe: Around thirty voluntary switches — one for each time it slept
+      - type: command_exit
+        command: "awk '/involuntary/ {v=$3} /nr_voluntary/ {n=$3} END { exit (n > v * 3) ? 0 : 1 }' /tmp/answer-sleeper"
+        exit_code: 0
+        describe: Voluntary switches far outnumber involuntary ones
+
+  - id: s7
+    instruction: >-
+      Now the contrast. Run a single busy loop for six seconds and save its
+      switch counters to /tmp/answer-spinner.
+    hint: "Same busy loop as before, then read the same two lines."
+    walkthrough: |
+      taskset -c 0 bash -c 'end=$((SECONDS+6)); while [ $SECONDS -lt $end ]; do :; done' &
+      P=$!
+      sleep 5
+      grep -E 'nr_voluntary_switches|nr_involuntary_switches' /proc/$P/sched > /tmp/answer-spinner
+      cat /tmp/answer-spinner
+      wait
+    verify:
+      - type: file_matches
+        path: /tmp/answer-spinner
+        pattern: 'nr_involuntary_switches\s+:\s+[1-9][0-9]'
+        describe: Many involuntary switches — it was stopped repeatedly while runnable
+      - type: file_matches
+        path: /tmp/answer-spinner
+        pattern: 'nr_voluntary_switches\s+:\s+[0-9]'
+        describe: And almost no voluntary ones — it never blocked on anything
+
+  - id: s8
+    instruction: >-
+      Write the rule you have just derived to /tmp/answer-rule: what a
+      predominance of each kind of switch tells you about a workload, and the
+      one case that looks like competition and is not.
+    hint: >-
+      Three sentences. Voluntary means one thing, involuntary means another, and
+      the spinner in step 7 had no competitor.
+    walkthrough: |
+      {
+        echo "mostly voluntary means the task blocks on something external, so it is io bound"
+        echo "mostly involuntary means it is stopped while still runnable, so it wants more cpu than it is getting"
+        echo "but a quota produces involuntary switches with no competitor at all, so check cpu.stat before blaming a neighbour"
+      } > /tmp/answer-rule
+      cat /tmp/answer-rule
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "voluntary"
+        describe: You characterised voluntary switches
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "quota|cpu.stat|throttl"
+        describe: And noted that a quota mimics competition
+
+solution: |
+  ```bash
+  cat /proc/sys/kernel/sched_schedstats                # see the note below
+  cat /proc/self/schedstat                             # the reading that matters
+
+  taskset -c 0 bash -c 'end=$((SECONDS+6)); while [ $SECONDS -lt $end ]; do :; done' &
+  P=$!; sleep 5; cat /proc/$P/schedstat                # 2500747400 2500202000 3016
+
+  # then two of them at once
+  cat /proc/$A/schedstat                               # 1770015700 5210755000 2401
+
+  grep -E 'voluntary' /proc/$SLEEPER/sched             # 41 voluntary, 0 involuntary
+  grep -E 'voluntary' /proc/$SPINNER/sched             # 1 voluntary, 3014 involuntary
+  ```
+
+  **What you just measured.**
+
+  **The sysctl said 0 and the counters worked anyway.** Worth knowing before you
+  trust a negative result. `kernel.sched_schedstats` gates the system-wide
+  `/proc/schedstat` and some per-CPU statistics; `/proc/PID/schedstat` is
+  populated from `sched_info`, which many kernels compile in unconditionally —
+  including this one. Advice that says "enable the sysctl or you will see zeros"
+  is true of some kernels and not of this one.
+
+  The reliable test is the reading. If field 2 is zero for a task you know has
+  been queueing, go and check the sysctl; otherwise the numbers are real.
+
+  **Alone, it waited as long as it ran.** 2.50 seconds on a CPU, 2.50 seconds
+  queued, over five seconds of wall clock. That is not a competitor — it is the
+  cgroup quota. `cpu.max` of `50000 100000` allows 50ms of every 100ms period,
+  so at the end of each period the task is stopped while still perfectly
+  runnable, and queues until the next one starts.
+
+  This is the reading that stops a wrong investigation. Half the time queued
+  looks like a busy node until you notice it is exactly the quota.
+
+  **With a competitor, the split collapses.** 1.77 seconds running against 5.21
+  seconds queued — three times more waiting than working. Two things changed at
+  once: the quota is now shared between two tasks, and each is preempted by the
+  other within every period.
+
+  Every nanosecond of field 2 is latency somebody experiences. It is per task,
+  it is exact, and no utilisation graph contains it.
+
+  **Voluntary and involuntary mean opposite things:**
+
+  | Reading | What the task was doing |
+  |---|---|
+  | 41 voluntary, 0 involuntary | Blocking. It slept, and gave up the CPU because it had nothing to do |
+  | 1 voluntary, 3014 involuntary | Spinning. It was stopped repeatedly while it still had work |
+
+  So the ratio characterises a workload from one file: mostly voluntary is
+  I/O-bound, mostly involuntary is CPU-bound and not getting enough.
+
+  **The trap is in step 7.** That spinner had no competitor and still collected
+  three thousand involuntary switches, because the quota preempts it at the end
+  of every period. Involuntary means "stopped while runnable" — not "outbid by a
+  neighbour". Conflating the two sends you looking for a noisy neighbour who
+  does not exist.
+
+  `cpu.stat` separates them in one reading: if `nr_throttled` is close to
+  `nr_periods`, the preemption is your own limit.
+
+  **The order to read these in.**
+
+  ```bash
+  cat /sys/fs/cgroup/cpu.stat                     # 1. is it our own quota?
+  cat /sys/fs/cgroup/cpu.pressure                 # 2. how much stall, cgroup-wide?
+  for t in /proc/$PID/task/*; do cat "$t/schedstat"; done   # 3. which threads waited?
+  grep voluntary /proc/$PID/sched                 # 4. waiting, or blocking?
+  ```
+
+  The per-thread step matters more than it looks. A process's own `schedstat`
+  covers its main thread only, and for a JVM, a Go binary or nginx the
+  interesting waiting is entirely in the workers. Reading the process and
+  concluding "no scheduling delay here" is the commonest way to miss this.
+
+  **Where this goes.** **F34** builds alerts on saturation. `schedstat` field 2
+  is the per-task version of the pressure signal from cgroups — it says *which*
+  of your threads waited, which the cgroup files cannot, and it is the
+  measurement that turns "the node looks fine" into a specific claim about your
+  own service.

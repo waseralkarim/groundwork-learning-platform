@@ -1,0 +1,282 @@
+id: troubleshooting.the-dry-run-that-deleted
+topic: topic.arguments-and-options
+title: The dry run that deleted 40,000 files
+level: L2
+objectives: [OBJ-B08.7.5, OBJ-B08.7.7]
+reveal_policy: progressive
+
+situation: >-
+  An engineer is asked to estimate how much the export archive would shrink under
+  a shorter retention policy. They open the runbook, copy the command it gives
+  for a safe preview, and run it.
+
+
+  Forty thousand files are deleted.
+
+
+  The runbook says `prune.sh --dry-run /srv/archive/exports`. The engineer typed
+  exactly that. The script has run nightly for two years with `-n` and has never
+  deleted anything it should not.
+
+
+  The job's stdout, captured by the wrapper, reads `delete=1 dry=1` followed by
+  40,000 `removed` lines. The engineer's terminal showed several more lines that
+  the wrapper did not capture, and they scrolled past before anyone thought to
+  read them.
+
+
+  The first hypothesis is that someone edited the script. `git log` shows no
+  change in fourteen months.
+
+
+  Work out how a documented dry-run flag deleted the archive.
+
+symptoms:
+  - "A documented --dry-run flag deleted 40,000 files"
+  - "The same script with -n has been a safe preview for two years"
+  - "The script has not been modified in fourteen months"
+  - "The captured log shows delete=1 dry=1 and 40,000 removals"
+  - "The engineer's terminal showed extra lines that were not captured"
+  - "The wrapper captures stdout only"
+
+artifacts:
+  - type: config
+    label: The script's parser
+    content: |
+      #!/bin/bash
+      # usage: prune.sh [-d] [-n] DIR
+      #   -d           delete the files it finds
+      #   -n           dry run — report only
+      #   --dry-run    dry run (long form)
+      set -uo pipefail
+
+      delete=0
+      dry=0
+
+      while getopts ":dn" OPT; do
+        case $OPT in
+          d) delete=1 ;;
+          n) dry=1 ;;
+          \?) echo "prune: ignoring unknown option -$OPTARG" >&2 ;;
+        esac
+      done
+      shift $((OPTIND - 1))
+
+      DIR=${1:-/srv/archive/exports}
+      echo "delete=$delete dry=$dry dir=$DIR"
+
+      for f in "$DIR"/*; do
+        [ -e "$f" ] || continue
+        if [ "$delete" -eq 1 ]; then
+          rm -f "$f"; echo "  removed $(basename "$f")"
+        else
+          echo "  would remove $(basename "$f")"
+        fi
+      done
+
+  - type: log
+    label: The runbook entry
+    content: |
+      ### Estimating archive growth
+
+      To preview what a retention change would remove, run:
+
+          prune.sh --dry-run /srv/archive/exports
+
+      This is safe and makes no changes.
+
+  - type: log
+    label: What the wrapper captured (stdout only)
+    content: |
+      delete=1 dry=1 dir=/srv/archive/exports
+        removed export-000001.csv
+        removed export-000002.csv
+        ... 39,998 more
+
+  - type: command_output
+    label: The same two invocations, side by side
+    content: |
+      $ prune.sh -n /tmp/exports
+      delete=0 dry=1 dir=/tmp/exports
+        would remove export-01.csv
+
+      $ prune.sh --dry-run /tmp/exports 2>/dev/null
+      delete=1 dry=1 dir=/tmp/exports
+        removed export-01.csv
+
+  - type: command_output
+    label: What was on stderr, recovered from the engineer's scrollback
+    content: |
+      prune: ignoring unknown option ---
+      prune: ignoring unknown option -r
+      prune: ignoring unknown option -y
+      prune: ignoring unknown option ---
+      prune: ignoring unknown option -r
+      prune: ignoring unknown option -u
+
+  - type: log
+    label: git log for the script
+    content: |
+      8f2c1ab  14 months ago  prune: add --dry-run to the usage comment
+      3a91e04  2 years ago    prune: initial
+
+diagnostic_questions:
+  - "The script sets `delete=1`. Which branch of the parser could have done that?"
+  - "What does `getopts` do with a word beginning with `--`?"
+  - "Count the letters in `--dry-run`. Which of them are in the optstring?"
+  - "Why did the wrapper's log contain no warning?"
+  - "Read the git log. What changed 14 months ago, and what did not?"
+
+hints:
+  - "Compare the two invocations in the artifacts. Only the flag differs."
+  - "`getopts` has no concept of a long option. What is `--dry-run` to it?"
+  - "The optstring is `:dn`. Spell out `--dry-run` one character at a time."
+  - "The warnings exist. Where did they go?"
+
+root_cause: >-
+  **`getopts` has no concept of a long option.** It saw a word beginning with a
+  dash and read the rest as **bundled single letters**: `-`, `d`, `r`, `y`, `-`,
+  `r`, `u`, `n`.
+
+
+  The optstring is `:dn`. The **`d`** in "**d**ry" matched and set `delete=1`.
+  The **`n`** in "ru**n**" matched and set `dry=1`. Both flags were enabled by
+  one typed word, and the script's own logic checks `delete` first — so it
+  deleted.
+
+
+  The unmatched letters produced `ignoring unknown option` warnings on
+  **stderr**. The wrapper captures stdout only, so the captured log contains no
+  evidence at all: it reads `delete=1 dry=1` and 40,000 removals, exit 0.
+
+
+  **Nothing was edited, and that is the point.** The git log shows the commit
+  that caused this: fourteen months ago somebody added `--dry-run` to the *usage
+  comment*. The parser was never touched, because from the author's point of view
+  they were only improving the documentation. A comment cannot be tested, is not
+  covered by any check, and reads as harmless in review.
+
+
+  **The `-n` path really is safe**, which is why two years of nightly runs prove
+  nothing. The nightly job and the runbook were exercising different code paths,
+  and only one of them had ever been run.
+
+
+  So: a documentation change enabled a destructive flag, on a script whose
+  destructive behaviour was opt-in-by-flag rather than opt-in-by-intent, and the
+  only warning went to a stream nobody was recording.
+
+method: >-
+  **1. Read the output as evidence about the parser, not the operation.** The log
+  says `delete=1`. The engineer did not type `-d`. So the question is not "why did
+  it delete" — it is "**what set `delete`**", which is a two-line search.
+
+
+  **2. Reject "someone changed it" early, but read the git log anyway.** No change
+  in fourteen months rules out an edit to the *logic* — and the commit that does
+  exist is the cause. A log that appears to exonerate the code is worth reading
+  for what it says rather than skimming for what it does not.
+
+
+  **3. Spell the flag out one character at a time against the optstring.** This is
+  the whole diagnosis and it takes ten seconds: `-`, **`d`**, `r`, `y`, `-`, `r`,
+  `u`, **`n`** against `:dn`. Two matches, both set.
+
+
+  **4. Reproduce it small.** Four files in `/tmp` and the two invocations side by
+  side settle it without touching production or reasoning about 40,000 files.
+
+
+  **5. Ask where the warnings went.** They were emitted — the script does report
+  unknown options. Finding them in scrollback and not in the log is a *second*
+  finding: the wrapper's capture is incomplete, which will hide the next incident
+  too.
+
+
+  **6. Ask which code path the two years of success actually exercised.** The
+  nightly job uses `-n`. The runbook uses `--dry-run`. They were never the same
+  path, so the operational history is not evidence about the one that failed.
+
+
+  The habit worth taking: **when a script does something nobody asked for, look at
+  what parsed the request before looking at what performed the action.**
+
+resolution: >-
+  **Immediately:** stop the wrapper, restore from backup, and check whether any
+  other runbook entry uses a long option against a `getopts` script —
+  `grep -rn -- '--[a-z-]*' runbooks/` cross-referenced against each script's
+  optstring. Assume there are others.
+
+
+  **Fix the parser so the documented options exist.** `getopt(1)` handles long
+  options, `--opt=value`, abbreviations and permutation:
+
+
+  ```bash
+  parsed=$(getopt -o h --long apply,dry-run,older-than:,help \
+                  -n "${0##*/}" -- "$@") || { usage; exit 64; }
+  eval set -- "$parsed"
+  ```
+
+
+  The `|| { usage; exit 64; }` is required: on a bad option `getopt` exits
+  non-zero **and still prints a usable list with the bad option removed**, so an
+  unguarded script would run on having silently discarded the flag.
+
+
+  **Then make the failure fall the safe way, which matters more than the parser
+  fix.** Deletion must be opt-in by *intent*, not by flag:
+
+
+  ```bash
+  apply=0                      # dry run is the DEFAULT
+  ...
+  --apply)   apply=1 ;;        # the only thing that enables deletion
+  --dry-run) apply=0 ;;
+  ```
+
+
+  With this, a mis-parsed flag can only ever turn a destructive run **safe**.
+  Every other change on this list catches errors; this one decides which way an
+  error falls when you fail to catch it, and it is the only change that would
+  still have saved the archive if the parser had been wrong anyway.
+
+
+  **Add the refusals**, so a wrong invocation stops rather than proceeding:
+
+
+  ```bash
+  :)  die "-$OPTARG requires a value" ;;      # if staying with getopts
+  \?) die "unknown option -$OPTARG" ;;        # REFUSE, don't "ignore"
+  ```
+
+
+  `ignoring unknown option` is the wrong verb. A destructive script that does not
+  understand its arguments must not run.
+
+
+  **Capture stderr in the wrapper.** `>>log 2>&1`, or `2>&1 | tee`. A log that
+  drops the only channel the script uses for warnings is not a log of what
+  happened.
+
+
+  **And add the parser test**, seven invocations, in CI:
+
+
+  ```bash
+  check 'long dry-run'   'would remove'  --dry-run "$dir"
+  check 'unknown option' 'unknown'       --nope "$dir"
+  check 'no arguments'   'usage'
+  ```
+
+
+  The first line alone would have caught this on the day the comment was written.
+
+
+  **For the postmortem:** the code was correct, unchanged for two years, and did
+  exactly what `getopts` documents. The failure was introduced by a **comment**,
+  in a commit whose diff contained no executable change, and it was invisible
+  because the only warning went to an unrecorded stream and the only tested path
+  was a different one. Two general findings: documentation that describes an
+  interface is part of that interface and needs a test; and a destructive action
+  should require an affirmative flag, so that every parsing mistake fails safe.

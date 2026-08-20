@@ -1,0 +1,150 @@
+topic: topic.virtual-memory
+
+exercises:
+  - id: e1
+    title: Read four lines of a memory map
+    level: L2
+    objectives: [OBJ-A01.4.2]
+    kind: interpretation
+    prompt: >-
+      Identify each region and say whether its pages are reclaimable without
+      loss:
+
+
+      **A** — `55d3f1c2a000-55d3f1cd8000 r-xp 0002a000 fd:00 1049601
+      /usr/bin/bash`
+
+
+      **B** — `55d3f2f00000-55d3f2f21000 rw-p 00000000 00:00 0 [heap]`
+
+
+      **C** — `7f8e4c000000-7f8e4c028000 r--p 00000000 fd:00 1049233
+      /usr/lib/libc.so.6`
+
+
+      **D** — `7ffd3a1e0000-7ffd3a201000 rw-p 00000000 00:00 0 [stack]`
+    answer: >-
+      A — executable code from the bash binary, file-backed, reclaimable. B —
+      heap, anonymous, not reclaimable. C — read-only data or code from libc,
+      file-backed, reclaimable and shared with every other process using libc.
+      D — stack, anonymous, not reclaimable.
+    explanation: >-
+      Two questions answer all four: does it have a path, and is it writable?
+
+
+      A path means a file exists on disk, so the kernel can drop the pages and
+      re-read them later. No path means anonymous memory, which can only be
+      swapped — and with swap off, cannot be reclaimed at all.
+
+
+      That single distinction predicts what happens under pressure. The
+      file-backed regions vanish silently when memory is short; the anonymous
+      ones are what the OOM killer is eventually forced to act on.
+
+  - id: e2
+    title: Choose the right number for four questions
+    level: L2
+    objectives: [OBJ-A01.4.3]
+    kind: short_answer
+    prompt: >-
+      Which of VSZ, RSS or PSS answers each of these best?
+
+
+      **A** — How much RAM would be freed if I killed this process?
+
+
+      **B** — How much memory do these 12 worker processes use between them?
+
+
+      **C** — Is this process about to exhaust its container's limit?
+
+
+      **D** — Has this process mapped an unreasonable amount of address space?
+    answer: >-
+      A — PSS, or more precisely Private_Dirty. B — the sum of PSS. C — neither;
+      read memory.current against memory.max. D — VSZ.
+    explanation: >-
+      **A** is the question people mean when they ask "how much is it using".
+      Killing a process frees its private pages; its shared pages stay for the
+      other users. `Private_Dirty` in `smaps_rollup` is the closest single
+      number.
+
+
+      **C** is the one that catches people. No per-process figure knows about
+      the cgroup limit, and the limit includes page cache that belongs to no
+      process's RSS. The only correct source is the cgroup's own accounting.
+
+
+      **D** is the only question VSZ answers, and even then a large value is
+      usually an allocator being an allocator.
+
+  - id: e3
+    title: Explain an impossible total
+    level: L2
+    objectives: [OBJ-A01.4.4]
+    kind: short_answer
+    prompt: >-
+      A monitoring dashboard sums per-process RSS on a 32 GB machine and reports
+      48 GB in use. The machine is not swapping and everything is healthy.
+
+
+      Explain the number, and say what you would change.
+    answer: >-
+      Shared pages are counted once per process. Libraries, binaries and
+      copy-on-write pages after fork are each counted in every process that maps
+      them, so the total exceeds physical memory. Sum PSS instead, or read the
+      machine's own figures from /proc/meminfo rather than aggregating processes.
+    explanation: >-
+      The dashboard is not broken so much as asking an unanswerable question.
+      Per-process RSS does not partition physical memory, so summing it is not
+      arithmetic on a real quantity.
+
+
+      Worth knowing: this is not a rounding error. On a machine running many
+      workers from one image the inflation can be several times, which makes the
+      graph actively misleading rather than merely imprecise.
+
+
+      PSS exists precisely to make the sum meaningful. If it is not available,
+      `MemTotal - MemAvailable` from /proc/meminfo answers the question the
+      dashboard was really asking.
+
+  - id: e4
+    title: Predict four allocations
+    level: L3
+    objectives: [OBJ-A01.4.7]
+    kind: interpretation
+    prompt: >-
+      A container has a 512 MB limit and no swap. For each, say whether it
+      succeeds, and what happens next:
+
+
+      **A** — malloc of 4 GB, never touched.
+
+
+      **B** — malloc of 400 MB, fully touched.
+
+
+      **C** — malloc of 400 MB fully touched, then reading 300 MB of files.
+
+
+      **D** — malloc of 600 MB, touched incrementally.
+    answer: >-
+      A — succeeds, nothing happens; address space is nearly free. B — succeeds
+      and stays resident, close to the limit but alive. C — succeeds; the kernel
+      reclaims page cache as needed and the container survives, with the file
+      reads simply being slower on repeat. D — succeeds, then the process is
+      OOM-killed partway through touching, at exit code 137.
+    explanation: >-
+      **A** is overcommit in its purest form. The kernel records a valid range
+      and costs itself nothing.
+
+
+      **C** is the case people find surprising and it is the healthy one. Page
+      cache is charged to the cgroup but reclaimed under pressure, so the
+      container runs at a high percentage indefinitely without dying.
+
+
+      **D** is the kill, and note where it lands: partway through touching, not
+      at the allocation. There is no error to handle and no NULL to check —
+      SIGKILL arrives during a perfectly ordinary memory write.

@@ -1,0 +1,258 @@
+id: troubleshooting.the-log-that-went-quiet
+topic: topic.where-output-goes
+title: The log that went quiet for the whole incident
+level: L2
+objectives: [OBJ-B08.2.6, OBJ-B08.2.8]
+reveal_policy: progressive
+
+situation: >-
+  A payment service degraded at 14:02 and recovered at 14:31. During the
+  incident the on-call engineer watched the error stream and saw nothing at all
+  — then at 14:31, as the service recovered, roughly four hundred error lines
+  appeared at once.
+
+
+  The team's conclusion in the review was that the logging pipeline "dropped
+  messages under load and then replayed them", and there is an action item to
+  replace the log shipper.
+
+
+  The service writes to stdout. A sidecar runs a filter and forwards to the
+  aggregator. Nothing was dropped — the aggregator has all four hundred lines,
+  and their embedded timestamps span 14:02 to 14:31 correctly.
+
+
+  Work out why they all arrived at 14:31.
+
+symptoms:
+  - "No error lines visible during a 29-minute incident"
+  - "Roughly 400 lines arrived together as the incident ended"
+  - "No lines were lost; the aggregator has all of them"
+  - "The lines' own timestamps are correct and spread across the incident"
+  - "The aggregator's received-at timestamps are all 14:31"
+
+artifacts:
+  - type: config
+    label: The sidecar's forwarding command
+    content: |
+      # /etc/logpipe/run.sh
+      kubectl logs -f "$POD" \
+        | grep -E 'ERROR|FATAL' \
+        | forwarder --endpoint "$AGGREGATOR"
+
+  - type: log
+    label: A sample of what arrived, as stored
+    content: |
+      received_at=14:31:07  msg="2026-08-17T14:02:11Z ERROR upstream timeout"
+      received_at=14:31:07  msg="2026-08-17T14:02:49Z ERROR upstream timeout"
+      received_at=14:31:07  msg="2026-08-17T14:05:03Z ERROR checksum mismatch"
+      ...
+      received_at=14:31:07  msg="2026-08-17T14:30:58Z ERROR upstream timeout"
+
+  - type: command_output
+    label: What the engineer tried during the incident
+    content: |
+      # on their laptop, during the incident — worked perfectly
+      $ kubectl logs -f pod/payments | grep ERROR
+      2026-08-17T14:07:22Z ERROR upstream timeout
+      2026-08-17T14:07:41Z ERROR upstream timeout
+      (lines appearing live, as expected)
+
+  - type: command_output
+    label: A reproduction afterwards
+    content: |
+      $ drip 3 | grep . | stamp
+      arrived +3s : line 1 emitted at +0s
+      arrived +3s : line 2 emitted at +1s
+      arrived +3s : line 3 emitted at +2s
+
+      $ drip 3 | grep --line-buffered . | stamp
+      arrived +0s : line 1 emitted at +0s
+      arrived +1s : line 2 emitted at +1s
+      arrived +2s : line 3 emitted at +2s
+
+  - type: metric
+    label: Error volume during the incident
+    content: |
+      14:02-14:31   ~400 ERROR lines total
+      average line length ~110 bytes
+      total ~44 KB over 29 minutes
+
+  - type: log
+    label: What ended at 14:31
+    content: |
+      14:31:05  service recovered, error rate -> 0
+      14:31:07  sidecar: kubectl logs -f exited (pod restarted)
+      14:31:07  400 lines received by aggregator
+
+diagnostic_questions:
+  - "Nothing was lost. So what is the difference between the send time and the receive time?"
+  - "What is grep's stdout connected to in the sidecar, and on the engineer's laptop?"
+  - "How much data accumulated during the incident, and does that number look familiar?"
+  - "What happened at 14:31:07 immediately before the lines arrived?"
+  - "Why did the engineer's own reproduction work?"
+
+hints:
+  - "Compare the sidecar's pipeline with the command the engineer ran by hand."
+  - "Read the reproduction at the bottom of the artifacts."
+  - "44 KB over 29 minutes. How big is a stdio buffer?"
+  - "The lines arrived two seconds after `kubectl logs -f` exited."
+
+root_cause: >-
+  **`grep`'s output was block-buffered because its stdout was a pipe, so it held
+  the lines until the buffer filled or the process exited — and the process
+  exited at 14:31 when the pod restarted.**
+
+
+  The C standard library chooses a buffering mode the first time a stream is
+  used, based on **what stdout is connected to**: line-buffered to a terminal,
+  block-buffered — 4 to 8 KB — to a pipe or file.
+
+
+  In the sidecar, `grep`'s stdout is a pipe into `forwarder`, so `grep`
+  block-buffered. Roughly 44 KB accumulated over 29 minutes, which is several
+  buffer-fulls, so some flushing did occur — but at a rate of about 1.5 KB per
+  minute a 4 KB buffer takes nearly three minutes to fill, and the final partial
+  buffer sat unflushed until the process ended.
+
+
+  **At 14:31:07 `kubectl logs -f` exited** because the pod restarted. That closed
+  the pipeline, `grep` flushed everything it was holding and exited, and the
+  aggregator received the backlog in one burst two seconds later.
+
+
+  **Nothing was dropped and nothing was replayed.** The log shipper is not at
+  fault and replacing it will not change this behaviour by one second.
+
+
+  **Why the engineer's reproduction worked.** They ran `kubectl logs -f pod |
+  grep ERROR` at a terminal. There, `grep`'s stdout **is a terminal**, so stdio
+  chose line buffering and every line appeared immediately. Their test differed
+  from the failing case in exactly the property that causes the fault — which is
+  what makes this class so hard to diagnose: **every attempt to observe it
+  removes it.**
+
+
+  The embedded timestamps being correct is the strongest evidence available, and
+  the team read it as proof of a replay. It is the opposite: the events happened
+  when they say they did, and only the *delivery* was late.
+
+
+  The general form is worth stating: **in production, output is almost never
+  connected to a terminal.** A container's stdout, a systemd service's stdout, a
+  CI step's stdout — none of them are ptys. So any program that behaves
+  differently when piped behaves the *piped* way in production, and the local run
+  is the unrepresentative one.
+
+method: >-
+  **1. Separate "when did it happen" from "when did it arrive".** The lines carry
+  their own timestamps and the aggregator records a receive time. Those disagree
+  by up to 29 minutes, which immediately rules out the service and points at the
+  transport.
+
+
+  **2. Nothing lost plus everything late is a buffering signature.** A drop looks
+  like missing lines; a replay looks like duplicates with new timestamps. Neither
+  is present. All the data, all late, is a buffer being flushed.
+
+
+  **3. Ask what each stage's stdout is connected to.** In the sidecar, `grep`
+  writes to a pipe. On the laptop, `grep` writes to a terminal. That single
+  difference explains everything, and it is visible by reading the two commands
+  side by side.
+
+
+  **4. Check the arithmetic.** 44 KB over 29 minutes is about 1.5 KB a minute
+  against a 4–8 KB buffer. That predicts flushes every three to five minutes and
+  a final partial buffer held indefinitely — which matches what was observed
+  more precisely than "the shipper dropped things" ever could.
+
+
+  **5. Look at what happened immediately before the burst.** `kubectl logs -f`
+  exited at 14:31:07 and the lines arrived at 14:31:07. Process exit flushes
+  stdio buffers; that is the mechanism, and the timestamps name it.
+
+
+  **6. Distrust a reproduction that succeeds.** The engineer's test proved that
+  the pipeline works *at a terminal*, which was never in question. When a bug
+  will not reproduce, ask what your reproduction changed — here it changed the
+  one thing that mattered.
+
+
+  The habit: **a log that is quiet during an incident is a claim that needs
+  checking, not evidence of calm.** Verify that the path from writer to reader
+  actually streams, before you need it to.
+
+resolution: >-
+  **Immediately:** make every filter in the path line-buffered.
+
+
+  ```bash
+  kubectl logs -f "$POD" \
+    | grep --line-buffered -E 'ERROR|FATAL' \
+    | forwarder --endpoint "$AGGREGATOR"
+  ```
+
+
+  One flag. If a tool in the chain has no such option, `stdbuf` forces it:
+
+
+  ```bash
+  ... | stdbuf -oL some_filter | ...
+  ```
+
+
+  `stdbuf` works by preloading a library that changes stdio's defaults, so it
+  cannot help with a program that does not use stdio — a Go binary — or one that
+  sets its own buffering; `tee` is the documented example of the second.
+
+
+  **Then remove the filter from the path entirely**, which is the better answer:
+
+
+  ```bash
+  kubectl logs -f "$POD" | forwarder --endpoint "$AGGREGATOR"
+  ```
+
+
+  Filtering at the *source* means the aggregator never receives warnings and
+  info lines, and it is exactly the wrong place to make that decision — you lose
+  the context around an error precisely when you need it, and the filter becomes
+  a second thing that can buffer, fail or fall behind. Forward everything and
+  filter at query time.
+
+
+  **Verify the fix rather than assuming it**, because this failure is invisible
+  until it matters:
+
+
+  ```bash
+  # a canary line every minute, and an alert if none arrives within two
+  while sleep 60; do printf '%s CANARY heartbeat\n' "$(date -Is)"; done
+  ```
+
+
+  A heartbeat through the real path turns "is the log pipeline streaming" from an
+  assumption into a monitored fact. Without it, the next buffering regression is
+  discovered during the next incident.
+
+
+  **Correct the review.** The action item to replace the log shipper should be
+  withdrawn: the shipper received what it was sent, when it was sent. Replacing
+  it would have cost weeks and changed nothing, and the team would have concluded
+  the new one had the same bug.
+
+
+  **And record the general rule**, because it will recur in a different pipeline:
+
+
+  > Production stdout is not a terminal. Anything that behaves differently when
+  > piped will behave the piped way in production, so a local run is not evidence
+  > about a deployed one.
+
+
+  **For the postmortem:** the service logged correctly, the sidecar forwarded
+  correctly, the aggregator stored everything, and the on-call engineer had no
+  visibility for 29 minutes. No component failed. A C library made a correct
+  decision about efficiency, and the cost of that decision was paid entirely
+  during an incident.

@@ -1,0 +1,275 @@
+id: lab.the-connected-datagram
+topic: topic.tcp-and-udp
+title: Make a UDP server ignore everybody but its first client
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A03.3.4]
+
+intro: >-
+  UDP has no connections on the wire, and a UDP socket can still be
+  "connected" — a purely local act that sends no packets and changes which
+  datagrams the kernel will deliver to it.
+
+
+  You will produce the failure this causes: a server that receives the first
+  client's message and silently discards every message from every other client,
+  while all of those senders report success. Then you will run the same server
+  correctly and watch every message arrive.
+
+
+  It is a real production bug, it is invisible from both ends, and one line of
+  `ss` output identifies it.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Start a UDP listener on port 9410 **without** the keep-listening flag, so
+      that it behaves like a simple server that replies to whoever it heard
+      from.
+
+
+      Have it write what it receives to /tmp/received-a, and confirm it is
+      bound.
+    hint: >-
+      `nohup nc -u -l 127.0.0.1 9410 > /tmp/received-a 2>/dev/null &` — note the
+      absence of `-k`.
+    walkthrough: |
+      nohup nc -u -l 127.0.0.1 9410 > /tmp/received-a 2>/dev/null &
+      sleep 1
+      ss -uan | grep ':9410' > /tmp/answer-before
+      cat /tmp/answer-before
+    verify:
+      - type: file_matches
+        path: /tmp/answer-before
+        pattern: 'UNCONN.*127\.0\.0\.1:9410'
+        describe: Unconnected, and willing to receive from anyone
+
+  - id: s2
+    instruction: >-
+      Send three messages from three separate senders — each `nc` invocation
+      gets its own source port, so each is a different peer.
+
+
+      Then save what the server actually received to /tmp/answer-received-a.
+    hint: >-
+      Loop over three words, piping each into its own
+      `nc -u -w 1 127.0.0.1 9410`.
+    walkthrough: |
+      for m in alpha bravo charlie; do
+        printf '%s\n' "$m" | nc -u -w 1 127.0.0.1 9410 >/dev/null 2>&1
+      done
+      sleep 1
+      cp /tmp/received-a /tmp/answer-received-a
+      cat /tmp/answer-received-a
+      echo "lines: $(wc -l < /tmp/answer-received-a)"
+    verify:
+      - type: file_matches
+        path: /tmp/answer-received-a
+        pattern: '^alpha$'
+        describe: The first message arrived
+      - type: command_exit
+        command: "test $(wc -l < /tmp/answer-received-a) -eq 1"
+        exit_code: 0
+        describe: And only the first — two messages vanished without a trace
+
+  - id: s3
+    instruction: >-
+      Every sender reported success. Confirm that, and save the evidence to
+      /tmp/answer-senders.
+    hint: >-
+      Send one more and record its exit status. Then check whether the server
+      received it.
+    walkthrough: |
+      printf 'delta\n' | nc -u -w 1 127.0.0.1 9410 >/dev/null 2>&1
+      echo "sender_rc=$?" > /tmp/answer-senders
+      sleep 1
+      echo "server_received=$(wc -l < /tmp/received-a)" >> /tmp/answer-senders
+      cat /tmp/answer-senders
+    verify:
+      - type: file_matches
+        path: /tmp/answer-senders
+        pattern: 'sender_rc=0'
+        describe: The sender succeeded
+      - type: file_matches
+        path: /tmp/answer-senders
+        pattern: 'server_received=1'
+        describe: And the server still has only the first message
+
+  - id: s4
+    instruction: >-
+      Now find out why. Save the server's socket to /tmp/answer-connected and
+      compare it with what you saved in step 1.
+    hint: "`ss -uan | grep ':9410'` again. Two fields have changed."
+    walkthrough: |
+      ss -uan | grep ':9410' > /tmp/answer-connected
+      echo "--- before:"; cat /tmp/answer-before
+      echo "--- after:";  cat /tmp/answer-connected
+    verify:
+      - type: file_matches
+        path: /tmp/answer-connected
+        pattern: 'ESTAB'
+        describe: The socket is now reported as ESTAB, on a protocol with no connections
+      - type: command_exit
+        command: "grep -qE 'ESTAB.*127\\.0\\.0\\.1:9410 +127\\.0\\.0\\.1:[0-9]+' /tmp/answer-connected"
+        exit_code: 0
+        describe: And it has acquired a specific peer — the first sender's ephemeral port
+
+  - id: s5
+    instruction: >-
+      Explain what happened, in /tmp/answer-why. Say what `connect()` on a UDP
+      socket does and does not do.
+    hint: >-
+      No packet was sent when it happened. What did change, and where does the
+      filtering occur?
+    walkthrough: |
+      echo "the server called connect on its udp socket after the first datagram, which sends no packet at all and is purely local: it fixes the peer address so the socket can use send instead of sendto, and it makes the kernel deliver only datagrams from that exact address and port, discarding everyone else before the application ever sees them" > /tmp/answer-why
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why
+        pattern: "no packet|local|sends nothing"
+        describe: You noted that connect() on UDP sends nothing
+      - type: file_matches
+        path: /tmp/answer-why
+        pattern: "discard|only|kernel"
+        describe: And that the kernel filters other senders out
+
+  - id: s6
+    instruction: >-
+      Now run the server correctly. Start a second listener on port 9411 that
+      keeps accepting from anybody, send three messages from three senders, and
+      save what it received to /tmp/answer-received-b.
+    hint: "The same command as before, plus `-k`."
+    walkthrough: |
+      nohup nc -u -l -k 127.0.0.1 9411 > /tmp/received-b 2>/dev/null &
+      sleep 1
+      for m in alpha bravo charlie; do
+        printf '%s\n' "$m" | nc -u -w 1 127.0.0.1 9411 >/dev/null 2>&1
+      done
+      sleep 1
+      cp /tmp/received-b /tmp/answer-received-b
+      cat /tmp/answer-received-b
+    verify:
+      - type: command_exit
+        command: "test $(wc -l < /tmp/answer-received-b) -eq 3"
+        exit_code: 0
+        describe: All three messages arrived this time
+      - type: file_matches
+        path: /tmp/answer-received-b
+        pattern: '^charlie$'
+        describe: Including the last one, from a third distinct sender
+
+  - id: s7
+    instruction: >-
+      Confirm the working server's socket never acquired a peer. Save it to
+      /tmp/answer-still-unconn.
+    walkthrough: |
+      ss -uan | grep ':9411' > /tmp/answer-still-unconn
+      cat /tmp/answer-still-unconn
+    verify:
+      - type: file_matches
+        path: /tmp/answer-still-unconn
+        pattern: 'UNCONN.*127\.0\.0\.1:9411'
+        describe: Still unconnected after three senders — which is why all three worked
+
+  - id: s8
+    instruction: >-
+      Last one. Write to /tmp/answer-diagnosis the single `ss` observation that
+      distinguishes a broken UDP server from a working one, and say why neither
+      end's logs would show it.
+    walkthrough: |
+      {
+        echo "ss -uan on the server: a socket in ESTAB with a specific peer is connected and is discarding every other sender, while UNCONN with a wildcard peer accepts from anyone"
+        echo "neither end logs it: the senders get a successful return from sendto because the kernel accepted the datagram, and the receiver simply never sees the discarded ones, so there is nothing to log"
+      } > /tmp/answer-diagnosis
+      cat /tmp/answer-diagnosis
+    verify:
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: 'ss -uan'
+        describe: You named the command
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "ESTAB"
+        describe: And the state that gives it away
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: "never sees|nothing to log|no log"
+        describe: And why the receiver cannot log what it never received
+
+solution: |
+  ```bash
+  # broken: no -k, so nc connects to the first sender
+  nohup nc -u -l    127.0.0.1 9410 > /tmp/received-a 2>/dev/null &
+  for m in alpha bravo charlie; do printf '%s\n' "$m" | nc -u -w 1 127.0.0.1 9410; done
+  cat /tmp/received-a          # alpha        <- one of three
+
+  ss -uan | grep :9410
+  # ESTAB 0 0 127.0.0.1:9410 127.0.0.1:47326  <- connected to the first sender
+
+  # working: -k keeps the socket unconnected
+  nohup nc -u -l -k 127.0.0.1 9411 > /tmp/received-b 2>/dev/null &
+  for m in alpha bravo charlie; do printf '%s\n' "$m" | nc -u -w 1 127.0.0.1 9411; done
+  cat /tmp/received-b          # alpha bravo charlie
+  ```
+
+  **What you just produced.**
+
+  Three senders, three successful sends, **one message received**. Nothing
+  reported an error anywhere.
+
+  **`connect()` on a UDP socket sends no packets.** It is a purely local
+  operation that records a peer address, and it does two things:
+
+  - the socket may use `send()` instead of `sendto()`, since the destination is
+    now fixed
+  - **the kernel delivers only datagrams from that peer**, discarding everything
+    else before the application sees it
+
+  The second is the one that causes outages. A server that connects its socket
+  to the first client it hears from — a common convenience, so that replies are
+  easy to write — silently ignores every other client for the rest of its life.
+
+  **`ss` reports it as ESTAB**, which is the giveaway and also a little
+  misleading: on a protocol with no connections, `ESTAB` means only that this
+  socket has a peer recorded locally. Nothing was negotiated and the peer has no
+  idea it is special.
+
+  ```text
+  UNCONN 0 0 127.0.0.1:9410      0.0.0.0:*        <- accepts from anyone
+  ESTAB  0 0 127.0.0.1:9410  127.0.0.1:47326      <- one peer only
+  ```
+
+  **Why neither end can see the problem.** The senders called `sendto()`, the
+  kernel accepted the datagram, and `sendto()` returned success — which is all it
+  has ever meant. There is no acknowledgement to be missing. On the receiving
+  side, the discarded datagrams never reach the application, so there is nothing
+  for it to log; the kernel counts them nowhere useful either.
+
+  So the symptom is a service that "works" in a single-client test, works in
+  development, works for the first client in production, and loses everything
+  else — with clean logs on both sides.
+
+  **The diagnosis is one line:**
+
+  ```bash
+  ss -uan | grep :<port>
+  ```
+
+  `ESTAB` with a specific peer on a socket that is supposed to serve many
+  clients is the bug. `UNCONN` with a wildcard peer is correct.
+
+  **In real code** the fix is to keep the receiving socket unconnected and use
+  `recvfrom()` to learn each sender's address, replying with `sendto()` to that
+  address. If a reply socket is convenient, make a *separate* one — do not
+  connect the listener.
+
+  **Where this goes.** A UDP `Service` in Kubernetes routes datagrams to a pod,
+  and a server with this bug will accept from whichever client the load balancer
+  happened to send first. It is a good example of why UDP services need
+  application-level health checks: nothing at the transport layer can tell that
+  the service has stopped listening to almost everybody.

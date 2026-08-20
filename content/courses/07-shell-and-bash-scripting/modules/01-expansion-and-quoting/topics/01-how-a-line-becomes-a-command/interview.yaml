@@ -1,0 +1,266 @@
+topic: topic.how-a-line-becomes-a-command
+
+questions:
+  - id: i1
+    level: L1
+    question: Why do people say to quote shell variables?
+    model_answer: >-
+      Because an unquoted expansion does not produce *a value* — it produces an
+      unpredictable **number of words**, decided by the data.
+
+
+      The shell expands the variable first and then performs **word splitting**
+      on the result, at any character in `IFS`. So:
+
+
+      ```console
+      $ f='a file.log'
+      $ argc $f
+      argc = 2
+      $ argc "$f"
+      argc = 1
+      ```
+
+
+      Nothing about the variable changed. Double quotes suppress word splitting,
+      and that is their main job.
+
+
+      Two cases people miss. An **empty** variable unquoted produces *zero*
+      arguments, not one — which is why `[ $x = y ]` fails with an unexpected
+      operator when `x` is empty, because the test receives two operands instead
+      of three. And an unquoted expansion is also **globbed**, so a variable
+      containing `*.log` expands against the current directory — meaning the
+      result depends on where the script was run from.
+
+
+      The rule I would give a team is "quote every expansion unless splitting or
+      globbing is deliberate, and comment it when it is". The second half matters:
+      without it a reviewer cannot tell a deliberate split from an oversight, and
+      "why is this not quoted?" has no answer that scales.
+    signal: >-
+      Naming word splitting is the baseline. The discriminator is the empty-value
+      case producing zero arguments, and knowing that unquoted expansions are
+      globbed too — most people only know about spaces. Proposing a rule that
+      covers the deliberate case shows they have reviewed other people's shell.
+    follow_ups:
+      - "When would you deliberately leave an expansion unquoted?"
+      - "Why does `for f in *.log` not have this problem?"
+      - "What does `[ $x = y ]` do when x is empty?"
+
+  - id: i2
+    level: L2
+    question: >-
+      Why is `for f in *.log` safe with filenames containing spaces, while
+      `for f in $(ls *.log)` is not?
+    model_answer: >-
+      Because of where each sits in the expansion order.
+
+
+      **Word splitting is stage 6 and globbing is stage 7.** By the time the glob
+      produces filenames, the splitting stage has already run — and glob results
+      are never re-split. So a file called `a file.log` arrives as one word with
+      its space intact.
+
+
+      `$(ls *.log)` goes the other way. Command substitution is stage 4, so its
+      output is handed to stage 6 and split at every space, tab and newline. One
+      file becomes several loop iterations, none of which exist.
+
+
+      That asymmetry is not a rule anybody decided — it falls out of the order,
+      which is why I find it easier to remember than "always quote".
+
+
+      There is a second reason not to parse `ls`, which is that a filename can
+      contain a **newline**. It is legal — any byte except NUL and `/` is — so
+      even splitting on newlines only is a guess. `ls *.log | wc -l` can report 7
+      for 6 files, and I have seen exactly that.
+
+
+      So: use a glob when you want the files in a directory, and `find -print0 |
+      xargs -0` when you need recursion or filtering, because NUL is the one byte
+      a filename cannot hold. And `find -delete` or `find -exec ... +` when you
+      can, since then no shell sits between selecting a file and acting on it.
+
+
+      The one thing to add to the glob form is `shopt -s nullglob`, because an
+      unmatched pattern stays literal by default and the loop body runs once with
+      a filename that does not exist.
+    signal: >-
+      Explaining it by stage order rather than as two memorised rules is the
+      discriminator — it means they can derive the answer for cases they have not
+      seen. The newline-in-filename point and `nullglob` both indicate someone who
+      has debugged this rather than read about it.
+    follow_ups:
+      - "What happens when the glob matches nothing?"
+      - "When would you still need find?"
+      - "How would you handle a filename beginning with a hyphen?"
+
+  - id: i3
+    level: L2
+    question: >-
+      A wrapper script ends with `exec tool $@`. What would you change?
+    model_answer: >-
+      Three things, and the first is the one that matters.
+
+
+      **`"$@"`, quoted.** Unquoted `$@` expands to the arguments and then
+      word-splits each one, so an argument containing a space arrives as several.
+      `"$@"` expands each as its own word and splits nothing. `"$*"` is worse
+      again — it joins everything into a single word using the first character of
+      `IFS`.
+
+
+      There is a special rule worth knowing here: with **zero** arguments, `"$@"`
+      expands to *nothing at all*, not to one empty string. Everywhere else in the
+      shell a quoted expansion produces exactly one word. That exception exists so
+      forwarding works when there is nothing to forward, and it is why `cmd "$@"`
+      is safe as a wrapper's last line while `cmd "$*"` runs the command with an
+      argument it was never given.
+
+
+      **`--` before the caller's arguments.** `exec tool --config "$CONF" --
+      "$@"`. Quoting controls word splitting; it says nothing about how the
+      command interprets the word. A filename beginning with a hyphen is still
+      read as an option, and those arrive routinely from generated identifiers,
+      ticket numbers and branch names.
+
+
+      **Quote the wrapper's own variables too**, including paths from the
+      environment — those are exactly the values that acquire a space when
+      somebody deploys to a new directory.
+
+
+      I would keep `exec`. Replacing the shell rather than forking means the tool
+      gets the wrapper's PID, so signals and exit codes reach it directly instead
+      of being mediated by a shell that is no longer doing anything useful.
+
+
+      And in a chain of wrappers the damage compounds — each unquoted hop
+      re-splits and re-globs what the previous one produced, and the globbing
+      makes the behaviour depend on the caller's working directory.
+    signal: >-
+      Quoting `"$@"` is table stakes. The discriminator is the zero-argument rule
+      and *why* it exists, plus adding `--`, which most people never do.
+      Explaining why `exec` is there — signals and exit codes — separates people
+      who copied the idiom from people who chose it.
+    follow_ups:
+      - "When is `\"$*\"` the right choice?"
+      - "What does `--` actually do?"
+      - "Why exec rather than just calling it?"
+
+  - id: i4
+    level: L2
+    question: >-
+      A script unchanged for a year fails with a syntax error on a line nobody
+      touched. Where do you look?
+    model_answer: >-
+      At what is interpreting it, because the line is old and therefore the
+      interpreter changed.
+
+
+      **The shebang is a claim, not a guarantee.** It is only consulted when the
+      file is executed directly. `sh script.sh`, `bash script.sh`, `source`, and
+      a systemd unit with `ExecStart=/bin/sh -c ...` all ignore it — so a script
+      saying `#!/bin/bash` may never have been run by bash.
+
+
+      I have seen exactly this: a Dockerfile with `HEALTHCHECK CMD sh
+      /app/healthcheck.sh`, which had overridden the shebang for three years
+      without anybody reading that line.
+
+
+      **Then: what is `/bin/sh` here?** It is dash on Debian, BusyBox ash on
+      Alpine, and bash on some RHEL derivatives — and only the last makes bashisms
+      work by accident. A base-image change is enough to swap it.
+
+
+      The fastest diagnosis is two commands with no side effects:
+
+
+      ```bash
+      bash -n script.sh     # parses as bash?
+      sh   -n script.sh     # parses as POSIX sh?
+      ```
+
+
+      They name the line and the shell together, and work on a script you would
+      rather not execute.
+
+
+      What I would expect to find is an array, `[[ ]]` or a here-string — the
+      common bashisms. Worth noting that `local` is usually listed as one and
+      works fine in dash.
+
+
+      The subtler point is that **parse-time and run-time failures surface at
+      completely different moments.** A bashism inside a branch that never
+      executes is invisible to a shell running line by line, and fatal to one that
+      parses the whole file first. So "it worked before" is not evidence the
+      script was ever correct — which in that health-check case was the real
+      finding: the check had been passing for three years without reaching the
+      function that could fail.
+    signal: >-
+      "The line is old, so the interpreter changed" is the reframe that solves it.
+      Knowing the shebang is bypassed by `sh script.sh` is the technical
+      discriminator, and reaching for `-n` rather than running the script shows
+      good instincts. The parse-time versus run-time distinction is the senior
+      half.
+    follow_ups:
+      - "What is /bin/sh on the distributions you use?"
+      - "How would you stop this recurring across a repository?"
+      - "Which bashisms fail at parse time?"
+
+  - id: i5
+    level: L2
+    question: >-
+      How would you convince a team to adopt a quoting standard?
+    model_answer: >-
+      By making it cheap, checkable, and about a specific failure rather than
+      about correctness in the abstract.
+
+
+      **The rule:** quote every expansion unless splitting or globbing is
+      deliberate, and comment it when it is. That second half is what makes review
+      possible — otherwise a deliberate split and an oversight look identical.
+
+
+      **The cost, stated honestly:** two characters per expansion and some visual
+      noise. There is no performance cost and **no case where correct quoting
+      breaks a working script**, which makes it an unusually easy sell once
+      somebody has tried to argue the other side.
+
+
+      **The failure it prevents** is the argument I would actually lead with,
+      because it is specific: a cleanup job that has run correctly for three
+      years, and then a release lets customers name their own files. Word
+      splitting turns one filename into three loop iterations, `rm -f` silently
+      ignores the fragments that do not exist, and the job deletes files it was
+      never asked to touch while exiting 0 with a plausible count. Nothing about
+      the script changed on the day it started destroying data.
+
+
+      **Then make the machine enforce it**, because a rule nobody checks is a
+      preference. `shellcheck` in CI, plus `bash -n`. Two things that make
+      adoption survive a mature codebase: start at `-S error` and tighten, because
+      a first run producing hundreds of warnings gets disabled wholesale; and
+      allow inline suppressions **with a reason**, which is exactly the comment
+      convention the rule asks for.
+
+
+      **And the highest-value habit is not a rule at all:** put a file called
+      `a file.log` and one called `-n` in the test fixtures. Two `touch` commands,
+      and this entire class becomes a test failure instead of a customer report.
+      I would push for that before the linter, because it is uncontroversial and
+      it works on scripts nobody wants to reformat.
+    signal: >-
+      Leading with a concrete failure rather than "it is more correct" is the
+      difference between a standard that gets adopted and one that gets argued
+      about. The `-S error` staging and reasoned suppressions show they have rolled
+      out a linter before. The test-fixture suggestion is the strongest answer
+      because it is the cheapest and needs nobody's permission.
+    follow_ups:
+      - "What would you do about the existing thousand warnings?"
+      - "How do you handle the legitimate unquoted cases?"
+      - "What else would you put in those fixtures?"

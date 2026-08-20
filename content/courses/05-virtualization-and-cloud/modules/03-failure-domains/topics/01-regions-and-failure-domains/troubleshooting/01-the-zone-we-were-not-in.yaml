@@ -1,0 +1,230 @@
+id: troubleshooting.the-zone-we-were-not-in
+topic: topic.regions-and-failure-domains
+title: A zone we do not run in failed and we went down completely
+level: L2
+objectives: [OBJ-A05.3.6, OBJ-A05.3.2]
+reveal_policy: progressive
+
+situation: >-
+  At 09:12 the provider reported a power event in availability zone
+  `eu-west-1b`. Instances there became unreachable. Zones `1a` and `1c` were
+  unaffected throughout.
+
+
+  Our checkout service runs six replicas, three in `1a` and three in `1c`. It has
+  no instances in `1b` at all.
+
+
+  At 09:12 the service began returning errors for 100% of requests.
+
+
+  Every one of the six replicas was healthy the entire time. The pods were
+  running, the application logs show no errors, and connecting to a pod directly
+  and issuing a request returns 200.
+
+
+  The load balancer was serving nothing.
+
+
+  The team's current theory is that the load balancer failed and they have opened
+  a ticket with the provider, who report it as healthy.
+
+
+  Work out what happened before reading on.
+
+symptoms:
+  - "100% errors from 09:12, coinciding exactly with a zone failure elsewhere"
+  - "No replicas in the failed zone"
+  - "All six replicas running and healthy throughout"
+  - "A direct request to any pod returns 200"
+  - "The load balancer reports all targets unhealthy"
+  - "The provider reports the load balancer as healthy"
+
+artifacts:
+  - type: command_output
+    label: The load balancer's view
+    content: |
+      $ describe-target-health --target-group checkout
+      i-0a1  eu-west-1a  unhealthy  Health checks failed
+      i-0a2  eu-west-1a  unhealthy  Health checks failed
+      i-0a3  eu-west-1a  unhealthy  Health checks failed
+      i-0c1  eu-west-1c  unhealthy  Health checks failed
+      i-0c2  eu-west-1c  unhealthy  Health checks failed
+      i-0c3  eu-west-1c  unhealthy  Health checks failed
+
+  - type: command_output
+    label: A request straight to a pod
+    content: |
+      $ kubectl exec -it checkout-7d9f -- curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/
+      200
+
+      $ kubectl exec -it checkout-7d9f -- curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/healthz
+      503
+
+  - type: config
+    label: The readiness probe
+    content: |
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+
+      # what /healthz does, from the source:
+      #   1. check we can reach the database        -> ok
+      #   2. check we can fetch a secret from vault -> FAILS
+      #   3. check disk space                       -> ok
+      #   returns 503 if any check fails
+
+  - type: config
+    label: Where the vault cluster runs
+    content: |
+      vault:
+        replicas: 3
+        nodeSelector:
+          topology.kubernetes.io/zone: eu-west-1b     # all three, one zone
+
+  - type: log
+    label: Application logs during the incident
+    content: |
+      (no errors — the application never received a request)
+
+diagnostic_questions:
+  - "The pods return 200 on / and 503 on /healthz. What does that tell you?"
+  - "What does the readiness probe check, and where does each dependency live?"
+  - "Why did the load balancer remove replicas in healthy zones?"
+  - "How many availability zones is the vault cluster in?"
+  - "What is the composite availability of six replicas that all need one vault?"
+
+hints:
+  - "Compare the two curl results. The application works and something else says it does not."
+  - "Read what /healthz actually checks, line by line."
+  - "Look at the vault's nodeSelector."
+  - "The load balancer did exactly what it is designed to do with unhealthy targets."
+
+root_cause: >-
+  **The readiness probe reads from a vault cluster that runs entirely in the
+  failed zone, so every replica in every zone reported itself unhealthy
+  simultaneously.**
+
+
+  The two `curl` results are the whole diagnosis. `/` returns 200 — the
+  application works. `/healthz` returns 503 — the probe fails. The application
+  was never broken; it was removed from service by its own health check.
+
+
+  `/healthz` performs three checks and the second one fetches a secret from
+  vault. The vault cluster has a `nodeSelector` pinning all three replicas to
+  `eu-west-1b`, so it is a **single-zone dependency of a multi-zone service**.
+  When `1b` failed, the check failed for all six replicas at once, they all
+  returned 503, and the load balancer removed every target.
+
+
+  The load balancer behaved correctly. Removing targets that report themselves
+  unhealthy is precisely its job, and the provider is right that it is healthy.
+
+
+  **The arithmetic explains why the redundancy was worth nothing.** Six replicas
+  in parallel is essentially perfect availability, and one component in series
+  with all of them sets the composite to approximately that component's own
+  figure. Six replicas across two zones with a single-zone dependency is a
+  single-zone system wearing six copies — and adding replicas would not have
+  moved the number at all.
+
+
+  The general rule this incident teaches: **anything on a health check path is a
+  hard dependency of the entire service.** A readiness probe has the power to
+  remove every replica simultaneously, which makes it the most consequential few
+  lines of configuration in a deployment — and it is usually written casually,
+  with "check everything we depend on" treated as thorough rather than dangerous.
+
+method: >-
+  **1. Ask whether the application is broken or has been removed.** One command
+  each: request the application directly, and request its health endpoint. 200
+  and 503 respectively means the application is fine and something is taking it
+  out of service. That reframes the entire investigation in ten seconds.
+
+
+  **2. Read what the health check actually does.** Line by line, and for each
+  line ask *where does that dependency live*. This is not a routine question and
+  it should be — a probe that checks four things has four hard dependencies.
+
+
+  **3. Locate every dependency's failure domain.** The `nodeSelector` on vault is
+  the finding, and it is three lines of YAML that nobody would look at during an
+  incident in a different zone.
+
+
+  **4. Take the coincidence seriously rather than dismissing it.** Total failure
+  at exactly 09:12, the same minute as a zone event elsewhere, is not a
+  coincidence even though we run nothing there. "We are not in that zone" is what
+  made the team look at the load balancer instead.
+
+
+  **5. Believe the load balancer.** It reported the targets as unhealthy and the
+  targets *were* reporting themselves unhealthy. Opening a ticket against a
+  component that is behaving correctly costs time and credibility.
+
+
+  **6. Compute the composite.** Six replicas in parallel with one shared
+  dependency in series gives approximately the dependency's availability. Doing
+  that arithmetic once, during design, would have shown that the replica count
+  was not the number that mattered.
+
+
+  The habit: **for every dependency on a request path or a health path, name its
+  failure domain.** The list is short and almost nobody has written it.
+
+resolution: >-
+  **Immediately:** make the readiness probe local. It should answer *can this
+  replica serve a request*, and nothing else.
+
+
+  ```yaml
+  readinessProbe:
+    httpGet:
+      path: /healthz/local     # no remote calls
+  ```
+
+
+  That single change converts this outage from total to nothing — the replicas in
+  `1a` and `1c` would have kept serving throughout, because they were capable of
+  serving throughout.
+
+
+  **Then separate the two kinds of check**, because the instinct behind the
+  original probe was not wrong, only misapplied:
+
+
+  - **Readiness** — can *this instance* serve? Local only. Nothing remote.
+    Failing it removes one replica from the pool.
+
+  - **Liveness** — is this process wedged and in need of restarting? Local, and
+    even more conservative; a liveness probe that fails on a remote dependency
+    creates a restart loop across the fleet.
+
+  - **A dependency dashboard** — is the database reachable, is vault up? This is
+    real and useful information, and it belongs in monitoring where it pages
+    somebody. It must not be wired to a control that removes capacity.
+
+
+  The rule worth writing down: **never put a remote dependency in a readiness
+  probe.** If the dependency is genuinely required to serve, the request will
+  fail on its own and be visible as an error rate, which is a proportionate
+  response. Removing every replica is not.
+
+
+  **Fix the vault placement too**, since it is a dependency of everything:
+  three replicas, one per zone, with a topology spread constraint rather than a
+  `nodeSelector` pinning them to one. A dependency of every service needs at
+  least the availability of the services depending on it.
+
+
+  **And add the test that finds this class.** Cordon every node in one zone and
+  watch what happens. It is half a day of work, runs in business hours with
+  nobody paged, and it would have found this exact fault — along with any other
+  single-zone dependency hiding in a health path.
+
+
+  **For the postmortem:** we were removed from service by our own health check,
+  during an event in a facility we do not use. Every component behaved as
+  designed, including the one that took us down.

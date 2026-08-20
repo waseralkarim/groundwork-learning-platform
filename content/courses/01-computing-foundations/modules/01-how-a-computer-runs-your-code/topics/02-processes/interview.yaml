@@ -1,0 +1,181 @@
+topic: topic.processes
+
+questions:
+  - id: i1
+    level: L1
+    question: What is a process?
+    model_answer: >-
+      A running instance of a program, together with everything the kernel tracks
+      about it: a PID, a parent, a state, the user it runs as, its open file
+      descriptors and its memory. A program is a passive file on disk; a process
+      is that program actually executing, and one program can be running as many
+      processes at once.
+    signal: >-
+      A weak answer is "a running program" and stops. A strong one distinguishes
+      the program from the process and mentions that the kernel holds state about
+      it — which is what makes the rest of the topic possible.
+    follow_ups:
+      - "What is the difference between a process and a thread?"
+      - "Can two processes run the same program at the same time?"
+
+  - id: i2
+    level: L1
+    question: How does a new process get created on Linux?
+    model_answer: >-
+      With two system calls. `fork` duplicates the calling process, producing a
+      child that differs only in its PID and in what the call returns. Then, in
+      the child, `exec` replaces the program with the one you actually want to
+      run — same PID, new code. The shell does exactly this for every command:
+      fork, exec in the child, wait in the parent.
+    signal: >-
+      Knowing it is two calls rather than one is the whole point. The best
+      answers explain *why*: the gap between fork and exec is where redirection,
+      directory changes and privilege dropping happen, using ordinary code rather
+      than parameters to a single spawn call.
+    follow_ups:
+      - "Why two calls instead of one?"
+      - "What happens to open file descriptors across exec?"
+      - "How does `ls > out.txt` actually work?"
+
+  - id: i3
+    level: L2
+    question: >-
+      What is a zombie process, and how do you get rid of one?
+    model_answer: >-
+      A process that has exited but whose parent has not yet collected its exit
+      status. It holds no memory and runs no code — just a process table entry
+      and an exit code. You cannot kill it, because it is already dead. The fix
+      is always the parent: either it starts reaping with `wait()`, or you
+      restart it, at which point the zombies are reparented to PID 1 and reaped
+      immediately.
+    signal: >-
+      "You kill it" is wrong and common. The strong answer says explicitly that
+      SIGKILL does nothing and that the parent is the target — and ideally
+      mentions PID exhaustion as the reason anyone cares, since a single zombie
+      is harmless.
+    follow_ups:
+      - "Why does kill -9 not work on one?"
+      - "When does a zombie actually become a problem?"
+      - "How would you find which process is creating them?"
+
+  - id: i4
+    level: L2
+    question: What is the difference between SIGTERM and SIGKILL?
+    model_answer: >-
+      SIGTERM is catchable: the process can install a handler and decide what to
+      do — finish in-flight work, flush buffers, close connections, then exit.
+      That is what graceful shutdown is. SIGKILL cannot be caught, blocked or
+      ignored; the kernel removes the process without telling it, so no cleanup
+      runs at all. Orchestrators send TERM first and escalate to KILL after a
+      grace period, which is the guarantee that shutdown terminates.
+    signal: >-
+      Everyone knows "9 is stronger". What separates a good answer is framing
+      TERM as a *request the program answers* and KILL as something done *to* it —
+      and understanding that the escalation exists so shutdown cannot hang.
+    follow_ups:
+      - "Why must SIGKILL be uncatchable?"
+      - "Where does the grace period between them come from?"
+      - "What happens to in-flight work in each case?"
+
+  - id: i5
+    level: L3
+    question: >-
+      A `docker stop` takes exactly ten seconds every time and then the container
+      dies. Walk me through it.
+    model_answer: >-
+      Ten seconds is Docker's default grace period, and an interval identical to
+      a configured timeout every time means nothing responded to the request.
+      Docker sends SIGTERM to PID 1 in the container. If PID 1 has no handler
+      installed, the kernel discards the signal — PID 1 is exempt from default
+      signal actions — so nothing happens. Docker waits out the grace period and
+      sends SIGKILL, which cannot be discarded. The container dies with exit code
+      137 and no cleanup ran. The usual cause is an entrypoint shell wrapping the
+      real process, so PID 1 is `sh` rather than the application. `ps -p 1` inside
+      the container confirms it in one command.
+    signal: >-
+      The tell of real experience is "exactly ten seconds every time" being
+      treated as diagnostic rather than incidental. Also listen for whether they
+      know PID 1 is exempt from default signal actions — that is the mechanism,
+      and without it the explanation is just pattern-matching.
+    follow_ups:
+      - "Why is PID 1 treated differently by the kernel?"
+      - "Give me three fixes and tell me which you would choose."
+      - "How would you verify the fix without doing a deploy?"
+
+  - id: i6
+    level: L3
+    question: >-
+      `kill -9` on a process does nothing and it is still there afterwards. What
+      is going on?
+    model_answer: >-
+      Two possibilities, and `ps -o stat=` distinguishes them immediately. If it
+      is in state Z it is a zombie — already exited, nothing left to kill, and
+      the fix is the parent. If it is in state D it is in uninterruptible sleep,
+      almost always waiting on I/O, and the kernel is not delivering signals to
+      it; SIGKILL is queued and applied the moment the I/O completes. If the I/O
+      never completes — a hung NFS mount, a failing disk — it stays until reboot,
+      and the fix is the storage, not the process.
+    signal: >-
+      A good answer names both cases and the one command that tells them apart.
+      A great one adds that neither is fixed by trying harder to kill it, which
+      is the instinct being tested.
+    follow_ups:
+      - "How do you tell the two apart?"
+      - "Why does the kernel refuse to interrupt a process in D?"
+      - "What would make you suspect a storage problem rather than a process one?"
+
+  - id: i7
+    level: L4
+    question: >-
+      How would you make sure a service shuts down cleanly during a deploy?
+    model_answer: >-
+      Four things, and they have to hold together. The process must actually
+      receive SIGTERM — so it has to be PID 1 in its container, verified with
+      `ps -p 1`, not assumed. It must have a handler that stops accepting new
+      work, finishes what is in flight, and exits. The grace period must exceed
+      the longest unit of work, or that work must be interruptible and resumable.
+      And it should keep serving briefly after SIGTERM, because removal from the
+      load balancer is not instantaneous — exiting immediately causes exactly the
+      dropped connections that graceful shutdown was meant to prevent. Then I
+      would test it under load, because with no in-flight requests every broken
+      implementation looks correct.
+    signal: >-
+      The last two points separate people who have implemented this from people
+      who have read about it. "Keep serving after SIGTERM" is counter-intuitive
+      and is the one most often missed; "test under load" is the reason the bug
+      reaches production.
+    follow_ups:
+      - "What if a job takes longer than any reasonable grace period?"
+      - "How do you test shutdown behaviour in CI?"
+      - "What exit code would you expect from a clean shutdown?"
+
+  - id: i8
+    level: L5
+    question: >-
+      You are designing the container standard for a platform team of 200
+      engineers. What do you mandate about processes and signals, and why?
+    model_answer: >-
+      Three rules, each because a specific failure is otherwise guaranteed at that
+      scale. First, the application must be PID 1 — no shell wrapper — enforced by
+      a CI check that runs `ps -p 1` against the built image. Signals silently not
+      arriving is the most common containerisation bug and it reviews cleanly, so
+      it has to be caught mechanically rather than by attention. Second, every
+      service must handle SIGTERM and drain, with the grace period documented
+      against the longest unit of work; I would surface a platform default and
+      require teams to justify exceeding it. Third, any image that spawns child
+      processes runs with an init, because orphan reaping is not something 200
+      teams will each get right. Beyond the rules, I would add the observability
+      that makes violations visible: alert when termination duration equals the
+      grace period, and when zombie count or PID usage crosses a threshold. The
+      general principle is that a standard nobody can violate accidentally beats
+      a standard everybody is told about — so each rule needs an automated check,
+      not a wiki page.
+    signal: >-
+      This is a judgement question. Strong answers pair every rule with the
+      failure it prevents and with a mechanical check, and recognise that at 200
+      engineers documentation does not change behaviour. Weak answers list best
+      practices without saying how compliance is achieved.
+    follow_ups:
+      - "How would you enforce the PID 1 rule in CI?"
+      - "What would you do about a team whose job legitimately takes 20 minutes?"
+      - "Which of your three rules would you drop first under pushback, and why?"

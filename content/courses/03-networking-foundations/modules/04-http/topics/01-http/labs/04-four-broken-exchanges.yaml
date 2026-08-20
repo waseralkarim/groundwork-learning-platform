@@ -1,0 +1,293 @@
+id: lab.four-broken-exchanges
+topic: topic.http
+title: "Challenge: four exchanges, four different faults"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A03.4.6, OBJ-A03.4.8]
+
+intro: >-
+  Four services are misbehaving. Each is reported the same way — "the request
+  fails" — and each has a different cause that the client's error message points
+  away from.
+
+
+  You will build all four, probe each with the same command, and work out which
+  evidence distinguishes them. Three of the four report a timeout, and none of
+  those three is a network problem.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before building anything, write to /tmp/hypotheses at least three distinct
+      reasons an HTTP request can fail while the network is healthy.
+    hint: >-
+      One is about the response framing. One is about where the request was
+      routed. One is about nothing being there at all.
+    walkthrough: |
+      printf 'the response declares a body longer than it sends, so the client waits\nthe headers are never terminated by a blank line\nnothing is listening on that port, so the connection is refused\nthe host header does not match any configured site, so the wrong thing answers\n' > /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You recorded hypotheses before looking
+      - type: command_output
+        command: "wc -l < /tmp/hypotheses"
+        pattern: "[3-9]"
+        describe: At least three hypotheses
+
+  - id: s2
+    instruction: >-
+      Build the four services and probe each with the same command, saving all
+      four results to /tmp/answer-probes.
+
+
+      - **8301** — responds `200` with `Content-Length: 50` and a 4-byte body
+
+      - **8302** — responds `200`, headers never terminated by a blank line
+
+      - **8303** — nothing listening at all
+
+      - **8304** — responds `500` immediately
+    hint: >-
+      Use `curl -s -m 3 -o /dev/null -w 'code=%{http_code} size=%{size_download}
+      ttfb=%{time_starttransfer}\n'` for each, and record `$?` after every one.
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\nshor' \
+        | timeout 12 nc -l 127.0.0.1 8301 >/dev/null 2>&1 &
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 4\r\nshor' \
+        | timeout 12 nc -l 127.0.0.1 8302 >/dev/null 2>&1 &
+      printf 'HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n' \
+        | timeout 12 nc -l 127.0.0.1 8304 >/dev/null 2>&1 &
+      sleep 1
+      for p in 8301 8302 8303 8304; do
+        echo "== $p"
+        curl -s -m 3 -o /dev/null \
+          -w 'code=%{http_code} size=%{size_download} ttfb=%{time_starttransfer}\n' \
+          "http://127.0.0.1:$p/" 2>&1
+        echo "rc=$?"
+      done > /tmp/answer-probes
+      cat /tmp/answer-probes
+    verify:
+      - type: command_exit
+        command: "test $(grep -c '^rc=' /tmp/answer-probes) -eq 4"
+        exit_code: 0
+        describe: All four were probed identically
+      - type: command_exit
+        command: "test $(grep -c '^rc=28$' /tmp/answer-probes) -ge 2"
+        exit_code: 0
+        describe: At least two reported a timeout
+
+  - id: s3
+    instruction: >-
+      One of the four failed differently from the others. Identify it and save
+      its exit status with an explanation to /tmp/answer-different.
+    hint: >-
+      Three exit statuses are the same. The odd one out came back instantly and
+      means something quite specific.
+    walkthrough: |
+      {
+        grep -A2 '^== 8303' /tmp/answer-probes
+        echo "8303 exited 7, connection refused, which came back instantly: the packet reached the machine and the kernel answered with a reset because nothing was bound, so routing and firewalls are all fine and the fault is that no process is listening"
+      } > /tmp/answer-different
+      cat /tmp/answer-different
+    verify:
+      - type: file_matches
+        path: /tmp/answer-different
+        pattern: '8303'
+        describe: You identified the odd one out
+      - type: file_matches
+        path: /tmp/answer-different
+        pattern: "refus"
+        describe: And read its exit status as a refusal rather than a timeout
+
+  - id: s4
+    instruction: >-
+      Of the three timeouts, one is not really a failure. Find it and save its
+      full result line to /tmp/answer-not-broken.
+    hint: >-
+      Look at the status codes. One of the three got a complete, valid response
+      and reported it.
+    walkthrough: |
+      grep -A2 '^== 8304' /tmp/answer-probes > /tmp/answer-not-broken
+      echo "8304 returned a complete 500 with a valid empty body, so the http exchange worked perfectly and the application is the thing that failed; curl exits 0 because the transfer succeeded" >> /tmp/answer-not-broken
+      cat /tmp/answer-not-broken
+    verify:
+      - type: file_matches
+        path: /tmp/answer-not-broken
+        pattern: 'code=500'
+        describe: A complete 500 response
+      - type: file_matches
+        path: /tmp/answer-not-broken
+        pattern: "transfer|exchange"
+        describe: And you separated a failed application from a failed transfer
+
+  - id: s5
+    instruction: >-
+      Two genuine timeouts remain, on 8301 and 8302. Distinguish them using
+      `size_download` and save the comparison to /tmp/answer-two-timeouts.
+    hint: >-
+      Both got far enough for curl to parse a status line. Only one of them
+      received any body bytes.
+    walkthrough: |
+      {
+        grep -A2 '^== 8301' /tmp/answer-probes
+        grep -A2 '^== 8302' /tmp/answer-probes
+        echo "8301 got a status and four bytes and then waited for the rest of a declared fifty, so the framing is wrong; 8302 got a status line but zero body bytes, because with no blank line the headers never ended and the body never began, so the client was still reading headers when it gave up"
+      } > /tmp/answer-two-timeouts
+      cat /tmp/answer-two-timeouts
+    verify:
+      - type: file_matches
+        path: /tmp/answer-two-timeouts
+        pattern: 'code=200 size=4'
+        describe: 8301 got a status line and a partial body
+      - type: file_matches
+        path: /tmp/answer-two-timeouts
+        pattern: 'code=200 size=0'
+        describe: While 8302 got a status line and never a single body byte
+      - type: file_matches
+        path: /tmp/answer-two-timeouts
+        pattern: "blank line|terminat"
+        describe: And you identified the missing header terminator
+
+  - id: s6
+    instruction: >-
+      Prove the 8302 diagnosis by looking at the bytes rather than the summary.
+      Serve the same broken response again on 8305 and capture curl's trace to
+      /tmp/answer-trace.
+    hint: >-
+      `curl -sv -m 3` and keep stderr. Look at what curl reports receiving.
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 4\r\nshor' \
+        | timeout 8 nc -l 127.0.0.1 8305 >/dev/null 2>&1 &
+      sleep 1
+      curl -sv -m 3 -o /dev/null http://127.0.0.1:8305/ > /dev/null 2> /tmp/answer-trace
+      cat /tmp/answer-trace
+    verify:
+      - type: file_matches
+        path: /tmp/answer-trace
+        pattern: '^> GET / HTTP/1\.1'
+        describe: The request went out normally
+      - type: command_exit
+        command: "grep -qE 'Operation timed out|timed out' /tmp/answer-trace"
+        exit_code: 0
+        describe: And curl timed out while still reading the response headers
+
+  - id: s7
+    instruction: >-
+      Write your four diagnoses to /tmp/answer-diagnosis — one line each,
+      naming the cause and the evidence that identified it.
+    walkthrough: |
+      {
+        echo "8301: content-length declares 50 and only 4 bytes are sent, so the client waits for the rest; evidence is code=200 with size=4 and a timeout"
+        echo "8302: the headers are never terminated by a blank line, so the client is still parsing headers when it gives up; evidence is code=200 with size=0, a status line but no body at all"
+        echo "8303: nothing is listening, so the kernel sent a reset; evidence is an instant connection refused rather than a timeout"
+        echo "8304: not broken at the http level at all; a complete 500 arrived, so the transfer worked and the application failed"
+      } > /tmp/answer-diagnosis
+      cat /tmp/answer-diagnosis
+    verify:
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: '8301:.*(content-length|framing|50)'
+        describe: Framing for the first
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: '8302:.*(blank line|header)'
+        describe: Header termination for the second
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: '8303:.*(refus|listen)'
+        describe: Nothing listening for the third
+      - type: file_matches
+        path: /tmp/answer-diagnosis
+        pattern: '8304:.*(500|application)'
+        describe: And an application failure for the fourth
+
+  - id: s8
+    instruction: >-
+      Last one. Write to /tmp/answer-rules the two rules you would give somebody
+      debugging an HTTP failure, based on what distinguished these four.
+    hint: >-
+      One rule is about what a timeout does and does not prove. The other is
+      about a field that separates two identical-looking timeouts.
+    walkthrough: |
+      {
+        echo "a timeout proves nothing about the network: three of these four timed out and none of them was a network fault, so bound every request with a timeout and then look at what arrived before it fired"
+        echo "size_download separates the timeouts: some body bytes then a stall means broken framing, zero body bytes with a status line means the headers never ended, and no status code at all with an instant exit means nothing was listening"
+      } > /tmp/answer-rules
+      cat /tmp/answer-rules
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rules
+        pattern: "timeout proves nothing|not.*network|none of them"
+        describe: You stated what a timeout does not prove
+      - type: file_matches
+        path: /tmp/answer-rules
+        pattern: 'size_download|http_code'
+        describe: And named the fields that separate the cases
+
+solution: |
+  **Four services, four faults, one probe.**
+
+  | Port | `http_code` | `size_download` | curl exit | Fault |
+  |---|---|---|---|---|
+  | 8301 | 200 | 4 | **28** | `Content-Length: 50` with a 4-byte body |
+  | 8302 | 200 | **0** | **28** | Headers never terminated by a blank line |
+  | 8303 | **000** | 0 | **7** | Nothing listening — connection refused |
+  | 8304 | 500 | 0 | **0** | Nothing wrong at the HTTP level |
+
+  **Three of the four timed out and none of them was a network problem.** That
+  is the point of the exercise: "it timed out" is the least informative thing a
+  client can tell you, and everybody reports it as a network symptom.
+
+  **8303 is the odd one out and the easiest.** Exit 7 — connection refused —
+  returned instantly. A refusal means the packet reached the machine and the
+  kernel answered with a reset, so routing, firewalls and host availability are
+  all fine. Nothing is bound. It is the most informative failure in the set.
+
+  **8304 is not broken at all**, in the sense this lab means. A complete,
+  well-formed 500 arrived and curl exited 0, because curl's exit status reports
+  whether the *transfer* worked. The application failed; HTTP did its job
+  perfectly. (`curl --fail` is what makes 4xx and 5xx produce a non-zero exit,
+  and its absence is a common bug in health-check scripts.)
+
+  **8301 and 8302 both report exit 28 and are distinguished by two fields:**
+
+  - **8301**: `code=200 size=4`. A status line arrived, headers were parsed, four
+    bytes of body arrived — and then the client waited for the other 46 it had
+    been promised. Bytes received plus a timeout means **broken framing**.
+  - **8302**: `code=200 size=0`. A status line arrived — curl parses that as soon
+    as it appears — and then **not one body byte**, because with no blank line
+    the headers never end and the body never begins. curl was still reading
+    headers when it gave up.
+
+  The pair to read is `size_download`: some bytes then a stall is broken framing;
+  zero bytes with a status line is unterminated headers. `code=000` belongs to
+  8303 instead, and means no response was received at all.
+
+  **The two rules worth carrying:**
+
+  **A timeout proves nothing about the network.** Bound every request with `-m`
+  and then look at what arrived before the timeout fired. The interesting
+  information is always in the partial result.
+
+  **`http_code` and `size_download` separate the cases in one line:**
+
+  ```bash
+  curl -s -m 5 -o /dev/null -w 'code=%{http_code} size=%{size_download} ttfb=%{time_starttransfer}\n' URL
+  ```
+
+  | Reading | Meaning |
+  |---|---|
+  | Instant exit 7 | Nothing listening. Not a network problem either |
+  | `code=000`, timeout | No response at all — nothing was ever sent back |
+  | `code=2xx`, `size=0`, timeout | Headers never terminated by a blank line |
+  | `code=2xx`, `size` > 0, timeout | Framing is wrong — length or chunk terminator |
+  | `code=5xx`, exit 0 | HTTP worked. The application failed |
+  | `code=2xx`, large `ttfb` | HTTP worked. The application is slow |
+
+  That table turns "the request fails" into a specific next step in about a
+  second, and four of its five rows point somewhere other than the network.

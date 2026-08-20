@@ -1,0 +1,190 @@
+id: assessment.addresses-subnets-and-routes
+topic: topic.addresses-subnets-and-routes
+pass_score: 70
+
+parts:
+  - id: A
+    title: Carve up an allocation
+    kind: practical
+    objectives: [OBJ-A03.1.3, OBJ-A03.1.4]
+    prompt: >-
+      You have been allocated `10.60.0.0/20` for a new region and need four
+      subnets: a public tier for 200 hosts, an application tier for 1500, a
+      database tier for 30, and a management tier for 10.
+
+
+      Give a CIDR block for each, with its usable host count, arranged so that
+      nothing overlaps and there is room to grow. Show the arithmetic for at
+      least one of them, and say how many addresses of the /20 you have left.
+    rubric:
+      - "All four blocks fit inside 10.60.0.0/20 and none of them overlap"
+      - "Each block is large enough: at least 200, 1500, 30 and 10 usable hosts"
+      - "Shows block size = 2^(32-prefix) and usable = size - 2 for at least one block"
+      - "States the remaining free space in the /20 correctly"
+      - "Notes that sizing up costs nothing and that resizing later means renumbering"
+    model_answer: >-
+      A /20 is 4096 addresses: `10.60.0.0` – `10.60.15.255`.
+
+
+      | Tier | Block | Addresses | Usable | Needed |
+      |---|---|---|---|---|
+      | Application | 10.60.0.0/21 | 2048 | 2046 | 1500 |
+      | Public | 10.60.8.0/23 | 512 | 510 | 200 |
+      | Database | 10.60.10.0/24 | 256 | 254 | 30 |
+      | Management | 10.60.11.0/24 | 256 | 254 | 10 |
+
+
+      Arithmetic for the application tier: 1500 usable hosts needs
+      `2^(32−prefix) − 2 ≥ 1500`. A /22 gives 1022, which is short; a /21 gives
+      2046, which fits. Its block starts at a multiple of 2048, so `10.60.0.0`,
+      and runs to `10.60.7.255`.
+
+
+      Largest first keeps the boundaries aligned — a /21 has to start at
+      `10.60.0.0` or `10.60.8.0`, and placing it first avoids having to move
+      anything.
+
+
+      Remaining: `10.60.12.0` – `10.60.15.255`, which is 1024 addresses, or a
+      free /22. That is deliberate rather than left over: the database and
+      management tiers took /24s they will never fill, because a /27 would have
+      been exactly right today and impossible to grow tomorrow. Subnets cannot be
+      resized in place, and private addresses are free.
+    common_failures:
+      - "Sizing the application tier as a /22, which gives 1022 usable and does not fit 1500"
+      - "Choosing blocks that do not start on their own boundary, so they overlap a neighbour"
+      - "Forgetting the minus two, which only matters at boundaries — and boundaries are where sizing lands"
+      - "Packing all four tightly with no free space, which guarantees a renumbering project later"
+
+  - id: B
+    title: Explain the routing decision
+    kind: explain
+    objectives: [OBJ-A03.1.6, OBJ-A03.1.5]
+    prompt: >-
+      A colleague has added a route and is confused that it has no effect. Their
+      table:
+
+
+      ```text
+      default via 192.168.1.1 dev wlan0
+      10.0.0.0/8 via 10.8.0.1 dev wg0
+      10.24.0.0/16 via 192.168.1.1 dev wlan0
+      ```
+
+
+      They added the `10.0.0.0/8` line last, expecting it to take precedence, and
+      traffic to `10.24.3.10` still goes out `wlan0`.
+
+
+      In about 200 words: explain how the kernel actually chooses, why their
+      mental model produced the wrong prediction, and how they would make the /8
+      win for that destination if they wanted to.
+    rubric:
+      - "States that the kernel finds all matching routes and takes the longest prefix"
+      - "States explicitly that the order routes were added or are listed in is irrelevant"
+      - "Identifies /16 as more specific than /8 for 10.24.3.10, so wlan0 wins correctly"
+      - "Explains that the fix is a more specific route, not a reordering"
+      - "Distinguishes metric from prefix length — metric only breaks ties at equal prefix"
+    model_answer: >-
+      The kernel does not evaluate routes in order. For a destination it finds
+      **every** matching route and takes the one with the longest prefix — the
+      most specific — and the order they were added or listed in carries no
+      meaning at all. Routing tables are not firewall rules.
+
+
+      For `10.24.3.10`, three routes match: the default at /0, the VPN route at
+      /8, and `10.24.0.0/16` at /16. The /16 is the most specific, so traffic
+      goes out `wlan0`. That is correct behaviour, and adding the /8 later could
+      not have changed it.
+
+
+      The mental model to replace is "later wins" or "first match wins". Neither
+      applies. What breaks ties is `metric`, and only between routes with the
+      **same** prefix length — it never overrides a longer prefix.
+
+
+      To make the tunnel win for that destination, add something more specific
+      than the /16 rather than reordering anything:
+
+
+      ```bash
+      ip route add 10.24.3.10/32 via 10.8.0.1 dev wg0
+      ```
+
+
+      A /32 is the longest prefix possible, so it beats everything. And
+      `ip route get 10.24.3.10` confirms the result in one line — better than
+      predicting it from a table, which is where the confusion started.
+    common_failures:
+      - "Explaining it as 'the more specific route was added first', which reintroduces ordering"
+      - "Suggesting the colleague delete the /16, which changes behaviour for a whole network to fix one address"
+      - "Confusing metric with prefix length, or claiming a lower metric can beat a longer prefix"
+      - "Omitting `ip route get`, leaving them to predict from a table again"
+
+  - id: C
+    title: Diagnose three hosts
+    kind: diagnose
+    objectives: [OBJ-A03.1.8, OBJ-A03.1.2]
+    prompt: >-
+      Three hosts on one switch.
+
+
+      **X** — `10.20.4.10/24`, default via `10.20.4.1`. Reaches the internet.
+      Times out to Y. Reaches Z.
+
+
+      **Y** — `10.20.4.200/25`, default via `10.20.4.1`. Reaches the internet.
+      Times out to X and to Z.
+
+
+      **Z** — `10.20.4.60/24`, no default route. Reaches X. Times out to Y.
+      Reports `connect: Network is unreachable` for anything off the subnet.
+
+
+      Diagnose each, give the exact fix for the broken ones, and say which host's
+      symptom is most misleading and why.
+    rubric:
+      - "X is correctly configured; its failure to Y is Y's fault"
+      - "Y has a /25 where the subnet is a /24, so its network starts at .128 and both neighbours look remote"
+      - "Z has no default route: local traffic works, everything else fails instantly"
+      - "Gives concrete fixes: correct Y's prefix to /24, add a default route on Z"
+      - "Identifies X's timeout as the misleading symptom and explains that a one-way failure means comparing masks"
+    model_answer: >-
+      **X is correct.** /24, a default route, reaches the internet and reaches Z.
+      Its only failing destination is Y, and the fault is entirely Y's.
+
+
+      **Y has the wrong prefix.** A /25 on `10.20.4.200` puts its network at
+      `10.20.4.128`–`.255`, so both X at .10 and Z at .60 fall below it and are
+      treated as remote. Y sends their traffic to the gateway instead of ARPing
+      for them on the wire it shares with them, and the gateway will not route it
+      back. X's packets still arrive at Y and are answered — the replies are what
+      go astray, which is why X reports a timeout while Y's own logs look normal.
+
+
+      ```bash
+      ip addr replace 10.20.4.200/24 dev eth0
+      ```
+
+
+      **Z has no default route.** Its own subnet works, which is why X and Z talk
+      fine, and everything else fails *instantly* with "Network is unreachable" —
+      no route matched, so nothing was ever sent. Z's timeout to Y is a second
+      fault it is merely a victim of.
+
+
+      ```bash
+      ip route add default via 10.20.4.1 dev eth0
+      ```
+
+
+      **X's symptom is the misleading one.** It reports the failure and is the
+      one host that is right, so the instinct to change something on the
+      complaining machine would make things worse. A failure in one direction
+      between two hosts on one wire means the two disagree about who is a
+      neighbour — compare the prefixes before touching either.
+    common_failures:
+      - "Changing something on X, because X is the host reporting the problem"
+      - "Treating Z's 'Network is unreachable' as equivalent to the timeouts, losing the strongest single clue"
+      - "Diagnosing Y as a firewall or switch problem rather than reading its prefix"
+      - "Missing that Z's failure to Y is caused by Y, and 'fixing' Z twice"

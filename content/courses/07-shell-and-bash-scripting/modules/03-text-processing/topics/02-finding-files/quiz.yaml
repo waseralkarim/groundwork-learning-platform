@@ -1,0 +1,462 @@
+id: quiz.finding-files
+topic: topic.finding-files
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.4.1]
+    stem: "How are adjacent find predicates combined?"
+    options:
+      - id: a
+        text: With an implicit AND
+        correct: true
+      - id: b
+        text: With an implicit OR
+        note: >-
+          OR must be written `-o`, and it binds more loosely than the implicit
+          AND.
+      - id: c
+        text: They are evaluated independently and the results merged
+        note: >-
+          find evaluates one boolean expression per path.
+      - id: d
+        text: In the order given, with the last one winning
+        note: >-
+          All of them apply; a path must satisfy the whole expression.
+    explanation: >-
+      `find . -name '*.log' -type f -mtime +7` requires all three. Because `-o`
+      binds more loosely, `-name A -o -name B -delete` parses as
+      `(-name A)` OR `(-name B AND -delete)` — so only the B files are deleted.
+      Always parenthesise an `-o` that is followed by an action.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.4.1]
+    stem: >-
+      Why must a `-name` pattern be quoted?
+    options:
+      - id: a
+        text: Otherwise the shell expands it against the current directory before find runs
+        correct: true
+      - id: b
+        text: Because find requires quoted arguments
+        note: >-
+          find is happy either way — the damage is done before it starts.
+      - id: c
+        text: To make the pattern case-sensitive
+        note: >-
+          Case sensitivity is `-name` versus `-iname`, unrelated to quoting.
+      - id: d
+        text: Only when the pattern contains a space
+        note: >-
+          `*` is the problem, and it needs no space to be expanded.
+    explanation: >-
+      Unquoted, `find . -name *.log` has `*.log` expanded by the shell first. If
+      it matches nothing the command works by accident; if it matches one file
+      find silently searches for that filename; if it matches several find
+      errors. Which is why the bug appears only when somebody runs the script
+      from a different directory.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.4.2]
+    stem: >-
+      What is the most important difference between `-exec cmd \;` and
+      `-exec cmd +`?
+    options:
+      - id: a
+        text: "`\\;` discards the command's exit status; `+` propagates it to find"
+        correct: true
+      - id: b
+        text: "`+` is faster, and that is the only difference"
+        note: >-
+          It is faster — and the status difference is the one that causes silent
+          failures.
+      - id: c
+        text: "`\\;` works on more platforms"
+        note: >-
+          Both are POSIX. `+` has been standard for a long time.
+      - id: d
+        text: "`+` cannot be used with commands that take options"
+        note: >-
+          It can; the only constraint is that `{}` must come last.
+    explanation: >-
+      Three differences: process count (one per file versus batched), where `{}`
+      may appear (anywhere versus last), and exit status. The third is the one
+      nobody knows — `find … -exec rm {} \;` reports success when **every** `rm`
+      failed, which is exactly what a retention job on a read-only filesystem
+      does.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.4.2]
+    stem: >-
+      For 50,000 matching files, how many processes does `-exec gzip {} +`
+      start?
+    options:
+      - id: a
+        text: A handful — as many as needed to fit the paths on command lines
+        correct: true
+      - id: b
+        text: Exactly one
+        note: >-
+          Close, and find splits into several invocations if the paths exceed
+          the command-line length limit.
+      - id: c
+        text: 50,000 — one per file
+        note: >-
+          That is `\;`. The whole point of `+` is batching.
+      - id: d
+        text: One per directory
+        note: >-
+          Batching is by command-line length, not by directory.
+    explanation: >-
+      `+` packs as many paths as fit within the system's argument-length limit,
+      so a very large set becomes a few invocations rather than one. That is the
+      same batching `xargs` does — and it is why `xargs -I{}` is a trap, since
+      `-I` silently reverts to one item per command.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.3]
+    stem: "Which files does `find . -mtime +7` select?"
+    options:
+      - id: a
+        text: Those modified more than seven whole 24-hour periods ago — eight days or more
+        correct: true
+      - id: b
+        text: Those modified seven or more days ago
+        note: >-
+          A file exactly seven days old is excluded, which is the whole trap.
+      - id: c
+        text: Those modified in the last seven days
+        note: >-
+          That is `-mtime -7`.
+      - id: d
+        text: Those modified exactly seven days ago
+        note: >-
+          That is `-mtime 7`, without the sign.
+    explanation: >-
+      `-mtime` truncates to whole 24-hour periods and `+7` means *strictly more
+      than* seven of them. So "delete anything older than seven days" written as
+      `-mtime +7` keeps everything for eight — a retention window 14% longer than
+      the policy, with the job reporting success throughout.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.3]
+    stem: >-
+      A policy says "delete files after seven full days". Which predicate says
+      that most clearly?
+    options:
+      - id: a
+        text: "`! -newermt '-7 days'`"
+        correct: true
+      - id: b
+        text: "`-mtime +7`"
+        note: >-
+          Implements eight days, because of the truncation.
+      - id: c
+        text: "`-mtime +6`"
+        note: >-
+          Numerically correct here, and it reads as "six" to anybody checking it
+          against the policy.
+      - id: d
+        text: "`-atime +7`"
+        note: >-
+          Access time, which is often not updated at all on `relatime` or
+          `noatime` mounts.
+    explanation: >-
+      `-newermt` compares against a real moment in time with no rounding, so the
+      boundary means what it says and a reviewer can check it against the policy
+      without knowing find's truncation rule. `-mmin +10080` is the other escape.
+      And note which clock each predicate reads: `-ctime` is bumped by `chmod`,
+      so a permissions fix can make an old file look new.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.4]
+    stem: >-
+      What does `-prune` do that `! -path '*/node_modules/*'` does not?
+    options:
+      - id: a
+        text: It stops find descending into the directory at all
+        correct: true
+      - id: b
+        text: It excludes the directory from the results
+        note: >-
+          Both exclude the contents. The difference is whether find walks them
+          first.
+      - id: c
+        text: It deletes the directory
+        note: >-
+          `-prune` only stops the descent; it changes nothing on disk.
+      - id: d
+        text: Nothing — they are two spellings of the same thing
+        note: >-
+          They produce the same files and do very different amounts of work.
+    explanation: >-
+      `! -path` walks the entire excluded tree and discards each path; `-prune`
+      never opens those directories. Measured on a 2,649-path tree it was 1ms
+      against 4ms, and the difference scales with the excluded subtree — which on
+      a real `node_modules` or `.git` is the difference between instant and
+      minutes.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.4]
+    stem: >-
+      Why does `find . -path '*/cache' -prune -o -name '*.log'` print the cache
+      directory itself?
+    options:
+      - id: a
+        text: >-
+          Supplying an action removes the implicit `-print`, so an explicit
+          `-print` is needed on the second branch
+        correct: true
+      - id: b
+        text: "`-prune` always prints what it prunes"
+        note: >-
+          It prints nothing itself; the implicit print is applying to the whole
+          expression.
+      - id: c
+        text: The `-path` pattern is wrong
+        note: >-
+          The pattern is fine — the output is a consequence of the missing
+          action.
+      - id: d
+        text: Because `-o` makes both branches print
+        note: >-
+          Only the branches that evaluate true reach the implicit print, and
+          `-prune` returns true.
+    explanation: >-
+      If you supply **no** action, `-print` is implied for the whole expression —
+      including the pruned directories, since `-prune` returns true. Adding an
+      explicit `-print` to the branch you want fixes it. This is the same rule
+      that makes output disappear when you add `-delete` to a working `find`.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.5]
+    stem: >-
+      What does find return when it cannot read one of the directories it was
+      asked to search?
+    options:
+      - id: a
+        text: 1, having printed an error to stderr and searched everything else
+        correct: true
+      - id: b
+        text: 0 — an unreadable directory is skipped silently
+        note: >-
+          It reports on stderr and sets a non-zero status; it is the *pipeline*
+          that throws that away.
+      - id: c
+        text: 2, since it is a usage error
+        note: >-
+          find uses 1 for this.
+      - id: d
+        text: It aborts immediately without searching the rest
+        note: >-
+          It continues, which is usually what you want and is why the status
+          matters.
+    explanation: >-
+      This is the status that matters most in a cleanup job: the files find could
+      not see are exactly the ones that will never be processed, silently, on
+      every run. And in `find … | xargs rm` the pipeline reports **xargs's**
+      status, so the error disappears entirely unless `pipefail` is set.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.5]
+    stem: >-
+      A cleanup job runs `find "$DIR" -name '*.log' -exec rm {} \;` on a
+      read-only filesystem. What does it report?
+    options:
+      - id: a
+        text: Success — every `rm` fails and find exits 0
+        correct: true
+      - id: b
+        text: Failure, because `rm` returns non-zero
+        note: >-
+          `\;` discards the command's status entirely.
+      - id: c
+        text: Failure, because find cannot read the files
+        note: >-
+          It can read them; it is the removal that fails.
+      - id: d
+        text: It depends on how many files failed
+        note: >-
+          None of them affect find's status in this form.
+    explanation: >-
+      `-exec cmd \;` ignores the command's exit status, so a job that deleted
+      nothing prints its completion message and exits 0. `-exec cmd +` propagates
+      the failure — which is a strong reason to prefer it, quite apart from the
+      process count.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.6]
+    stem: >-
+      `find . -name 'nomatch' -print0 | xargs -0 rm` — what happens when nothing
+      matches?
+    options:
+      - id: a
+        text: "`rm` runs once with no arguments"
+        correct: true
+      - id: b
+        text: Nothing runs, because the input is empty
+        note: >-
+          That is `xargs -r`. The default is to run once regardless.
+      - id: c
+        text: xargs exits non-zero without running anything
+        note: >-
+          It exits 0, having run the command.
+      - id: d
+        text: "`rm` deletes everything in the current directory"
+        note: >-
+          `rm` with no arguments is an error, not a wildcard — though a command
+          with a default target would be a real problem.
+    explanation: >-
+      For `rm` this is a harmless usage error. It is **not** harmless for a
+      command with a default target, or one that treats "no arguments" as
+      "everything". `xargs -r` suppresses it and is GNU-specific; elsewhere,
+      guard with `[ -s "$LIST" ]`.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.6]
+    stem: "What does `xargs -I{}` do to batching?"
+    options:
+      - id: a
+        text: Removes it — `-I` implies one item per invocation
+        correct: true
+      - id: b
+        text: Nothing; it only changes where the arguments are placed
+        note: >-
+          Placement is what it is *for*, and the side effect is one command per
+          item.
+      - id: c
+        text: Improves it, by letting xargs pack arguments more tightly
+        note: >-
+          The opposite.
+      - id: d
+        text: It depends on whether `-n` is also given
+        note: >-
+          `-I` overrides the batching regardless.
+    explanation: >-
+      Measured: 8 files gave 1 invocation batched and 8 with `-I{}`. So a
+      pipeline written for efficiency silently becomes one process per file — the
+      same regression as `\;` versus `+`, arrived at by accident. Use `-I` only
+      when the command needs the argument somewhere other than at the end.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.7]
+    stem: >-
+      You copy a directory with `cp -r` to test an age-based retention job. What
+      is wrong with the test?
+    options:
+      - id: a
+        text: >-
+          `cp -r` sets every copy's mtime to now, so nothing is old enough and
+          the job correctly deletes nothing
+        correct: true
+      - id: b
+        text: Nothing — `cp -r` is the right way to copy a tree
+        note: >-
+          It is fine for content and destroys exactly the property under test.
+      - id: c
+        text: "`cp -r` does not copy hidden files"
+        note: >-
+          It does. Timestamps are the issue.
+      - id: d
+        text: The copy will have the wrong ownership
+        note: >-
+          Possible with `cp -a` as a different user, and not what breaks this
+          test.
+    explanation: >-
+      The test passes for entirely the wrong reason: the job deletes nothing
+      because nothing is old, not because the predicate is right. `cp -a` (or
+      `cp -rp`) preserves timestamps. The same trap applies to a tarball
+      extracted without `-p` and to a **git checkout**, which sets every file's
+      mtime to the checkout time.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.7]
+    stem: >-
+      A weekly cleanup job has reported success for two years. What does that
+      tell you about whether it works?
+    options:
+      - id: a
+        text: >-
+          Very little — its likely failure modes all report success and delete
+          less than intended
+        correct: true
+      - id: b
+        text: That the predicate and the deletion are both correct
+        note: >-
+          `-exec … \;` reports success when every deletion fails, so the record
+          is consistent with deleting nothing.
+      - id: c
+        text: That the directory has stayed within its size limit
+        note: >-
+          Nothing in the job's exit status measures that.
+      - id: d
+        text: That no files have been wrongly deleted
+        note: >-
+          It says nothing in either direction.
+    explanation: >-
+      The three faults in this topic's job — `-mtime` truncation, `-exec \;`
+      discarding failures, and an unchecked find status — all fail **silently
+      toward doing less than asked**. So a clean record is consistent with the
+      job never having deleted anything. What you want to monitor is `remaining`
+      shrinking, not whether the run succeeded.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.4.8]
+    stem: >-
+      Which pattern makes a destructive bulk operation reviewable?
+    options:
+      - id: a
+        text: >-
+          Compute the list to a file, print and count it, then act on that file
+        correct: true
+      - id: b
+        text: "`find … -delete`, after testing the predicate with `-print`"
+        note: >-
+          A good habit and the right default for a tested predicate in a path you
+          control — but it leaves no artefact to review or log.
+      - id: c
+        text: "`find … | xargs rm`, with `set -e` enabled"
+        note: >-
+          `set -e` does not help: the pipeline reports xargs's status, so find's
+          errors vanish.
+      - id: d
+        text: Running it as a less privileged user
+        note: >-
+          A useful control that does nothing about a wrong predicate.
+    explanation: >-
+      Computing the list once means nothing changes between deciding and acting —
+      `find -delete` re-walks a tree other processes are writing to. The file can
+      be printed, counted against a ceiling, logged, and diffed against
+      yesterday's. Add `DRY_RUN=yes` as the default and an allow-list on the
+      target path, and the operation becomes something a reviewer can check
+      before it runs.

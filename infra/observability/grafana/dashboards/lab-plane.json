@@ -1,0 +1,128 @@
+{
+  "uid": "gw-labs",
+  "title": "Groundwork \u00b7 Lab plane",
+  "description": "Capacity, cost and the two failure modes that matter: labs that start slowly and labs whose instructions do not work.",
+  "tags": [
+    "groundwork"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Lab provisioning p95",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(lab_provision_duration_seconds_bucket[10m])))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "description": "Alerts at 8s. Slow lab start is the #1 UX killer on platforms like this."
+    },
+    {
+      "type": "timeseries",
+      "title": "Sessions created, by outcome",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(lab_sessions_total[10m]))",
+          "legendFormat": "{{ outcome }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Session lifetime p50",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, reason) (rate(lab_session_duration_seconds_bucket[1h])))",
+          "legendFormat": "{{ reason }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "description": "Mostly ttl_expired means the TTL is shorter than the lab; near-zero lifetimes mean something breaks at the start."
+    },
+    {
+      "type": "timeseries",
+      "title": "Step failure rate, worst 10",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (lab, step) (rate(lab_check_results_total{passed=\"false\"}[6h])) / clamp_min(sum by (lab, step) (rate(lab_check_results_total[6h])), 0.001))",
+          "legendFormat": "{{ lab }}/{{ step }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "description": "This is a content dashboard wearing an ops dashboard's clothes. A step everyone fails is an instruction problem."
+    }
+  ]
+}

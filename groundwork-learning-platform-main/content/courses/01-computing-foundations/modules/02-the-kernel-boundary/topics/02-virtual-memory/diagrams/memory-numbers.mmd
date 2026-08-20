@@ -1,0 +1,6 @@
+graph TD
+    V["VSZ · everything mapped<br/>412 MB"] --> R["RSS · actually in RAM<br/>52 MB"]
+    R --> P["PSS · RSS with shared pages divided<br/>31 MB"]
+    V -.->|"includes reservations never touched,<br/>and files never read"| NOTE1["Says almost nothing"]
+    R -.->|"counts every shared page in full,<br/>in every process"| NOTE2["Sums to more than the machine has"]
+    P -.->|"each shared page split between sharers"| NOTE3["The only one that adds up"]

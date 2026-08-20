@@ -1,0 +1,327 @@
+id: lab.what-put-this-file-here
+topic: topic.packages-and-dependencies
+title: Follow file ownership in both directions, and find what nothing owns
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B06.2.1, OBJ-B06.2.2, OBJ-B06.2.6]
+
+intro: >-
+  Every file on this machine either has a package that placed it there or does
+  not, and the difference decides whether anyone will ever patch it.
+
+
+  You will ask the ownership question in both directions, meet a file that
+  answers neither way for an interesting reason, and then find the files here
+  that answer neither way for a serious one.
+
+setup:
+  - /opt/lab/seed-packages.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Ask both directions of the ownership question about OpenSSL, and save the
+      answers to /tmp/answer-both-ways.
+    hint: >-
+      `dpkg -S <path>` goes from a file to its package. `dpkg -L <package>` goes
+      the other way. Count what comes back from the second one.
+    walkthrough: |
+      {
+        echo "file -> package:"
+        dpkg -S /usr/bin/openssl
+        echo
+        echo "package -> files:"
+        echo "paths owned by openssl: $(dpkg -L openssl | wc -l)"
+        dpkg -L openssl | grep 'bin/'
+        echo
+        echo "and what the database records about it:"
+        dpkg-query -W -f='  version:   ${Version}\n  priority:  ${Priority}\n  essential: ${Essential}\n  size(kB):  ${Installed-Size}\n' openssl
+        echo
+        echo "so one package is not one binary. 400 paths for openssl, most of them directories and certificate helpers. the package is the unit of ownership, not the thing i think of when i say 'openssl'."
+      } > /tmp/answer-both-ways
+      cat /tmp/answer-both-ways
+    verify:
+      - type: file_matches
+        path: /tmp/answer-both-ways
+        pattern: "openssl: /usr/bin/openssl"
+        describe: You went from the file to its package
+      - type: command_exit
+        command: "test $(sed -n 's/^paths owned by openssl: //p' /tmp/answer-both-ways) -gt 100"
+        exit_code: 0
+        describe: And found the package owns far more than one binary
+      - type: file_matches
+        path: /tmp/answer-both-ways
+        pattern: "version: +3\\."
+        describe: And read the metadata the database keeps alongside
+
+  - id: s2
+    instruction: >-
+      Now ask the same question about /usr/bin/awk and /bin/sh. Both exist and
+      both run. Work out why the database does not admit to them, and save your
+      finding to /tmp/answer-awk.
+    hint: >-
+      Look at what kind of file each one is before concluding anything. `ls -l`,
+      then `readlink -f`.
+    walkthrough: |
+      {
+        echo "asking directly:"
+        dpkg -S /usr/bin/awk 2>&1
+        dpkg -S /bin/sh 2>&1
+        echo
+        echo "but both run. what are they?"
+        ls -l /usr/bin/awk /bin/sh
+        echo
+        echo "resolve, then ask again:"
+        for f in /usr/bin/awk /bin/sh; do
+          t=$(readlink -f "$f")
+          printf '  %-14s -> %-18s owned by %s\n' "$f" "$t" "$(dpkg -S "$t" | cut -d: -f1)"
+        done
+        echo
+        echo "explanation: /usr/bin/awk points into /etc/alternatives, a symlink layer that lets several packages provide the same command. mawk, gawk and original-awk all provide awk; the symlink decides which one i get and is managed by a script rather than shipped by any one package."
+        echo "so the answer is not 'unowned'. the owner is one resolution away, and the habit is: dpkg -S \"\$(readlink -f <path>)\"."
+        echo
+        echo "and /bin/sh -> dash is not trivia. a script with a #!/bin/sh shebang gets dash here and bash on distributions where sh points at bash, which is why 'works on my machine' scripts break on debian in ways that look like syntax errors."
+      } > /tmp/answer-awk
+      cat /tmp/answer-awk
+    verify:
+      - type: file_matches
+        path: /tmp/answer-awk
+        pattern: "no path found matching pattern /usr/bin/awk"
+        describe: You confirmed the direct question finds nothing
+      - type: file_matches
+        path: /tmp/answer-awk
+        pattern: "owned by mawk"
+        describe: And found the real owner by resolving the symlink
+      - type: file_matches
+        path: /tmp/answer-awk
+        pattern: "(?i)alternatives"
+        describe: And identified the alternatives layer as the reason
+      - type: file_matches
+        path: /tmp/answer-awk
+        pattern: "(?i)dash"
+        describe: And what /bin/sh actually points at here
+
+  - id: s3
+    instruction: >-
+      Read /tmp/pkg/deployed/install-record.txt, then try to answer its questions
+      from the package database. Save what you can and cannot answer to
+      /tmp/answer-unowned.
+    hint: >-
+      Try `dpkg -S` on each of the paths the record lists. The record is asking
+      you for a version, a change date, and a CVE assessment.
+    walkthrough: |
+      cat /tmp/pkg/deployed/install-record.txt
+      {
+        echo "asking the database about every path the vendor script wrote:"
+        for p in /usr/local/bin/acme-agent /etc/acme/agent.conf /opt/lab/seed-packages.sh; do
+          printf '  %-34s %s\n' "$p" "$(dpkg -S "$p" 2>&1 | tail -1)"
+        done
+        echo
+        echo "what i can answer from the machine:"
+        echo "  - nothing. no package owns any of it."
+        echo
+        echo "what the record asked, and what the machine says:"
+        echo "  which package owns these?   none"
+        echo "  what version is installed?  unknown - no version was recorded anywhere"
+        echo "  when did it last change?    unknown - no checksum was ever taken"
+        echo "  affected by the CVE?        unanswerable without finding the vendor's own tooling"
+        echo "  what on a distribution upgrade? nothing happens to it. it is not part of the upgrade."
+        echo
+        echo "note the message is IDENTICAL to the awk case. same words, completely different meaning: awk had an owner one symlink away, these have no owner at all."
+        echo
+        echo "so an inventory built from dpkg-query is complete and accurate about everything the distribution installed, and silent about the agent running as root on every machine in the fleet. a scanner reading that database reports this host clean about acme-agent forever - not because it is safe, but because nothing looked."
+      } > /tmp/answer-unowned
+      cat /tmp/answer-unowned
+    verify:
+      - type: file_matches
+        path: /tmp/answer-unowned
+        pattern: "no path found matching pattern /opt/lab/seed-packages.sh"
+        describe: You confirmed even this platform's own files are unowned
+      - type: file_matches
+        path: /tmp/answer-unowned
+        pattern: "(?i)unanswerable|unknown"
+        describe: And identified the questions the machine cannot answer
+      - type: file_matches
+        path: /tmp/answer-unowned
+        pattern: "(?i)identical"
+        describe: And that the message is the same as the awk case with a different meaning
+      - type: file_matches
+        path: /tmp/answer-unowned
+        pattern: "(?i)scanner|inventory"
+        describe: And what that means for an inventory built from the database
+
+  - id: s4
+    instruction: >-
+      Write a check that finds every binary on this machine that no package
+      owns. Run it and save the result to /tmp/answer-audit.
+    hint: >-
+      Loop over the directories where unpackaged software normally lands, resolve
+      each path, and report the ones `dpkg -S` cannot place.
+    walkthrough: |
+      {
+        echo "scanning for unowned executables:"
+        found=0
+        for f in /usr/local/bin/* /usr/local/sbin/* /opt/lab/*.sh; do
+          [ -e "$f" ] || continue
+          if ! dpkg -S "$(readlink -f "$f")" >/dev/null 2>&1; then
+            echo "  unowned: $f"
+            found=$((found + 1))
+          fi
+        done
+        echo "unowned count: $found"
+        echo
+        echo "for comparison, the same loop over a packaged directory:"
+        owned=0
+        for f in /usr/bin/openssl /usr/bin/curl /usr/bin/strace; do
+          dpkg -S "$(readlink -f "$f")" >/dev/null 2>&1 && owned=$((owned + 1))
+        done
+        echo "owned count: $owned of 3"
+        echo
+        echo "this loop is the audit worth automating. run across a fleet it produces the list of software that receives no security updates and appears in no report - and it is never empty."
+      } > /tmp/answer-audit
+      cat /tmp/answer-audit
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/^unowned count: //p' /tmp/answer-audit) -ge 1"
+        exit_code: 0
+        describe: Your check found unowned executables on this machine
+      - type: file_matches
+        path: /tmp/answer-audit
+        pattern: "owned count: 3 of 3"
+        describe: And correctly placed the packaged binaries
+      - type: file_matches
+        path: /tmp/answer-audit
+        pattern: "(?i)no security updates|no report"
+        describe: And stated what the unowned list actually represents
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-lost what a file loses by being unowned — everything
+      the package system would have provided.
+    hint: >-
+      Go back to what the database recorded about openssl in step 1, and ask
+      which of those things exist for the agent.
+    walkthrough: |
+      {
+        echo "what an owned file gets, and an unowned one does not:"
+        echo
+        echo "  a version           dpkg-query answers instantly. the agent has one; nothing on the machine knows it."
+        echo "  upgrades            apt-get upgrade moves it. nothing moves the agent."
+        echo "  security fixes      arrive as backports without me acting. never arrive for the agent."
+        echo "  integrity checking  dpkg -V compares a recorded checksum. no checksum was ever taken for the agent."
+        echo "  a file list         dpkg -L says exactly what it put where. nobody knows what the install script wrote."
+        echo "  clean removal       dpkg removes what it placed. removing the agent means guessing."
+        echo "  an inventory line   scanners and SBOM tooling read the database. the agent is invisible to all of it."
+        echo
+        echo "and the one that matters most: NOTHING RECORDS THAT IT EXISTS. every other item could in principle be recovered by looking hard enough. that one cannot, because there is no place to look - the knowledge lives in whoever ran the install command."
+        echo
+        echo "so an unowned file is not a technical shortcut, it is a transfer of obligation. somebody accepted permanent responsibility for patching it, and on a fleet that is old enough, that person has left."
+      } > /tmp/answer-lost
+      cat /tmp/answer-lost
+    verify:
+      - type: file_matches
+        path: /tmp/answer-lost
+        pattern: "(?i)integrity"
+        describe: You named integrity checking as one of the losses
+      - type: file_matches
+        path: /tmp/answer-lost
+        pattern: "(?i)nothing records that it exists"
+        describe: And identified the one that cannot be recovered
+      - type: file_matches
+        path: /tmp/answer-lost
+        pattern: "(?i)obligation|responsibility"
+        describe: And framed it as a transfer of obligation rather than a technical detail
+
+solution: >-
+  **Both directions.**
+
+
+  ```console
+  $ dpkg -S /usr/bin/openssl
+  openssl: /usr/bin/openssl
+  $ dpkg -L openssl | wc -l
+  400
+  ```
+
+
+  Four hundred paths for one package. A package is the unit of ownership, and it
+  is rarely the single binary you have in mind when you name it.
+
+
+  **Why `awk` answers neither way.**
+
+
+  ```console
+  $ dpkg -S /usr/bin/awk
+  dpkg-query: no path found matching pattern /usr/bin/awk
+  $ readlink -f /usr/bin/awk
+  /usr/bin/mawk
+  $ dpkg -S /usr/bin/mawk
+  mawk: /usr/bin/mawk
+  ```
+
+
+  `/usr/bin/awk` is a symlink into `/etc/alternatives`, the layer that lets
+  several packages provide the same command. The owner is one resolution away, so
+  the habit is `dpkg -S "$(readlink -f <path>)"`.
+
+
+  `/bin/sh` is the same shape and points at **dash**. That is not trivia: a
+  `#!/bin/sh` script gets dash here and bash on distributions where `sh` points at
+  bash, which is why scripts that "work on my machine" fail on Debian with errors
+  that look like syntax problems.
+
+
+  **The same message, a different meaning.**
+
+
+  ```console
+  $ dpkg -S /usr/local/bin/acme-agent
+  dpkg-query: no path found matching pattern /usr/local/bin/acme-agent
+  ```
+
+
+  Identical words. But there is no symlink to resolve and no owner to find — this
+  file genuinely has none. The install record asks five questions and the machine
+  can answer none of them: no version, no change date, no CVE assessment, no
+  upgrade path.
+
+
+  The consequence is the part worth carrying: **an inventory built from
+  `dpkg-query` is complete and accurate about the distribution, and silent about
+  the agent running as root on every host.** A scanner reading that database
+  reports this machine clean about the agent forever — not because it is safe,
+  but because nothing looked.
+
+
+  **The audit.**
+
+
+  ```bash
+  for f in /usr/local/bin/* /opt/*/bin/*; do
+    [ -e "$f" ] || continue
+    dpkg -S "$(readlink -f "$f")" >/dev/null 2>&1 || echo "unowned: $f"
+  done
+  ```
+
+
+  Worth automating once and running across a fleet. The output is the software
+  nobody is patching, and it is never empty.
+
+
+  **What is lost.**
+
+
+  A version, upgrades, security fixes, integrity checking, a file list, clean
+  removal, and a line in every inventory. Each of those is recoverable in
+  principle by looking hard enough — except the last thing, which is that
+  **nothing records that the file exists at all.** There is no place to look,
+  because the knowledge lives in whoever ran the install command.
+
+
+  Which is why the honest framing is not technical. An unowned file is a
+  **transfer of obligation**: somebody accepted permanent responsibility for
+  patching it, usually without noticing, and on a fleet old enough to matter that
+  person has left.

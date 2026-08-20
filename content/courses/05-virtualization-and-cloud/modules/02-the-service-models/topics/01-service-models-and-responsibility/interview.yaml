@@ -1,0 +1,255 @@
+topic: topic.service-models-and-responsibility
+
+questions:
+  - id: i1
+    level: L1
+    question: Explain IaaS, PaaS and SaaS.
+    model_answer: >-
+      They are one stack with the responsibility boundary drawn in three
+      different places, rather than three kinds of product.
+
+
+      Take one application — an API and a database — and list every layer from
+      physical security up to data. **IaaS** puts the line under the guest OS:
+      the provider handles hardware, firmware and the hypervisor, and every patch
+      above that is yours forever. **PaaS** moves it up past the OS, container
+      runtime and database software. **SaaS** means you have stopped running the
+      application at all.
+
+
+      The useful version of this is a count. For the same application: colocation
+      leaves you fourteen layers, IaaS eleven, PaaS eight plus three shared, SaaS
+      three.
+
+
+      Two things fall out of counting that do not fall out of the definitions.
+
+
+      **PaaS is the only model with genuinely shared layers** — OS patching,
+      database patching and backups, where the provider acts and you must respond.
+      That band is where incidents cluster.
+
+
+      **Three layers never transfer at any model**: data, access control and
+      configuration. They are yours at SaaS too, and they are where nearly all
+      cloud breaches happen — a public bucket, a role granting `*` on `*`, a
+      default credential. None of those is a patch anybody can ship.
+    signal: >-
+      Framing them as one boundary in different positions, rather than as three
+      product categories, is the discriminator — it is what makes the models
+      predictive rather than memorised. The irreducible three, and the
+      observation that they are where breaches actually happen, shows they have
+      thought about the consequence rather than the taxonomy.
+    follow_ups:
+      - "What is left to do at SaaS?"
+      - "Which model has shared responsibilities, and why does that matter?"
+      - "How would you decide between them?"
+
+  - id: i2
+    level: L2
+    question: >-
+      Your managed database was patched during business hours and caused an
+      outage. Whose incident is that?
+    model_answer: >-
+      The provider applied it and we could have prevented the timing, and those
+      are genuinely different answers to different questions.
+
+
+      Mandatory patching is what a managed service *is* — an authentication
+      bypass in the database engine is not something a provider makes optional.
+      Our half of that shared layer is choosing **when**, and if the maintenance
+      window was left at its default of "any time", we made that choice by not
+      making it.
+
+
+      So the answer I would give in a review is: no provider failure, and a
+      preventable outage. Setting a window is a two-minute change and it is the
+      first thing I check on any managed database I inherit.
+
+
+      The general point is that **fault and preventability are different
+      questions**. In the provider's own layers they are the same party. In the
+      shared band they come apart, which is exactly why shared-layer incidents
+      produce arguments — everybody is answering a different question and both
+      answers are correct.
+
+
+      Asking "whose fault" ends the conversation: if the answer is "the
+      provider", the review stops and nothing changes before the next one.
+      Asking "who could have prevented it, and what would that have taken"
+      produces an action.
+
+
+      And I would check the other shared layers in the same session, because a
+      team that never set a maintenance window has probably also never rolled its
+      node images or restored a backup.
+    signal: >-
+      Separating fault from preventability, and explaining why the shared band is
+      where they diverge, is the core. Knowing the maintenance window default is
+      "any" — and that it is a two-minute fix — is practical experience.
+      Generalising to "check the other shared layers too" shows they treat it as
+      a category rather than an instance.
+    follow_ups:
+      - "What are the other shared layers on managed Kubernetes?"
+      - "Why do shared layers fail more often than either party's own?"
+      - "How would you word that in a postmortem?"
+
+  - id: i3
+    level: L2
+    question: >-
+      A team has nightly backups with two years of successes. How much confidence
+      should that give you?
+    model_answer: >-
+      Almost none, and I would say so before anything else.
+
+
+      "Backup succeeded" asserts that a job completed and a file of the expected
+      size was written. It says nothing about three things you actually need:
+      **whether the file restores**, **how long that takes**, and **whether the
+      result is usable**.
+
+
+      The number I would ask for is not backups — it is **restores**. Seven
+      hundred successes and zero restores is a ratio that tells you the whole
+      story, and it is extremely common.
+
+
+      I have seen this end badly in a specific way worth describing. A restore
+      succeeded faithfully and the application still would not start, because a
+      scheduled job that created monthly table partitions had stopped running
+      three weeks earlier. The backup was perfect; it reproduced a database that
+      was already broken. A restore test would have found that within a day, and
+      instead it was found during an outage.
+
+
+      Two other things I would want written down and usually are not. **RPO** —
+      with nightly backups and point-in-time recovery disabled, which is the
+      default, worst-case data loss is 24 hours, and nobody has agreed to that.
+      And **RTO** — a large database can take hours to restore, and that is your
+      recovery time whether or not anyone has measured it.
+
+
+      The fix is a scheduled restore into a scratch environment that asserts the
+      application starts and a known row is present. It is not expensive and it
+      converts a claim into a capability.
+
+
+      Backups are a **shared** layer: the provider takes them, and what they are
+      worth is yours to establish.
+    signal: >-
+      "Count restores, not backups" is the discriminator. The partition anecdote
+      — a faithful restore of an already-broken database — shows they understand
+      that a restore test verifies more than the backup. Volunteering RPO and RTO
+      as separately undefined, and identifying PITR-disabled as a default nobody
+      chose, are both signs of having owned this.
+    follow_ups:
+      - "What would a restore test actually assert?"
+      - "How would you find the RPO a business has actually agreed to?"
+      - "Why is this a shared layer rather than the provider's?"
+
+  - id: i4
+    level: L2
+    question: >-
+      Four services fail at exactly midnight on the first of the month. Nothing
+      was deployed. Where do you look?
+    model_answer: >-
+      At the provider's deprecation calendar, before anything else.
+
+
+      A failure at exactly 00:00 UTC on the first, with no deployment, total
+      rather than intermittent, and identical across independent services, is a
+      **date rather than a fault**. Faults are messy and partial and do not
+      respect calendar boundaries. Scheduled removals are clean and punctual.
+
+
+      I would read the error body rather than the status code — a deprecation
+      failure usually names the mechanism it wants, and it is easy to read a 403
+      as a generic permissions problem when your hypothesis is credential expiry.
+
+
+      The thing I would specifically not trust is the status page. **Status pages
+      report incidents**, and a removal executed exactly as announced is the
+      service operating as specified — so it will never appear there. Green does
+      not exclude a provider-caused failure, and that is a note worth having in
+      the incident runbook because it costs hours every time.
+
+
+      Then the real question: the notice was almost certainly published months
+      earlier, so where did it go? In the case I am thinking of it went to the
+      account root address, which pointed at a distribution list with three
+      members, two of whom had left. That is checkable in a minute and nobody had
+      ever checked.
+
+
+      And I would find the full blast radius before declaring scope. Four failed;
+      if the affected library is used by eleven services, seven more are failures
+      that have not been triggered yet.
+
+
+      This is a shared layer: they announce, we act. Their half had thirteen
+      months of notice through three channels. Ours had no owner, and nothing
+      errored in the thirteen months we did not do it.
+    signal: >-
+      "It is a date, not a fault" is the reframe that solves it, and it comes
+      from having seen one. Knowing that status pages structurally cannot show
+      planned removals is the detail most people get wrong. Checking where notices
+      arrive, and finding the blast radius beyond what has already failed, are
+      both operational maturity rather than knowledge.
+    follow_ups:
+      - "Why is the status page green?"
+      - "How would you make sure the next notice is read?"
+      - "What would you do about the services that have not failed yet?"
+
+  - id: i5
+    level: L2
+    question: >-
+      How would you advise a six-person team choosing between self-managed and
+      managed services?
+    model_answer: >-
+      Move to managed, and the dominant input is headcount rather than
+      technology.
+
+
+      Six people cannot run a database, patch operating systems, operate a
+      control plane and build a product. That is the argument, and it is not
+      close at that size. Cloud providers also run infrastructure better than a
+      six-person team does, because it is the only thing they do — which is worth
+      saying plainly rather than treating it as a compromise.
+
+
+      What I would insist goes in the decision document is **what is given up**,
+      because that is what nobody writes down and what nobody can reconstruct
+      later. Control over patch timing — you get a window, not a decision.
+      Version pinning — you can defer, not decline. Visibility into the layers
+      below. Exit cost, which rises at every step and is cheapest to think about
+      before you commit. And concentration risk, as more of the estate comes to
+      share one provider's control plane and its bad days.
+
+
+      The part most migrations miss: **you take on three shared layers** —
+      rolling node images, setting a maintenance window, verifying restores. The
+      count of layers needing a mechanism on your side barely falls; what falls
+      is the effort per layer. Teams plan the move as "we stop doing three
+      things" and are surprised when three new obligations appear.
+
+
+      So I would assign an owner to each of those three at the point of cutover,
+      while somebody is still thinking about it. That single step avoids most of
+      what goes wrong afterwards.
+
+
+      And I would write the reversal conditions — a compliance requirement about
+      data location, a database version or extension the managed service does not
+      support, a latency floor, or growing large enough that a platform team
+      makes self-managing genuinely cheaper. That last one is much later than
+      most teams believe.
+    signal: >-
+      Naming headcount as the dominant input is honest and usually left implicit
+      while people argue about technology. The strongest signal is knowing that
+      the number of layers needing a mechanism barely falls — that is a
+      non-obvious consequence of the shared band, and it predicts exactly how
+      these migrations go wrong. Writing reversal conditions is a maturity marker.
+    follow_ups:
+      - "What are the three shared layers, and what does each need?"
+      - "When would you advise the opposite?"
+      - "How would you price the exit cost?"

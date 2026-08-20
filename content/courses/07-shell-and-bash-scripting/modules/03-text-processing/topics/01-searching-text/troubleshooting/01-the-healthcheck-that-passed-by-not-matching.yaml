@@ -1,0 +1,265 @@
+id: troubleshooting.the-healthcheck-that-passed-by-not-matching
+topic: topic.searching-text
+title: The release check that skipped a release
+level: L2
+objectives: [OBJ-B08.3.4, OBJ-B08.3.5]
+reveal_policy: progressive
+
+situation: >-
+  A deploy pipeline records each shipped version in `releases.txt` and refuses
+  to deploy a version that is already there.
+
+
+  On Tuesday, release `1.2.3` reported *"already released, nothing to do"* and
+  exited 0. The pipeline went green. Nothing was deployed.
+
+
+  `releases.txt` does not contain `1.2.3`. It has never contained it.
+
+
+  The same check has correctly skipped genuine re-deploys for two years, and
+  correctly deployed 1.2.2 the week before.
+
+
+  Work out how a version that was never released was reported as already
+  released.
+
+symptoms:
+  - "Version 1.2.3 reported as already released and skipped"
+  - "releases.txt has never contained 1.2.3"
+  - "The pipeline reported success and deployed nothing"
+  - "The same check has worked correctly for two years"
+  - "1.2.2 deployed correctly the week before"
+
+artifacts:
+  - type: config
+    label: The check
+    content: |
+      # deploy.sh
+      if grep -q "$VERSION" releases.txt; then
+        echo "already released, nothing to do"
+        exit 0
+      fi
+
+      do_deploy "$VERSION"
+      echo "$VERSION" >> releases.txt
+
+  - type: command_output
+    label: The file
+    content: |
+      $ cat releases.txt
+      1.0.0
+      1.1.0
+      1.1.1
+      1.2.0
+      1.2.2
+      11213
+      1.2.30
+
+  - type: command_output
+    label: Reproducing it by hand
+    content: |
+      $ VERSION=1.2.3
+      $ grep -q "$VERSION" releases.txt; echo $?
+      0
+
+      $ grep "$VERSION" releases.txt
+      11213
+      1.2.30
+
+      $ grep -qxF "$VERSION" releases.txt; echo $?
+      1
+
+  - type: log
+    label: What changed recently
+    content: |
+      2026-06-02  release 1.2.30 shipped (a hotfix numbering experiment,
+                  later abandoned)
+      2026-07-14  build id 11213 appended by a broken CI step, never cleaned up
+
+  - type: log
+    label: The pipeline's own output
+    content: |
+      [deploy] checking releases.txt for 1.2.3
+      [deploy] already released, nothing to do
+      [deploy] SUCCESS
+
+diagnostic_questions:
+  - "What does `grep -q \"$VERSION\"` treat the dots in 1.2.3 as?"
+  - "Which lines in releases.txt does that pattern actually match?"
+  - "Why did 1.2.2 work the week before?"
+  - "Would this have failed loudly if the file were missing?"
+  - "What direction does this failure push the pipeline in?"
+
+hints:
+  - "Run the grep without -q and look at what it prints."
+  - "A dot in a regular expression is not a dot."
+  - "Look at the two most recently added lines in the file."
+  - "Ask what grep returns for a file it cannot read, and what the check does then."
+
+root_cause: >-
+  **`$VERSION` is used as a regular expression, and `1.2.3` matches far more than
+  `1.2.3`.**
+
+
+  In a regex, `.` matches **any character**. So the pattern `1.2.3` matches:
+
+
+  - `11213` — `1`, any char, `2`, any char, `3`
+  - `1.2.30` — the pattern is not anchored, so it matches the first five
+    characters and ignores the trailing `0`
+
+
+  Both lines are in the file, and either alone is enough to make `grep -q` return
+  0. The check concluded the version was already released and skipped the deploy.
+
+
+  **Two separate faults compound**, and each is worth naming:
+
+
+  **The pattern is data.** A version string is made of dots, which makes it the
+  most common real example of a value that must be matched literally. `grep -F`
+  treats it as text.
+
+
+  **The match is not anchored.** Even with `-F`, `1.2.3` matches inside `1.2.30`
+  — a genuinely plausible neighbouring release. `grep -x` requires the whole line
+  to match.
+
+
+  **Why it worked for two years.** Until June, every line in the file was a
+  three-part version with no line that could collide. The check was never
+  correct; it was **unopposed**. The hotfix numbering experiment added `1.2.30`
+  and a broken CI step appended the build id `11213`, and both are collisions
+  waiting for a specific version number.
+
+
+  **Why 1.2.2 worked the week before.** No line in the file matches the pattern
+  `1.2.2` — `11213` would need a `2` in the fifth position and has a `1`. The
+  check happened to be right, which is not the same as being correct.
+
+
+  **And the failure direction is the dangerous part.** The check errs toward
+  **skipping work** and exiting 0. A deploy that does nothing and reports success
+  is much harder to notice than one that fails — there is no alert, no red build,
+  and the artefact simply never appears.
+
+
+  There is a third latent fault: if `releases.txt` were missing, `grep` returns
+  **2**, `grep -q` is false, and the check proceeds to deploy. That direction is
+  safer, and it is luck rather than design — nothing distinguishes "not released"
+  from "cannot read the file".
+
+method: >-
+  **1. Run the failing check without `-q`.** The whole diagnosis is in what it
+  prints: `11213` and `1.2.30`, neither of which is the version. `-q` hides the
+  evidence, which is exactly why it is the right flag in production and the wrong
+  one during an investigation.
+
+
+  **2. Ask what the pattern is, not just what it says.** `1.2.3` as text and
+  `1.2.3` as a regular expression are different objects. Any value from a
+  variable, a file, a filename or a user is data, and data used as a pattern is
+  the bug.
+
+
+  **3. Check whether the match is anchored.** `-F` alone would not have saved
+  this — `1.2.3` is a substring of `1.2.30`. Two flags are needed and people
+  reach for one.
+
+
+  **4. Ask why it worked before.** "Two years without a problem" is evidence
+  about the **file's contents**, not about the check. Reading the file's recent
+  history found both collisions and dated them.
+
+
+  **5. Establish the failure direction.** This check fails toward doing nothing
+  and reporting success — no alert, no red build, no artefact. A check that fails
+  toward *doing the work twice* would have been noticed the same day.
+
+
+  **6. Ask what happens when the input is missing.** `grep` returns 2, the `if`
+  is false, and the deploy proceeds. Safe here, and by accident.
+
+
+  The habit: **a check that skips work needs to be more careful than one that
+  does work**, because its failure mode is silence.
+
+resolution: >-
+  **Immediately:** deploy 1.2.3, and audit whether any earlier release was
+  skipped the same way. Every version whose digits could match another line is
+  suspect — the June and July additions define the window.
+
+
+  **Fix the check:**
+
+
+  ```bash
+  if grep -qxF -- "$VERSION" releases.txt; then
+    echo "already released, nothing to do"
+    exit 0
+  fi
+  ```
+
+
+  `-F` because the pattern is data. `-x` because a version must match a **whole
+  line**. `--` because a version string could begin with a hyphen. Three
+  characters of flags against a silent skipped release.
+
+
+  **Then handle the missing-file case explicitly**, because the current
+  behaviour is correct by luck:
+
+
+  ```bash
+  [ -r releases.txt ] || { echo "cannot read releases.txt" >&2; exit 2; }
+  ```
+
+
+  Without it, an unreadable file and an unreleased version are indistinguishable,
+  and they should lead to different actions.
+
+
+  **Then make the record structured**, because the underlying problem is that a
+  list of versions in a text file has no schema:
+
+
+  ```bash
+  # releases.jsonl — one object per line
+  {"version":"1.2.3","deployed_at":"2026-08-19T10:04:11Z","by":"ci"}
+  ```
+
+
+  ```bash
+  jq -e --arg v "$VERSION" 'select(.version == $v)' releases.jsonl >/dev/null
+  ```
+
+
+  An exact field comparison cannot collide with a neighbouring value, and the
+  record now carries when and by whom — which is what the incident review wanted
+  and the flat file could not answer.
+
+
+  **And assert the outcome rather than trusting the check**, which is the part
+  that generalises:
+
+
+  ```bash
+  do_deploy "$VERSION"
+  deployed=$(query_running_version)
+  [ "$deployed" = "$VERSION" ] || { echo "deploy did not take effect" >&2; exit 1; }
+  ```
+
+
+  A pipeline that reports success without verifying that anything changed will
+  eventually report success for doing nothing. That is true of this check, and of
+  every "already done, skipping" branch anywhere.
+
+
+  **For the postmortem:** the check was wrong from the day it was written and
+  produced correct answers for two years, because no line in the file could
+  collide with any version being deployed. Two unrelated additions in June and
+  July created the collision, and neither was a mistake anybody could have
+  connected to the deploy check. The finding is not that somebody wrote a bad
+  grep — it is that **a two-year clean record was evidence about the data, and
+  everybody read it as evidence about the code.**

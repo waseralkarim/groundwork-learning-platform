@@ -1,0 +1,215 @@
+id: assessment.where-output-goes
+topic: topic.where-output-goes
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain six weeks of clean logs
+    kind: explain
+    objectives: [OBJ-B08.2.3, OBJ-B08.2.5]
+    prompt: >-
+      A nightly job has failed for six weeks while `/var/log/reindex.log`
+      recorded `reindex complete` every night. Running it by hand shows an
+      obvious error. The relevant lines:
+
+
+      ```text
+      0 1 * * * /opt/jobs/reindex.sh 2>&1 >> /var/log/reindex.log
+      ```
+
+      ```bash
+      build_index "$SRC" | gzip > "$DEST/index.new.gz"
+      mv "$DEST/index.new.gz" "$DEST/index.gz"
+      echo "reindex complete"
+      ```
+
+
+      In about 200 words: explain both faults and what you would change.
+    rubric:
+      - "Identifies that 2>&1 applied first copies cron's stdout, so stderr misses the log"
+      - "States that a pipeline's exit status is its last command's, so gzip masks build_index"
+      - "Notes that gzip succeeded at compressing nothing, producing a small non-empty file"
+      - "Observes that mv replaced the last good artifact unconditionally"
+      - "Proposes 2>> at the end, PIPESTATUS or pipefail, and an artifact size check"
+    model_answer: >-
+      **Two faults, and either alone would have been caught.**
+
+
+      **The redirection order.** `2>&1` makes descriptor 2 a copy of *wherever
+      descriptor 1 points at that moment* — and at that moment it is still cron's
+      stdout. The later `>>` moves descriptor 1 to the log and leaves 2 pointing
+      at cron, so six weeks of errors went to cron's mail. **A clean log for a
+      failing job is the signature of this bug.**
+
+
+      **The pipeline's exit status.** It is the status of the **last** command.
+      `build_index` failed and wrote nothing; `gzip` succeeded at compressing zero
+      bytes and exited 0. Even `set -e` would not catch it. The artifact is a
+      ~20-byte gzip stream — present and recent, so every existence-and-freshness
+      check passed — and `mv` then replaced the last good index with it
+      unconditionally.
+
+
+      What I would change:
+
+
+      ```text
+      MAILTO=alerts@example.com
+      0 1 * * * /opt/jobs/reindex.sh >> /var/log/reindex.out 2>> /var/log/reindex.err
+      ```
+
+
+      ```bash
+      set -euo pipefail
+      build_index "$SRC" | gzip > "$DEST/index.new.gz"
+      st=("${PIPESTATUS[@]}")
+      [ "${st[0]}" -eq 0 ] || { echo "build_index failed: ${st[0]}" >&2; exit 1; }
+      [ "$(stat -c %s "$DEST/index.new.gz")" -gt 1000000 ] || exit 1
+      mv "$DEST/index.new.gz" "$DEST/index.gz"
+      ```
+
+
+      The size check matters most: the exit status is the job's opinion of itself,
+      the file's size is evidence.
+    common_failures:
+      - "Finding only one of the two faults"
+      - "Not explaining where the errors actually went"
+      - "Missing that gzip succeeds on empty input and produces a plausible file"
+      - "Fixing the exit status but leaving mv to overwrite the good artifact"
+
+  - id: B
+    title: Reason about a pipeline that loses information
+    kind: reason
+    objectives: [OBJ-B08.2.2, OBJ-B08.2.5]
+    prompt: >-
+      This reports `processed 0 files` for a directory containing 40, and exits 0
+      when `find` fails:
+
+
+      ```bash
+      count=0
+      find "$DIR" -name '*.json' | while read -r f; do
+        process "$f" && count=$((count + 1))
+      done
+      echo "processed $count files"
+      ```
+
+
+      In about 250 words: explain both behaviours and rewrite it.
+    rubric:
+      - "Identifies the subshell as the reason count does not survive"
+      - "States that a pipeline's exit status is the last command's, hiding find's failure"
+      - "Proposes process substitution or lastpipe, with the reason"
+      - "Uses -print0 with read -d '' or explains why filenames need it"
+      - "Adds an explicit check so a failed find is not silent success"
+    model_answer: >-
+      **The counter.** Every stage of a pipeline runs in a **subshell** — its own
+      process with its own copy of the shell's variables. The loop ran forty times
+      and incremented a `count` belonging to a child, which then exited. Nothing
+      was lost or overwritten; the parent's copy was never touched.
+
+
+      **The exit status.** A pipeline reports its **last** command's status. If
+      `find` fails — bad path, permission denied — the `while` loop still exits 0,
+      so the script reports success having processed nothing.
+
+
+      Rewritten:
+
+
+      ```bash
+      count=0
+      while IFS= read -r -d '' f; do
+        process "$f" && count=$((count + 1))
+      done < <(find "$DIR" -name '*.json' -print0)
+
+      echo "processed $count files"
+      [ "$count" -gt 0 ] || { echo "no files processed" >&2; exit 1; }
+      ```
+
+
+      **Process substitution** removes the pipeline, so the loop runs in this
+      shell and `count` survives. `< <(cmd)` presents the output as a file.
+
+
+      **`-print0` and `read -d ''`** because NUL is the only byte a filename
+      cannot contain — a name with a space or newline would otherwise split into
+      several iterations. `IFS=` preserves leading and trailing whitespace and
+      `-r` stops backslash interpretation.
+
+
+      **The explicit check** turns "processed nothing" into a failure rather than
+      a confident zero, which is the behaviour that let this run unnoticed.
+
+
+      `shopt -s lastpipe` would also fix the counter — bash only, and it needs job
+      control off, which is true in a script and not interactively.
+    common_failures:
+      - "Fixing the counter but leaving the exit status unchecked"
+      - "Using process substitution without -print0, so filenames still split"
+      - "Suggesting a temporary file to carry the count out of the subshell"
+      - "Not explaining why the subshell causes it"
+
+  - id: C
+    title: Diagnose a silent monitoring gap
+    kind: diagnose
+    objectives: [OBJ-B08.2.6, OBJ-B08.2.8]
+    prompt: >-
+      During a 29-minute incident the on-call engineer saw no error lines, then
+      ~400 arrived at once as it ended. Nothing was lost; the lines' own
+      timestamps span the incident correctly. The sidecar runs:
+
+
+      ```bash
+      kubectl logs -f "$POD" | grep -E 'ERROR|FATAL' | forwarder --endpoint "$AGG"
+      ```
+
+
+      The engineer's own `kubectl logs -f pod | grep ERROR` worked live. The team
+      wants to replace the log shipper.
+
+
+      In about 250 words: say what happened and what you would do.
+    rubric:
+      - "Identifies grep's block buffering because its stdout is a pipe"
+      - "Explains the burst as the flush when the process exited"
+      - "Uses the embedded-versus-arrival timestamps as the evidence"
+      - "Explains why the engineer's reproduction worked and proved nothing"
+      - "Rejects replacing the shipper and proposes --line-buffered or stdbuf"
+    model_answer: >-
+      **Buffering, not loss.** The C library picks a buffering mode from what
+      stdout is connected to: line-buffered to a terminal, block-buffered (4–8 KB)
+      to a pipe. In the sidecar `grep` writes to a pipe, so it held lines until
+      the buffer filled or the process exited — and `kubectl logs -f` exited when
+      the pod restarted at the end of the incident, flushing everything at once.
+
+
+      **The evidence is in the timestamps.** The lines carry correct times
+      spanning the incident, while their arrival times are identical. Event time
+      and delivery time are different quantities, and buffering separates them. A
+      drop would show missing lines; a replay would show duplicates. Neither is
+      present.
+
+
+      **The engineer's reproduction proved nothing.** Run at a terminal, `grep`'s
+      stdout is a terminal, so stdio chose line buffering. Their test differed
+      from the failing case in exactly the property that causes the fault — every
+      attempt to observe it removes it.
+
+
+      **I would not replace the shipper.** It received what it was sent, when it
+      was sent; replacing it costs weeks and changes nothing, and the team would
+      conclude the new one had the same bug.
+
+
+      What I would do: `grep --line-buffered`, or `stdbuf -oL` for a tool without
+      its own flag. Better, drop the filter from the path entirely and forward
+      everything — filtering at the source loses the context around an error
+      exactly when it is needed. Then add a canary line every minute and alert if
+      none arrives within two, so "is the pipeline streaming" is monitored rather
+      than assumed.
+    common_failures:
+      - "Accepting the drop-and-replay theory and blaming the shipper"
+      - "Not using the timestamp discrepancy as evidence"
+      - "Missing why the local reproduction succeeded"
+      - "Fixing this instance without monitoring for the next one"

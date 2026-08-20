@@ -1,0 +1,264 @@
+topic: topic.concurrency-and-locking
+
+questions:
+  - id: i1
+    level: L2
+    question: "How do you stop a cron job running twice at once?"
+    model_answer: >-
+      `flock`, and I would usually put it in the crontab rather than the script:
+
+
+      ```crontab
+      */5 * * * * flock -n /var/lock/report.lock /opt/jobs/report.sh
+      ```
+
+
+      No change to the script, and the guard sits next to the schedule, which is
+      where somebody debugging an overlap will look.
+
+
+      In the script it is two lines:
+
+
+      ```bash
+      exec 9>/var/lock/report.lock
+      flock -n 9 || { echo "another run holds the lock, skipping" >&2; exit 0; }
+      ```
+
+
+      **`exec 9>` is the part people drop.** A redirection attached to the `flock`
+      command itself closes the descriptor the moment `flock` returns, so the
+      lock lasts microseconds and the script then runs unguarded. That version
+      passes review because it contains the word `flock` and checks the status.
+
+
+      The decision that actually matters is not the mechanism, it is **what
+      "already running" should mean**, and there are four different right
+      answers. `flock -n` and exit 0 to **skip** — right for periodic work the
+      next run picks up anyway, and my default. Blocking `flock` to **queue** —
+      right when every run must happen and order matters, with the hazard of a
+      pile-up if runs arrive faster than they finish. `flock -w 30` when late is
+      acceptable and much later is not, always with a message. And for a deploy
+      or a schema change, **refuse loudly** — exit non-zero, because a second one
+      means something is already wrong and it should page rather than pass.
+
+
+      Picking one by habit is the mistake. A metrics scrape that queues turns a
+      slow morning into an outage; a deploy that skips silently reports success.
+    signal: >-
+      Naming `flock` is table stakes. The discriminator is `exec 9>` and why —
+      that a redirection on the flock command itself releases the lock
+      immediately, which is the version that passes review and protects nothing.
+      Treating skip/queue/wait/refuse as a design decision rather than reaching
+      for one by habit is the senior half.
+    follow_ups:
+      - "What does flock -n return when it cannot acquire?"
+      - "Where should the lock file live, and why not /tmp?"
+  - id: i2
+    level: L3
+    question: >-
+      A job has a correct `flock` guard and still runs twice, occasionally. What
+      would you look for?
+    model_answer: >-
+      Whether anything deletes the lock file — and the usual culprit is the
+      script's own cleanup trap.
+
+
+      **A `flock` is held on an open file description, which points at an inode,
+      not at a path.** `rm` unlinks a name. The holder keeps its lock on a
+      now-nameless inode — you can see it as
+      `/proc/PID/fd/9 -> /var/lock/job.lock (deleted)` — and the next run opens
+      the path, which creates a **brand new inode**, and locks that. Two runs,
+      two locks, no mutual exclusion.
+
+
+      So `trap 'rm -f "$LOCK"' EXIT` is the bug, and it fires on the **success**
+      path, which means the more reliably the job runs the more collisions it
+      arms.
+
+
+      The tell I would look for first is the lock file's mtime. It should be old —
+      created once and never touched. If it tracks recent job *completions*,
+      something is deleting and recreating it.
+
+
+      **Why it survives testing** is the part I find most instructive. Two
+      simultaneous runs contend on the same inode and the kernel arbitrates
+      correctly, so the obvious test passes. The defect needs a run that has
+      **already finished** to have removed the file — it only shows up when a run
+      overruns its schedule, which might be one night in twelve.
+
+
+      And I would not try to test the race. The window is the two instructions
+      between another run opening the lock file and calling `flock`; a test built
+      from sleeps would pass almost always and fail in CI once a month, which is
+      worse than no test. **Find the invariant it violates and assert that
+      instead** — here, that the lock file still exists after a run that held it
+      has finished. One deterministic line.
+
+
+      The fix is to delete the `rm`. An empty lock file costs an inode, and
+      `/var/lock` is cleared on reboot, when nothing can be holding one.
+    signal: >-
+      Getting to "something deleted the lock file" is the answer; the
+      discriminator is knowing a lock lives on the **inode** and being able to
+      say what the next run acquires. Explaining why the obvious test passes —
+      simultaneous runs contend on the same inode — and choosing to assert an
+      invariant instead of racing, is rare and is the whole lesson.
+    follow_ups:
+      - "How would you confirm it from the lock file alone?"
+      - "Why not test the race directly?"
+  - id: i3
+    level: L2
+    question: >-
+      Compare `flock` with a PID file.
+    model_answer: >-
+      The difference that matters is **who keeps the record**.
+
+
+      With `flock` the kernel does. It closes every descriptor when a process
+      dies — however it dies — so the lock is released on `SIGKILL`, on an OOM
+      kill, on a node reboot. **A `flock` cannot go stale.** I have measured
+      this: kill the holder with `-9`, and the next run acquires immediately.
+
+
+      With a PID file the script does, and a script can be killed between any two
+      instructions. Three defects follow. It **goes stale**, because the trap that
+      removes it does not run on `SIGKILL`, so the file survives naming a dead
+      process and the next run either refuses forever or has to guess. The
+      `kill -0` liveness check **is** that guess, and PIDs are reused, so on a
+      busy machine the recorded number may belong to something unrelated. And
+      check-then-write is **TOCTOU** — between the test and the write another run
+      does the same test, both find nothing, both proceed.
+
+
+      The one good use for a PID file is as *information*, written into the lock
+      file after acquiring a real lock, so a human can see who holds it. What
+      makes a lock a lock is the `flock`, not the contents of the file.
+
+
+      If `flock` genuinely is not available — a busybox image, or a network
+      filesystem where its semantics do not hold across clients — I would use
+      `mkdir`. It is atomic: it either creates or fails with `EEXIST`, with no
+      window. It is a real lock. But the `rmdir` is in a trap, so it inherits the
+      staleness problem, and I would alert on the directory's age.
+
+
+      What I would never use is `[ -e "$LOCK" ] || touch "$LOCK"`. That is not a
+      lock — it is a comment about intent with a race in the middle — and it
+      appears in production more often than the other three combined.
+    signal: >-
+      Most people say "flock is better". The discriminator is **who keeps the
+      record** — the kernel versus the script — because it explains every
+      difference rather than listing them. Knowing mkdir is a genuine atomic
+      lock, and that a PID file is fine as information inside a real lock, shows
+      judgement rather than a preference.
+    follow_ups:
+      - "When would you use mkdir instead?"
+      - "What is wrong with `[ -e lock ] || touch lock`?"
+  - id: i4
+    level: L2
+    question: >-
+      Your watchdog reports that it terminated a job. How much do you believe it?
+    model_answer: >-
+      Not much, unless it used `-k`.
+
+
+      `timeout` sends **`SIGTERM`**, which is a request. Status **124** means
+      *the time limit was reached* — not that the process stopped. Those are
+      different claims and a whole incident lives in the gap.
+
+
+      I have watched an importer catch `TERM`, log "ignoring TERM, batch in
+      progress", write every remaining batch and finish — while the watchdog
+      reported `terminated (rc=124)`. And the handler was not a mistake: it was
+      added deliberately after a deploy killed an importer mid-batch and left a
+      partial table. Both components behaved exactly as designed, and the
+      combination reported the opposite of what happened.
+
+
+      `timeout -k 60 1800` sends `SIGKILL` after a grace period. That cannot be
+      caught, gives status **137** — 128+9 — and the same importer stops partway
+      through. **`timeout LIMIT` is a request; `timeout -k GRACE LIMIT` is a
+      guarantee.** The grace period is the point: a well-behaved process gets time
+      to finish cleanly, a badly-behaved one still stops.
+
+
+      The deeper issue is that **a wrapper's status describes the wrapper**. The
+      watchdog cannot observe whether the import completed, so it should not claim
+      to — it should report what it knows (124: exceeded the limit, state unknown)
+      and something should separately assert the outcome. In the case I am
+      describing, the runbook read the watchdog as fact and instructed a re-run,
+      and the re-run was where the duplicate records came from. A runbook that
+      turns an unvalidated signal into an action is a defect with the same
+      standing as a code defect.
+
+
+      I would also make the re-run harmless. The duplication was only possible
+      because the import was not idempotent, and making an unnecessary re-run safe
+      is worth more than any improvement to the watchdog.
+    signal: >-
+      "124 means timed out" is the expected answer. The discriminator is that 124
+      does **not** mean the process stopped, and that the TERM handler was added
+      for a good reason — so both components are correct and the combination
+      lies. Pivoting to "a wrapper's status describes the wrapper" and to making
+      the re-run idempotent is what separates a fix from a diagnosis.
+    follow_ups:
+      - "What status does `timeout -k` give, and why that number?"
+      - "What should the watchdog report instead?"
+  - id: i5
+    level: L2
+    question: "When is it safe to retry?"
+    model_answer: >-
+      When the operation is idempotent — and the case that decides it is not a
+      failure, it is a **lost response**.
+
+
+      A charge that is applied and whose reply never arrives looks identical, from
+      the caller's side, to one that never happened. That is what a timeout, a
+      dropped connection or a load-balancer restart produces. So **a non-zero
+      status means "I did not hear that it worked", not "it did not work"**, and a
+      retry loop treats those as the same thing. I have run a script that reported
+      `giving up after 3 attempts` and left three charges in the ledger.
+
+
+      The property that decides safety is whether the operation describes a
+      **desired state** or a **change**. `mkdir -p`, `ln -sfn`, `rsync -a
+      --delete`, `PUT` to a fixed path, setting a value — states, applying them
+      twice is the same as once. Appending to a file, incrementing a counter,
+      `POST`ing a charge, sending an email — changes, and no amount of care in the
+      retry loop fixes that.
+
+
+      For the unsafe ones the answer is an **idempotency key**: generate it once,
+      *before* the first attempt, send it with every attempt, and have the far
+      side treat a repeat as success — "already done" is the answer the caller
+      wanted. Generating it inside the loop gives each attempt a different key and
+      changes nothing. Where there is no key support, record that the step
+      happened before doing the next thing and check that record on the way in.
+
+
+      The loop itself needs four things. **Jitter**, or every client that failed
+      together retries together and the service that just came back is knocked
+      down again — a thundering herd caused by the retry logic being correct and
+      identical everywhere. A **capped delay**, or the eighth retry waits two
+      minutes. A **capped count**, because an unbounded loop turns a fast failure
+      into a hang, and holds any lock for the whole time. And **not retrying
+      permanent failures** — a 404 or a missing command will still be that in
+      eight seconds, and retrying spends the whole budget rediscovering what the
+      first attempt knew while delaying the alert by exactly the length of the
+      loop.
+
+
+      One thing worth saying explicitly: the retry helper cannot make a command
+      safe to run twice. That is a property of the command, and it has to be
+      established before the retry is written.
+    signal: >-
+      Saying "idempotent operations" is the start. The discriminator is the
+      **lost response** — that a non-zero status means "I did not hear that it
+      worked" — because that is the case people miss and the reason idempotency
+      keys exist. Knowing the key must be generated before the first attempt, and
+      that jitter prevents a thundering herd, shows they have built one.
+    follow_ups:
+      - "Why generate the key outside the loop?"
+      - "Which failures would you refuse to retry at all?"

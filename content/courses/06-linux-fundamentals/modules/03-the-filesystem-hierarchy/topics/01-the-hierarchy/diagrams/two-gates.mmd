@@ -1,0 +1,21 @@
+flowchart TD
+    W["A process calls open() for writing"] --> G1{"Is the MOUNT<br/>read-write?"}
+
+    G1 -- "no — mounted ro" --> D1["EROFS<br/>Read-only file system"]
+    G1 -- yes --> G2{"Do the permission bits<br/>and ownership allow it?"}
+
+    G2 -- no --> D2["EACCES<br/>Permission denied"]
+    G2 -- yes --> OK["write succeeds"]
+
+    OK --> G3{"Later: execute<br/>what was written?"}
+    G3 -- "mount has noexec" --> D3["EACCES on exec<br/><i>the write was fine;<br/>the run is not</i>"]
+    G3 -- "mount allows exec" --> RUN["runs"]
+
+    N1["/var/lib on a read-only root<br/>mount ro, mode 755 root:root"] -.-> D1
+    N2["/run in a lab container<br/>mount RW, mode 755 root:root<br/><i>the mount says yes, the mode says no</i>"] -.-> D2
+    N3["/dev/shm<br/>mount rw + noexec, mode 1777"] -.-> D3
+
+    style D1 fill:#fdecea,stroke:#c0392b
+    style D2 fill:#fdf6e3,stroke:#b58900
+    style D3 fill:#fdf6e3,stroke:#b58900
+    style OK fill:#e8f4ea,stroke:#2f7d4f

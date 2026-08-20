@@ -1,0 +1,273 @@
+id: troubleshooting.the-cleanup-that-ran-twice
+topic: topic.set-euo-pipefail
+title: The cancelled deploy that was recorded as a success
+level: L2
+objectives: [OBJ-B08.5.7, OBJ-B08.5.8]
+reveal_policy: progressive
+
+situation: >-
+  An engineer notices a bad build going out and cancels the deploy from the CI
+  UI, eight seconds in. The pipeline reports **success**, and the release goes
+  live.
+
+
+  The released artifact is 4 KB. A correct one is 40 MB.
+
+
+  The deploy script is careful. It builds into a temporary directory, cleans up
+  with a trap, and has `set -euo pipefail` at the top. The trap line lists three
+  signals rather than one, which the author added specifically so that a
+  cancelled deploy would clean up after itself.
+
+
+  A second engineer points out that the deploy lock was also released twice —
+  visible in the lock service's audit log — and that a Slack notification was
+  posted twice for the same run.
+
+
+  Work out how a cancelled job produced a successful pipeline, a truncated
+  release and two of everything.
+
+symptoms:
+  - "A cancelled deploy is recorded as successful with exit status 0"
+  - "The released artifact is 4 KB where 40 MB is expected"
+  - "The cleanup message appears twice in the job output"
+  - "The line 'deploy complete' appears between the two cleanup messages"
+  - "The deploy lock was released twice"
+  - "The completion notification was posted twice"
+
+artifacts:
+  - type: config
+    label: The deploy script
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      WORKDIR=$(mktemp -d)
+
+      cleanup() {
+        echo "cleanup: removing $WORKDIR"
+        rm -rf "$WORKDIR"
+        release_lock deploy
+        notify "#deploys" "run $BUILD_ID finished"
+      }
+      trap cleanup EXIT INT TERM
+
+      build_into "$WORKDIR"
+      cp "$WORKDIR/app.tar" /srv/releases/app.tar
+      echo "deploy complete"
+
+  - type: log
+    label: The cancelled job's output
+    content: |
+      + bash /srv/ci/deploy.sh
+      building into /tmp/tmp.yCWRSQFUrM
+      cleanup: removing /tmp/tmp.yCWRSQFUrM
+      deploy complete
+      cleanup: removing /tmp/tmp.yCWRSQFUrM
+      + echo "pipeline finished with $?"
+      pipeline finished with 0
+
+  - type: log
+    label: The lock service audit log
+    content: |
+      14:22:01  acquire  deploy  run=8841
+      14:22:09  release  deploy  run=8841
+      14:22:09  release  deploy  run=8841   (no holder)
+
+  - type: command_output
+    label: The released artifact
+    content: |
+      $ ls -l /srv/releases/app.tar
+      -rw-r--r-- 1 deploy deploy 4096 Aug 18 14:22 /srv/releases/app.tar
+
+  - type: command_output
+    label: The same shape, reduced
+    content: |
+      $ cat demo.sh
+      #!/bin/bash
+      trap 'echo handler' EXIT TERM
+      sleep 5
+      echo "after the sleep"
+
+      $ bash demo.sh & sleep 1; kill -TERM $!; wait $!; echo "rc=$?"
+      handler
+      after the sleep
+      handler
+      rc=0
+
+  - type: config
+    label: What the CI runner does with a cancellation
+    content: |
+      # cancellation sends SIGTERM to the job's process group,
+      # waits 30s, then sends SIGKILL.
+      # the job's recorded result is the exit status of the step's shell.
+
+diagnostic_questions:
+  - "Look at the order of the three lines. What ran between the two cleanups?"
+  - "What does a trap handler do when it finishes — exit, or return?"
+  - "If the script resumed, what state was WORKDIR in when the cp ran?"
+  - "Which command in this script exited non-zero? What does that make the script's exit status?"
+  - "Why was the lock released twice, and why does the second release have no holder?"
+
+hints:
+  - "Run the reduced example in the artifacts. Read the middle line of its output."
+  - "The trap fires on TERM. It also fires on EXIT. Those are two separate events."
+  - "`set -e` acts on a non-zero status. Was there one?"
+  - "The cleanup does four things. Which of them are safe to do twice?"
+
+root_cause: >-
+  **A trap handler returns, and execution resumes at the point of
+  interruption.** SIGTERM ran `cleanup`, which deleted `WORKDIR`, released the
+  lock and posted the notification — and then the script **carried straight on**
+  to the `cp` and the final `echo`.
+
+
+  So the `cp` ran with its source directory already removed. It wrote 4 KB —
+  whatever was recoverable — over the live release. Then the script reached its
+  normal end, and `cleanup` ran a **second** time, via the EXIT trap, releasing
+  an already-released lock and posting a second notification.
+
+
+  **The pipeline reported success because nothing exited non-zero.** `set -e`
+  acts on a status; there was never one to act on. The script ran to the bottom
+  and exited 0, and the runner recorded that. Cancellation was, from the shell's
+  point of view, an interruption the script recovered from.
+
+
+  **`trap cleanup EXIT INT TERM` is the defect, and it looks like the careful
+  option.** It was added deliberately so a cancelled deploy would clean up — and
+  it does clean up. It also lets the deploy continue past its own cleanup, which
+  is far worse than not cleaning up at all.
+
+
+  Two independent problems in one line:
+
+
+  - **The handler runs twice**, because TERM fires it and EXIT fires it again on
+    the way out. `rm -rf` tolerates that. Releasing a lock and posting a
+    notification do not — hence the `(no holder)` release, which would have
+    permitted a concurrent deploy to take the lock during the window.
+
+  - **The script does not stop**, because the handler has no `exit`. Everything
+    after the point of interruption runs against half-cleaned state.
+
+
+  **Nothing failed.** `mktemp`, `trap`, `rm`, `cp` and the runner all behaved
+  exactly as documented, and the author's intent — clean up when cancelled — was
+  correct. The gap is that a trap handler is a *function call*, not a way of
+  ending the script, and nothing in the syntax says so.
+
+method: >-
+  **1. Read the order of the log lines, not just their content.** The three
+  lines are cleanup, `deploy complete`, cleanup. The interesting one is the
+  middle: the script produced its success message *between* two cleanups, which
+  means it was still running after the first. That single observation is most of
+  the diagnosis.
+
+
+  **2. Ask what a handler does when it finishes.** Not "does the trap fire" —
+  that is obviously yes. The question is what happens next, and the answer is
+  that it returns like any other function.
+
+
+  **3. Reduce it to four lines and run it.** A trap on EXIT and TERM, a sleep, an
+  echo afterwards. Signal it. The output shows the handler, the line after the
+  sleep, and the handler again, with `rc=0`. Ten seconds, and no need to reason
+  about the real script at all.
+
+
+  **4. Ask which command exited non-zero.** None did. That is why `set -e` was
+  irrelevant here and why the pipeline was green — the exit status faithfully
+  reported that no command failed, which is a different question from whether
+  the deploy succeeded.
+
+
+  **5. Audit the handler for repeat safety, item by item.** `rm -rf` is
+  idempotent. `release_lock` is not — and the lock service's audit log proves it
+  ran twice, which is a concurrency hazard, not just noise. `notify` is not.
+  A handler that fires more than once is a normal condition, so every action
+  inside it must tolerate it.
+
+
+  **6. Check the blast radius before fixing the script.** The `cp` overwrote a
+  live release with a truncated file. Any incident where a cleanup and a
+  production write can interleave needs the artefact checked, not just the code.
+
+
+  The habit worth taking: **when a script can be interrupted, ask what runs
+  after the interruption.** Most people design the handler carefully and never
+  ask what happens on the line after.
+
+resolution: >-
+  **Immediately:** restore the previous release, confirm the lock has a correct
+  holder, and check whether anything acquired the deploy lock during the window
+  in which it was wrongly released.
+
+
+  **Fix the traps.** A signal handler must `exit`, and the handler must tolerate
+  running twice because EXIT still fires after it:
+
+
+  ```bash
+  cleanup() {
+    [ -n "${WORKDIR:-}" ] || return 0      # idempotent: second call is a no-op
+    echo "cleanup: removing $WORKDIR"
+    rm -rf "$WORKDIR"
+    release_lock deploy || true            # already released is not an error
+    WORKDIR=
+  }
+  trap cleanup EXIT
+  trap 'cleanup; notify "#deploys" "run $BUILD_ID cancelled"; exit 143' TERM
+  trap 'cleanup; exit 130' INT
+  ```
+
+
+  **143** is 128+15 and **130** is 128+2 — the conventional statuses for "killed
+  by SIGTERM/SIGINT". They tell the runner and any supervisor that the job was
+  *signalled* rather than that it failed, which is what decides whether a retry
+  is appropriate. A cancelled deploy will now be recorded as cancelled.
+
+
+  **Move the notification out of the shared handler.** It is the one action here
+  that is neither idempotent nor unconditional — the message differs between
+  finished and cancelled, and blanking `WORKDIR` does not make a duplicate Slack
+  post un-happen. Notify at the specific exits, not in the cleanup.
+
+
+  **Make the release atomic**, so an interrupted deploy cannot leave a partial
+  artefact live at all:
+
+
+  ```bash
+  cp "$WORKDIR/app.tar" /srv/releases/app.tar.new
+  [ -s /srv/releases/app.tar.new ] || { echo "artifact is empty" >&2; exit 1; }
+  [ "$(sha256sum < /srv/releases/app.tar.new | cut -d' ' -f1)" = "$BUILT_SUM" ] \
+    || { echo "checksum mismatch" >&2; exit 1; }
+  mv -f /srv/releases/app.tar.new /srv/releases/app.tar   # rename is atomic
+  ```
+
+
+  Write beside, verify, rename. A `mv` within a filesystem is atomic, so readers
+  see either the old release or the new one and never a 4 KB truncation. This
+  would have prevented the outage even with the trap bug still present, which is
+  why it is the more valuable of the two changes.
+
+
+  **Then test the cancellation path**, because it is a code path like any other
+  and it had never been run:
+
+
+  ```bash
+  DEPLOY_ENV=staging ./deploy.sh & sleep 1; kill -TERM $!; wait $!
+  # assert: rc=143, one cleanup line, no "deploy complete",
+  #         the previous release still intact
+  ```
+
+
+  **For the postmortem:** every component behaved as documented, and the change
+  that caused the outage was made to *improve* interrupt handling. Two general
+  findings: a trap handler is a function call and not a way of ending a script,
+  so signal handlers must exit; and a deploy's success was inferred from an exit
+  status rather than from the artefact it produced. The exit status is the
+  script's opinion of itself. The bytes on disk are evidence.

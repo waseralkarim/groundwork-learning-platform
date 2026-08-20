@@ -1,0 +1,188 @@
+id: lab.inspect-the-machine
+topic: topic.the-machine
+title: Inspect the machine you are running on
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A01.1.1, OBJ-A01.1.6]
+
+intro: >-
+  You have a shell on a Linux machine you know nothing about. Work out what it
+  is made of. This is the first thing you do on any unfamiliar server, and it
+  takes about ninety seconds once it is habit.
+
+
+  Step 4 asks you for the machine's free memory. Answer it with the number you
+  genuinely believe is right, then read step 5. Being briefly wrong here is the
+  point of the lab.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Find out what CPU architecture this machine uses, and write just the
+      architecture string to /tmp/answer-arch.
+    hint: "`uname -m` prints it. `x86_64` means amd64; `aarch64` means arm64."
+    walkthrough: |
+      uname -m > /tmp/answer-arch
+    verify:
+      - type: file_exists
+        path: /tmp/answer-arch
+        describe: The answer file exists
+      - type: command_output
+        command: "cat /tmp/answer-arch | tr -d '[:space:]'"
+        equals_command: "uname -m"
+        describe: The recorded architecture matches the machine
+
+  - id: s2
+    instruction: >-
+      How many logical processors does the kernel see? Write the number to
+      /tmp/answer-logical-cpus.
+    hint: "`nproc`, or the `CPU(s):` line from `lscpu`."
+    walkthrough: |
+      nproc > /tmp/answer-logical-cpus
+    verify:
+      - type: file_matches
+        path: /tmp/answer-logical-cpus
+        pattern: '^\d+$'
+        describe: The answer is a bare number
+      - type: command_output
+        command: "cat /tmp/answer-logical-cpus | tr -d '[:space:]'"
+        equals_command: "nproc"
+        describe: The logical CPU count is correct
+
+  - id: s3
+    instruction: >-
+      Now the harder question: how many *physical* cores are there? Logical
+      processors and physical cores are not the same number when SMT is on.
+      Write the physical core count to /tmp/answer-physical-cores.
+    hint: >-
+      In `lscpu`, multiply `Core(s) per socket` by `Socket(s)`. Or divide the
+      logical count by `Thread(s) per core`.
+    walkthrough: |
+      lscpu -p=CORE,SOCKET | grep -v '^#' | sort -u | wc -l > /tmp/answer-physical-cores
+    verify:
+      - type: file_matches
+        path: /tmp/answer-physical-cores
+        pattern: '^\d+$'
+        describe: The answer is a bare number
+      - type: command_output
+        command: "cat /tmp/answer-physical-cores | tr -d '[:space:]'"
+        equals_command: "lscpu -p=CORE,SOCKET | grep -v '^#' | sort -u | wc -l"
+        describe: The physical core count is correct
+
+  - id: s4
+    instruction: >-
+      How much memory does this machine have free right now? Write the value in
+      mebibytes, as a bare number, to /tmp/answer-free-naive.
+    hint: "`free -m` reports in MiB. Use the column labelled `free`."
+    walkthrough: |
+      free -m | awk '/^Mem:/ {print $4}' > /tmp/answer-free-naive
+    verify:
+      - type: file_matches
+        path: /tmp/answer-free-naive
+        pattern: '^\d+$'
+        describe: A number was recorded
+
+  - id: s5
+    instruction: >-
+      Now compare your answer to the `available` column of `free -m`. On most
+      running systems these differ enormously — often by a factor of fifty.
+
+
+      The `free` column counts only untouched memory. The kernel has filled most
+      of the rest with **page cache**: copies of file data it is keeping in case
+      you read those files again. That memory is released the instant a process
+      needs it, so it is available in every sense that matters.
+
+
+      Write the `available` value in MiB to /tmp/answer-available, and write
+      which of the two numbers you should alert on — the literal word `free` or
+      `available` — to /tmp/answer-which-column.
+    hint: >-
+      `free -m | awk '/^Mem:/ {print $7}'` gives the available column. The
+      second answer is one word.
+    walkthrough: |
+      free -m | awk '/^Mem:/ {print $7}' > /tmp/answer-available
+      echo available > /tmp/answer-which-column
+    verify:
+      - type: file_matches
+        path: /tmp/answer-available
+        pattern: '^\d+$'
+        describe: The available figure was recorded
+      - type: file_matches
+        path: /tmp/answer-which-column
+        pattern: '^available$'
+        describe: You identified `available` as the column that matters
+
+  - id: s6
+    instruction: >-
+      List the block devices attached to this machine and check how full the
+      root filesystem is. Then write the root filesystem's use percentage, as a
+      bare number without the % sign, to /tmp/answer-root-usage.
+    hint: "`lsblk` for devices, `df -h /` for the root filesystem."
+    walkthrough: |
+      lsblk
+      df -h / | awk 'NR==2 {gsub("%","",$5); print $5}' > /tmp/answer-root-usage
+    verify:
+      - type: command_ran
+        pattern: "lsblk"
+        describe: You looked at the block devices
+      - type: file_matches
+        path: /tmp/answer-root-usage
+        pattern: '^\d{1,3}$'
+        describe: The usage percentage was recorded
+
+  - id: s7
+    instruction: >-
+      A filesystem can be out of space while `df -h` shows free gigabytes.
+      Find the other resource a filesystem can exhaust, and write its name
+      (one word, lowercase) to /tmp/answer-other-limit.
+    hint: "`df -i` shows it. Millions of tiny files exhaust this before bytes."
+    walkthrough: |
+      df -i /
+      echo inodes > /tmp/answer-other-limit
+    verify:
+      - type: file_matches
+        path: /tmp/answer-other-limit
+        pattern: '^inodes?$'
+        describe: You identified inodes
+
+solution: |
+  ```bash
+  uname -m > /tmp/answer-arch
+  nproc > /tmp/answer-logical-cpus
+  lscpu -p=CORE,SOCKET | grep -v '^#' | sort -u | wc -l > /tmp/answer-physical-cores
+  free -m | awk '/^Mem:/ {print $4}' > /tmp/answer-free-naive
+  free -m | awk '/^Mem:/ {print $7}' > /tmp/answer-available
+  echo available > /tmp/answer-which-column
+  lsblk
+  df -h / | awk 'NR==2 {gsub("%","",$5); print $5}' > /tmp/answer-root-usage
+  echo inodes > /tmp/answer-other-limit
+  ```
+
+  **Why steps 4 and 5 are separate.**
+
+  Nearly everyone answers step 4 with the `free` column, because it is labelled
+  "free". On a machine that has been up for any length of time that number is
+  small — often a rounding error against total RAM — and it is not a measure of
+  memory pressure.
+
+  The kernel deliberately fills spare RAM with page cache, because idle RAM does
+  no work. That memory is reclaimable on demand. `available` is the kernel's own
+  estimate of what a new process could obtain right now without swapping, and it
+  is the only one of the two that answers the question you actually asked.
+
+  Alerting on `free` is a real and common production mistake. It generates pages
+  at 3am for machines that are perfectly healthy, and — worse — it trains people
+  to ignore memory alerts.
+
+  **Why step 3 is worth the effort.**
+
+  `nproc` reports logical processors. With SMT enabled that is double the
+  physical core count, and the second thread on a core delivers somewhere
+  between 0% and 30% of a real core, depending on workload. Sizing a thread pool
+  or a CPU limit from `nproc` overcommits the machine by roughly 2×.

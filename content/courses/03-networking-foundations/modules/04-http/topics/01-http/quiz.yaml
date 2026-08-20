@@ -1,0 +1,483 @@
+id: quiz.http
+topic: topic.http
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.4.1]
+    stem: What ends the headers of an HTTP message?
+    options:
+      - id: a
+        text: A blank line — a bare CRLF, making CRLF CRLF in sequence
+        correct: true
+      - id: b
+        text: The `Content-Length` header, which is always last
+        note: >-
+          Header order is not significant and `Content-Length` may appear
+          anywhere among them, or not at all.
+      - id: c
+        text: A special terminator byte defined by the protocol
+        note: >-
+          HTTP is text. There is no non-printing terminator — the delimiter is
+          an empty line.
+      - id: d
+        text: Nothing — the server counts the headers it expects
+        note: >-
+          A server cannot know how many headers a client will send. It reads
+          until the blank line.
+    explanation: >-
+      Every line ends with CR LF, and the headers end with a line containing
+      nothing at all — so the byte sequence a parser scans for is CRLF CRLF.
+      Omitting it means the headers never end: the server never starts reading a
+      body, or a client never starts reading a response, and the symptom is a
+      hang rather than an error.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.4.1]
+    stem: >-
+      In `GET /orders/42?expand=items HTTP/1.1`, where is the hostname?
+    options:
+      - id: a
+        text: Not on that line — it is in the `Host` header
+        correct: true
+      - id: b
+        text: Implied by the connection, and not sent at all
+        note: >-
+          It is sent, and it must be: HTTP/1.1 requires a `Host` header on every
+          request.
+      - id: c
+        text: In the target, which is a full URL
+        note: >-
+          The target is a path and query. Full URLs appear on the request line
+          only when talking to a forward proxy.
+      - id: d
+        text: In the version field, after `HTTP/`
+        note: >-
+          That field carries only the protocol version.
+    explanation: >-
+      The request line carries a method, a *path* and a version. The hostname is
+      a separate header, which is what makes virtual hosting possible — one
+      address, one port, one process, and `Host` deciding which site answers. It
+      is also why testing an ingress by IP address fails: `curl http://10.0.1.5/`
+      sends `Host: 10.0.1.5` and matches no rule.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.4.2]
+    stem: What is the operational difference between a 4xx and a 5xx?
+    options:
+      - id: a
+        text: A 4xx will fail identically if retried; a 5xx might succeed
+        correct: true
+      - id: b
+        text: A 4xx is less serious than a 5xx
+        note: >-
+          Severity depends on the code and who is affected. A 401 storm can be
+          an outage; a single 500 may be noise.
+      - id: c
+        text: A 4xx comes from a proxy and a 5xx from the application
+        note: >-
+          Both can come from either. 502, 503 and 504 are specifically proxy
+          answers, and they are 5xx.
+      - id: d
+        text: A 4xx is logged by the client and a 5xx by the server
+        note: >-
+          Both are usually logged by both. The status class says nothing about
+          logging.
+    explanation: >-
+      That single distinction decides retry policy and alerting. A rising 4xx
+      rate is a client population doing something wrong, and retrying wastes work
+      — it rarely deserves a page. A rising 5xx rate is yours, deserves an alert,
+      and retries are reasonable. The exception worth knowing is 429, a 4xx that
+      *is* worth retrying, after the delay in `Retry-After`.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.4.2]
+    stem: >-
+      An ingress controller returns 503 and your application's logs are empty.
+      What does that suggest?
+    options:
+      - id: a
+        text: The proxy had nowhere to send the request — no healthy endpoints behind the service
+        correct: true
+      - id: b
+        text: The application returned 503 and failed to log it
+        note: >-
+          Then the request would have reached it. Empty logs plus a 503 is the
+          combination that says it did not.
+      - id: c
+        text: The application is slow and the proxy gave up waiting
+        note: >-
+          That is 504 — gateway timeout — where an upstream accepted and did not
+          answer in time.
+      - id: d
+        text: The proxy reached the application and could not parse its reply
+        note: >-
+          That is 502 — bad gateway — which means an upstream answered with
+          something unusable.
+    explanation: >-
+      502, 503 and 504 are three different proxy answers and they name where the
+      failure was. 503 means no upstream was available at all, which in a cluster
+      means every pod is failing readiness or the selector matches nothing — and
+      the application's logs are empty because the request never reached it. That
+      is a diagnosis before any log is opened.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.3]
+    stem: What does a client do when it receives a 301?
+    options:
+      - id: a
+        text: Makes a second request to the URL in the `Location` header, if it is configured to follow
+        correct: true
+      - id: b
+        text: Nothing — the server has already fetched the new resource for it
+        note: >-
+          The server fetched nothing. A redirect is an instruction to the
+          client, not an action by the server.
+      - id: c
+        text: Retries the same URL, which the server will now serve correctly
+        note: >-
+          The same URL will redirect again. The point is to go somewhere else.
+      - id: d
+        text: Fails, because 3xx is an error class
+        note: >-
+          3xx is redirection, not error. A client that treats it as failure is
+          misconfigured — `curl` needs `-L` to follow.
+    explanation: >-
+      A redirect is an ordinary response whose status tells the client to make a
+      *second* request. Two requests, and often two connections. `curl` without
+      `-L` shows the 301 itself, which is usually what you want when debugging,
+      because it tells you what the first server said rather than where you
+      ended up.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.3]
+    stem: Why is a 301 riskier than a 302?
+    options:
+      - id: a
+        text: Clients and proxies may cache it indefinitely, so a mistake keeps redirecting after the server stops
+        correct: true
+      - id: b
+        text: A 301 changes the request method and a 302 does not
+        note: >-
+          Historically 302 was the one that might turn a POST into a GET. 307
+          and 308 exist to remove that ambiguity.
+      - id: c
+        text: A 301 cannot carry a `Location` header
+        note: >-
+          Both carry one. Without it, neither is useful.
+      - id: d
+        text: Search engines ignore 301s
+        note: >-
+          The opposite — they honour them strongly, which is part of why a
+          mistaken one is hard to undo.
+    explanation: >-
+      "Permanent" is taken seriously: browsers and proxies may cache a 301 for a
+      very long time, and there is no way to reach into their caches and correct
+      it. Use 302 or 307 unless the move is genuinely permanent — and never use a
+      301 for a redirect that depends on anything conditional, like a locale or a
+      feature flag, or you permanently pin users to whichever branch they saw
+      first.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.4]
+    stem: >-
+      A response says `Content-Length: 100` and the server sends 5 bytes then
+      stops. What does the client do?
+    options:
+      - id: a
+        text: Waits for the remaining 95 bytes until its own timeout fires
+        correct: true
+      - id: b
+        text: Returns the 5 bytes and reports a truncated response
+        note: >-
+          It has no reason to believe the response is finished — it was told 100
+          bytes and 95 are outstanding.
+      - id: c
+        text: Rejects the response as malformed and errors immediately
+        note: >-
+          Nothing is malformed yet. The message is incomplete, not invalid.
+      - id: d
+        text: Retries the request automatically
+        note: >-
+          Nothing has failed yet from the client's point of view, so there is
+          nothing to trigger a retry.
+    explanation: >-
+      `Content-Length` is an instruction to read exactly that many bytes, and the
+      client obeys it. The error eventually reported is a timeout, which points
+      at the network or a slow server — and neither is true: the server finished
+      instantly and lied about the size. The diagnostic pair is a timeout with a
+      non-zero `size_download`.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.4]
+    stem: >-
+      Why is a `Content-Length` that is too *small* more dangerous than one that
+      is too large?
+    options:
+      - id: a
+        text: The leftover bytes are read as the start of the next response on a keep-alive connection
+        correct: true
+      - id: b
+        text: It causes the server to run out of memory
+        note: >-
+          Nothing about the header affects the server's memory. The consequence
+          is entirely on the reading side.
+      - id: c
+        text: It truncates the body, which is always worse than a delay
+        note: >-
+          Truncation is bad and is not the reason. The damage spreading to
+          another request is.
+      - id: d
+        text: Proxies reject it outright, causing a 502
+        note: >-
+          Some will; many pass it through, which is exactly how the damage
+          propagates.
+    explanation: >-
+      A too-large length stalls the request that caused it. A too-small one
+      makes the client stop early, and on a keep-alive connection the remaining
+      bytes become the beginning of the *next* response — so the failure lands on
+      a different request, possibly for a different user, as a parse error with no
+      connection to its cause. This is also the mechanism behind request
+      smuggling, which is why a response carrying both `Content-Length` and
+      `Transfer-Encoding` is rejected by careful proxies.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.4]
+    stem: Why does chunked transfer encoding exist?
+    options:
+      - id: a
+        text: So a response can begin before its total length is known
+        correct: true
+      - id: b
+        text: To compress the body, reducing bytes on the wire
+        note: >-
+          Compression is `Content-Encoding: gzip`, and it is independent of
+          framing.
+      - id: c
+        text: To allow a body larger than `Content-Length` can express
+        note: >-
+          `Content-Length` is not meaningfully bounded for real payloads.
+      - id: d
+        text: To let the client request only part of a resource
+        note: >-
+          That is `Range` requests and 206 Partial Content — a different
+          mechanism.
+    explanation: >-
+      `Content-Length` requires knowing the size before sending the first byte,
+      which means buffering the whole response. Chunked framing sends
+      size-prefixed pieces ending with a zero-size chunk, so output can start
+      immediately — which is what streamed responses, generated reports and slow
+      queries need. The cost is that a missing terminator produces a client that
+      received every byte and still hangs.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.5]
+    stem: >-
+      You need to test an ingress rule for `shop.example.com` but only have the
+      backend IP. What do you run?
+    options:
+      - id: a
+        text: '`curl -H ''Host: shop.example.com'' http://10.0.1.5/` — or `--resolve` for HTTPS'
+        correct: true
+      - id: b
+        text: '`curl http://10.0.1.5/` — the ingress will work it out'
+        note: >-
+          It sends `Host: 10.0.1.5`, matches no rule, and returns the ingress
+          controller's default backend, usually a 404.
+      - id: c
+        text: Edit /etc/hosts, since the Host header cannot be set by hand
+        note: >-
+          It can be set directly, and editing /etc/hosts is a heavier way to
+          achieve the same thing.
+      - id: d
+        text: '`curl --header ''X-Forwarded-Host: shop.example.com'' http://10.0.1.5/`'
+        note: >-
+          A proxy hint that most ingress controllers do not route on. `Host` is
+          what matching uses.
+    explanation: >-
+      The address decides which machine the connection reaches; `Host` decides
+      which site answers. Testing by IP without setting it produces a 404 from
+      the ingress controller while your application logs nothing at all. For
+      HTTPS, `--resolve shop.example.com:443:10.0.1.5` is required rather than
+      `-H`, because it sets the TLS SNI as well — `-H` alone fails during the
+      handshake.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.6]
+    stem: >-
+      `curl -w` reports `connect=0.002 starttransfer=2.41 total=2.43`. Where is
+      the time?
+    options:
+      - id: a
+        text: In the server — 2.4 seconds passed between connecting and the first response byte
+        correct: true
+      - id: b
+        text: In the network, since the total is over two seconds
+        note: >-
+          The connection completed in two milliseconds, which is the network
+          measurement. It is fine.
+      - id: c
+        text: In transferring the body, which took most of the time
+        note: >-
+          That would be `total − starttransfer`, which here is 20 milliseconds.
+      - id: d
+        text: In DNS resolution before the connection
+        note: >-
+          DNS is `time_namelookup` and is included in `connect`, which is 2ms
+          in total.
+    explanation: >-
+      The values are cumulative, so the phases are the differences. Connecting
+      took 2ms — the network is fine. `starttransfer − connect` is 2.4 seconds:
+      the server's own processing time, or TTFB. Transfer took 20ms. That single
+      command ends the "is it the network or the app" argument in a second, and
+      here the answer is unambiguous.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.6]
+    stem: >-
+      Which `curl` timing value isolates TLS handshake cost?
+    options:
+      - id: a
+        text: '`time_appconnect` minus `time_connect`'
+        correct: true
+      - id: b
+        text: '`time_appconnect` on its own'
+        note: >-
+          The values are cumulative from the start, so this includes DNS and the
+          TCP handshake too.
+      - id: c
+        text: '`time_starttransfer` minus `time_connect`'
+        note: >-
+          That is TLS *and* the server's processing time together, which is
+          exactly the confusion to avoid.
+      - id: d
+        text: '`time_total` minus `time_starttransfer`'
+        note: >-
+          That is body transfer time, after the response has already started.
+    explanation: >-
+      Every `time_*` value is measured from the start of the request, so each
+      phase is a subtraction. `appconnect` is the moment the TLS handshake
+      finished, and `connect` is the moment TCP finished, so the difference is
+      the handshake alone. A large value there points at certificate chain
+      length or CPU, not at the application.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.7]
+    stem: >-
+      What does keep-alive save on each request over an HTTPS connection with a
+      50ms round trip?
+    options:
+      - id: a
+        text: Roughly 150ms — one TCP round trip and one or two for TLS
+        correct: true
+      - id: b
+        text: Nothing measurable; the handshake is negligible
+        note: >-
+          It is often the largest single component of small-request latency,
+          and it recurs on every request without reuse.
+      - id: c
+        text: Only the DNS lookup, which is cached anyway
+        note: >-
+          DNS caching is separate and does not depend on the connection being
+          reused.
+      - id: d
+        text: The server's processing time, which is skipped for reused connections
+        note: >-
+          The server does the same work every time. Only the setup is avoided.
+    explanation: >-
+      One round trip for the TCP handshake, plus one or two for TLS, before any
+      request bytes move. On a 50ms path that is 150ms per request that reuse
+      eliminates entirely — often three quarters of the latency of a small
+      request. `ActiveOpens` rising while `CurrEstab` stays flat is the signature
+      of connections being created and destroyed rather than reused.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.8]
+    stem: >-
+      `curl -m 5` times out, and reports `http_code=200` with
+      `size_download=4`. What is wrong?
+    options:
+      - id: a
+        text: The response framing — the declared body length exceeds what was sent
+        correct: true
+      - id: b
+        text: The network is dropping packets partway through the response
+        note: >-
+          Possible in principle, and far less likely than framing. The status
+          line and headers arrived instantly, which loss would not have allowed.
+      - id: c
+        text: The server crashed after sending part of the response
+        note: >-
+          A crash closes the connection, which terminates the read. The client
+          would report a truncated transfer, not hang.
+      - id: d
+        text: The client's timeout is too short for a large response
+        note: >-
+          Only four bytes arrived. A larger response would have kept arriving.
+    explanation: >-
+      A timeout with a status code and a non-zero download is the signature of
+      broken framing: the client parsed the headers, began the body, and is
+      waiting for bytes the server declared and never sent. The network is
+      exonerated by the fact that everything up to that point arrived instantly.
+      The rule to carry: when curl reports a timeout, check `size_download`.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.4.8]
+    stem: >-
+      A health check script runs `curl -s "$URL" && echo healthy`. What is wrong
+      with it?
+    options:
+      - id: a
+        text: '`curl` exits 0 on a 500, so the check reports healthy while the service is failing'
+        correct: true
+      - id: b
+        text: '`-s` suppresses errors, so failures are invisible'
+        note: >-
+          `-s` hides the progress meter. It does not change the exit status,
+          which is the actual problem.
+      - id: c
+        text: It needs a timeout, and nothing else
+        note: >-
+          It does need `-m`, and adding one alone still reports a 500 as
+          healthy.
+      - id: d
+        text: Nothing — a non-zero exit on an error is curl's default
+        note: >-
+          curl's exit status reports whether the *transfer* worked. A complete
+          500 is a successful transfer.
+    explanation: >-
+      curl's exit status is about the transfer, not the application's answer, so
+      a well-formed 500 exits 0. `curl --fail` makes 4xx and 5xx exit non-zero,
+      and `-m` bounds the wait. The corrected check is
+      `curl -sf -m 5 "$URL" && echo healthy` — and this is one of the most common
+      bugs in hand-written monitoring.

@@ -1,0 +1,256 @@
+topic: topic.searching-text
+
+questions:
+  - id: i1
+    level: L1
+    question: What does grep return when it finds nothing, and why does that matter?
+    model_answer: >-
+      **1** — and it matters because that is a *result*, not a failure, while
+      `set -e` cannot tell the difference.
+
+
+      grep has three exit statuses: 0 for at least one match, 1 for no match, and
+      **2 for an actual error** — an unreadable file or an invalid pattern.
+      Almost nobody uses the third, and merging 1 with failure means "the thing I
+      searched for is absent" and "the search could not be performed" become the
+      same event. Those are opposite findings.
+
+
+      The failure I have actually seen: a health check under `set -euo pipefail`
+      with a bare `grep ' 401 ' access.log`. There were no 401s, which was the
+      good news — and the script exited 1 without printing anything further.
+      **The healthier the system, the sooner it dies**, and because `set -e`
+      exits silently the symptom looks like an infrastructure problem rather than
+      a bug in the check.
+
+
+      Three correct forms depending on intent:
+
+
+      ```bash
+      if grep -q PATTERN "$f"; then ...          # branching — usually the intent
+      count=$(grep -c PATTERN "$f" || true)      # a count; zero is fine
+      grep PATTERN "$f" || true                  # absence acceptable HERE
+      ```
+
+
+      `grep -c` catches people out specifically: it prints `0` on stdout **and
+      still exits 1**, so capturing a count under `set -e` dies on a perfectly
+      good answer.
+
+
+      The third form needs a comment saying which case it covers — a bare
+      `|| true` also swallows status 2, so a missing file becomes a silent pass.
+    signal: >-
+      Knowing 1 means "no match" is the baseline. The discriminator is knowing 2
+      exists and why conflating it with 1 matters, plus the `grep -c` detail —
+      which people only learn by having a script die on it.
+    follow_ups:
+      - "What would you write instead of a bare grep in a health check?"
+      - "What does || true also hide?"
+      - "How would you tell 'no match' from 'no file'?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A colleague searches a file for a version number from a variable and gets
+      matches that are not that version. What happened?
+    model_answer: >-
+      The variable is being used as a **regular expression**, and version strings
+      are made of dots — which match any character.
+
+
+      So `1.2.3` also matches `11213`, `1-2-3`, and it matches *inside* `1.2.30`
+      because the pattern is not anchored. I have seen exactly that skip a deploy:
+      the check said "already released", exited 0, and nothing shipped.
+
+
+      Two flags fix it, and people usually reach for one:
+
+
+      ```bash
+      grep -qxF -- "$VERSION" releases.txt
+      ```
+
+
+      **`-F`** because the pattern came from data. **`-x`** because a version
+      should match a whole line — `-F` alone still matches `1.2.3` inside
+      `1.2.30`, which is a plausible neighbouring release. And `--` in case the
+      value starts with a hyphen.
+
+
+      The general rule is the same shape as quoting: **if the pattern came from a
+      variable, a config file, a filename or a user, it is data, and data used as
+      a pattern is a bug.** The worst example I have measured is a config value
+      of `[warn]` — a character class matching any of w, a, r, n, which matched
+      all sixteen lines of a sixteen-line file. No error; it simply answered a
+      different question.
+
+
+      What makes it worth care is the failure *direction*. A check that errs
+      toward skipping work exits 0 with no alert and no artefact, which is much
+      harder to notice than something that fails.
+    signal: >-
+      Identifying the dots is the baseline. The discriminator is adding `-x` —
+      most people stop at `-F` and leave the substring collision. Reasoning about
+      the failure direction, rather than just the mechanism, is the senior half.
+    follow_ups:
+      - "Why is -F alone not enough?"
+      - "What if part of the pattern genuinely needs to be a wildcard?"
+      - "How would you have caught this before production?"
+
+  - id: i3
+    level: L2
+    question: >-
+      Why might `cut -d' ' -f2` return nothing on the output of `ps`?
+    model_answer: >-
+      Because `cut -d' '` splits on **exactly one space**, and column-aligned
+      output separates fields with *runs* of spaces. Field 2 is the empty string
+      between the first and second space.
+
+
+      It does not error and exits 0, so a downstream comparison against the empty
+      value quietly succeeds at doing nothing. That silence is what makes it
+      worth knowing rather than just fixing.
+
+
+      `awk '{print $2}'` works because awk's default separator treats a run of
+      whitespace as one, and ignores leading whitespace. One detail that catches
+      people: `awk -F' '` does **not** behave like `cut` — a single space as the
+      field separator is special-cased back to the default. You need `-F'[ ]'` for
+      the literal one, which is almost never what you want.
+
+
+      So the rule I use is **`cut` for data files with a real delimiter — CSV,
+      `/etc/passwd` — and `awk` for command output.**
+
+
+      But the better answer is not to parse the human-readable output at all.
+      `ps -o rss=,pid=` asks the tool for exactly those fields with no header and
+      nothing to split, and it is shorter than the awk it replaces. Same for
+      `kubectl -o custom-columns`, `docker ps --format`, `git log --format`.
+
+
+      And if I do have to parse positionally, I count from the **right** with
+      `$NF` — columns get added on the left. I have seen an agent upgrade prepend
+      a node column and shift every field by one, which turned a disk alert's
+      percentage comparison into a comparison against `60G`. That errored on every
+      line, and the script still exited 0.
+    signal: >-
+      The runs-of-spaces explanation is the core. The `-F' '` special case is a
+      strong signal — it is only learned by trying it. Volunteering "ask the tool
+      for the field" rather than perfecting the parsing is the answer that scales.
+    follow_ups:
+      - "When is cut the right tool?"
+      - "How would you make a positional parse survive a new column?"
+      - "What does $NF give you?"
+
+  - id: i4
+    level: L2
+    question: >-
+      When would you use awk rather than grep, and when would you stop using the
+      shell?
+    model_answer: >-
+      **grep answers "does this line match".** Its exit status is the answer,
+      which is why `-q` exists, and it matches text anywhere in a line. It cannot
+      compare a field.
+
+
+      **awk for anything involving a field, a comparison or a total.** The
+      example that makes the difference concrete: `grep ' 500 '` on an access log
+      also matches a request that took 500 milliseconds, while `awk '$5 == 500'`
+      compares the status field and does not. Text matching cannot express
+      "the fifth column, numerically".
+
+
+      awk also groups — `{n[$3]++} END {for (k in n) print k, n[k]}` — which
+      replaces the whole `sort | uniq -c | sort -rn` idiom in one pass. That is
+      worth doing for a second reason: `uniq` only collapses **adjacent**
+      duplicates, so the pipeline is correct only because the sort ran, and an awk
+      array has no ordering dependency at all.
+
+
+      **When to stop using the shell entirely:**
+
+
+      - The input is **structured** — JSON, YAML, XML. Regex cannot match nested
+        structures and will happily *succeed* against malformed input, which is
+        worse than failing. Use `jq`, or a language with a parser.
+      - I need state across lines beyond a counter.
+      - The awk program passes about ten lines.
+      - Correctness matters more than convenience, because the characteristic
+        failure here is producing **nothing** and exiting 0.
+
+
+      And the counter-signal: a four-stage pipeline is often one awk program.
+      `grep | grep -v | awk | sed` is usually two conditions and a print, and the
+      single program is faster and clearer six months later — though at a terminal
+      on a small file, the pipeline's incremental readability may be worth more.
+    signal: >-
+      The status-versus-duration example shows they understand what field
+      comparison buys. The `uniq` adjacency point is a strong discriminator.
+      Naming "regex succeeds against malformed structured input" as the reason to
+      leave the shell — rather than just "use jq" — is the senior answer.
+    follow_ups:
+      - "What does uniq require, and why?"
+      - "Where's the line for you between a pipeline and a script?"
+      - "What would you do about a CSV with quoted commas?"
+
+  - id: i5
+    level: L2
+    question: >-
+      An alert based on parsing command output stopped firing after a tool
+      upgrade. How would you investigate, and what would you change?
+    model_answer: >-
+      First, **diff the tool's output across the upgrade**. When a parser breaks
+      after an upgrade, the format is what changed, not the parser. A new column
+      on the left shifts every field number by one.
+
+
+      Then **print the field being extracted rather than the comparison's
+      result** — one line of `awk '{print $5}'` usually shows something that is
+      obviously not a percentage.
+
+
+      Then `bash -x`, which shows the actual test: something like
+      `[ 60G -ge 90 ]` and the `integer expression expected` error it produces.
+      That single line contains both the wrong value and the fact that the test
+      **errored** rather than returning false.
+
+
+      Three things usually conspire to hide it. `set -e` does not fire, because a
+      command used as an `if` condition is exempt — deliberately, and it means a
+      broken condition and a false condition are indistinguishable. A counter
+      incremented inside `cmd | while read` is lost to the subshell, so the
+      summary reports zero. And the script's last command is an `echo`, so it
+      exits 0 regardless.
+
+
+      What I would change, in order:
+
+
+      **Stop parsing by position** — ask for `--format` or structured output.
+      A named field cannot be shifted by a new column, and it is shorter.
+
+
+      **Validate what you extracted.** If the percentage is not numeric, fail
+      loudly rather than comparing and moving on.
+
+
+      **Assert the check did something.** `[ "$n" -gt 0 ]` — "checked zero
+      filesystems" should never be able to look like "nothing wrong".
+
+
+      **And monitor the monitor.** The deepest problem is that a check reporting
+      zero forever is indistinguishable from a broken one. Alert on the *absence*
+      of evaluations, not only on threshold breaches — a check that has never
+      fired is untested.
+    signal: >-
+      Diffing the output first is the right instinct. The discriminator is
+      knowing that `if` conditions are exempt from `set -e`, which explains why an
+      erroring test looks like a passing check. "A check that has never fired is
+      untested" is the finding that generalises past this incident.
+    follow_ups:
+      - "Why didn't set -e catch the failing test?"
+      - "How would you make a positional parse robust if --format doesn't exist?"
+      - "What would you alert on instead of the threshold?"

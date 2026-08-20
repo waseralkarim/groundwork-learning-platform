@@ -1,0 +1,175 @@
+id: troubleshooting.container-sees-too-much
+topic: topic.namespaces
+title: The monitoring agent is reporting other teams' processes
+level: L3
+objectives: [OBJ-A02.1.7, OBJ-A02.1.3]
+reveal_policy: progressive
+
+situation: >-
+  A platform team ships an in-house process-monitoring agent as a DaemonSet. It
+  reports the top ten processes by CPU on each node, and it has run without
+  complaint for eight months.
+
+
+  Last week the security team noticed something in the agent's own output
+  stream: command lines from workloads belonging to other tenants, including one
+  containing what looks like a database password passed as an argument. They
+  have asked whether the agent is doing something it should not.
+
+
+  The platform team's position is that the agent "only reads /proc, it doesn't
+  do anything privileged". Both statements are true. Work out what is actually
+  happening before reading further.
+
+symptoms:
+  - "The agent reports processes that belong to workloads in other namespaces"
+  - "Command lines including arguments appear in the agent's output, some containing credentials"
+  - "The agent's own code only opens files under /proc — this has been reviewed"
+  - "It holds no capabilities: CapEff is zero"
+  - "A copy of the agent run as a plain Deployment reports only its own processes"
+
+artifacts:
+  - type: command_output
+    label: Namespaces of the agent pod, and of the node
+    content: |
+      $ kubectl exec ds/proc-agent -- sh -c 'for t in pid net mnt ipc uts user; do printf "%-5s %s\n" "$t" "$(readlink /proc/self/ns/$t)"; done'
+      pid   pid:[4026531836]
+      net   net:[4026532781]
+      mnt   mnt:[4026532778]
+      ipc   ipc:[4026532780]
+      uts   uts:[4026532779]
+      user  user:[4026531837]
+
+      # the same readings taken on the node itself
+      $ readlink /proc/1/ns/pid /proc/1/ns/net /proc/1/ns/mnt /proc/1/ns/user
+      pid:[4026531836]
+      net:[4026531992]
+      mnt:[4026531841]
+      user:[4026531837]
+
+  - type: command_output
+    label: What the agent can see
+    content: |
+      $ kubectl exec ds/proc-agent -- ps -eo pid,comm --no-headers | wc -l
+      291
+
+      $ kubectl exec ds/proc-agent -- sh -c 'tr "\0" " " < /proc/8531/cmdline'
+      python3 /srv/ingest.py --db-host pg-prod --db-pass hunter2-prod-ingest
+
+  - type: command_output
+    label: The agent's own privileges
+    content: |
+      $ kubectl exec ds/proc-agent -- grep -E 'Uid|CapEff|NoNewPrivs|Seccomp' /proc/self/status
+      Uid:    10001   10001   10001   10001
+      CapEff: 0000000000000000
+      NoNewPrivs:     1
+      Seccomp:        2
+
+  - type: config
+    label: The DaemonSet spec, abridged
+    content: |
+      spec:
+        hostPID: true
+        containers:
+          - name: agent
+            securityContext:
+              runAsUser: 10001
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+
+diagnostic_questions:
+  - "Which of the agent's namespaces match the node's, and which of those matches is unusual?"
+  - "The agent holds no capabilities and runs as uid 10001. Why does that not prevent what it is doing?"
+  - "Why does the identical agent, run as a Deployment, see only its own processes?"
+  - "Which permission check governs reading another process's /proc/<pid>/cmdline?"
+  - "Is the agent doing anything it was not asked to do?"
+
+hints:
+  - "Compare the pod's inodes with the node's, type by type. Two will match; only one of them is a finding."
+  - "Capabilities govern privileged operations. Reading a world-readable file is not one."
+  - "/proc/<pid>/cmdline is mode 444. Ask who it is readable by."
+  - "The agent's code did not change between the DaemonSet and the Deployment. The pod spec did."
+
+root_cause: >-
+  `hostPID: true` puts the agent in the node's PID namespace, so every process
+  on the node has a number the agent can name — and `/proc/<pid>/cmdline` is
+  world-readable by design.
+
+
+  Nothing the agent does is privileged, and nothing in its code is wrong. It
+  opens files under /proc, exactly as reviewed. What changed is which processes
+  exist as far as it is concerned: 291 instead of 3. The credentials were not
+  extracted, escalated to, or broken into — they were passed as command-line
+  arguments by another workload, and command lines are readable by any process
+  in the same PID namespace.
+
+
+  The capability set is a red herring, and an instructive one. `CapEff: 0` is
+  genuinely empty and genuinely does prevent a long list of things. Reading a
+  mode-444 file is not on that list, so every hardening control on this pod is
+  working correctly and none of them is relevant to the problem.
+
+method: >-
+  Four steps, and the first one settles it.
+
+
+  **1. Compare namespaces with the node, type by type.** Two of the agent's
+  match: `pid` and `user`. The `user` match is true of every pod on a default
+  cluster and is not a finding. The `pid` match is not true of any normal pod,
+  so it was configured — and `hostPID: true` is right there in the spec.
+
+
+  **2. Confirm from the other direction.** 291 visible processes is a node's
+  worth, not a pod's. The identical agent run as a Deployment sees three. The
+  code is the same in both cases, so the difference is not in the code.
+
+
+  **3. Identify which check governs the access.** This is the step people skip.
+  `/proc/<pid>/cmdline` is mode 444 — readable by everyone, deliberately, which
+  is how `ps` works for unprivileged users on any Linux machine. No capability
+  is consulted, so an empty `CapEff` does not enter into it. The only thing that
+  ever stood between the agent and that file was the PID namespace, and the spec
+  gave it away.
+
+
+  **4. Separate the two questions the security team actually has.** *Is the
+  agent malicious?* No — its behaviour is a direct consequence of the isolation
+  it was granted. *Is there a problem?* Yes, and there are two: the agent's
+  access is far wider than its purpose, and a workload on this cluster is
+  passing a database password on a command line where every process in its PID
+  namespace can read it.
+
+
+  The habit worth taking from this: when something reads more than it should,
+  check what governs that read before checking privilege. A world-readable file
+  has no privilege story, and the whole investigation is then about namespaces.
+
+resolution: >-
+  Two fixes, because there are two defects.
+
+
+  **The agent.** It needs process *counts* and CPU figures, not command lines.
+  Have it read only `/proc/<pid>/stat` and `/proc/<pid>/comm` and never open
+  `cmdline`, then redact anything unexpected at the point of emission rather
+  than downstream. `hostPID` stays — a node process monitor genuinely requires
+  it, and this is one of the cases where the option is load-bearing.
+
+
+  If the agent could work per-pod instead of per-node, dropping `hostPID`
+  entirely would be better still. Establish that before keeping it: "it is a
+  DaemonSet" is not by itself a reason to be in the node's PID namespace.
+
+
+  **The workload passing a password as an argument.** This is the more urgent
+  of the two, and it is not the platform team's bug. Command lines are readable
+  by every process in the same PID namespace and are recorded by anything that
+  samples `/proc` — including, on many systems, the audit log. Move it to an
+  environment variable at minimum, and to a mounted secret properly.
+
+
+  Then close the general case rather than these two instances: enforce
+  `baseline` Pod Security on tenant namespaces, which forbids `hostPID`
+  outright, and grant the exception to the monitoring namespace explicitly. That
+  turns "did anyone notice this in review" into a property of the cluster.

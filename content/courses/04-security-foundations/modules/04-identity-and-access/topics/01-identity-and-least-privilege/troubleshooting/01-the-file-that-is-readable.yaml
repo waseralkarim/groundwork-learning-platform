@@ -1,0 +1,243 @@
+id: troubleshooting.the-file-that-is-readable
+topic: topic.identity-and-least-privilege
+title: The config file is mode 644 and the service still cannot read it
+level: L2
+objectives: [OBJ-A04.4.7, OBJ-A04.4.3]
+reveal_policy: progressive
+
+situation: >-
+  A service failed to start after a routine deployment. It logs
+  `EACCES: permission denied, open '/srv/app/config/settings.json'` and exits.
+
+
+  The file is mode 644, owned by the account the service runs as. Three engineers
+  have confirmed this independently. One has already run `chmod 666` on it, which
+  changed nothing, and another has proposed `chmod -R 777 /srv/app` to "get it
+  running and tidy up after".
+
+
+  The deployment that preceded it changed one thing: config files moved from
+  `/srv/app/` into a new `/srv/app/config/` subdirectory, created by the deploy
+  script.
+
+
+  It works on the previous release. It works when an engineer cats the file as
+  themselves.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "EACCES on a file that is mode 644 and owned by the service account"
+  - "chmod 666 on the file changed nothing"
+  - "An engineer can read the file interactively as their own user"
+  - "The previous release, with the file one directory higher, works"
+  - "The deployment created a new subdirectory"
+
+artifacts:
+  - type: command_output
+    label: The file, as three people have checked it
+    content: |
+      $ ls -l /srv/app/config/settings.json
+      -rw-rw-rw- 1 appsvc appsvc 812 Aug 17 02:14 settings.json
+
+      $ id appsvc
+      uid=997(appsvc) gid=997(appsvc) groups=997(appsvc)
+
+  - type: command_output
+    label: The whole path
+    content: |
+      $ namei -l /srv/app/config/settings.json
+      f: /srv/app/config/settings.json
+      drwxr-xr-x root   root   /
+      drwxr-xr-x root   root   srv
+      drwxr-xr-x root   root   app
+      drw-r--r-- root   root   config
+                               settings.json - Permission denied
+
+  - type: config
+    label: The relevant part of the deploy script
+    content: |
+      # new in this release
+      install -d -m 644 -o root -g root /srv/app/config
+      install -m 644 -o appsvc -g appsvc config/settings.json /srv/app/config/
+
+      # previous release
+      # install -m 644 -o appsvc -g appsvc config/settings.json /srv/app/
+
+  - type: log
+    label: The service, started manually as appsvc
+    content: |
+      $ sudo -u appsvc ls /srv/app/config/
+      settings.json
+
+      $ sudo -u appsvc cat /srv/app/config/settings.json
+      cat: /srv/app/config/settings.json: Permission denied
+
+  - type: command_output
+    label: How the engineer tested it
+    content: |
+      $ whoami
+      alice
+      $ groups
+      alice sudo adm
+      $ cat /srv/app/config/settings.json
+      { "listen": "0.0.0.0:8080", ... }
+
+diagnostic_questions:
+  - "The service can list the directory and cannot read the file. What does that combination mean?"
+  - "What mode did the deploy script give the new directory, and what does that mode mean on a directory?"
+  - "Why did chmod 666 on the file change nothing?"
+  - "Why can the engineer read it when the service account cannot?"
+  - "What is the minimal fix, and what is wrong with chmod -R 777?"
+
+hints:
+  - "Read the `namei` output line by line and find the component that is not like the others."
+  - "`install -d -m 644` creates a directory. Think about what 644 means when the thing is a directory."
+  - "`ls` succeeded and `cat` failed. Those need different bits."
+  - "The engineer is in the `sudo` and `adm` groups. Check what else is different about how they tested."
+
+root_cause: >-
+  **The deploy script created the new directory with mode 644, and a directory
+  without the execute bit cannot be traversed.**
+
+
+  `install -d -m 644 /srv/app/config` is the whole fault. On a file, 644 is a
+  perfectly ordinary "readable by everyone, writable by owner". On a **directory**
+  the bits mean something different: `r` permits listing the contents, and `x`
+  permits *traversal* — resolving a name inside it. Mode 644 gives read and no
+  execute, so the directory can be listed and nothing inside it can be opened.
+
+
+  That is exactly the observed behaviour, and it is in the artifacts:
+  `sudo -u appsvc ls` succeeds and `sudo -u appsvc cat` fails.
+
+
+  `namei -l` names the culprit directly:
+
+
+  ```text
+  drw-r--r-- root   root   config      ← no x anywhere
+  ```
+
+
+  Every other component is `drwxr-xr-x`. The one that differs is the one the
+  deployment created.
+
+
+  **Why `chmod 666` on the file changed nothing.** The file was never the
+  problem. It is mode 644, owned by `appsvc`, and entirely readable. The error
+  names it because that is what was asked for; the object that refused is the
+  directory above it. Making the file more permissive addresses nothing, and the
+  file is now world-writable for no benefit.
+
+
+  **Why the engineer could read it.** Alice is in the `sudo` and `adm` groups —
+  but more to the point, she almost certainly tested with `sudo`, or her shell
+  already had the path resolved. The decisive evidence is in the artifacts: when
+  the same read is performed **as `appsvc`** with `sudo -u appsvc`, it fails.
+  Testing as yourself is not testing.
+
+
+  **Why the previous release worked.** The file was in `/srv/app/`, which is
+  `drwxr-xr-x` — the directory has the execute bit, so the path resolves. Nothing
+  about the file or the service changed. Only the directory it now sits behind.
+
+method: >-
+  **1. Run `namei -l` on the failing path before anything else.** It prints every
+  component with its mode and owner, and the culprit stands out — one
+  `drw-r--r--` among `drwxr-xr-x`. This turns a guessing game up the directory
+  tree into a five-second answer, and it is the single most useful command for
+  any `EACCES` that does not immediately make sense.
+
+
+  **2. Note which operations succeed.** `ls` working and `cat` failing is
+  diagnostic on its own: those need different bits on a directory. If listing had
+  also failed, the directory would be missing `r` as well, which is a different
+  mode and a different mistake.
+
+
+  **3. Test as the failing identity, not as yourself.** `sudo -u appsvc` — and
+  ideally `sudo -u appsvc -s` for anything more involved. Three engineers
+  confirming a file is readable while logged in as themselves confirmed nothing.
+  Your groups, your sudo access and your shell's state are all different.
+
+
+  **4. When a change of directory layout precedes the failure, read how the
+  directory was created.** `install -d -m 644` is the kind of line that looks
+  right in review because 644 is the mode everybody types for files. The `-d`
+  makes it a directory and the mode means something else.
+
+
+  **5. Do not escalate the permission until you know what refused.** `chmod 666`
+  on the file was applied without a hypothesis and, having changed nothing,
+  produced the suggestion of `chmod -R 777` — the classic path from a small
+  misdiagnosis to a large exposure.
+
+
+  The habit worth taking: **the error names the object you asked for, not the
+  object that refused.** On any path-based permission failure, the whole path is
+  the suspect.
+
+resolution: >-
+  **Immediately:**
+
+
+  ```bash
+  chmod 755 /srv/app/config
+  chmod 644 /srv/app/config/settings.json    # undo the 666
+  ```
+
+
+  Then verify **as the service account**, which is the step that was missing all
+  along:
+
+
+  ```bash
+  sudo -u appsvc cat /srv/app/config/settings.json >/dev/null && echo ok
+  ```
+
+
+  If the intent is that only `appsvc` should reach the config, `750` with group
+  `appsvc` is better than `755`. Either way the directory needs `x` for whoever
+  must traverse it.
+
+
+  **Fix the deploy script, which is where the bug lives:**
+
+
+  ```bash
+  install -d -m 755 -o root -g root /srv/app/config
+  ```
+
+
+  Or `-m 750 -g appsvc` if the contents are sensitive. The general rule worth
+  writing in the script as a comment: **directories need the execute bit; 644 is
+  a file mode.**
+
+
+  **What not to do.** `chmod -R 777 /srv/app` fixes the symptom and makes every
+  file in the tree world-writable, including the config that was the point of the
+  exercise. It also survives — nobody comes back to tidy it up, and it will be
+  found in an audit two years from now with no record of why.
+
+
+  Revert the `chmod 666` too. It was applied on a guess, it achieved nothing, and
+  a world-writable config file is a real finding: anything on the host can now
+  rewrite what the service loads at startup.
+
+
+  **Then add the check that would have caught it.** The deploy already knows
+  which account the service runs as, so it can verify its own work:
+
+
+  ```bash
+  sudo -u appsvc test -r /srv/app/config/settings.json \
+    || { echo "config not readable by appsvc"; exit 1; }
+  ```
+
+
+  One line, and it converts a failed startup at 02:14 into a failed deployment
+  that never ships. That is the same lesson as verifying a renewed certificate is
+  actually served: **automation that produces an artefact is not finished until
+  something confirms the consumer can use it.**

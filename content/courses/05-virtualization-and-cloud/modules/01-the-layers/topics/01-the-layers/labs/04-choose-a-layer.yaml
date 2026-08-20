@@ -1,0 +1,295 @@
+id: lab.choose-a-layer
+topic: topic.the-layers
+title: "Challenge: four workloads, and the constraint that decides each one"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A05.1.8, OBJ-A05.1.6]
+
+intro: >-
+  /tmp/workloads describes four services the way a design document would. Choose
+  a layer for each — bare metal, VM, container or function — and justify it by
+  what the alternatives would have cost.
+
+
+  One of them has a constraint that eliminates every layer but one, and it is not
+  the one with the largest resource requirement. Another could run on any of
+  them, which is its own kind of answer.
+
+setup:
+  - /opt/lab/seed-layers.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read all four descriptions and the reference table in
+      /tmp/captures/startup-costs.txt. Commit to a choice for each before
+      analysing, one line each, in /tmp/hypotheses.
+    hint: >-
+      For each, ask what would go wrong on each layer rather than which layer
+      sounds modern.
+    walkthrough: |
+      cat /tmp/workloads/*.txt
+      {
+        echo "alpha: container - steady traffic, stateless, deploys often"
+        echo "bravo: function or microvm - hostile tenancy needs a hypervisor boundary"
+        echo "charlie: vm or bare metal - 60gb working set on local disk, fixed schedule"
+        echo "delta: function - idle most of the time and tolerates 3s cold start"
+      } > /tmp/hypotheses
+      cat /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You committed to a choice before analysing
+      - type: command_exit
+        command: "test $(wc -l < /tmp/hypotheses) -ge 4"
+        exit_code: 0
+        describe: With a line for each of the four workloads
+
+  - id: s2
+    instruction: >-
+      Identify which workload has a constraint that eliminates all but one layer,
+      name the constraint, and say what each rejected layer would cost. Save to
+      /tmp/answer-decided.
+    walkthrough: |
+      {
+        echo "bravo. the constraint is 'tenancy: HOSTILE - customers may submit anything, deliberately'."
+        echo
+        echo "why each rejected layer fails:"
+        echo "- container alone: the boundary is the host kernel, enforced by namespaces, cgroups and seccomp. all of those are software in the same kernel as the thing being contained, so a kernel vulnerability is a container escape. against an attacker who is deliberately probing, that is not an acceptable boundary."
+        echo "- bare metal: no isolation between executions at all, and 0 to 2000 concurrent means provisioning for a peak that is idle most of the time."
+        echo "- a full vm per execution: the isolation is right and the startup is wrong. tens of seconds against executions that are short and unpredictable."
+        echo
+        echo "what remains: a hypervisor boundary with container-like startup, which is exactly what a microvm is - firecracker or similar, around 125ms to boot with about 5mb of overhead. in practice that means a function platform, because that is what they are built on."
+        echo
+        echo "this is the constraint that decides rather than trades. every other consideration here - cost, density, startup - can be argued about. 'the code is hostile' removes options outright, and no amount of container hardening substitutes for a different kind of boundary."
+        echo
+        echo "note it is NOT charlie, the one with 60gb of memory. a large resource requirement narrows the instance you buy; it does not narrow the layer."
+      } > /tmp/answer-decided
+      cat /tmp/answer-decided
+    verify:
+      - type: file_matches
+        path: /tmp/answer-decided
+        pattern: "(?i)bravo"
+        describe: You identified the workload whose constraint decides
+      - type: file_matches
+        path: /tmp/answer-decided
+        pattern: "(?i)hostile"
+        describe: And named hostile tenancy as the constraint
+      - type: file_matches
+        path: /tmp/answer-decided
+        pattern: "(?i)microvm|firecracker"
+        describe: And the layer that provides a hypervisor boundary at container speed
+      - type: file_matches
+        path: /tmp/answer-decided
+        pattern: "(?i)kernel vulnerability|escape"
+        describe: And why a container boundary is insufficient here
+
+  - id: s3
+    instruction: >-
+      Take charlie and delta. For each, name the layer you would choose and the
+      specific number in the description that drove it. Save to
+      /tmp/answer-charlie-delta.
+    walkthrough: |
+      {
+        echo "charlie - nightly reconciliation, 40 minutes, 60gb at peak, large local working set, must finish by 06:00"
+        echo "  layer: a vm, sized for the job and destroyed afterwards - or bare metal if one already exists."
+        echo "  the number that drove it: 60gb with a large working set on LOCAL DISK. that rules out a function on two counts - memory ceilings on function platforms are well below it, and execution time limits are minutes rather than 40 of them."
+        echo "  a container would work technically and buys nothing: it runs once a night, so density and fast startup - the two things a container is for - are worth nothing here. and if it is the only thing on the machine, the isolation is not needed either."
+        echo "  the real decision is scheduling, not layer: provision it for the run and release it, so you are not paying for 60gb for 23 hours and 20 minutes a day."
+        echo
+        echo "delta - webhook receiver, 0 to 40 req/s, bursty, often silent for hours, tolerates 3s for the first request"
+        echo "  layer: a function."
+        echo "  the number that drove it: 'tolerates up to 3 s for the first request after idle'. that is an explicit cold start budget, and it is the only thing standing between this workload and the cheapest possible option."
+        echo "  'often silent for hours' is the other half - a container would be running and billed through all of it. paying per execution turns this from a monthly bill into a rounding error."
+        echo "  if that 3s tolerance were 200ms instead, the answer becomes a container with a minimum of one replica, and the cost goes up by whatever a small always-on instance costs."
+      } > /tmp/answer-charlie-delta
+      cat /tmp/answer-charlie-delta
+    verify:
+      - type: file_matches
+        path: /tmp/answer-charlie-delta
+        pattern: "(?i)60 ?gb|local disk"
+        describe: You identified what rules out a function for charlie
+      - type: file_matches
+        path: /tmp/answer-charlie-delta
+        pattern: "(?i)cold start|3 ?s"
+        describe: And the cold-start budget that permits one for delta
+      - type: file_matches
+        path: /tmp/answer-charlie-delta
+        pattern: "(?i)silent for hours|idle"
+        describe: And the idle profile that makes it the cheap answer
+
+  - id: s4
+    instruction: >-
+      Alpha could run on more than one layer. Choose one, and say honestly what
+      the runner-up would have cost rather than why it is wrong. Save to
+      /tmp/answer-alpha.
+    walkthrough: |
+      {
+        echo "alpha - customer-facing api, steady 400 req/s, 24 hours, p99 under 150ms, stateless, 20+ deploys a day"
+        echo "  layer: container."
+        echo
+        echo "nothing here forces it. there is no hostile tenancy, no kernel requirement, no hardware need. so this is a trade rather than a constraint, and the honest version names what the alternatives cost:"
+        echo
+        echo "- a vm would work. it costs tens of seconds per start, which against 20+ deploys a day makes rolling deployments slow and rollback slower. and density: one api per vm against many per machine."
+        echo "- a function would work for the traffic shape but this is never idle - steady 400 req/s, 24 hours. paying per execution at that volume is usually more expensive than an always-on container, and the cold start would land on real user requests during scale-up."
+        echo "- bare metal would be fastest per request and cannot be deployed to 20 times a day by a team."
+        echo
+        echo "the deciding line is '20+ deploys a day', not the traffic. that requirement is about how fast the layer can be replaced, and it is the container's actual selling point here."
+        echo
+        echo "and the p99 budget of 150ms is worth checking against the layer rather than assuming: a container adds no measurable per-request overhead, but the throttling in the previous lab does - if this is sized from nproc it will miss that budget while showing 3 percent cpu."
+      } > /tmp/answer-alpha
+      cat /tmp/answer-alpha
+    verify:
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "(?i)container"
+        describe: You chose a layer for alpha
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "(?i)deploys a day|20\\+"
+        describe: And identified the deployment frequency as the deciding factor
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "(?i)would work"
+        describe: And said what the alternatives cost rather than why they are wrong
+
+  - id: s5
+    instruction: >-
+      Write the summary to /tmp/answer-summary: your four choices, the one
+      question that decided three of them, and what you would measure before
+      committing to any of it.
+    walkthrough: |
+      {
+        echo "alpha   -> container  (deploy frequency)"
+        echo "bravo   -> function / microvm  (hostile tenancy)"
+        echo "charlie -> vm, provisioned for the run  (60gb local working set)"
+        echo "delta   -> function  (idle most of the time, 3s cold start budget)"
+        echo
+        echo "the question that decided three of the four: WHAT CONSTRAINT ELIMINATES A LAYER OUTRIGHT?"
+        echo "most workloads run acceptably on most layers, so the useful move is to look for the thing that removes options rather than to compare them on merit. hostile tenancy removed all but one for bravo. a 60gb local working set removed functions for charlie. a 3s tolerance permitted one for delta."
+        echo "alpha had no such constraint, and naming that is also an answer - it means the choice is a trade and should be argued on deploy speed and density rather than presented as forced."
+        echo
+        echo "what i would measure before committing:"
+        echo "1. the actual cold start for delta on the platform in question, against the stated 3s - published figures range from 100ms to 10s and the difference decides the answer."
+        echo "2. charlie's real peak memory, not the estimate. 60gb is the number that ruled out other options, so it is the number worth being sure of."
+        echo "3. alpha's p99 under a realistic cpu limit, with throttled_usec watched - because a container sized from nproc will miss a 150ms budget while its cpu graph looks fine."
+        echo "4. the end-to-end start time in our own environment, since the quoted figure and the observed one differed by more than an order of magnitude on the machine these labs run on."
+      } > /tmp/answer-summary
+      cat /tmp/answer-summary
+    verify:
+      - type: command_exit
+        command: "test $(grep -c '\\->' /tmp/answer-summary) -ge 4"
+        exit_code: 0
+        describe: You recorded a choice for each workload
+      - type: file_matches
+        path: /tmp/answer-summary
+        pattern: "(?i)eliminates a layer|removes options"
+        describe: And named the question that decided most of them
+      - type: file_matches
+        path: /tmp/answer-summary
+        pattern: "(?i)measure|cold start"
+        describe: And what you would measure before committing
+      - type: file_matches
+        path: /tmp/answer-summary
+        pattern: "(?i)throttled|p99"
+        describe: Including the check that the previous lab showed a dashboard would hide
+
+solution: >-
+  **The four answers.**
+
+
+  ```text
+  alpha   → container            deploy frequency
+  bravo   → function / microVM   hostile tenancy
+  charlie → VM for the run       60 GB local working set
+  delta   → function             idle most of the time, 3 s cold-start budget
+  ```
+
+
+  **Bravo is the one that is decided rather than traded.** *"Tenancy: HOSTILE —
+  customers may submit anything, deliberately."*
+
+
+  A container's boundary is the host kernel, enforced by namespaces, cgroups and
+  seccomp — all software running in the same kernel as the thing being contained.
+  Against an attacker deliberately probing it, a kernel vulnerability is an
+  escape. No amount of hardening substitutes for a different *kind* of boundary.
+
+
+  Bare metal has no isolation at all and would be provisioned for a peak of 2000
+  concurrent that is idle most of the time. A full VM per execution has the right
+  isolation and the wrong startup — tens of seconds against short, unpredictable
+  executions.
+
+
+  What survives is a hypervisor boundary at container speed: a **microVM**,
+  ~125 ms to boot with ~5 MB of overhead. In practice that means a function
+  platform, because that is what they are built on — which is why "serverless" is
+  not a fifth kind of thing but a microVM scheduled aggressively.
+
+
+  **It is not charlie**, despite charlie having the largest resource requirement.
+  A big memory footprint narrows the *instance you buy*; it does not narrow the
+  *layer*. Confusing "large" with "constrained" is the trap in the set.
+
+
+  **Charlie.** 60 GB with a large working set on local disk rules out functions
+  twice over — memory ceilings are well below it and execution limits are minutes
+  rather than forty of them. A container would work and buys nothing: it runs
+  once a night, so density and fast startup are worth zero, and if it is alone on
+  the machine the isolation is not needed either.
+
+
+  The real decision is **scheduling, not layer** — provision for the run and
+  release it, rather than paying for 60 GB for 23 hours and 20 minutes a day.
+
+
+  **Delta.** *"Tolerates up to 3 s for the first request after idle"* is an
+  explicit cold-start budget, and *"often silent for hours"* is the other half. A
+  container would be running and billed through all that silence. Change the
+  tolerance to 200 ms and the answer becomes a container with a minimum replica,
+  at whatever a small always-on instance costs.
+
+
+  **Alpha has no constraint at all**, and saying so is the answer. No hostile
+  tenancy, no kernel requirement, no hardware need — so this is a trade, and the
+  honest form names what the alternatives cost rather than why they are wrong. A
+  VM works and costs tens of seconds per start against 20+ deploys a day. A
+  function works for the traffic shape and this is never idle, so per-execution
+  billing at steady 400 req/s is usually more expensive.
+
+
+  The deciding line is **"20+ deploys a day"** — a statement about how fast the
+  layer can be replaced, not about traffic.
+
+
+  **The question that did most of the work:**
+
+
+  > What constraint eliminates a layer outright?
+
+
+  Most workloads run acceptably on most layers. Looking for the thing that
+  *removes options* is faster and more defensible than comparing four layers on
+  merit, and when nothing does, that is itself worth stating — it means the
+  decision is a trade and should be argued as one.
+
+
+  **And what to measure before committing**, because every one of these rests on
+  a number somebody quoted:
+
+
+  - Delta's actual cold start on the actual platform. Published figures span 100 ms
+    to 10 s, and the answer changes across that range.
+
+  - Charlie's real peak memory, since 60 GB is the number that ruled out the
+    alternatives.
+
+  - Alpha's p99 under a realistic CPU limit **with `throttled_usec` watched** —
+    the previous lab showed a container sized from `nproc` missing its budget
+    while its CPU graph looked comfortable.
+
+  - Your own end-to-end start time, since the quoted 5–50 ms and the observed
+    ~760 ms differ by more than an order of magnitude.

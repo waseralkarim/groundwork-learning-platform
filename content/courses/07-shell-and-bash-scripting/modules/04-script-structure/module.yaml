@@ -1,0 +1,9 @@
+id: module.script-structure
+slug: script-structure
+title: Script Structure
+summary: >-
+  The preamble everyone copies and nobody reads. `set -e` has nine contexts
+  where it does not fire, `set -u` exits 127 rather than 1, and the single most
+  common way to write a variable in a function silently discards the failure it
+  was meant to catch.
+order: 4

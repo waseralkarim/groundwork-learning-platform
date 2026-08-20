@@ -1,0 +1,100 @@
+{
+  "uid": "gw-funnel",
+  "title": "Groundwork \u00b7 Learning funnel",
+  "description": "The most valuable dashboard in the system. A topic with many starts and few completions is a content bug, and this is where it becomes visible.",
+  "tags": [
+    "groundwork"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Topic starts vs completions",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (status) (increase(topic_completion_total[24h]))",
+          "legendFormat": "{{ status }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Completion ratio per topic",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (topic) (increase(topic_completion_total{status=\"completed\"}[7d])) / clamp_min(sum by (topic) (increase(topic_completion_total{status=\"in_progress\"}[7d])), 1)",
+          "legendFormat": "{{ topic }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "description": "Low ratio with high starts: learners are bailing. Read that topic again as a stranger."
+    },
+    {
+      "type": "timeseries",
+      "title": "Quiz outcomes",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (result) (increase(quiz_attempts_total[24h]))",
+          "legendFormat": "{{ result }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "description": "A quiz nearly everyone fails is usually a question that is unclear rather than hard."
+    }
+  ]
+}

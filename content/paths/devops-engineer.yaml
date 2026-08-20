@@ -1,0 +1,22 @@
+id: path.devops-engineer
+slug: devops-engineer
+title: DevOps Engineer
+summary: >-
+  The full path from "what is a CPU" to designing and operating production
+  systems. Ordered so that nothing is ever used before it has been explained.
+
+courses:
+  - course: course.computing-foundations
+    order: 1
+  - course: course.operating-systems
+    order: 2
+  - course: course.networking-foundations
+    order: 3
+  - course: course.security-foundations
+    order: 4
+  - course: course.virtualization-and-cloud
+    order: 5
+  - course: course.linux-fundamentals
+    order: 6
+  - course: course.shell-and-bash-scripting
+    order: 7

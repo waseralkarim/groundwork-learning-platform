@@ -1,0 +1,7 @@
+graph TD
+    A["A packet for <b>10.0.5.20</b>"] --> B{"Is it inside a subnet<br/>one of my interfaces is on?"}
+    B -->|"yes — <i>directly connected</i>"| C["ARP for its MAC address<br/>and send the frame straight to it.<br/><b>No router involved</b>"]
+    B -->|"no"| D{"Which routes match?"}
+    D --> E["Compare every matching route.<br/><b>Longest prefix wins</b> —<br/>most specific, not first listed"]
+    E --> F["Send the frame to that route's<br/><b>gateway</b>, addressed to the<br/>gateway's MAC but the<br/>destination's IP"]
+    D -->|"none match, not even 0.0.0.0/0"| G["<b>Network is unreachable</b><br/><i>the packet never leaves</i>"]

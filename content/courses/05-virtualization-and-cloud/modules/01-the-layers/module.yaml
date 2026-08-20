@@ -1,0 +1,8 @@
+id: module.the-layers
+slug: the-layers
+title: The Layers
+summary: >-
+  Bare metal, virtual machine, container and function — what each one actually
+  virtualises, what it costs to start, how strong its boundary is, and the
+  places where the abstraction leaks numbers that are not true.
+order: 1

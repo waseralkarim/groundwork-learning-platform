@@ -1,0 +1,14 @@
+id: course.linux-fundamentals
+slug: linux-fundamentals
+code: B06
+title: Linux Fundamentals
+summary: >-
+  The parts of a Linux system you deal with every day and nobody explains: what
+  a distribution actually is and why its software is deliberately old, where
+  files live and why, what a package really is and where every file on the
+  system came from, and why your environment differs between a shell, a cron job
+  and a systemd unit.
+track: Core Craft
+levels: [L1, L2]
+estimated_hours: 10
+order: 6

@@ -1,0 +1,302 @@
+id: lab.works-in-curl-fails-in-the-browser
+topic: topic.certificates-and-tls
+title: "Challenge: your monitoring is green and your users see warnings"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A04.3.6, OBJ-A04.3.8]
+
+intro: >-
+  A service is reported as broken by users and healthy by every automated check
+  you own. The certificate has not expired, the chain verifies, and `curl`
+  returns 200.
+
+
+  Two separate faults are present. Both have the property that a common testing
+  method cannot see them, and they fail in opposite directions — one is invisible
+  to your tooling, the other is invisible to a browser.
+
+
+  Find both, prove each with a command, and write the remediation.
+
+setup:
+  - /opt/lab/seed-tls.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Two servers are the subject. Start /tmp/broken/cnonly on port 4481 with its
+      intermediate, and /tmp/broken/good on port 4482 without one. Verify both
+      with the tooling you would normally trust, and save the results to
+      /tmp/answer-green.
+    hint: >-
+      Use `curl --cacert root.crt --resolve lab.internal:<port>:127.0.0.1` so the
+      hostname matches. Record status codes and exit statuses for both.
+    walkthrough: |
+      cd /tmp/broken
+      /tmp/serve-tls 4481 cnonly.crt cnonly.key int.crt >/dev/null
+      /tmp/serve-tls 4482 good.crt good.key >/dev/null
+      cat root.crt int.crt > bundle.crt
+      {
+        for p in 4481 4482; do
+          printf 'port %s: ' "$p"
+          curl -sS --cacert root.crt --resolve "lab.internal:$p:127.0.0.1" \
+            "https://lab.internal:$p/" -o /dev/null -w 'http=%{http_code} ' 2>&1 | head -1
+          echo "rc=$?"
+        done
+      } > /tmp/answer-green
+      cat /tmp/answer-green
+    verify:
+      - type: file_exists
+        path: /tmp/answer-green
+        describe: You tested both endpoints with a normal client
+      - type: command_exit
+        command: "test $(grep -c '^port' /tmp/answer-green) -eq 2"
+        exit_code: 0
+        describe: Recording the result for each
+
+  - id: s2
+    instruction: >-
+      One of the two is failing for your tooling and the other is not. Identify
+      which, diagnose it from the error, and save the diagnosis with the command
+      that proves it to /tmp/answer-fault-one.
+    walkthrough: |
+      cd /tmp/broken
+      {
+        echo "port 4482 fails for curl. the error names it:"
+        curl -sS --cacert root.crt --resolve lab.internal:4482:127.0.0.1 https://lab.internal:4482/ -o /dev/null 2>&1 | head -1
+        echo
+        echo "proof - the server sends only one certificate, so the client cannot reach a trusted root:"
+        openssl s_client -connect 127.0.0.1:4482 -CAfile root.crt </dev/null 2>&1 | grep -E "^depth=|Verify return code" | head -4
+        echo
+        echo "only depth=0 appeared. a complete chain reaches depth=2. the server is not sending its intermediate, which is error 20 seen from the client as 21."
+        echo
+        echo "and this is the fault a browser would hide, because browsers cache intermediates from other sites, so users may report this endpoint as fine while every automated check fails."
+      } > /tmp/answer-fault-one
+      cat /tmp/answer-fault-one
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fault-one
+        pattern: "Verify return code: 21|num=20|local issuer"
+        describe: You identified the incomplete chain from the verification output
+      - type: file_matches
+        path: /tmp/answer-fault-one
+        pattern: "depth"
+        describe: And used the chain depth as the proof
+      - type: file_matches
+        path: /tmp/answer-fault-one
+        pattern: "(?i)cache|browsers"
+        describe: And noted that a browser would hide this one
+
+  - id: s3
+    instruction: >-
+      The other endpoint satisfies every check you have run. It is still broken.
+      Find the fault and save the evidence to /tmp/answer-fault-two.
+    walkthrough: |
+      cd /tmp/broken
+      {
+        echo "port 4481 passes curl and passes openssl verify against the hostname:"
+        openssl verify -CAfile root.crt -untrusted int.crt -verify_hostname lab.internal cnonly.crt 2>&1
+        echo
+        echo "but the certificate has no subject alternative name at all:"
+        echo -n "SAN: "
+        openssl x509 -in cnonly.crt -noout -ext subjectAltName 2>&1 | tail -1
+        echo "subject: $(openssl x509 -in cnonly.crt -noout -subject)"
+        echo
+        echo "openssl and curl fall back to the common name when no SAN is present. browsers do not - chrome has required a SAN since 2017 - so this certificate is valid to every tool i own and invalid to every user."
+        echo "nothing in my monitoring would ever report it, because my monitoring uses the verifier that accepts it."
+      } > /tmp/answer-fault-two
+      cat /tmp/answer-fault-two
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fault-two
+        pattern: "No extensions in certificate|SAN: *$"
+        describe: You found the missing subject alternative name
+      - type: file_matches
+        path: /tmp/answer-fault-two
+        pattern: "(?i)common name"
+        describe: And identified the CN fallback as why your tools accepted it
+      - type: file_matches
+        path: /tmp/answer-fault-two
+        pattern: "(?i)monitoring"
+        describe: And why monitoring could never have caught it
+
+  - id: s4
+    instruction: >-
+      Prove you can fix the second fault. Reissue the certificate with a proper
+      SAN using the CA material in /tmp/pki, serve it on 4483, and verify. Save
+      to /tmp/answer-reissued.
+    walkthrough: |
+      cd /tmp/pki
+      openssl req -newkey rsa:2048 -keyout /tmp/fixed.key -out /tmp/fixed.csr -nodes \
+        -subj "/CN=lab.internal" 2>/dev/null
+      printf 'subjectAltName=DNS:lab.internal\nbasicConstraints=CA:FALSE\n' > /tmp/fixed.ext
+      openssl x509 -req -in /tmp/fixed.csr -CA int.crt -CAkey int.key \
+        -out /tmp/fixed.crt -days 365 -extfile /tmp/fixed.ext 2>/dev/null
+      /tmp/serve-tls 4483 /tmp/fixed.crt /tmp/fixed.key /tmp/pki/int.crt >/dev/null
+      {
+        echo "reissued with a SAN:"
+        openssl x509 -in /tmp/fixed.crt -noout -ext subjectAltName
+        echo
+        echo "served with its intermediate, verified end to end:"
+        openssl s_client -connect 127.0.0.1:4483 -CAfile /tmp/pki/root.crt -verify_hostname lab.internal </dev/null 2>&1 \
+          | grep -E "^depth=|Verify return code" | head -4
+        echo
+        echo "note the -extfile. openssl x509 -req copies no extensions from the csr, so signing without it produces exactly the certificate i was asked to fix - which is how these get made by accident."
+      } > /tmp/answer-reissued
+      cat /tmp/answer-reissued
+    verify:
+      - type: file_matches
+        path: /tmp/answer-reissued
+        pattern: "DNS:lab\\.internal"
+        describe: The reissued certificate carries a subject alternative name
+      - type: file_matches
+        path: /tmp/answer-reissued
+        pattern: "Verify return code: 0"
+        describe: And verifies cleanly over a live connection
+      - type: file_matches
+        path: /tmp/answer-reissued
+        pattern: "depth=2"
+        describe: With the full chain served
+      - type: file_matches
+        path: /tmp/answer-reissued
+        pattern: "(?i)extfile|copies no extensions"
+        describe: And you noted how the original fault gets created
+
+  - id: s5
+    instruction: >-
+      Write the report to /tmp/answer-report: both faults, why each was invisible
+      to one kind of client, the fix for each, and what you would change about
+      the monitoring so neither recurs undetected.
+    walkthrough: |
+      {
+        echo "fault 1 - incomplete chain on 4482. the server sends its leaf and not its intermediate. clients that verify exactly what was sent (curl, health checks, java, language runtimes) fail with error 20/21. browsers succeed, because they cache intermediates seen on other sites and some fetch missing ones via the authority information access extension. so this fault is invisible to a browser test and obvious to tooling."
+        echo "  fix: serve the full chain - leaf then intermediate concatenated into the file nginx names in ssl_certificate. acme clients write fullchain.pem for this; pointing at cert.pem instead is the usual cause."
+        echo
+        echo "fault 2 - no subject alternative name on 4481. openssl and curl fall back to the common name when no SAN is present; browsers have required a SAN since 2017. so this fault is invisible to tooling and obvious to every user."
+        echo "  fix: reissue with subjectAltName. the root cause is signing without -extfile, since openssl x509 -req copies no extensions from the csr."
+        echo
+        echo "the two faults fail in opposite directions, which is why the reported symptom was contradictory. neither client was wrong: verification is policy rather than arithmetic, and these two verifiers have different policies about names and about caching."
+        echo
+        echo "monitoring changes:"
+        echo "1. assert the chain depth, not just the status code. a check that only records curl's exit status throws away the diagnosis - curl returns 60 for expiry, self-signed, unknown issuer and hostname mismatch alike, and the message is what distinguishes them."
+        echo "2. assert that a subjectAltName exists and contains the hostname served. nothing in a curl or openssl verify result will tell you it is missing."
+        echo "3. check from outside, against the real endpoint, with a fresh trust store - not against a file on disk, which passes while a stale process serves the old certificate."
+        echo "4. alert on days remaining at 30 and 14, and check the whole chain's dates, since an expiring intermediate leaves the leaf looking fine."
+      } > /tmp/answer-report
+      cat /tmp/answer-report
+    verify:
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "(?i)incomplete chain|intermediate"
+        describe: You reported the chain fault
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "(?i)subject alternative name|SAN"
+        describe: And the missing SAN
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "(?i)opposite direction|invisible to"
+        describe: And explained why the two symptoms contradicted each other
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "(?i)policy"
+        describe: And that neither client was wrong
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "(?i)depth"
+        describe: And proposed asserting chain depth in monitoring
+      - type: file_matches
+        path: /tmp/answer-report
+        pattern: "(?i)exit status|exit code|60"
+        describe: And noted that an exit status alone discards the diagnosis
+
+solution: >-
+  **Two faults, failing in opposite directions.**
+
+
+  That is why the report was contradictory, and it is worth recognising as a
+  shape: when users and monitoring disagree, suspect that the two are running
+  different verifiers rather than that one of them is mistaken.
+
+
+  **Fault 1 — incomplete chain (port 4482).** The server sends its leaf and not
+  its intermediate. `curl` fails with exit 60, and `s_client` shows the
+  diagnosis in one line: only `depth=0` appeared where a complete chain reaches
+  `depth=2`.
+
+
+  Browsers hide this, because they cache intermediates seen on other sites and
+  some fetch a missing one using the Authority Information Access extension in
+  the leaf. So users are fine and every automated check fails.
+
+
+  *Fix:* serve the full chain — leaf first, then intermediate, in the file nginx
+  names as `ssl_certificate`. ACME clients write exactly this as `fullchain.pem`,
+  and pointing at `cert.pem` instead is how it usually happens.
+
+
+  **Fault 2 — no subject alternative name (port 4481).** `curl` returns 200.
+  `openssl verify -verify_hostname lab.internal` returns `OK`. Every tool you own
+  is satisfied, and the certificate has no SAN at all — OpenSSL fell back to the
+  Common Name.
+
+
+  Browsers have required a SAN since 2017 and reject it outright. So this one is
+  invisible to tooling and obvious to every user, which is the exact inverse of
+  the first.
+
+
+  *Fix:* reissue with `subjectAltName`. The root cause is signing without
+  `-extfile`: `openssl x509 -req` copies **no** extensions from the CSR, so a
+  certificate signed without explicit extensions comes out with no SAN and no
+  basic constraints. That is how these are made by accident, and you reproduced
+  the correct version in one command.
+
+
+  **Neither client is broken.**
+
+
+  The signature check is mathematics and is identical everywhere. Whether a CN
+  fallback is permitted, and whether to cache intermediates, are **policy** — and
+  these two verifiers have different policies. Expecting them to agree is the
+  actual mistake.
+
+
+  This is why "check it with curl" is not sufficient and neither is "it works in
+  my browser". They answer different questions, and here each one answers the
+  question the other gets wrong.
+
+
+  **What to change in the monitoring.**
+
+
+  *Assert the chain depth, not just the status code.* A check recording only
+  curl's exit status has thrown the diagnosis away — curl returns **60** for
+  expiry, self-signed, unknown issuer *and* hostname mismatch, and only the
+  message distinguishes them. Four faults, four fixes, one number.
+
+
+  *Assert that a SAN exists and contains the hostname served.* Nothing in a
+  `curl` result or an `openssl verify` result will ever tell you it is missing.
+  This is a one-line check that almost nobody has:
+
+
+  ```bash
+  openssl s_client -connect host:443 -servername host </dev/null 2>/dev/null \
+    | openssl x509 -noout -ext subjectAltName | grep -q "DNS:host"
+  ```
+
+
+  *Check from outside, against the real endpoint.* Not a file on disk — a
+  renewed file with a process still serving the old certificate from memory
+  passes every file check there is.
+
+
+  *Alert at 30 and 14 days, on the whole chain.* An expiring intermediate leaves
+  the leaf looking perfectly healthy, and renewal often needs a change window.
+
+
+  The habit underneath all four: **check what the client sees, with a client
+  whose policy matches your users'.**

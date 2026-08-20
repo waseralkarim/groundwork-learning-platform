@@ -1,0 +1,464 @@
+id: lab.the-preamble
+topic: topic.set-euo-pipefail
+title: Build a preamble you can defend line by line
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.5.7, OBJ-B08.5.8]
+
+intro: >-
+  A preamble copied from a blog post is worth very little in review, because the
+  first question is always "why that line?"
+
+
+  You will build one, prove each guard fires, then state plainly what it still
+  cannot catch — and add the assertions that cover the gap.
+
+setup:
+  - /opt/lab/seed-strict.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Write /tmp/publish.sh — a script that copies a build artifact to a
+      destination — with a full preamble. It takes SOURCE and DEST, requires
+      DEPLOY_ENV, and works in a temporary directory it cleans up.
+    hint: >-
+      Options, required inputs, tool checks, cleanup traps, an ERR trap, then
+      main "$@" on the last line.
+    walkthrough: |
+      cat > /tmp/publish.sh <<'PUB'
+      #!/bin/bash
+      set -eEuo pipefail
+
+      usage() { echo "usage: $0 SOURCE DEST" >&2; exit 64; }
+
+      SOURCE=${1:-}; [ -n "$SOURCE" ] || usage
+      DEST=${2:-};   [ -n "$DEST" ]   || usage
+      : "${DEPLOY_ENV:?DEPLOY_ENV must be set (staging|production)}"
+
+      for cmd in tar sha256sum; do
+        command -v "$cmd" >/dev/null || { echo "$cmd is required" >&2; exit 1; }
+      done
+
+      WORKDIR=$(mktemp -d)
+      cleanup() {
+        [ -n "${WORKDIR:-}" ] || return 0
+        rm -rf "$WORKDIR"
+        WORKDIR=
+      }
+      trap cleanup EXIT
+      trap 'cleanup; exit 143' TERM
+      trap 'cleanup; exit 130' INT
+      trap 'echo "failed at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+      main() {
+        [ -f "$SOURCE" ] || { echo "no such file: $SOURCE" >&2; exit 1; }
+
+        local sum
+        sum=$(sha256sum "$SOURCE" | cut -d' ' -f1)
+
+        mkdir -p "$DEST"
+        cp "$SOURCE" "$WORKDIR/artifact"
+        cp "$WORKDIR/artifact" "$DEST/artifact"
+
+        # assert the OUTCOME, not the exit status of the cp
+        [ -s "$DEST/artifact" ] || { echo "published artifact is empty" >&2; exit 1; }
+        [ "$(sha256sum "$DEST/artifact" | cut -d' ' -f1)" = "$sum" ] \
+          || { echo "checksum mismatch after publish" >&2; exit 1; }
+
+        echo "published $SOURCE to $DEST/artifact ($DEPLOY_ENV)"
+      }
+
+      main "$@"
+      PUB
+      chmod 0755 /tmp/publish.sh
+      bash -n /tmp/publish.sh && echo "parses cleanly"
+      echo hello > /tmp/build.tar
+      DEPLOY_ENV=staging bash /tmp/publish.sh /tmp/build.tar /tmp/out
+    verify:
+      - type: file_exists
+        path: /tmp/publish.sh
+        describe: You wrote the script
+      - type: command_exit
+        command: bash -n /tmp/publish.sh
+        exit_code: 0
+        describe: And it parses
+      - type: file_matches
+        path: /tmp/publish.sh
+        pattern: "set -eEuo pipefail"
+        describe: With -E for the ERR trap
+      - type: file_matches
+        path: /tmp/publish.sh
+        pattern: "DEPLOY_ENV:\\?"
+        describe: A required variable that names itself
+      - type: file_matches
+        path: /tmp/publish.sh
+        pattern: "command -v"
+        describe: A tool check
+      - type: file_matches
+        path: /tmp/publish.sh
+        pattern: "trap 'cleanup; exit 143' TERM"
+        describe: A signal handler that exits
+      - type: file_matches
+        path: /tmp/publish.sh
+        pattern: "main \"\\$@\""
+        describe: And main "$@" on the last line
+      - type: file_exists
+        path: /tmp/out/artifact
+        describe: And the happy path works
+
+  - id: s2
+    instruction: >-
+      Prove each guard fires, by breaking one thing at a time. Save the results
+      to /tmp/answer-guards.
+    hint: >-
+      Missing argument, missing DEPLOY_ENV, missing source file. Capture both
+      the message and the exit status of each.
+    walkthrough: |
+      run() {
+        printf '  %-34s ' "$1"; shift
+        out=$("$@" 2>&1); rc=$?
+        printf 'rc=%-4s %s\n' "$rc" "$(printf '%s' "$out" | head -1)"
+      }
+      {
+        echo "each guard, triggered on its own:"
+        run "no arguments"       env DEPLOY_ENV=staging bash /tmp/publish.sh
+        run "one argument"       env DEPLOY_ENV=staging bash /tmp/publish.sh /tmp/build.tar
+        run "no DEPLOY_ENV"      env -u DEPLOY_ENV bash /tmp/publish.sh /tmp/build.tar /tmp/out
+        run "source missing"     env DEPLOY_ENV=staging bash /tmp/publish.sh /tmp/nope.tar /tmp/out
+        run "happy path"         env DEPLOY_ENV=staging bash /tmp/publish.sh /tmp/build.tar /tmp/out
+        echo
+        echo "every failure names itself and exits non-zero. 64 is the conventional"
+        echo "EX_USAGE from sysexits.h, which distinguishes 'you called it wrong' from"
+        echo "'it went wrong' - useful when a wrapper is deciding whether to retry."
+        echo
+        echo "and the workdir is gone on every one of those paths:"
+        echo "  temporary dirs left behind: $(ls -d /tmp/tmp.* 2>/dev/null | wc -l)"
+      } > /tmp/answer-guards
+      cat /tmp/answer-guards
+    verify:
+      - type: file_matches
+        path: /tmp/answer-guards
+        pattern: "no arguments +rc=64"
+        describe: Missing arguments exit EX_USAGE
+      - type: file_matches
+        path: /tmp/answer-guards
+        pattern: "(?i)no DEPLOY_ENV +rc=1.*DEPLOY_ENV must be set"
+        describe: And the required variable names itself
+      - type: file_matches
+        path: /tmp/answer-guards
+        pattern: "(?i)source missing +rc=1.*no such file"
+        describe: And a missing input is caught in main
+      - type: file_matches
+        path: /tmp/answer-guards
+        pattern: "(?i)happy path +rc=0.*published"
+        describe: And the success path still works
+      - type: file_matches
+        path: /tmp/answer-guards
+        pattern: "temporary dirs left behind: 0"
+        describe: And nothing was left behind
+
+  - id: s3
+    instruction: >-
+      Justify every line of the preamble in /tmp/answer-defence — including the
+      lines you chose NOT to include.
+    walkthrough: |
+      {
+        echo "why each line is there:"
+        echo
+        echo "  set -e            an unhandled failure stops the script instead of"
+        echo "                    continuing into a worse state."
+        echo "  set -E            without it the ERR trap below is SILENT inside"
+        echo "                    functions - and main is a function, so the trap would"
+        echo "                    never fire at all."
+        echo "  set -u            a typo'd variable name fails instead of expanding to"
+        echo "                    nothing. rm -rf \"\$DIR/\$SUBDIR\" with SUBDIR misspelled"
+        echo "                    is the canonical incident."
+        echo "  set -o pipefail   a pipeline reports its last NON-ZERO status, not its"
+        echo "                    last command's. pg_dump | gzip otherwise reports gzip."
+        echo "  usage + \${1:-}    the caller is told the calling convention, and exits"
+        echo "                    64 (EX_USAGE) rather than a generic 1."
+        echo "  \${DEPLOY_ENV:?}   fails at line 8 with a sentence naming the variable"
+        echo "                    and its legal values, rather than at line 40 with"
+        echo "                    'unbound variable' and exit 127."
+        echo "  command -v loop   a missing tool is a message at line 10, not a"
+        echo "                    half-finished publish at line 40. B06.2's deploy guard"
+        echo "                    used a tool that was not installed and the missing"
+        echo "                    command inverted the check for five months."
+        echo "  mktemp -d         a predictable path in /tmp is both a collision and a"
+        echo "                    symlink-attack surface."
+        echo "  trap cleanup EXIT cleanup on every path out, including an errexit abort."
+        echo "  separate TERM/INT because a signal handler must EXIT - otherwise the"
+        echo "                    script RESUMES after its workdir has been removed, and"
+        echo "                    a killed deploy reports success."
+        echo "  cleanup idempotent because EXIT still fires after the signal handler"
+        echo "                    already ran it."
+        echo "  trap ... ERR      turns errexit's silent exit into a line number and the"
+        echo "                    command that failed."
+        echo "  local sum; sum=   NOT 'local sum=\$(...)', which would discard sha256sum's"
+        echo "                    exit status. SC2155."
+        echo "  main \"\$@\"         the whole file is PARSED before anything runs, so a"
+        echo "                    truncated download or a file copied mid-write cannot"
+        echo "                    execute half a deploy. it also gives every helper a"
+        echo "                    place to live above the entry point."
+        echo
+        echo "lines i deliberately did NOT include:"
+        echo
+        echo "  set -x            useful while debugging, dangerous by default - it"
+        echo "                    prints every expanded command, and expanded commands"
+        echo "                    contain secrets."
+        echo "  IFS=\$'\\n\\t'       a popular preamble line. it changes word splitting"
+        echo "                    globally to fix unquoted expansions, which is treating"
+        echo "                    the symptom. quote the expansions instead - and if you"
+        echo "                    do set it, everything you did not write also runs"
+        echo "                    under it."
+        echo "  shopt -s failglob a non-matching glob becoming an error is right for"
+        echo "                    some scripts. here there are no globs, so it is noise."
+        echo "                    nullglob would belong in migrate.sh, which does glob."
+        echo "  set -o posix      changes enough bash behaviour to be a decision, not a"
+        echo "                    default."
+        echo
+        echo "the rule i would state in review: EVERY LINE OF A PREAMBLE SHOULD ANSWER A"
+        echo "FAILURE THIS SCRIPT CAN ACTUALLY HAVE. a preamble nobody can explain is"
+        echo "cargo cult, and the first time one of its lines causes a problem somebody"
+        echo "deletes the whole block."
+      } > /tmp/answer-defence
+      cat /tmp/answer-defence
+    verify:
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)SILENT inside"
+        describe: You justified -E specifically
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)script RESUMES"
+        describe: And the separate signal handlers
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)PARSED before anything runs"
+        describe: And main "$@"
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)did NOT include"
+        describe: And the lines you left out
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)contain secrets"
+        describe: Including set -x
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)treating\\s+the symptom"
+        describe: And the IFS line
+      - type: file_matches
+        path: /tmp/answer-defence
+        pattern: "(?i)cargo cult"
+        describe: And stated the rule
+
+  - id: s4
+    instruction: >-
+      Now break the script in a way the preamble structurally cannot catch, and
+      show that the assertions do. Save to /tmp/answer-gap.
+    hint: >-
+      A command that succeeds while doing the wrong thing. Every command in the
+      publish path can exit 0 and still leave the wrong bytes at the destination.
+    walkthrough: |
+      # a copy that truncates and still exits 0
+      cp /tmp/publish.sh /tmp/broken.sh
+      sed -i 's|^  cp "$WORKDIR/artifact"|  head -c 2 "$WORKDIR/artifact" >|' /tmp/broken.sh
+
+      {
+        echo "the change - a truncating copy that exits 0:"
+        grep -n 'DEST/artifact"$' /tmp/broken.sh | head -2 | sed 's/^/    /'
+        echo
+        echo "every command in that line succeeds. set -e sees nothing wrong, -u sees"
+        echo "nothing wrong, pipefail has no pipeline to judge, the ERR trap never fires."
+        echo
+        echo "running it:"
+        DEPLOY_ENV=staging bash /tmp/broken.sh /tmp/build.tar /tmp/out2 2>&1 | sed 's/^/    /'
+        echo "    rc=$(DEPLOY_ENV=staging bash /tmp/broken.sh /tmp/build.tar /tmp/out2 >/dev/null 2>&1; echo $?)"
+        echo
+        echo "caught - but not by the preamble. by this line:"
+        echo "    [ \"\$(sha256sum \"\$DEST/artifact\" | cut -d' ' -f1)\" = \"\$sum\" ] || exit 1"
+        echo
+        echo "which is the whole point. THE PREAMBLE CATCHES UNHANDLED FAILURES, NOT"
+        echo "WRONG BEHAVIOUR. a curl that received a 404 page with status 200, an rm on"
+        echo "the wrong path, a migration applied to the wrong database - all succeed."
+        echo
+        echo "what to show without the assertion, for contrast:"
+        printf '    destination contents with the assertion removed: '
+        head -c 2 /tmp/build.tar > /tmp/out3-artifact; cat /tmp/out3-artifact; echo " (2 bytes, exit 0)"
+        echo
+        echo "so: the preamble is a FLOOR. the rest of the work is asserting the outcome"
+        echo "- that the file exists, is a plausible size, and is the bytes you meant."
+        echo "THE EXIT STATUS IS THE COMMAND'S OPINION OF ITSELF; THE RESULTING STATE IS"
+        echo "EVIDENCE."
+      } > /tmp/answer-gap
+      cat /tmp/answer-gap
+    verify:
+      - type: file_matches
+        path: /tmp/answer-gap
+        pattern: "(?i)checksum mismatch"
+        describe: The assertion caught it
+      - type: file_matches
+        path: /tmp/answer-gap
+        pattern: "rc=1"
+        describe: And the script exits non-zero
+      - type: file_matches
+        path: /tmp/answer-gap
+        pattern: "(?i)NOT\\s+WRONG BEHAVIOUR"
+        describe: And you named what the preamble structurally misses
+      - type: file_matches
+        path: /tmp/answer-gap
+        pattern: "(?i)RESULTING STATE IS\\s+EVIDENCE"
+        describe: And stated the rule
+
+  - id: s5
+    instruction: >-
+      Finally, make the script safe to run twice, and say where you would stop
+      writing shell entirely. Save to /tmp/answer-idempotent.
+    walkthrough: |
+      {
+        echo "publish.sh is already close to idempotent, and that is not an accident:"
+        echo
+        echo "    mkdir -p \"\$DEST\"        succeeds whether or not it exists"
+        echo "    cp \"\$SRC\" \"\$DEST/...\"  overwrites rather than appending or failing"
+        echo
+        echo "proving it - two consecutive runs:"
+        DEPLOY_ENV=staging bash /tmp/publish.sh /tmp/build.tar /tmp/out 2>&1 | sed 's/^/    run 1: /'
+        DEPLOY_ENV=staging bash /tmp/publish.sh /tmp/build.tar /tmp/out 2>&1 | sed 's/^/    run 2: /'
+        echo "    bytes at destination: $(wc -c < /tmp/out/artifact) (unchanged, not doubled)"
+        echo
+        echo "the general patterns:"
+        echo "    mkdir -p \"\$DIR\"                       not mkdir, which fails if present"
+        echo "    ln -sfn \"\$TARGET\" \"\$LINK\"             replaces an existing link"
+        echo "    rsync -a --delete \"\$SRC/\" \"\$DEST/\"    converges rather than appends"
+        echo "    grep -qxF \"\$LINE\" \"\$F\" || echo \"\$LINE\" >> \"\$F\"    append once"
+        echo
+        echo "all four describe the DESIRED STATE rather than a change. that is also the"
+        echo "entire argument for configuration management over scripts."
+        echo
+        echo "where a step genuinely cannot be repeated - charging a card, sending a"
+        echo "notification, allocating an id - record that it happened before doing the"
+        echo "next thing, and check the record on the way in."
+        echo
+        echo "where i would stop writing shell:"
+        echo "  - more than a few functions, or data structures beyond a list"
+        echo "  - parsing JSON or YAML with text tools"
+        echo "  - retries with backoff, partial rollback, four distinct failure modes"
+        echo "  - the tests becoming harder to write than the script"
+        echo "  - multiple people editing it and quoting bugs recurring"
+        echo
+        echo "the tell: when most of the lines are handling errors and manipulating"
+        echo "strings rather than running programs. shell is excellent at gluing"
+        echo "commands together and poor at everything else - and publish.sh is now"
+        echo "about half preamble, which is the point at which i would start watching."
+      } > /tmp/answer-idempotent
+      cat /tmp/answer-idempotent
+    verify:
+      - type: file_matches
+        path: /tmp/answer-idempotent
+        pattern: "(?s)run 1: published.*run 2: published"
+        describe: It runs clean twice
+      - type: file_matches
+        path: /tmp/answer-idempotent
+        pattern: "(?i)unchanged, not doubled"
+        describe: With the same result
+      - type: file_matches
+        path: /tmp/answer-idempotent
+        pattern: "(?i)DESIRED STATE"
+        describe: And you named the pattern
+      - type: file_matches
+        path: /tmp/answer-idempotent
+        pattern: "(?i)cannot be repeated"
+        describe: And what to do when a step is not repeatable
+      - type: file_matches
+        path: /tmp/answer-idempotent
+        pattern: "(?i)stop writing shell"
+        describe: And where shell stops being the right tool
+
+solution: >-
+  **The script.** Options, required inputs, tool checks, cleanup, diagnostics,
+  then `main "$@"` on the last line:
+
+
+  ```bash
+  #!/bin/bash
+  set -eEuo pipefail
+
+  usage() { echo "usage: $0 SOURCE DEST" >&2; exit 64; }
+  SOURCE=${1:-}; [ -n "$SOURCE" ] || usage
+  DEST=${2:-};   [ -n "$DEST" ]   || usage
+  : "${DEPLOY_ENV:?DEPLOY_ENV must be set (staging|production)}"
+
+  for cmd in tar sha256sum; do
+    command -v "$cmd" >/dev/null || { echo "$cmd is required" >&2; exit 1; }
+  done
+
+  WORKDIR=$(mktemp -d)
+  cleanup() { [ -n "${WORKDIR:-}" ] || return 0; rm -rf "$WORKDIR"; WORKDIR=; }
+  trap cleanup EXIT
+  trap 'cleanup; exit 143' TERM
+  trap 'cleanup; exit 130' INT
+  trap 'echo "failed at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+  main() { ...; }
+  main "$@"
+  ```
+
+
+  **Every guard fires, and names itself:**
+
+
+  | Broken | rc | Message |
+  |---|---|---|
+  | no arguments | **64** | `usage: ... SOURCE DEST` |
+  | no `DEPLOY_ENV` | 1 | `DEPLOY_ENV must be set (staging\|production)` |
+  | source missing | 1 | `no such file: /tmp/nope.tar` |
+  | happy path | 0 | `published ...` |
+
+
+  64 is `EX_USAGE` from `sysexits.h` — it distinguishes "you called it wrong"
+  from "it went wrong", which matters to a wrapper deciding whether to retry. And
+  no temporary directory survives any of those paths.
+
+
+  **The defence, in short.** `-E` because the ERR trap would otherwise be silent
+  inside functions — and `main` *is* a function. `-u` because a misspelled
+  variable in `rm -rf "$DIR/$SUBDIR"` is the canonical incident. Separate
+  TERM/INT handlers because a signal handler must `exit`. `local sum` then
+  `sum=$(...)`, never the one-liner. `main "$@"` because the file is **parsed
+  completely before anything runs**, so a truncated download cannot execute half
+  a deploy.
+
+
+  **Deliberately absent:** `set -x` (expanded commands contain secrets),
+  `IFS=$'\n\t'` (treats the symptom of unquoted expansions globally, and applies
+  to code you did not write), `shopt -s failglob` (no globs here — it would belong
+  in `migrate.sh`), `set -o posix`.
+
+
+  **Every line of a preamble should answer a failure this script can actually
+  have.** A preamble nobody can explain is cargo cult, and the first time one of
+  its lines causes a problem somebody deletes the whole block.
+
+
+  **The gap.** Replace the copy with a truncating one that exits 0, and the entire
+  preamble sees nothing wrong — no non-zero status, no unset variable, no pipeline,
+  no ERR. It is caught by the checksum assertion instead. **The preamble catches
+  unhandled failures, not wrong behaviour**, so the remaining work is asserting the
+  outcome: that the file exists, is a plausible size, and is the bytes you meant.
+
+
+  **The exit status is the command's opinion of itself; the resulting state is
+  evidence.**
+
+
+  **And run it twice.** `mkdir -p` and an overwriting `cp` mean the second run
+  produces the same result rather than a doubled one. The pattern in all such
+  idioms — `ln -sfn`, `rsync -a --delete`, `grep -qxF || >>` — is describing the
+  **desired state** rather than the change, which is also the entire argument for
+  configuration management over scripts. Stop writing shell when the majority of
+  the lines are handling errors and manipulating strings rather than running
+  programs.

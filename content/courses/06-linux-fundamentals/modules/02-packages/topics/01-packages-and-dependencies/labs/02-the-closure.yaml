@@ -1,0 +1,352 @@
+id: lab.the-closure
+topic: topic.packages-and-dependencies
+title: Trace 16 requested packages into 162, and find what was skipped
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B06.2.3, OBJ-B06.2.4]
+
+intro: >-
+  This image's Dockerfile names seventeen packages. The machine has considerably
+  more than seventeen packages on it, and the difference was computed at install
+  time and written down.
+
+
+  You will measure that gap, read the four dependency strengths that produced
+  it, and then audit a real script against the result — where you will find a
+  command it needs that is not on this machine, and work out why nobody noticed.
+
+setup:
+  - /opt/lab/seed-packages.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Measure the gap between what was asked for and what is installed. Save the
+      numbers and the list of requested packages to /tmp/answer-gap.
+    hint: >-
+      `apt-mark showmanual` and `apt-mark showauto` split the database into the
+      two groups. `dpkg-query -W` counts the whole thing.
+    walkthrough: |
+      {
+        echo "installed: $(dpkg-query -W -f='${Package}\n' | wc -l)"
+        echo "asked for: $(apt-mark showmanual | wc -l)"
+        echo "pulled in: $(apt-mark showauto | wc -l)"
+        echo
+        echo "what somebody actually asked for:"
+        apt-mark showmanual | tr '\n' ' ' | fold -s -w 68 | sed 's/^/  /'
+        echo
+        echo "that list is nearly the Dockerfile's apt-get install line, which names 17. util-linux is the missing one: it was asked for, was already installed as part of the base system, and is recorded as AUTOMATIC. the record describes what the package manager did, not a transcript of what i typed."
+        echo
+        echo "everything else - 146 packages - arrived as a consequence, and the system recorded which is which."
+        echo
+        echo "that distinction is not bookkeeping. it is what makes autoremove possible: a package marked automatic with nothing depending on it can go, because nobody ever asked for it."
+      } > /tmp/answer-gap
+      cat /tmp/answer-gap
+    verify:
+      - type: file_matches
+        path: /tmp/answer-gap
+        pattern: "asked for: 16"
+        describe: You found how many packages were requested
+      - type: file_matches
+        path: /tmp/answer-gap
+        pattern: "pulled in: 146"
+        describe: And how many arrived as a consequence
+      - type: file_matches
+        path: /tmp/answer-gap
+        pattern: "(?i)autoremove"
+        describe: And why the distinction is recorded at all
+
+  - id: s2
+    instruction: >-
+      Pick two of the requested packages and measure how much each one actually
+      brought with it. Save to /tmp/answer-cost.
+    hint: >-
+      `apt-cache depends --recurse --installed` walks the graph. Suppress
+      recommends, suggests, conflicts, breaks, replaces and enhances so you are
+      measuring requirements only.
+    walkthrough: |
+      closure() {
+        apt-cache depends --recurse --installed \
+          --no-recommends --no-suggests --no-conflicts \
+          --no-breaks --no-replaces --no-enhances "$1" 2>/dev/null |
+          grep -c '^[a-z0-9]'
+      }
+      {
+        echo "the true cost of one request:"
+        for p in gcc curl less; do
+          printf '  %-8s pulls in %s packages\n' "$p" "$(closure $p)"
+        done
+        echo
+        echo "some of what gcc brought:"
+        apt-cache depends gcc 2>/dev/null | sed -n 's/^ *Depends: /  /p' | head -6
+        echo
+        echo "a compiler is not one program. gcc brought binutils, cpp-14, libisl23, libmpfr6, libgcc-14-dev and dozens more, because compiling requires an assembler, a linker, a preprocessor and several arbitrary-precision maths libraries."
+        echo
+        echo "two consequences. image size is a property of this graph, not of discipline - shaving megabytes off my application while installing a compiler is arithmetic that does not work. and attack surface is the CLOSURE, not the request: a CVE in libisl23 is mine, and i have never heard of libisl23."
+      } > /tmp/answer-cost
+      cat /tmp/answer-cost
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/^ *gcc *pulls in \\([0-9]*\\) packages/\\1/p' /tmp/answer-cost) -ge 20"
+        exit_code: 0
+        describe: You measured gcc's dependency closure
+      - type: file_matches
+        path: /tmp/answer-cost
+        pattern: "(?i)attack surface|closure"
+        describe: And connected the closure to attack surface
+      - type: file_matches
+        path: /tmp/answer-cost
+        pattern: "libisl23"
+        describe: And named something you inherited without choosing it
+
+  - id: s3
+    instruction: >-
+      Read /tmp/pkg/relationships.txt, then confirm on the live system which
+      dependency strengths are actually guarantees. Save to /tmp/answer-strengths.
+    hint: >-
+      Check whether openssh-client's Recommends is installed. Then check what
+      coreutils Pre-Depends on, and think about what that makes impossible.
+    walkthrough: |
+      cat /tmp/pkg/relationships.txt
+      {
+        echo "openssh-client's declared relationships:"
+        apt-cache depends openssh-client 2>/dev/null | grep -E 'Depends|Recommends|Suggests' | head -6
+        echo
+        echo "is the recommended package here?"
+        echo "  xauth: $(dpkg-query -W -f='${Status}' xauth 2>&1 | head -1)"
+        echo
+        echo "so Recommends is NOT a guarantee. it is installed by default, which means software relying on it works everywhere the author looked - until an image is built with --no-install-recommends, which every container guide on earth recommends."
+        echo
+        echo "and the strongest one:"
+        echo "  coreutils Pre-Depends: $(dpkg-query -W -f='${Pre-Depends}' coreutils | tr ',' '\n' | grep ssl | tr -d ' ')"
+        echo
+        echo "coreutils pre-depends on the TLS library. ls, cp and mkdir ship in the same package as sha256sum and cksum, and those link against openssl. so the crypto library and the file utilities are welded together."
+        echo
+        echo "which demolishes a comfortable mental model: the dependency graph is not organised the way i would organise it, and i cannot infer it from the names. i have to ask."
+      } > /tmp/answer-strengths
+      cat /tmp/answer-strengths
+    verify:
+      - type: file_matches
+        path: /tmp/answer-strengths
+        pattern: "xauth: unknown ok not-installed"
+        describe: You confirmed the recommended package is absent
+      - type: file_matches
+        path: /tmp/answer-strengths
+        pattern: "(?i)not a guarantee"
+        describe: And stated what Recommends is worth
+      - type: file_matches
+        path: /tmp/answer-strengths
+        pattern: "libssl3t64"
+        describe: And found what coreutils pre-depends on
+      - type: file_matches
+        path: /tmp/answer-strengths
+        pattern: "(?i)cannot infer|have to ask"
+        describe: And drew the conclusion about reasoning versus asking
+
+  - id: s4
+    instruction: >-
+      Find every Recommends of an installed package that is missing from this
+      machine. Save the list to /tmp/answer-missing.
+    hint: >-
+      Loop over some installed packages, read their Recommends from
+      `apt-cache depends`, strip the angle brackets, and check each one's status.
+    walkthrough: |
+      {
+        echo "recommended but absent:"
+        n=0
+        for p in openssh-client curl procps less strace file binutils; do
+          for x in $(apt-cache depends "$p" 2>/dev/null | sed -n 's/^ *Recommends: //p' | tr -d '<>'); do
+            if ! dpkg-query -W -f='${Status}' "$x" 2>/dev/null | grep -q '^install ok installed'; then
+              printf '  %-16s recommends %-24s ABSENT\n' "$p" "$x"
+              n=$((n + 1))
+            fi
+          done
+        done
+        echo "missing recommends: $n"
+        echo
+        echo "the one that matters: procps recommends psmisc, and psmisc is what provides pstree, killall and fuser."
+        for c in pstree killall fuser; do
+          printf '  %-8s %s\n' "$c" "$(command -v $c || echo 'not on this machine')"
+        done
+        echo
+        echo "those are commands every engineer assumes exist. they are absent here, and nothing anywhere declares that they should be present - because Recommends is an opinion, not a dependency."
+      } > /tmp/answer-missing
+      cat /tmp/answer-missing
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/^missing recommends: //p' /tmp/answer-missing) -ge 3"
+        exit_code: 0
+        describe: You found several recommended packages missing
+      - type: file_matches
+        path: /tmp/answer-missing
+        pattern: "psmisc"
+        describe: Including the one that provides the process tools
+      - type: file_matches
+        path: /tmp/answer-missing
+        pattern: "killall +not on this machine"
+        describe: And confirmed those commands are genuinely absent
+
+  - id: s5
+    instruction: >-
+      Audit /tmp/pkg/collect-metrics.sh against this machine. Sort every command
+      it calls into the three groups its notes describe, and explain how the
+      broken one survived a year in production. Save to /tmp/answer-audit-script.
+    hint: >-
+      Read the script, list the commands, and check each one. Then look
+      carefully at how the script calls the one that is missing.
+    walkthrough: |
+      cat /tmp/pkg/collect-metrics.sh
+      {
+        echo "every command the script calls:"
+        for c in fuser awk grep tr cut ss openssl curl; do
+          path=$(command -v "$c" 2>/dev/null)
+          if [ -z "$path" ]; then
+            printf '  %-8s %-14s %s\n' "$c" "ABSENT" "-"
+          else
+            pkg=$(dpkg -S "$(readlink -f "$path")" 2>/dev/null | cut -d: -f1)
+            ess=$(dpkg-query -W -f='${Essential}' "$pkg" 2>/dev/null)
+            pri=$(dpkg-query -W -f='${Priority}' "$pkg" 2>/dev/null)
+            printf '  %-8s %-14s essential=%-4s priority=%s\n' "$c" "${pkg:-alternatives}" "${ess:-no}" "$pri"
+          fi
+        done
+        echo
+        echo "grouped:"
+        echo "  always there    grep, tr, cut  (Essential) and awk via mawk (Priority: required)"
+        echo "  somebody asked  ss (iproute2), openssl, curl - all manually installed here."
+        echo "                  a minimal debian has none of them."
+        echo "  not here at all fuser - from psmisc, which is only a Recommends of procps"
+        echo
+        echo "how it survived a year: the script calls it as"
+        grep -n 'fuser' /tmp/pkg/collect-metrics.sh
+        echo
+        echo "stderr is discarded and the exit status is never checked, so 'fuser: not found' goes nowhere and the script continues. the stale-lock cleanup has silently never run on any machine in the fleet."
+        echo "the failure is not that a command is missing. it is that a missing command produced no signal for a year."
+      } > /tmp/answer-audit-script
+      cat /tmp/answer-audit-script
+    verify:
+      - type: file_matches
+        path: /tmp/answer-audit-script
+        pattern: "fuser +ABSENT"
+        describe: You identified the command that is not on this machine
+      - type: file_matches
+        path: /tmp/answer-audit-script
+        pattern: "(?i)psmisc"
+        describe: And traced it to a Recommends that was skipped
+      - type: file_matches
+        path: /tmp/answer-audit-script
+        pattern: "(?i)stderr is discarded|2>/dev/null"
+        describe: And explained why the failure was silent
+      - type: file_matches
+        path: /tmp/answer-audit-script
+        pattern: "(?i)no signal"
+        describe: And named the real defect rather than the missing package
+
+solution: >-
+  **The gap.**
+
+
+  ```console
+  $ apt-mark showmanual | wc -l
+  16
+  $ apt-mark showauto | wc -l
+  146
+  ```
+
+
+  Sixteen asked for, 146 as a consequence. The system records which is which,
+  and that is what makes `autoremove` possible — a package marked automatic with
+  nothing depending on it can go, because nobody ever asked for it.
+
+
+  **What one request costs.**
+
+
+  `gcc` alone pulls in around 38 packages: `binutils`, `cpp-14`, `libisl23`,
+  `libmpfr6`, `libgcc-14-dev`, `linux-libc-dev` and more. A compiler is not one
+  program — compiling needs an assembler, a linker, a preprocessor and several
+  arbitrary-precision maths libraries.
+
+
+  Two things follow. **Image size is a property of this graph**, so shaving
+  megabytes off your application while installing a compiler is arithmetic that
+  does not work; the route to a small image is asking for less. And **attack
+  surface is the closure, not the request** — a CVE in `libisl23` is yours, and
+  almost nobody has heard of `libisl23`.
+
+
+  **Only two strengths are guarantees.**
+
+
+  ```console
+  $ dpkg-query -W -f='${Status}' xauth
+  unknown ok not-installed
+  ```
+
+
+  `openssh-client` recommends `xauth` and `xauth` is not here, because the image
+  was built with `--no-install-recommends`. `Recommends` is installed by default,
+  so software relying on it works everywhere the author looked — and then does
+  not, in a container, with an error about something unrelated to the change.
+
+
+  At the other end:
+
+
+  ```text
+  coreutils Pre-Depends: libssl3t64 (>= 3.0.0)
+  ```
+
+
+  `ls` and `cp` ship in the same package as `sha256sum`, which links against
+  OpenSSL. The file utilities and the crypto library are welded together. The
+  dependency graph is not organised the way you would organise it, and it cannot
+  be inferred from the names.
+
+
+  **What else is missing.**
+
+
+  Across seven packages, several recommended ones are absent — and one is
+  significant:
+
+
+  ```console
+  $ command -v pstree killall fuser
+  $
+  ```
+
+
+  `psmisc` is a `Recommends` of `procps`. It provides `pstree`, `killall` and
+  `fuser` — commands every engineer assumes exist. They are absent here, and
+  nothing anywhere declares that they should be present.
+
+
+  **The script, audited.**
+
+
+  | Group | Commands | Why |
+  |---|---|---|
+  | Always there | `grep`, `tr`, `cut`, `awk` | Essential, or Priority: required |
+  | Somebody asked | `ss`, `openssl`, `curl` | manually installed here; a minimal Debian has none |
+  | Not here at all | `fuser` | only ever a Recommends |
+
+
+  **And how it survived a year:**
+
+
+  ```sh
+  fuser -k "$OUT" 2>/dev/null
+  ```
+
+
+  stderr is discarded and the exit status is never checked. `fuser: not found`
+  goes nowhere, the script continues, and the stale-lock cleanup has silently
+  never run on any machine in the fleet.
+
+
+  Which is the finding worth carrying out of this lab. **The defect is not the
+  missing package — it is that a missing command produced no signal for a year.**
+  `2>/dev/null` on a command you have not verified exists converts a dependency
+  problem into a permanent silent behaviour change.

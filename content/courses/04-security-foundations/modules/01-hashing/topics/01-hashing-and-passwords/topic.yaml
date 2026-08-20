@@ -1,0 +1,148 @@
+id: topic.hashing-and-passwords
+slug: hashing-and-passwords
+title: "Hashing: One Function, Four Jobs"
+summary: >-
+  A hash is the most reused primitive in operations — it verifies your
+  downloads, stores your passwords, names your container images and underpins
+  every signature you trust. The same three-letter word covers jobs with
+  opposite requirements, and choosing the wrong one is how password databases
+  become plaintext.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.the-block-layer
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A04.1.1
+    level: L1
+    verb: describe
+    statement: >-
+      Describe the properties a hash function provides, and demonstrate each one
+      against a real implementation.
+    assessed_by: [quiz.q1, quiz.q2, lab.what-a-hash-guarantees, exercise.e1]
+
+  - id: OBJ-A04.1.2
+    level: L1
+    verb: distinguish
+    statement: >-
+      Distinguish hashing from encryption and from encoding, and identify which
+      one a given output is.
+    assessed_by: [quiz.q3, quiz.q4, lab.what-a-hash-guarantees, exercise.e2]
+
+  - id: OBJ-A04.1.3
+    level: L1
+    verb: evaluate
+    statement: >-
+      Evaluate a file's integrity against a published digest, and interpret both
+      a mismatch and a match correctly.
+    assessed_by: [quiz.q5, lab.what-a-hash-guarantees, exercise.e3]
+
+  - id: OBJ-A04.1.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what a salt is for, and what specifically it does and does not
+      defeat.
+    assessed_by: [quiz.q6, quiz.q7, lab.why-passwords-are-different, assessment.A]
+
+  - id: OBJ-A04.1.5
+    level: L2
+    verb: measure
+    statement: >-
+      Measure the work factor of a password hash, and state what a given cost
+      buys against an offline attacker.
+    assessed_by: [quiz.q8, quiz.q9, lab.why-passwords-are-different, exercise.e4]
+
+  - id: OBJ-A04.1.6
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret a stored password hash: name its algorithm, read its parameters,
+      and judge whether it is adequate.
+    assessed_by: [quiz.q10, quiz.q11, lab.read-the-hash, troubleshooting.the-leak-that-was-not-encrypted]
+
+  - id: OBJ-A04.1.7
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why a keyed hash is not the same as hashing a secret together with
+      data, and where each belongs.
+    assessed_by: [quiz.q12, quiz.q13, lab.read-the-hash, assessment.B]
+
+  - id: OBJ-A04.1.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a hash choice for a stated job, against the alternatives and
+      against the property the job actually needs.
+    assessed_by: [quiz.q14, quiz.q15, lab.choose-the-wrong-hash, exercise.e5, assessment.C]
+
+terminology:
+  - term: hash function
+    definition: >-
+      A function turning any input into a fixed-size output, where the same
+      input always gives the same output and the output reveals nothing about
+      the input.
+  - term: digest
+    definition: >-
+      The output of a hash function. Fixed-size regardless of input — the same
+      64 hex characters for one byte or one terabyte.
+  - term: avalanche effect
+    definition: >-
+      A one-bit change in the input changes about half the output bits. It is
+      what makes "the digests differ" a useful answer and "how much they differ"
+      a meaningless one.
+  - term: collision
+    definition: >-
+      Two different inputs with the same digest. They must exist — inputs are
+      infinite and digests are not — and a hash is broken when finding one
+      becomes practical.
+  - term: preimage resistance
+    definition: >-
+      Given a digest, being unable to find any input that produces it. This is
+      the property password storage depends on, and it is not the same as
+      collision resistance.
+  - term: salt
+    definition: >-
+      A unique random value stored alongside a password hash and mixed in before
+      hashing. It defeats precomputation and cross-account comparison. It is not
+      secret.
+  - term: pepper
+    definition: >-
+      A secret value mixed into every password hash, stored outside the database.
+      Unlike a salt it is secret, and unlike a salt it is the same for everyone.
+  - term: work factor
+    definition: >-
+      How much computation one hash costs, chosen deliberately to be slow. The
+      only parameter that matters once an attacker has the database.
+  - term: HMAC
+    definition: >-
+      A construction that combines a key with a message to produce a tag only a
+      key holder could produce. Not the same as hashing the key and message
+      concatenated.
+  - term: length extension
+    definition: >-
+      A property of SHA-2 and MD5 letting an attacker who knows `H(secret|data)`
+      compute `H(secret|data|more)` without knowing the secret. It is why HMAC
+      exists.
+  - term: rainbow table
+    definition: >-
+      A precomputed structure mapping digests back to inputs. Salts make it
+      useless, which is the entire reason salts exist.
+  - term: content addressing
+    definition: >-
+      Naming something by the hash of its content, so the name is a proof of
+      what it contains. Git commits and container image digests both work this
+      way.
+
+foreshadows:
+  - "A04.3's certificates are signatures over hashes — the digest is what actually gets signed."
+  - "C14's image digests are content addresses, and `@sha256:...` is the only immutable way to name an image."
+  - "C17's supply-chain checks compare a built artefact against a published digest, exactly as this topic does by hand."
+  - "G43's SBOM signing and provenance attestation are the same primitive with a key attached."
+
+tags: [security, hashing, passwords, integrity, openssl, fundamentals]

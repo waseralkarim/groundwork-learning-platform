@@ -1,0 +1,145 @@
+id: topic.tcp-and-udp
+slug: tcp-and-udp
+title: "TCP and UDP: What the Transport Layer Promises"
+summary: >-
+  IP delivers packets to a machine, badly — they may be lost, duplicated or
+  reordered. TCP repairs all of that and charges for it; UDP repairs none of it
+  and charges nothing. This topic is about seeing the difference rather than
+  reciting it.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.ports-and-sockets
+    hardness: required
+
+objectives:
+  - id: OBJ-A03.3.1
+    level: L1
+    verb: explain
+    statement: >-
+      Explain what a transport protocol adds above an address and a port, and
+      what IP alone does not promise.
+    assessed_by: [quiz.q1, quiz.q2, lab.two-transports]
+
+  - id: OBJ-A03.3.2
+    level: L1
+    verb: distinguish
+    statement: >-
+      Distinguish what TCP guarantees from what UDP does not, and name the cost
+      of each guarantee.
+    assessed_by: [quiz.q3, quiz.q4, lab.two-transports, exercise.e1, assessment.A]
+
+  - id: OBJ-A03.3.3
+    level: L2
+    verb: identify
+    statement: >-
+      Identify TCP and UDP sockets and their states, and explain why UDP has no
+      LISTEN state.
+    assessed_by: [quiz.q5, quiz.q6, lab.two-transports]
+
+  - id: OBJ-A03.3.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what "connected" means for a UDP socket, and what it changes about
+      which datagrams arrive.
+    assessed_by: [quiz.q7, quiz.q8, lab.the-connected-datagram, assessment.B]
+
+  - id: OBJ-A03.3.5
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret the kernel's TCP and UDP counters, and relate them to the
+      outcomes of individual connection attempts.
+    assessed_by: [quiz.q9, quiz.q10, lab.counting-connections, exercise.e2]
+
+  - id: OBJ-A03.3.6
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish how TCP and UDP report a port with nothing bound, and say what
+      the sender learns in each case.
+    assessed_by: [quiz.q11, quiz.q12, lab.counting-connections, exercise.e3]
+
+  - id: OBJ-A03.3.7
+    level: L2
+    verb: evaluate
+    statement: >-
+      Evaluate a protocol choice for a given workload, and state what it gives
+      up.
+    assessed_by: [quiz.q13, exercise.e4]
+
+  - id: OBJ-A03.3.8
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a UDP service that is silently losing messages.
+    assessed_by: [quiz.q14, quiz.q15, lab.the-messages-that-vanish, troubleshooting.metrics-that-mostly-arrive, troubleshooting.the-udp-service-that-only-hears-one-client, assessment.C]
+
+terminology:
+  - term: transport protocol
+    definition: >-
+      The layer that turns "deliver to this machine" into "deliver to this
+      socket", and optionally adds reliability. TCP and UDP are the two you will
+      meet.
+  - term: datagram
+    definition: >-
+      A single self-contained UDP message. It arrives whole or not at all, and
+      its boundaries are preserved — unlike a TCP stream.
+  - term: stream
+    definition: >-
+      TCP's abstraction: an ordered sequence of bytes with no message
+      boundaries. What you write in three calls may arrive in one read, or five.
+  - term: three-way handshake
+    definition: >-
+      SYN, SYN-ACK, ACK. The round trip that establishes a TCP connection before
+      any data moves — and the latency cost UDP does not pay.
+  - term: retransmission
+    definition: >-
+      TCP resending data that was not acknowledged. It is why a lossy link makes
+      TCP slow rather than broken.
+  - term: flow control
+    definition: >-
+      The receiver advertising how much it can accept, so a fast sender cannot
+      overwhelm it. Visible as the window in a TCP header.
+  - term: congestion control
+    definition: >-
+      The sender slowing down when the network shows signs of loss. It is what
+      stops TCP flows collapsing a shared link.
+  - term: head-of-line blocking
+    definition: >-
+      One lost segment stalling everything behind it, because TCP must deliver
+      bytes in order. The main reason latency-sensitive protocols avoid it.
+  - term: UNCONN
+    definition: >-
+      The state `ss` shows for a UDP socket bound to a port. There is no
+      connection to be in, so there is no LISTEN.
+  - term: connected UDP socket
+    definition: >-
+      A UDP socket on which `connect()` has been called. No packet is sent — it
+      is a purely local filter that fixes the peer and discards datagrams from
+      anyone else.
+  - term: NoPorts
+    definition: >-
+      The UDP counter for datagrams arriving at a port with nothing bound. The
+      rough equivalent of a TCP reset, except the sender usually never learns.
+  - term: ActiveOpens
+    definition: >-
+      TCP connections this machine initiated. `AttemptFails` counts those that
+      failed, and `PassiveOpens` counts connections it accepted.
+  - term: RcvbufErrors
+    definition: >-
+      Datagrams dropped because the receive buffer was full. On UDP this is
+      silent to the sender, and it is the commonest cause of "we are losing
+      metrics".
+
+foreshadows:
+  - "B12's TCP deep dive adds windows, congestion control algorithms and retransmission timers to the states here."
+  - "A03's HTTP topic is a protocol built on the stream abstraction, and its quirks follow from it."
+  - "F34 ships metrics over UDP in some setups, and the loss modes here are why the counts do not add up."
+  - "E29's Services support both protocols, and a UDP Service behaves differently from a TCP one in ways this topic explains."
+
+tags: [networking, tcp, udp, transport, sockets, fundamentals]

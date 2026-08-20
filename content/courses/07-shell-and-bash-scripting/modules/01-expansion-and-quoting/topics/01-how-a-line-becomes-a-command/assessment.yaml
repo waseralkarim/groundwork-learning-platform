@@ -1,0 +1,192 @@
+id: assessment.how-a-line-becomes-a-command
+topic: topic.how-a-line-becomes-a-command
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a deletion that should not have happened
+    kind: explain
+    objectives: [OBJ-B08.1.8, OBJ-B08.1.6]
+    prompt: >-
+      A nightly cleanup ran correctly for three years. Two weeks after a release
+      that let customers name their own export files, it deleted 340 files
+      including 61 created that morning. It exited 0 and logged
+      `removed 340 files`.
+
+
+      ```bash
+      for f in $(find $DIR -maxdepth 1 -name '*.csv' -mtime +$DAYS); do
+        rm -f $f
+        count=$((count + 1))
+      done
+      ```
+
+
+      In about 200 words: explain what happened and what you would change.
+    rubric:
+      - "Identifies word splitting of the command substitution output as the cause"
+      - "Explains that rm -f silently ignores fragments that do not exist"
+      - "Notes that the age test and the deletion were applied to different values"
+      - "Explains the plausible count as a count of iterations, not files"
+      - "Proposes find -delete or a -print0 loop, not filename sanitising"
+    model_answer: >-
+      **`find`'s output is word-split.** `for f in $(...)` splits at every space,
+      tab and newline, so `march 2026 data.csv` becomes three loop iterations —
+      `march`, `2026`, `data.csv`.
+
+
+      **`rm -f` hides it.** Suppressing complaints about missing files is `-f`'s
+      job, so deleting `march` is a silent no-op exiting 0. With plain `rm` this
+      would have produced hundreds of errors on night one.
+
+
+      **The recent files died because a fragment is sometimes a real filename.**
+      Among hundreds of customer-titled exports, a genuine `orders.csv` gets
+      matched by a fragment from another file's name — and deleted regardless of
+      age. That is the crucial step: **`find` applied `-mtime` to real files, and
+      `rm` received fragments that were never age-checked.** A check applied to a
+      different value than the action it authorises is decorative.
+
+
+      **The count was misleading, not reassuring.** `count` increments per
+      *iteration*; 340 is a count of fragments.
+
+
+      What I would change: `find "$DIR" -maxdepth 1 -name '*.csv' -mtime +"$DAYS"
+      -delete` — no shell between selection and removal, so nothing to split or
+      glob. If a loop is needed, `-print0` with `while IFS= read -r -d ''` and
+      `rm --`. **Not** sanitising filenames: spaces are legal, the sanitiser will
+      always be one character behind, and the script stays broken for every other
+      source of names.
+    common_failures:
+      - "Blaming the release for allowing spaces rather than the script for splitting"
+      - "Missing that rm -f is what made the failure silent"
+      - "Not noticing the age test and the deletion applied to different values"
+      - "Proposing filename sanitising as the fix"
+
+  - id: B
+    title: Reason about a wrapper and a hostile argument
+    kind: reason
+    objectives: [OBJ-B08.1.5, OBJ-B08.1.8]
+    prompt: >-
+      An entrypoint runs `exec /usr/local/bin/tool --config $CONF $@`. It is
+      called with two arguments: `report Q3 summary.csv` and an empty string. The
+      deploy path recently changed to `/opt/acme apps/conf`.
+
+
+      In about 250 words: say what `tool` actually receives, why, and what you
+      would write instead.
+    rubric:
+      - "States that $CONF splits, so --config receives a broken path"
+      - "States that unquoted $@ splits the first argument and drops the empty one"
+      - "Notes that unquoted expansions are globbed as well as split"
+      - "Gives the corrected line including \"$@\" and --"
+      - "Explains the special zero-argument behaviour of \"$@\" or why -- is needed"
+    model_answer: >-
+      **`--config` gets a broken path.** `$CONF` is `/opt/acme apps/conf` and is
+      unquoted, so word splitting makes it two arguments: `--config
+      /opt/acme` followed by a stray `apps/conf`. The tool reports that
+      `/opt/acme` does not exist, and the message names a path nobody wrote.
+
+
+      **The first argument becomes three.** `report Q3 summary.csv` splits into
+      `report`, `Q3`, `summary.csv`.
+
+
+      **The empty argument disappears entirely.** An unquoted expansion of an
+      empty value produces *zero* words, so the tool is called with one fewer
+      argument than it was given — and any positional logic downstream is now
+      off by one.
+
+
+      **And everything is globbed as well as split.** If any argument contained
+      `*` or `?`, it would be expanded against the container's working directory,
+      making the entrypoint's behaviour depend on where it happened to be
+      started.
+
+
+      What I would write:
+
+
+      ```bash
+      exec /usr/local/bin/tool --config "$CONF" -- "$@"
+      ```
+
+
+      `"$@"` is the only form that forwards arguments unchanged — each as its own
+      word, splitting nothing. It also has a special rule that matters for an
+      entrypoint: with **zero** arguments it expands to nothing at all rather than
+      to one empty string, so `exec tool "$@"` runs cleanly when no command was
+      supplied, whereas `"$*"` would pass one empty argument.
+
+
+      `--` ends option parsing, so a filename beginning with a hyphen is treated
+      as data rather than a flag — which matters because the arguments here are
+      caller-supplied.
+    common_failures:
+      - "Fixing $@ but leaving $CONF unquoted"
+      - "Missing that the empty argument vanishes"
+      - "Not mentioning globbing, only splitting"
+      - "Using \"$*\" instead of \"$@\""
+
+  - id: C
+    title: Diagnose a syntax error on unchanged code
+    kind: diagnose
+    objectives: [OBJ-B08.1.7, OBJ-B08.1.6]
+    prompt: >-
+      After a base-image change from `debian:12-slim` to `alpine:3.20`, a script
+      fails with `Syntax error: "(" unexpected` at line 24. Line 24 is
+      `urls=("$@")` and has not changed in eleven months. The shebang is
+      `#!/bin/bash`. `bash healthcheck.sh` works. The Dockerfile contains
+      `HEALTHCHECK CMD sh /app/healthcheck.sh`.
+
+
+      In about 250 words: explain it, and say what you would change.
+    rubric:
+      - "Identifies that `sh script.sh` bypasses the shebang entirely"
+      - "Identifies the array as a bashism unsupported by dash and BusyBox ash"
+      - "Notes that bash is not present in the Alpine image at all"
+      - "Gives both fixes — invoke it directly plus install bash, or remove the bashism"
+      - "Proposes bash -n / sh -n or shellcheck to prevent recurrence"
+    model_answer: >-
+      **The shebang has never applied.** It is consulted only when a file is
+      executed directly. `HEALTHCHECK CMD sh /app/healthcheck.sh` names the
+      interpreter explicitly, so `#!/bin/bash` has been a comment for three
+      years — bash has never interpreted this script inside the container.
+
+
+      **Line 24 is an array**, which is a bashism. `/bin/sh` is dash on Debian and
+      BusyBox ash on Alpine; neither supports arrays. It "worked" before most
+      likely because the function was never reached — dash fails at *run* time,
+      while BusyBox ash rejects the syntax at **parse** time, killing the script
+      before line 1 executes. That difference in timing is the whole reason a
+      latent bashism can sit for years.
+
+
+      **And bash is not in the Alpine image.** A correct shebang would have given
+      `/bin/bash: not found` — a clearer message for the same root cause.
+
+
+      Two fixes. Either honour the shebang and provide the interpreter — `apk add
+      --no-cache bash` and `HEALTHCHECK CMD /app/healthcheck.sh` — or remove the
+      bashism and keep the 9 MB image:
+
+
+      ```sh
+      for u in "$@"; do ... done
+      ```
+
+
+      `"$@"` already does what the array was for, which is true of most shell
+      arrays in operations scripts.
+
+
+      To prevent recurrence: `bash -n` and `sh -n` in CI, and `shellcheck -s sh`,
+      which reports "In POSIX sh, arrays are undefined" at authoring time. Also
+      grep the repository for `sh .*\.sh` — the Dockerfile is rarely the only
+      place it hides.
+    common_failures:
+      - "Concluding the script was modified, or blaming git"
+      - "Missing that `sh script.sh` overrides the shebang"
+      - "Recommending only 'install bash' without noticing the invocation"
+      - "Not distinguishing a parse-time failure from a run-time one"

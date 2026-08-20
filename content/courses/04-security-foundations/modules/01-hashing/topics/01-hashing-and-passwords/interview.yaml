@@ -1,0 +1,273 @@
+topic: topic.hashing-and-passwords
+
+questions:
+  - id: i1
+    level: L1
+    question: What is the difference between hashing, encryption and encoding?
+    model_answer: >-
+      Three different operations that get grouped because all three make data
+      unreadable to a casual glance.
+
+
+      **Encoding** — base64, hex, URL-encoding — is a representation change so
+      data survives a channel. No key, reversible by anyone. It is not security
+      in any sense, and it gets mistaken for it because the output looks
+      scrambled. Credentials base64-encoded in a config file are stored in
+      plaintext.
+
+
+      **Encryption** takes a key and is reversible with it. It is the only one of
+      the three that protects confidentiality, and the protection lives entirely
+      in the key rather than in the algorithm. The point is that you get the data
+      back — which is a requirement, not a side effect.
+
+
+      **Hashing** takes no key and is reversible by nobody, including the person
+      who computed it. Any input becomes a fixed-size output — 32 bytes for
+      SHA-256, whether the input was five bytes or a gigabyte. Most of the input
+      is discarded, and that is why no procedure recovers it.
+
+
+      The practical test I would apply: if a service can email you your password,
+      it is not hashed. Recovery is exactly what hashing prevents, so the ability
+      to recover proves the storage is plaintext or encrypted.
+
+
+      And one thing hashing does *not* do, which is where most confusion sits: it
+      does not protect anything. It reveals nothing, but anyone can hash anything,
+      so a digest sitting next to the data it describes stops nobody replacing
+      both. It is a fingerprint, not a lock.
+    signal: >-
+      The key/no-key and reversible/not-reversible axes cleanly separated is the
+      baseline. The discriminator is "hashing protects nothing" — most people
+      describe it as a protective measure, and someone who has thought about it
+      knows a digest is an identifier. The email-your-password test shows they can
+      apply it rather than recite it.
+    follow_ups:
+      - "Where have you seen base64 mistaken for encryption?"
+      - "Why is it a problem that encryption is reversible, for passwords specifically?"
+      - "What does a digest next to a download on the same server actually prove?"
+
+  - id: i2
+    level: L2
+    question: >-
+      Walk me through storing passwords correctly, and tell me which decision
+      matters most.
+    model_answer: >-
+      A password hashing function — Argon2id by default, bcrypt or scrypt if it
+      is not available — with a unique random salt per user and a work factor
+      measured against my own login path.
+
+
+      The threat model is the thing to be explicit about first, because it drives
+      everything: assume the database is already stolen and the attacker is
+      running offline on their own hardware. Every other control I have — rate
+      limiting, lockouts, MFA, anomaly detection — is on the wrong side of that
+      boundary and does nothing. What is left is how many guesses per second the
+      hash permits.
+
+
+      **The work factor is the decision that matters most**, and it is the one
+      usually left at a default. On hardware I have measured, bare SHA-256 runs
+      at around four million hashes a second per core and sha512crypt at its
+      default around three hundred — a factor of over ten thousand. Raising
+      the rounds to a million takes it to about two per second. Same algorithm,
+      and that parameter is worth more than the difference between algorithms.
+
+
+      The tuning rule is a budget: the largest cost the login path can absorb,
+      commonly around 250ms. Imperceptible to a person, and a crushing tax on
+      someone doing it a billion times. It has to be revisited, because it is the
+      only security parameter that silently decays as hardware improves — which
+      is why it is stored inside the hash string, so you can raise it for new
+      passwords and upgrade old ones as people log in.
+
+
+      On the **salt**, I would be precise about what it buys, because it is
+      usually overstated. It removes shared work: rainbow tables, identical
+      passwords showing as identical rows, and one guess being tested against
+      every account at once. It does *not* slow a single guess down at all — a
+      salted hash computes at exactly the same rate. So against one targeted
+      account, the salt helps almost nothing and the work factor is the entire
+      defence.
+
+
+      Salt defeats bulk; work factor defeats guessing. You need both, and a
+      system with unique salts and a fast hash has solved the easier half.
+
+
+      Two implementation details I would not skip: constant-time comparison, and
+      never building the scheme myself.
+    signal: >-
+      Naming the offline-attacker threat model unprompted is the strongest early
+      signal — it explains *why* rather than reciting *what*. The salt answer is
+      the real discriminator: almost everyone says "salts stop rainbow tables",
+      and very few know that a salt costs an attacker no time per guess and
+      therefore does nothing for a targeted account. Real measured numbers, or a
+      correct order of magnitude, separate people who have timed this from people
+      who have read about it.
+    follow_ups:
+      - "How would you migrate a database of unsalted MD5 hashes without the plaintext?"
+      - "Why is memory hardness worth anything on top of rounds?"
+      - "Where does MFA fit, and what does it not fix?"
+
+  - id: i3
+    level: L2
+    question: >-
+      You inherit a service. What tells you within a minute whether its password
+      storage is adequate?
+    model_answer: >-
+      I would look at one stored hash and read its format, because the string is
+      self-describing.
+
+
+      Crypt format is `$id$[params$]salt$digest`. The leading id gives the
+      algorithm: `1` md5crypt, `2a`/`2b`/`2y` bcrypt, `5` sha256crypt, `6`
+      sha512crypt, `argon2id` the current answer. No `$` at all and thirteen
+      characters is DES crypt, where only the first eight characters of the
+      password even matter.
+
+
+      Then the parameter, which is what actually decides the answer. `$6$` with
+      no `rounds=` is the default five thousand, which I would expect to measure
+      at a few hundred hashes a second. `$6$rounds=1000000$` measures at about
+      two. Same algorithm, hundredfold difference. So "we use SHA-512" is not an
+      answer to "how are passwords stored" — the work factor is.
+
+
+      A raw 64-hex-character value with no prefix is a bare SHA-256, and that is
+      a finding on its own.
+
+
+      Two other checks take seconds. **Count distinct hashes against account
+      count** — if it is meaningfully below one-to-one, the scheme is unsalted,
+      and the size of the largest duplicate group tells you how bad it is
+      without cracking anything. And **read the verification function**, because
+      it is the ground truth: a salt column can exist and go unused, and the code
+      settles what the schema leaves open.
+
+
+      If I can, I would then time one hash on the actual hardware, because that
+      is the number I would take to a review. "Our hash is ten thousand times
+      faster to attack than it should be" is an argument. "SHA-256 is insecure"
+      is not, and it is false, and saying it costs me credibility with anyone who
+      knows the field.
+    signal: >-
+      Knowing the `$id$` table cold is a strong practical signal — it comes from
+      having read real shadow files. The distinct-count trick is the answer that
+      stands out: it proves the absence of a salt with a single query and no
+      cracking, and most people have never thought of it. Framing the conclusion
+      as a measured ratio rather than as "X is insecure" suggests someone who has
+      actually had to win this argument.
+    follow_ups:
+      - "What do `!` and an empty password field mean in /etc/shadow?"
+      - "How would you raise the work factor on a live system?"
+      - "What would you check next, after the hashing?"
+
+  - id: i4
+    level: L2
+    question: >-
+      A colleague signs webhook requests with `sha256(secret + body)`. Is that
+      acceptable?
+    model_answer: >-
+      No, and specifically rather than as a matter of taste.
+
+
+      SHA-2 is a Merkle–Damgård construction, which means the digest it emits
+      *is* its internal state after consuming the input. An attacker who sees a
+      tag — without ever learning the secret — can resume the hash from that
+      state and compute a valid tag for `body ‖ padding ‖ anything they choose`.
+      That is a length extension attack, and it works against MD5, SHA-1 and
+      SHA-2 alike.
+
+
+      So the justification people give for this construction — "the secret is
+      mixed in, so only we can produce the value" — is false. Anyone who has seen
+      one legitimate signed request can forge an extended one.
+
+
+      HMAC exists for exactly this. It hashes twice with two derived keys, so the
+      visible output is the result of an outer hash rather than an internal state
+      anybody can resume from. It is one function call in every standard library
+      and there is no reason to build it by hand.
+
+
+      Two things I would check alongside it. **Constant-time comparison** —
+      `hmac.compare_digest` or equivalent — because an ordinary `==` returns on
+      the first differing byte, and an attacker timing responses recovers a valid
+      tag one byte at a time, roughly four thousand attempts instead of 2^256.
+      And **whether the verification actually runs**: services that log the
+      signature header and never check it are common, and functionally identical
+      to having no signature at all.
+
+
+      If SHA-3 or BLAKE2 were in use the length extension point would not apply —
+      they are not vulnerable to it — but I would still use the HMAC construction,
+      because I would rather the correctness of the scheme not depend on which
+      hash someone swaps in later.
+    signal: >-
+      Naming length extension and the reason for it — the digest being a
+      resumable internal state — is the discriminator. Many people know "use
+      HMAC" as a rule; far fewer can say what breaks without it. Adding the
+      constant-time comparison unprompted, and the observation that SHA-3 is not
+      affected but the construction should not depend on that, are both signs of
+      real depth.
+    follow_ups:
+      - "What would you use if the two parties could not share a secret?"
+      - "How would you rotate a webhook signing secret with no downtime?"
+      - "How would you tell whether the verification is actually running?"
+
+  - id: i5
+    level: L2
+    question: >-
+      An analytics team hashes email addresses and calls the export anonymised.
+      What do you say?
+    model_answer: >-
+      That it is pseudonymised rather than anonymised, and the difference is
+      legally and practically significant.
+
+
+      Hashing is one-way, but one-wayness only helps when the attacker cannot
+      guess the input. Email addresses are enumerable: there are on the order of
+      four billion in circulation, and at a few million hashes a second per core
+      that space is exhaustible in about an hour on a laptop. So an individual
+      digest is recoverable, and I would demonstrate that rather than assert it —
+      generating candidates in the obvious format and matching one takes about
+      twenty lines.
+
+
+      The more important half is that it does not matter whether they bother.
+      The function is deterministic, so the same address produces the same digest
+      in every dataset — which means the export still joins across datasets
+      exactly as the plaintext would. That linkability is usually the property the
+      team wanted from the field, and it is precisely what makes it not anonymous.
+
+
+      Salting does not rescue it either, and this is the part worth walking
+      through: a per-record salt breaks the joins the field exists for, and a
+      shared salt is enumerable alongside the addresses. There is no parameter
+      that makes this work, which is the sign that the primitive is wrong rather
+      than the configuration.
+
+
+      What I would suggest instead is tokenisation — a random identifier per
+      subject, with the mapping held in a separate system under separate access
+      control — so the identifier carries no information about the input and the
+      link can be severed. Or, better if the use case allows, not collecting the
+      identifier at all.
+
+
+      The same applies to phone numbers, IP addresses, national ID numbers and
+      postcodes. Any low-entropy identifier hashed is that identifier with an
+      index on it.
+    signal: >-
+      The pseudonymisation/anonymisation distinction is the baseline. The
+      discriminator is recognising that *linkability*, not recoverability, is the
+      real defect — someone who only argues "it can be brute-forced" will accept
+      a slow hash as a fix, and a slow hash fixes nothing here. Explaining why
+      salting cannot work, and concluding the primitive is wrong rather than its
+      parameters, is a senior answer.
+    follow_ups:
+      - "Would a slow hash like Argon2id make it acceptable?"
+      - "What would you do if the team genuinely needs to join across exports?"
+      - "Which other fields have this problem?"

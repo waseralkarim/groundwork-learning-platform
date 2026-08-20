@@ -1,0 +1,139 @@
+id: topic.finding-files
+slug: finding-files
+title: "Finding Files and Acting on Them"
+summary: >-
+  `find -mtime +7` does not match a file that is seven days old. `-exec cmd \;`
+  runs one process per file and throws away every failure, while `-exec cmd +`
+  runs one and reports them. And `xargs` runs your command even when it received
+  nothing at all. Bulk operations on files, and the four ways they quietly act on
+  the wrong set.
+order: 2
+levels: [L1, L2]
+estimated_minutes: 115
+status: published
+
+prerequisites:
+  - topic: topic.searching-text
+    hardness: required
+  - topic: topic.where-output-goes
+    hardness: required
+
+objectives:
+  - id: OBJ-B08.4.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify what find's common predicates test, and how they combine by
+      default.
+    assessed_by: [quiz.q1, quiz.q2, lab.predicates-and-time, exercise.e1]
+
+  - id: OBJ-B08.4.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe the three differences between `-exec cmd \;` and `-exec cmd +`.
+    assessed_by: [quiz.q3, quiz.q4, lab.exec-forms-and-status]
+
+  - id: OBJ-B08.4.3
+    level: L2
+    verb: predict
+    statement: >-
+      Predict which files a time-based predicate selects, given the 24-hour
+      truncation rule.
+    assessed_by: [quiz.q5, quiz.q6, lab.predicates-and-time, exercise.e2, troubleshooting.the-retention-job-that-kept-an-extra-day]
+
+  - id: OBJ-B08.4.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why `-prune` differs from excluding paths after the fact.
+    assessed_by: [quiz.q7, quiz.q8, lab.predicates-and-time, exercise.e3]
+
+  - id: OBJ-B08.4.5
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret find's exit status, including what happens to it in a pipeline.
+    assessed_by: [quiz.q9, quiz.q10, lab.exec-forms-and-status, troubleshooting.the-cleanup-that-skipped-a-directory]
+
+  - id: OBJ-B08.4.6
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish the xargs forms, and say which preserves batching and which
+      runs on empty input.
+    assessed_by: [quiz.q11, quiz.q12, lab.xargs-forms, exercise.e4]
+
+  - id: OBJ-B08.4.7
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a bulk operation that acted on the wrong set of files or silently
+      skipped part of it.
+    assessed_by: [quiz.q13, quiz.q14, lab.the-safe-bulk-operation, troubleshooting.the-cleanup-that-skipped-a-directory]
+
+  - id: OBJ-B08.4.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a pattern for a destructive bulk operation, naming what makes it
+      reviewable and reversible.
+    assessed_by: [quiz.q15, lab.the-safe-bulk-operation, exercise.e5, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: predicate
+    definition: >-
+      A test find applies to each path — `-name`, `-type`, `-mtime`. Adjacent
+      predicates are ANDed implicitly; `-o` is OR, and it binds more loosely.
+  - term: action
+    definition: >-
+      What find does with a matching path — `-print`, `-delete`, `-exec`. If you
+      supply none, `-print` is implied; if you supply one, it is not.
+  - term: "-exec ;"
+    definition: >-
+      Run the command once per file. One process each, and **find ignores the
+      command's exit status**.
+  - term: "-exec +"
+    definition: >-
+      Batch as many paths as fit on a command line, like xargs. One process for
+      many files, and a failure **does** reach find's exit status.
+  - term: "-mtime"
+    definition: >-
+      Modification age in **whole 24-hour periods, truncated**. `+7` means
+      strictly more than seven of them, so a file seven days old is excluded.
+  - term: "-mmin"
+    definition: >-
+      The same test in minutes. Usually what people meant when they wrote
+      `-mtime`, because it has no rounding surprise at the boundary.
+  - term: "-prune"
+    definition: >-
+      Do not descend into this directory. Different from excluding it from the
+      output, because find never enters it.
+  - term: "-print0"
+    definition: >-
+      Separate results with NUL. Paired with `xargs -0`, it is the only encoding
+      safe for arbitrary filenames.
+  - term: "xargs -r"
+    definition: >-
+      Do not run the command at all if the input is empty. GNU-specific, and the
+      default without it is to run it once with no arguments.
+  - term: "xargs -I"
+    definition: >-
+      Substitute each item into a template. It implies one item per command, so
+      it silently gives up batching.
+  - term: "xargs -P"
+    definition: >-
+      Run that many commands in parallel. Fast, and it interleaves output from
+      several processes.
+  - term: dry run
+    definition: >-
+      Printing what a destructive command would act on, before it acts. The only
+      review step that catches a wrong predicate.
+
+foreshadows:
+  - "F31's backup pruning is this topic's retention logic at fleet scale."
+  - "C14's build context exclusion is `-prune` reasoning applied to Docker."
+  - "D22's configuration management replaces most bulk file operations entirely."
+  - "B12's log rotation depends on the same time predicates and the same off-by-one."
+
+tags: [shell, find, xargs, files, bulk-operations, fundamentals]

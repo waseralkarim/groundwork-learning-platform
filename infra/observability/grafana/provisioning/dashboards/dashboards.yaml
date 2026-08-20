@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: groundwork
+    orgId: 1
+    type: file
+    disableDeletion: true
+    # Dashboards live in git and are read-only in the UI. Editing one in the
+    # browser and losing it on the next restart is the classic way a team stops
+    # trusting its own dashboards.
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

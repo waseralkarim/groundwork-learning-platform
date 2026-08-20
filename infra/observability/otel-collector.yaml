@@ -1,0 +1,59 @@
+# OTel Collector — the single place every signal passes through.
+#
+# Services speak OTLP and nothing else. Which backend stores what is a decision
+# made here, in one file, rather than in five services' configuration — which is
+# the entire reason a collector exists rather than exporting straight to
+# Prometheus and Tempo.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bounded queues, so a backend outage degrades telemetry rather than the
+  # services producing it. Dropping spans is always better than blocking a
+  # request path.
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+exporters:
+  # Prometheus scrapes the collector rather than the collector pushing, so a
+  # restarted Prometheus loses nothing and needs no write endpoint open.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki]
+  telemetry:
+    logs:
+      level: warn

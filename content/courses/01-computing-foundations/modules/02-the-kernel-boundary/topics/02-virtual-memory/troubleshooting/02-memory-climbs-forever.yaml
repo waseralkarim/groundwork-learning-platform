@@ -1,0 +1,156 @@
+id: troubleshooting.memory-climbs-forever
+topic: topic.virtual-memory
+title: Memory climbs for six days and everyone calls it a leak
+level: L3
+objectives: [OBJ-A01.4.8]
+reveal_policy: progressive
+
+situation: >-
+  A pricing API has been restarted weekly for eight months. The runbook says
+  "memory leak — restart before Friday", and nobody has questioned it because
+  the restart works.
+
+
+  A new engineer asks why. The graph is unambiguous: RSS climbs steadily from
+  180 MB after a restart to about 1.6 GB by day six, then flattens. The service
+  has a 2 GB limit and has never been OOM-killed.
+
+
+  You have been asked whether the leak is worth fixing, which requires first
+  establishing whether there is one. Work it out before reading the answer.
+
+symptoms:
+  - "RSS climbs from 180 MB to ~1.6 GB over six days, then plateaus"
+  - "Never OOM-killed — it flattens below the 2 GB limit"
+  - "Restarting drops it to 180 MB immediately"
+  - "Request latency is unchanged across the week"
+  - "The runtime's own heap metric sits between 140 MB and 260 MB the whole time"
+  - "No file I/O to speak of — the service is a cache in front of a database"
+
+artifacts:
+  - type: metric
+    label: RSS against the runtime's reported heap, one week
+    content: |
+      day 0   rss 184 MB    heap_in_use 142 MB
+      day 1   rss 612 MB    heap_in_use 201 MB
+      day 2   rss 903 MB    heap_in_use 188 MB
+      day 3   rss 1204 MB   heap_in_use 244 MB
+      day 4   rss 1421 MB   heap_in_use 197 MB
+      day 5   rss 1587 MB   heap_in_use 233 MB
+      day 6   rss 1602 MB   heap_in_use 210 MB
+
+  - type: command_output
+    label: cgroup accounting on day 6
+    content: |
+      $ grep -E '^(anon|file|slab) ' /sys/fs/cgroup/memory.stat
+      anon 1678032896
+      file 8388608
+      slab 21430272
+
+  - type: command_output
+    label: The allocator's own view, day 6
+    content: |
+      $ curl -s localhost:9090/debug/allocator | head -6
+      arenas:            48
+      allocated_bytes:   220,148,224
+      heap_released:     18,874,368
+      heap_idle:       1,402,994,688
+      heap_inuse:        224,395,264
+      spans_in_use:      118,442
+
+  - type: config
+    label: Deployment and workload shape
+    content: |
+      replicas: 6
+      resources:
+        limits:
+          memory: 2Gi
+      # traffic is bursty: 40x request volume for ~20 minutes each morning
+
+diagnostic_questions:
+  - "Is the growth in anon or file? What does that rule out?"
+  - "The runtime's heap metric is flat. What is the gap between it and RSS?"
+  - "What does heap_idle of 1.4 GB tell you?"
+  - "Why does it plateau at 1.6 GB rather than continuing to the limit?"
+  - "What would a real leak look like on these same graphs?"
+
+hints:
+  - "Compare the application's heap figure with RSS at each point, not just the trend."
+  - "Freed memory is not necessarily returned to the kernel."
+  - "Think about what the morning traffic burst does to peak allocation."
+  - "A plateau is information. Leaks rarely plateau."
+
+root_cause: >-
+  There is no leak. The application's own heap usage is stable between 140 and
+  260 MB across the entire week — the number that grows is RSS, and the gap
+  between them is memory the allocator has freed but not returned to the kernel.
+
+
+  The daily traffic burst forces peak allocation far above the steady state. The
+  allocator obtains memory from the kernel to serve the peak, and when the burst
+  passes it keeps those arenas rather than releasing them, because releasing and
+  re-obtaining pages is expensive and the peak is likely to recur. `heap_idle`
+  of 1.4 GB against `heap_inuse` of 224 MB says exactly this.
+
+
+  It plateaus at 1.6 GB because that is the high-water mark of demand: once the
+  allocator holds enough for the largest burst, it needs no more.
+
+
+  The weekly restart has been treating a number, not a fault. The service is
+  behaving correctly and has never been at risk.
+
+method: >-
+  **1. Split anon from file first.** `anon 1.67 GB`, `file 8 MB` — this is not
+  page cache, so the growth is genuinely the process's own memory. That rules
+  out the most common false alarm and makes the investigation worth continuing.
+
+
+  **2. Compare the application's view with the kernel's.** This is the step that
+  decides everything, and it is the one usually skipped. Heap in use is flat at
+  around 200 MB while RSS climbs past 1.5 GB. Both numbers are correct. A leak
+  would show them climbing *together* — the application believing it holds more
+  and more, because it does.
+
+
+  **3. Ask the allocator.** `heap_idle` of 1.4 GB is memory the allocator has
+  taken from the kernel, is not using, and has not given back. That is the
+  entire discrepancy, named and quantified.
+
+
+  **4. Explain the plateau.** A leak has no reason to stop; retained arenas do,
+  at the high-water mark of demand. The flattening around day six is strong
+  evidence on its own, and it is visible on the graph the team had all along.
+
+
+  **5. Then decide whether to act.** The service is within its limit, latency is
+  unaffected, and nothing is at risk. "Nothing" is a legitimate outcome here, and
+  arriving at it deliberately is different from arriving at it by not looking.
+
+resolution: >-
+  Delete the weekly restart from the runbook, and record why — so that the next
+  person to see the graph does not reinstate it.
+
+
+  If reclaiming the idle memory is genuinely worth it, the levers are the
+  allocator's, not the application's:
+
+
+  - Go: `GOMEMLIMIT` makes the runtime return memory more eagerly under pressure,
+    and `debug.FreeOSMemory()` forces it — at a latency cost during the return.
+  - glibc: `MALLOC_TRIM_THRESHOLD_` and `malloc_trim()` control the same
+    behaviour for C and anything embedding it.
+  - Reduce the peak itself: the morning burst sets the high-water mark, so
+    smoothing it with a queue lowers the plateau for free.
+
+
+  **What a real leak would have looked like**, so the distinction is on record:
+  heap in use climbing with RSS, no plateau, and the growth continuing across
+  restarts of the traffic pattern rather than tracking it. If those appear later,
+  a heap profile at two points and a diff between them names the allocation site
+  in minutes.
+
+
+  **The alert worth having** is not on RSS growth, which is normal here. It is on
+  the OOM kill counter, and on RSS as a fraction of the limit — a number that
+  would have stayed comfortable all week and correctly stayed quiet.

@@ -1,0 +1,354 @@
+id: lab.the-path-you-actually-get
+topic: topic.environment-and-shell-startup
+title: Four PATHs on one machine, and the command that disappears
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B06.4.3, OBJ-B06.4.7]
+
+intro: >-
+  PATH looks like a setting. It is really an output — three different mechanisms
+  construct it on this machine and they disagree with each other.
+
+
+  You will measure four different PATHs as the same user in the same second,
+  find a command that a script can run and your login shell cannot, and discover
+  what bash falls back to when PATH is not set at all.
+
+setup:
+  - /opt/lab/seed-environment.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Measure PATH in four different invocations and record every one. Save to
+      /tmp/answer-paths.
+    hint: >-
+      Login and non-login shells, plus one with no inherited environment at all
+      (`env -i`). Compare them character by character rather than glancing.
+    walkthrough: |
+      {
+        echo "PATH, four ways, same user, same second:"
+        echo
+        printf '  %-22s %s\n' "the image (pid 1):" "$(tr '\0' '\n' < /proc/1/environ | sed -n 's/^PATH=//p')"
+        printf '  %-22s %s\n' "bash -c (script):"   "$(bash -c 'echo $PATH')"
+        printf '  %-22s %s\n' "bash -lc (login):"   "$(bash -lc 'echo $PATH')"
+        printf '  %-22s %s\n' "env -i bash -c:"     "$(env -i bash -c 'echo $PATH')"
+        echo
+        echo "three different answers, and the login one is SHORTER."
+        echo
+        echo "a script inherits the image's PATH untouched. a login shell has its PATH REPLACED - it does not extend it, it overwrites it - and what replaces it has no sbin directories."
+      } > /tmp/answer-paths
+      cat /tmp/answer-paths
+    verify:
+      - type: file_matches
+        path: /tmp/answer-paths
+        pattern: "bash -lc \\(login\\): +/usr/local/bin:/usr/bin:/bin"
+        describe: You captured the login shell's PATH
+      - type: file_matches
+        path: /tmp/answer-paths
+        pattern: "bash -c \\(script\\): +/usr/local/sbin"
+        describe: And the script's, which is different
+      - type: file_matches
+        path: /tmp/answer-paths
+        pattern: "(?i)shorter"
+        describe: And noticed the login shell's is the narrower one
+
+  - id: s2
+    instruction: >-
+      Find what rewrites PATH for a login shell, and why it produces that
+      particular list. Save to /tmp/answer-who.
+    hint: >-
+      Only login shells read it, and it is the first thing in the file. Note what
+      it branches on.
+    walkthrough: |
+      {
+        echo "the first ten lines of /etc/profile:"
+        sed -n '1,10p' /etc/profile | sed 's/^/  /'
+        echo
+        echo "so it branches on id -u. root gets the sbin directories; everyone else gets /usr/local/games:/usr/games instead."
+        echo
+        echo "my uid is $(id -u), so i get the second branch."
+        echo
+        echo "and note it ASSIGNS rather than appends. whatever PATH the image set is discarded, which is why a login shell can have LESS on its PATH than the process that started it. the container's PATH was chosen by whoever built the image; /etc/profile overrides it without consulting it."
+      } > /tmp/answer-who
+      cat /tmp/answer-who
+    verify:
+      - type: file_matches
+        path: /tmp/answer-who
+        pattern: "id -u"
+        describe: You found what /etc/profile branches on
+      - type: file_matches
+        path: /tmp/answer-who
+        pattern: "(?i)games"
+        describe: And what a non-root user gets instead of sbin
+      - type: file_matches
+        path: /tmp/answer-who
+        pattern: "(?i)assigns rather than appends|discarded|overrides"
+        describe: And that it replaces rather than extends PATH
+
+  - id: s3
+    instruction: >-
+      Find a command that a script can run and your login shell cannot. Then
+      explain why one apparently similar command is unaffected. Save to
+      /tmp/answer-missing.
+    hint: >-
+      Look for tools that live only in an sbin directory. Then check `ip`, which
+      also lives in sbin and behaves differently — `ls -l` will tell you why.
+    walkthrough: |
+      {
+        echo "which sbin tools can each shell find?"
+        printf '  %-10s %-22s %-12s %s\n' TOOL "REAL PATH" LOGIN SCRIPT
+        for t in capsh ldconfig ip; do
+          printf '  %-10s %-22s %-12s %s\n' "$t" \
+            "$(ls -d /usr/sbin/$t 2>/dev/null || echo -)" \
+            "$(bash -lc "command -v $t >/dev/null 2>&1 && echo found || echo NOT-FOUND")" \
+            "$(bash -c  "command -v $t >/dev/null 2>&1 && echo found || echo NOT-FOUND")"
+        done
+        echo
+        echo "capsh and ldconfig are not found in a login shell and are found in a script. that is backwards from the story everybody tells - the usual complaint is that cron cannot find something a human can."
+        echo
+        echo "why ip is different:"
+        ls -l /usr/sbin/ip /usr/bin/ip 2>/dev/null | sed 's/^/  /'
+        echo
+        echo "iproute2 installs the real binary in /usr/bin and leaves a symlink in /usr/sbin for compatibility. so ip is reachable from the bin directories that every PATH has, and capsh genuinely only exists under sbin."
+        echo
+        echo "the lesson: 'it is in sbin' does not predict whether a login shell can run it. i have to check where the binary actually is, and command -v run in the RIGHT SHELL is the only reliable way to ask."
+      } > /tmp/answer-missing
+      cat /tmp/answer-missing
+    verify:
+      - type: file_matches
+        path: /tmp/answer-missing
+        pattern: "capsh .*NOT-FOUND +found"
+        describe: You found a command a script can run and a login shell cannot
+      - type: file_matches
+        path: /tmp/answer-missing
+        pattern: "(?i)backwards"
+        describe: And noticed it is the opposite of the usual story
+      - type: file_matches
+        path: /tmp/answer-missing
+        pattern: "(?i)symlink"
+        describe: And why ip is unaffected
+
+  - id: s4
+    instruction: >-
+      Find out what bash uses when PATH is not set at all, and say why that
+      matters. Save to /tmp/answer-fallback.
+    hint: >-
+      `env -u PATH` removes it entirely. Look carefully at the last entry of what
+      comes back.
+    walkthrough: |
+      {
+        echo "PATH with PATH removed from the environment:"
+        echo "  $(env -u PATH bash -c 'echo $PATH')"
+        echo
+        echo "that is bash's compiled-in fallback, and the last entry is a single dot: THE CURRENT DIRECTORY."
+        echo
+        echo "the dot is LAST, which matters. testing what that does and does not do:"
+        mkdir -p /tmp/hostile
+        { echo '#!/bin/sh'; echo "echo 'this is not the real ls'"; } > /tmp/hostile/ls
+        { echo '#!/bin/sh'; echo "echo 'picked up from the current directory'"; } > /tmp/hostile/reconcile
+        chmod +x /tmp/hostile/ls /tmp/hostile/reconcile
+        cd /tmp/hostile
+        echo "  a command that EXISTS elsewhere - ls:"
+        echo "    no PATH at all:  $(env -u PATH bash -c 'ls' 2>&1 | head -1 | cut -c1-40)"
+        echo "    -> the real /usr/bin/ls wins, because . is searched LAST."
+        echo "  a command that exists ONLY here - reconcile:"
+        echo "    normal PATH:     $(bash -c 'reconcile' 2>&1 | head -1 | sed 's/^bash: line 1: //')"
+        echo "    no PATH at all:  $(env -u PATH bash -c 'reconcile' 2>&1 | head -1)"
+        cd - >/dev/null
+        echo
+        echo "so the hazard is NOT that . overrides real commands - it cannot, being last. it is that a command which SHOULD have failed with command-not-found silently succeeds instead, using whatever happens to be in the working directory."
+        echo
+        echo "that is the dangerous shape: a missing tool, a typo, or a helper that was never installed - each of which normally fails loudly - now runs somebody else's file. and if the working directory is a spool, an upload directory or a git checkout, somebody else chooses that file."
+        echo
+        echo "so a script that does PATH= or unset PATH is WORSE than one with a wrong PATH: a wrong PATH fails loudly with command not found, and no PATH turns that same failure into silent execution of an attacker-chosen file."
+        echo
+        echo "the rule: set PATH explicitly, never blank it. and if a script must run with a clean environment, use env -i PATH=/usr/bin:/bin rather than env -i alone."
+      } > /tmp/answer-fallback
+      cat /tmp/answer-fallback
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fallback
+        pattern: "(?i)current directory"
+        describe: You identified what the final PATH entry is
+      - type: file_matches
+        path: /tmp/answer-fallback
+        pattern: "picked up from the current directory"
+        describe: And demonstrated what it does pick up
+      - type: file_matches
+        path: /tmp/answer-fallback
+        pattern: "(?i)searched LAST"
+        describe: And that it cannot override a real command
+      - type: file_matches
+        path: /tmp/answer-fallback
+        pattern: "(?i)worse than"
+        describe: And why an unset PATH is worse than a wrong one
+
+  - id: s5
+    instruction: >-
+      Read /tmp/env/invocations.txt and identify, for each of the five captured
+      environments, whether the shell was a login shell and whether it was
+      interactive. Save your reasoning to /tmp/answer-invocations.
+    hint: >-
+      TERM and PS1 indicate a terminal. A PATH without sbin indicates
+      /etc/profile ran for a non-root user.
+    walkthrough: |
+      cat /tmp/env/invocations.txt
+      {
+        echo "1. ssh, typed at the prompt      LOGIN + INTERACTIVE"
+        echo "   TERM and PS1 are set, so a terminal. PATH has no sbin, so"
+        echo "   /etc/profile ran and this account is not root."
+        echo
+        echo "2. ssh host 'env'                LOGIN, NOT INTERACTIVE"
+        echo "   no TERM, no PS1. and PATH HAS sbin - so /etc/profile did NOT"
+        echo "   rewrite it. worth pausing on: same account, same host, and the"
+        echo "   non-interactive one has the LONGER path."
+        echo
+        echo "3. from crontab                  NEITHER"
+        echo "   PATH=/usr/bin:/bin, the shortest of all, and SHELL=/bin/sh."
+        echo "   no dotfile ran. this is the one nobody tests."
+        echo
+        echo "4. a systemd service             NEITHER"
+        echo "   INVOCATION_ID and JOURNAL_STREAM are systemd's. HOME=/ because"
+        echo "   no User= was set - anything writing to \$HOME will try to write"
+        echo "   to the root directory and fail with a permissions error that"
+        echo "   points nowhere useful."
+        echo
+        echo "5. a CI runner step              NEITHER"
+        echo "   CI=true and a toolchain directory PREPENDED to PATH, which is"
+        echo "   how a runner pins a language version. no dotfiles."
+        echo
+        echo "the pattern: four of the five are non-interactive and three read no startup files at all. everything my dotfiles do is invisible to all of them."
+      } > /tmp/answer-invocations
+      cat /tmp/answer-invocations
+    verify:
+      - type: file_matches
+        path: /tmp/answer-invocations
+        pattern: "(?i)LOGIN, NOT INTERACTIVE"
+        describe: You classified the ssh-with-command case
+      - type: file_matches
+        path: /tmp/answer-invocations
+        pattern: "(?i)longer"
+        describe: And noticed the non-interactive session has the longer PATH
+      - type: file_matches
+        path: /tmp/answer-invocations
+        pattern: "HOME=/"
+        describe: And what systemd's HOME implies
+      - type: file_matches
+        path: /tmp/answer-invocations
+        pattern: "(?i)nobody tests"
+        describe: And which environment is least likely to have been tested
+
+solution: >-
+  **Four PATHs, one machine.**
+
+
+  ```text
+  the image (pid 1):  /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  bash -c (script):   /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  bash -lc (login):   /usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
+  env -i bash -c:     /usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:.
+  ```
+
+
+  **The login shell's PATH is the shortest**, and a script simply inherits the
+  image's untouched.
+
+
+  **What does it.** `/etc/profile`, read only by login shells, in its first ten
+  lines:
+
+
+  ```sh
+  if [ "$(id -u)" -eq 0 ]; then
+    PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  else
+    PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games"
+  fi
+  ```
+
+
+  Root gets `sbin`; everyone else gets `games`. And it **assigns rather than
+  appends** — whatever the image set is discarded, which is how a login shell ends
+  up with less on its PATH than the process that started it.
+
+
+  **The command that disappears.**
+
+
+  ```console
+  $ bash -c  'command -v capsh'     # a script finds it
+  /usr/sbin/capsh
+  $ bash -lc 'command -v capsh'     # your login shell does not
+  $
+  ```
+
+
+  That is **backwards from the story everybody tells**. The usual complaint is
+  that cron cannot find something a human can; here a human cannot find something
+  CI can.
+
+
+  `ip` is unaffected for a reason worth checking rather than assuming:
+
+
+  ```console
+  $ ls -l /usr/sbin/ip
+  lrwxrwxrwx 1 root root ... /usr/sbin/ip -> ../bin/ip
+  ```
+
+
+  iproute2 puts the real binary in `/usr/bin` and leaves a compatibility symlink
+  in `/usr/sbin`. So **"it is in sbin" does not predict whether a login shell can
+  run it** — you have to look at where the binary actually is, and `command -v`
+  run in the *right shell* is the only reliable way to ask.
+
+
+  **What bash does with no PATH.**
+
+
+  ```console
+  $ env -u PATH bash -c 'echo $PATH'
+  /usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:.
+  ```
+
+
+  The last entry is `.` — the current directory. Demonstrated:
+
+
+  ```console
+  $ cd /tmp/hostile          # contains an executable named ls
+  $ env -u PATH bash -c 'ls'
+  this is not the real ls
+  ```
+
+
+  So **a script that does `PATH=` or `unset PATH` is worse than one with a wrong
+  PATH.** A wrong PATH fails loudly with `command not found`; no PATH silently
+  searches the working directory. Set it explicitly, and prefer
+  `env -i PATH=/usr/bin:/bin` over a bare `env -i`.
+
+
+  **The five captured environments.**
+
+
+  | | Login | Interactive | Tell |
+  |---|---|---|---|
+  | ssh, typed | yes | yes | `TERM`, `PS1`, and a PATH with no sbin |
+  | `ssh host 'env'` | yes | **no** | no `TERM`/`PS1`, and PATH **still has sbin** |
+  | crontab | no | no | `PATH=/usr/bin:/bin`, `SHELL=/bin/sh` |
+  | systemd | no | no | `INVOCATION_ID`, `JOURNAL_STREAM`, `HOME=/` |
+  | CI runner | no | no | `CI=true`, toolchain dir prepended |
+
+
+  Two things to carry. The second row's PATH is **longer** than the first's, from
+  the same account on the same host — the interactive session is the impoverished
+  one. And `systemd`'s `HOME=/` means anything writing a cache under `$HOME` tries
+  to write to the root directory, producing a permissions error that points
+  nowhere useful.
+
+
+  Four of the five are non-interactive and three read no startup files at all.
+  Everything in your dotfiles is invisible to all of them.

@@ -1,0 +1,172 @@
+id: assessment.boot-and-init
+topic: topic.boot-and-init
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a dependency that only fails under load
+    kind: explain
+    objectives: [OBJ-A02.5.4, OBJ-A02.5.5]
+    prompt: >-
+      A colleague has a unit with `Requires=postgres.service` and nothing else.
+      It works everywhere except the busiest production node, where it fails
+      about a third of the time with a connection error. They believe postgres is
+      unreliable on that node.
+
+
+      In about 200 words: explain what the unit actually declares, why the
+      failure is load-dependent, give the fix, and say why the obvious fix is
+      still not quite sufficient.
+    rubric:
+      - "States that Requires= answers whether and After= answers when, and that neither implies the other"
+      - "Explains that both units therefore start at the same instant, making it a race"
+      - "Connects load to which side of the race wins, and to why it passes in CI"
+      - "Gives both lines as the fix, in the dependent unit"
+      - "Notes that After= on a Type=simple dependency waits for exec, not readiness, and names Type=notify"
+    model_answer: >-
+      The unit declares *whether*, not *when*. `Requires=postgres.service` says
+      "pull postgres in, and fail if it fails". It says nothing about ordering,
+      so systemd starts both at the same instant.
+
+
+      That makes it a race between how long postgres takes to become usable and
+      how long the service takes to reach its first connection. On a quiet
+      machine postgres wins almost every time, which is why it passes locally and
+      in CI. On a loaded node with slow storage it often does not, and the
+      symptom is a connection refused pointing at a service that is perfectly
+      healthy — just not ready yet.
+
+
+      The fix is both lines, in the dependent unit:
+
+
+      ```ini
+      Requires=postgres.service
+      After=postgres.service
+      ```
+
+
+      And that is still not quite enough. `After=` waits for the other unit to
+      have *finished starting*, and for the default `Type=simple` that means
+      `exec()` returned — not that the port is bound or the database accepts
+      connections. The race narrows from seconds to milliseconds and does not
+      close. Closing it needs postgres to be `Type=notify`, so it reports genuine
+      readiness via `sd_notify` and `After=` waits for that. Failing that, the
+      client should retry with a bounded backoff.
+    common_failures:
+      - "Treating Requires= as implying ordering, which is the misconception being tested"
+      - "Blaming postgres, or proposing an ExecStartPre sleep, which encodes a timing guess"
+      - "Stopping at 'add After=' without the Type=simple caveat"
+      - "Failing to connect node load to which side of the race wins, which is what explains the intermittency"
+
+  - id: B
+    title: Translate an init model across two systems
+    kind: reason
+    objectives: [OBJ-A02.5.7]
+    prompt: >-
+      A team is moving a service from systemd units to Kubernetes. Their unit
+      uses `After=`, `Type=notify`, `Restart=on-failure`, `RestartSec=5`,
+      `WatchdogSec=30` and `Requires=redis.service`.
+
+
+      In about 200 words: give the Kubernetes equivalent of each, name the one
+      that has no direct equivalent and say what replaces it, and identify one
+      behaviour that differs in a way that will surprise them during an incident.
+    rubric:
+      - "After= → initContainer; Type=notify → readinessProbe; WatchdogSec= → livenessProbe"
+      - "Restart=on-failure → restartPolicy, with CrashLoopBackOff standing in for RestartSec"
+      - "Identifies Requires= as having no equivalent, and explains why: Kubernetes does not start other workloads on your behalf"
+      - "Names the retry difference: systemd stops permanently at the start limit, Kubernetes backs off but keeps trying"
+      - "Draws a practical consequence for incident response from that difference"
+    model_answer: >-
+      `After=redis.service` becomes an initContainer that waits for redis.
+      `Type=notify` becomes a `readinessProbe` — both are the service declaring
+      in its own voice that it can work. `WatchdogSec=30` becomes a
+      `livenessProbe`: kill it if it stops responding. `Restart=on-failure`
+      becomes `restartPolicy: Always` at the pod level, with the back-off
+      standing in for `RestartSec=5`.
+
+
+      `Requires=redis.service` has no equivalent, and the reason is
+      architectural. systemd manages every unit on one machine and can start one
+      because another asked for it; Kubernetes schedules independent workloads
+      and a Deployment cannot cause another Deployment to exist. What replaces it
+      is weaker and more decoupled: the pod stays unready, and its endpoints are
+      removed from the Service until it recovers.
+
+
+      The difference that will surprise them during an incident is the retry
+      behaviour. systemd stops permanently once a unit hits `StartLimitBurst` —
+      fix the cause and nothing happens until someone runs `systemctl
+      reset-failed`. Kubernetes never stops; it backs off, up to five minutes.
+      So the same words, "we fixed it and it is still down", mean opposite
+      things: on systemd it will never recover on its own, and on Kubernetes it
+      probably will, just not yet.
+    common_failures:
+      - "Mapping Type=notify to a livenessProbe, which conflates 'do not send me traffic' with 'kill me'"
+      - "Claiming initContainers are the equivalent of Requires= rather than of After="
+      - "Missing that Requires= has no equivalent, and asserting a mapping that does not exist"
+      - "Describing the retry difference without drawing the incident-response consequence"
+
+  - id: C
+    title: Diagnose three failed units
+    kind: diagnose
+    objectives: [OBJ-A02.5.8, OBJ-A02.5.6]
+    prompt: >-
+      Three units on one node, all failed.
+
+
+      **X** — `Active: failed (Result: timeout)`, Main PID killed by TERM after
+      90s. Unit is `Type=notify`. Journal shows the service logging
+      "listening on :9000" and "ready" two seconds after start.
+
+
+      **Y** — `Active: failed (Result: dependency)`, no Main PID ever recorded.
+      Unit has `Requires=data.mount`. Journal shows `mount.nfs: Connection timed
+      out` followed by `Dependency failed`.
+
+
+      **Z** — `Active: failed (Result: start-limit-hit)` since 03:02. Unit has
+      `Restart=always`, `RestartSec=0`. Journal shows five identical config
+      errors within one second, then nothing. It is now 07:15 and the config was
+      corrected at 03:20.
+
+
+      Diagnose each, give the fix for each, and say which one is not broken any
+      more.
+    rubric:
+      - "X: Type=notify with no sd_notify call — logging readiness is not the protocol; systemd waited TimeoutStartSec and killed a working service"
+      - "Y: a required mount failed, so the job was cancelled and nothing ever executed; 'no Main PID' is the tell"
+      - "Z: hit the start limit, is no longer being retried, and has been fixed since 03:20"
+      - "Fixes: implement sd_notify or use Type=exec; fix the mount or weaken Requires= to Wants=; systemctl reset-failed then start, and raise RestartSec"
+      - "Identifies Z as already fixed, and explains that the empty journal is evidence rather than a gap"
+    model_answer: >-
+      **X — a healthy service with the wrong `Type=`.** `Type=notify` makes
+      systemd wait for an `sd_notify(0, "READY=1")` message. The service logs
+      that it is ready, which is a different protocol — systemd does not read
+      logs. With no message, the start operation ran to `TimeoutStartSec` (90s
+      by default) and systemd killed something that had been serving for 88
+      seconds. Fix: implement `sd_notify`, which is best because `After=` on this
+      unit then means real readiness for everything downstream; or set
+      `Type=exec`, which is honest about having no readiness protocol. Raising
+      the timeout only delays the same kill.
+
+
+      **Y — never executed a single instruction.** No Main PID and
+      `Result: dependency` together mean the job was cancelled before anything
+      ran, because `Requires=data.mount` propagated the mount's failure. Fix the
+      NFS server, or — if the service can run degraded — change `Requires=` to
+      `Wants=` so it starts and fails on its own terms.
+
+
+      **Z is not broken any more.** It hit `StartLimitBurst` at 03:02 with
+      `RestartSec=0` making that certain, and systemd stopped retrying
+      permanently. The config was fixed at 03:20 and nothing has attempted a
+      start since, which is exactly why the journal has been empty for four
+      hours. `systemctl reset-failed` and start it; then set `RestartSec=5`, so
+      five attempts take 25 seconds and the limit becomes unreachable.
+    common_failures:
+      - "Raising TimeoutStartSec for X, which delays the kill rather than fixing the mismatch"
+      - "Diagnosing Y as a crash, when no process ever ran"
+      - "Reading Z's empty journal as missing evidence rather than as proof that nothing is being attempted"
+      - "Fixing Z by raising StartLimitBurst, which removes the protection instead of making it unreachable"

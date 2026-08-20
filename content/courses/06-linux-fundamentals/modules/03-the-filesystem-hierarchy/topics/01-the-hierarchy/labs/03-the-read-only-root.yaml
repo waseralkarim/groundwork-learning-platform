@@ -1,0 +1,333 @@
+id: lab.the-read-only-root
+topic: topic.the-filesystem-hierarchy
+title: Nine ordinary writes, and the two gates that refuse them
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B06.3.5, OBJ-B06.3.6]
+
+intro: >-
+  The container you are in right now runs with a read-only root filesystem. That
+  is not a lab contrivance — it is how this platform runs every lab, for the same
+  reason production systems do it.
+
+
+  You will attempt the nine writes a normal service makes while starting up, find
+  out which are refused, and then do the part that matters: separate the ones the
+  **mount** refused from the one the **permission bits** refused. They produce
+  different error messages and need completely different fixes.
+
+setup:
+  - /opt/lab/seed-hierarchy.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before running anything, predict. Read /tmp/fhs/probe-notes.txt, then write
+      to /tmp/prediction how many of the nine writes you expect to succeed and
+      which ones.
+    hint: >-
+      You are running as an unprivileged user on a read-only root. Which
+      directories would have to be special for anything to work at all?
+    walkthrough: |
+      cat /tmp/fhs/probe-notes.txt
+      {
+        echo "prediction: 3 of 9 succeed"
+        echo "  /tmp                 - has to work; everything assumes scratch space"
+        echo "  HOME                 - probably, since the shell needs somewhere"
+        echo "  /dev/shm             - shared memory is usually available"
+        echo "expect denied: /var/log /var/lib /var/cache /run /etc /usr/local/bin"
+        echo "and my guess is they are ALL denied by the read-only root."
+      } > /tmp/prediction
+      cat /tmp/prediction
+    verify:
+      - type: file_exists
+        path: /tmp/prediction
+        describe: You committed to a prediction before measuring
+      - type: file_matches
+        path: /tmp/prediction
+        pattern: "(?i)/tmp"
+        describe: And named which paths you expect to work
+
+  - id: s2
+    instruction: >-
+      Run /tmp/fhs/probe-writes.sh and save its output to /tmp/answer-probe.
+      Compare against your prediction.
+    hint: >-
+      The script attempts nine writes that are entirely ordinary for a daemon at
+      startup. On a normal machine all nine succeed.
+    walkthrough: |
+      /tmp/fhs/probe-writes.sh > /tmp/answer-probe
+      cat /tmp/answer-probe
+      echo
+      echo "succeeded: $(grep -c ' ok ' /tmp/answer-probe)"
+      echo "denied:    $(grep -c DENIED /tmp/answer-probe)"
+    verify:
+      - type: file_matches
+        path: /tmp/answer-probe
+        pattern: "/var/lib/ledger/ledger.db +DENIED"
+        describe: The service could not create its database
+      - type: file_matches
+        path: /tmp/answer-probe
+        pattern: "/tmp/ledger-upload.part +ok"
+        describe: But scratch space works
+      - type: command_exit
+        command: "test $(grep -c DENIED /tmp/answer-probe) -eq 6"
+        exit_code: 0
+        describe: Six of the nine writes were refused
+
+  - id: s3
+    instruction: >-
+      For each denied path, determine which gate refused it — the mount or the
+      permission bits. Save your findings to /tmp/answer-gates.
+    hint: >-
+      Two independent things must both allow a write. Check the mount options
+      that govern each path, and separately check the directory's mode and owner.
+    walkthrough: |
+      {
+        printf '%-16s %-30s %-22s %s\n' DIRECTORY MOUNT-OPTIONS MODE-OWNER GATE
+        for d in /var/log /var/lib /var/cache /etc /usr/local/bin /run /tmp /dev/shm; do
+          m=$(df --output=target "$d" 2>/dev/null | tail -1)
+          opts=$(awk -v m="$m" '$2==m {print $4}' /proc/mounts | head -1)
+          mode=$(stat -c '%A %U:%G' "$d")
+          case "$opts" in
+            ro,*|*,ro,*) gate="MOUNT is ro" ;;
+            *) case "$mode" in
+                 drwxrwxrwt*) gate="allowed" ;;
+                 *root:root*) gate="MODE - mount is rw!" ;;
+                 *) gate="allowed" ;;
+               esac ;;
+          esac
+          printf '%-16s %-30s %-22s %s\n' "$d" "$(echo $opts | cut -c1-30)" "$mode" "$gate"
+        done
+        echo
+        echo "the finding: five paths are denied by the MOUNT - the root filesystem is mounted ro, and no permission bits can override that."
+        echo
+        echo "but /run is different. its mount is READ-WRITE:"
+        awk '$2=="/run"{print "  " $4}' /proc/mounts
+        echo "  and its mode is: $(stat -c '%A %U:%G' /run)"
+        echo
+        echo "the mount says yes and the mode says no. i am uid $(id -u) and the directory is 755 owned by root, so the write is refused by permissions, not by the filesystem."
+        echo
+        echo "that distinction decides the fix. a mount problem needs the path declared writable by whoever starts the container. a mode problem needs ownership or a different uid - remounting will not help, and neither will read_only: false."
+      } > /tmp/answer-gates
+      cat /tmp/answer-gates
+    verify:
+      - type: file_matches
+        path: /tmp/answer-gates
+        pattern: "MOUNT is ro"
+        describe: You identified the paths the mount refused
+      - type: file_matches
+        path: /tmp/answer-gates
+        pattern: "MODE - mount is rw"
+        describe: And the one where the mount allows the write but the mode does not
+      - type: file_matches
+        path: /tmp/answer-gates
+        pattern: "(?i)remounting will not help"
+        describe: And that the two need different fixes
+
+  - id: s4
+    instruction: >-
+      Read the actual error messages for a mount refusal and a mode refusal, and
+      record how to tell them apart. Then find the path that accepts a write but
+      refuses to run what you wrote. Save to /tmp/answer-messages.
+    hint: >-
+      The two refusals produce different text. And one writable mount has an
+      option that has nothing to do with writing.
+    walkthrough: |
+      {
+        echo "the two error messages:"
+        echo -n "  /var/lib : "; touch /var/lib/probe 2>&1 | sed 's/.*: //'
+        echo -n "  /run     : "; touch /run/probe 2>&1 | sed 's/.*: //'
+        echo
+        echo "'Read-only file system' is EROFS - the mount."
+        echo "'Permission denied' is EACCES - the mode."
+        echo "people read both as 'a permissions problem' and go and change the wrong thing."
+        echo
+        echo "now the third case. /dev/shm accepted a write in step 2:"
+        awk '$2=="/dev/shm"{print "  mount: " $4}' /proc/mounts
+        echo "  mode:  $(stat -c '%A' /dev/shm)"
+        echo
+        printf '#!/bin/sh\necho ran\n' > /dev/shm/t.sh && chmod +x /dev/shm/t.sh
+        echo -n "  running it: "; /dev/shm/t.sh 2>&1 | sed 's/.*: //'
+        ls -l /dev/shm/t.sh | sed 's/^/  file is: /'
+        rm -f /dev/shm/t.sh
+        echo
+        echo "mode 1777 - anyone may write. mount noexec - nobody may run what they wrote. the file is 0755 and owned by me and still will not execute, because noexec is a property of the MOUNT and the permission bits cannot express it."
+        echo
+        echo "that is a third distinct failure wearing the same words: 'Permission denied' on EXECUTE, with a file whose permissions are fine."
+        echo
+        echo "and worth noticing where /dev/shm came from. the lab broker configures tmpfs for /tmp, /home/learner and /run - it never mentions /dev/shm. this is a docker default: a world-writable path nobody explicitly authorised. it is harmless because of noexec, which is what defence in depth looks like when it works."
+      } > /tmp/answer-messages
+      cat /tmp/answer-messages
+    verify:
+      - type: file_matches
+        path: /tmp/answer-messages
+        pattern: "Read-only file system"
+        describe: You captured the mount refusal message
+      - type: file_matches
+        path: /tmp/answer-messages
+        pattern: "Permission denied"
+        describe: And the mode refusal message
+      - type: file_matches
+        path: /tmp/answer-messages
+        pattern: "noexec"
+        describe: And found the mount option that blocks execution
+      - type: file_matches
+        path: /tmp/answer-messages
+        pattern: "(?i)docker default|never mentions"
+        describe: And noticed /dev/shm was never explicitly authorised
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-runlist the shortest list of writable paths that would
+      let this service start under a read-only root, and say what kind each
+      should be.
+    hint: >-
+      Go back to the nine writes. Which genuinely need to survive a restart, and
+      which just need to succeed?
+    walkthrough: |
+      {
+        echo "what the service actually needs, and of what kind:"
+        echo
+        echo "  VOLUME  /var/lib/ledger      state. must survive the container."
+        echo "  TMPFS   /run                 pid and socket. must NOT survive - a"
+        echo "                               stale pid file after a crash is a whole"
+        echo "                               class of bug that tmpfs deletes."
+        echo "  TMPFS   /tmp                 upload buffers. size-limited."
+        echo "  TMPFS   /var/log/ledger      only if logs are not going to stdout."
+        echo "                               they should be, so prefer to drop this."
+        echo "  TMPFS   /var/cache/ledger    regenerable; a volume only buys warmth"
+        echo "                               across restarts, which is rarely worth it."
+        echo
+        echo "  NOT WRITABLE: /etc, /usr/local/bin, /usr"
+        echo "    the generated config should be rendered at build or injected as a"
+        echo "    mounted file. a service writing its own binaries into /usr/local"
+        echo "    at runtime is the thing read-only roots exist to prevent."
+        echo
+        echo "so: one volume and three or four tmpfs mounts, each narrow."
+        echo
+        echo "two rules behind those choices. keep paths NARROW - /var/lib/ledger, never /var - because every extra writable byte is somewhere state can hide and somewhere a compromise can persist. and prefer TMPFS over a volume for anything that does not need to survive, because a tmpfs both satisfies the write and guarantees the data cannot outlive the container."
+        echo
+        echo "and the thing this exercise produced that is worth more than the config: an explicit, TESTED list of everything this service writes. almost nobody has that document, and the read-only root is what forces it into existence - it converts 'where does this write?' from a guess into an error message with a path in it."
+      } > /tmp/answer-runlist
+      cat /tmp/answer-runlist
+    verify:
+      - type: file_matches
+        path: /tmp/answer-runlist
+        pattern: "VOLUME +/var/lib/ledger"
+        describe: You identified the one path that must persist
+      - type: file_matches
+        path: /tmp/answer-runlist
+        pattern: "TMPFS +/run"
+        describe: And that runtime data should not survive
+      - type: file_matches
+        path: /tmp/answer-runlist
+        pattern: "(?i)stale pid"
+        describe: And why that is a feature rather than a limitation
+      - type: file_matches
+        path: /tmp/answer-runlist
+        pattern: "(?i)narrow"
+        describe: And the rule about how wide to make writable paths
+      - type: file_matches
+        path: /tmp/answer-runlist
+        pattern: "(?i)tested list|forces it into existence"
+        describe: And what the exercise produced beyond the configuration
+
+solution: >-
+  **Six of nine ordinary writes are refused.**
+
+
+  Every one of those nine is a normal thing for a daemon to do at startup — open
+  a log, create a database, write a pid file, buffer an upload. On an ordinary
+  machine all nine succeed. Here, only `/tmp`, `$HOME` and `/dev/shm` accept a
+  write.
+
+
+  **But they are not refused for the same reason.**
+
+
+  | Path | Mount | Mode | Refused by |
+  |---|---|---|---|
+  | `/var/log` `/var/lib` `/var/cache` `/etc` `/usr/local/bin` | `ro` | `755 root:root` | **the mount** |
+  | `/run` | **`rw`** | `755 root:root` | **the mode** |
+  | `/tmp` `/dev/shm` | `rw` | `1777` | not refused |
+
+
+  `/run` is the case worth being able to spot. Its mount is read-write — the
+  broker mounts a tmpfs there — and a process running as uid 10001 still cannot
+  write, because the directory is `755` owned by root. **The mount says yes and
+  the mode says no.**
+
+
+  That distinction decides the fix. A mount problem needs the path declared
+  writable by whoever starts the container. A mode problem needs ownership or a
+  different uid — remounting will not help, and neither will `read_only: false`.
+
+
+  **The errors say which.**
+
+
+  ```console
+  $ touch /var/lib/probe
+  touch: cannot touch '/var/lib/probe': Read-only file system     # EROFS — the mount
+  $ touch /run/probe
+  touch: cannot touch '/run/probe': Permission denied             # EACCES — the mode
+  ```
+
+
+  Both get read as "a permissions problem", and half the time that sends someone
+  to `chmod` a filesystem that would ignore it.
+
+
+  **And a third failure wearing the same words.**
+
+
+  ```console
+  $ printf '#!/bin/sh\necho ran\n' > /dev/shm/t.sh && chmod +x /dev/shm/t.sh
+  $ /dev/shm/t.sh
+  Permission denied
+  $ ls -l /dev/shm/t.sh
+  -rwxr-xr-x 1 learner learner ...
+  ```
+
+
+  Mode `1777` so anyone may write; mount `noexec` so nobody may run what they
+  wrote. The file is `0755` and owned by you and still will not execute, because
+  `noexec` is a property of the **mount** and the permission bits cannot express
+  it.
+
+
+  Worth noticing where `/dev/shm` came from: the lab broker configures tmpfs for
+  `/tmp`, `/home/learner` and `/run`, and never mentions `/dev/shm`. It is a
+  Docker default — a world-writable path nobody explicitly authorised, harmless
+  because of `noexec`. That is what defence in depth looks like when it works.
+
+
+  **The shortest run list.**
+
+
+  ```text
+  VOLUME  /var/lib/ledger      state; must survive the container
+  TMPFS   /run                 pid and socket; must NOT survive
+  TMPFS   /tmp                 upload buffers
+  TMPFS   /var/cache/ledger    regenerable
+  ```
+
+
+  `/run` on tmpfs is a feature rather than a compromise: **a stale pid file after
+  a crash is an entire class of bug that an empty-at-boot tmpfs deletes.**
+
+
+  Two rules behind the rest. Keep paths **narrow** — `/var/lib/ledger`, never
+  `/var` — because every extra writable byte is somewhere state can hide and
+  somewhere a compromise can persist. And prefer **tmpfs over a volume** for
+  anything that need not survive, because a tmpfs both satisfies the write and
+  guarantees the data cannot outlive the container.
+
+
+  The most valuable output is not the configuration. It is **an explicit, tested
+  list of everything this service writes** — a document almost nobody has, which
+  the read-only root forced into existence by converting "where does this write?"
+  from a guess into an error message with a path in it.

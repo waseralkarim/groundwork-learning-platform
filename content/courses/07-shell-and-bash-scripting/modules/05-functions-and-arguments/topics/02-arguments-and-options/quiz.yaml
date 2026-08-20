@@ -1,0 +1,448 @@
+id: quiz.arguments-and-options
+topic: topic.arguments-and-options
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.7.1]
+    stem: >-
+      With `set -- a "b c" d`, which expansion produces exactly three words?
+    options:
+      - id: a
+        text: '`"$@"`'
+        correct: true
+      - id: b
+        text: '`"$*"`'
+        note: >-
+          One word — the arguments joined by the first character of `IFS`.
+      - id: c
+        text: '`$@` unquoted'
+        note: >-
+          Four words: the shell splits `b c` on whitespace.
+      - id: d
+        text: '`$*` unquoted'
+        note: >-
+          Also four. Unquoted, `$@` and `$*` behave identically.
+    explanation: >-
+      Only `"$@"` reproduces the argument list — one word per argument, splitting
+      nothing. That is why it is the only correct way to forward arguments.
+      `"$*"` is right for exactly one job, building a message:
+      `die() { echo "$0: $*" >&2; }`.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.7.1]
+    stem: "Which is true of `$0`?"
+    options:
+      - id: a
+        text: It is the invocation name, is not counted by `$#`, and `shift` never touches it
+        correct: true
+      - id: b
+        text: It is the first argument, so `$0` and `$1` are the same
+        note: >-
+          `$1` is the first argument; `$0` is not an argument at all.
+      - id: c
+        text: It is always the absolute path of the script
+        note: >-
+          It is whatever the caller used — a relative path, `-bash` for a login
+          shell, or anything a program chose when it `exec`'d.
+      - id: d
+        text: "`shift` moves it to `$1`"
+        note: >-
+          `shift` operates only on the positional parameters.
+    explanation: >-
+      Use it for messages — `${0##*/}` gives the basename — so a renamed or
+      symlinked copy still prints something true. Do not rely on it to locate the
+      script.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.7.2]
+    stem: >-
+      With three positional parameters, what does `shift 5` do?
+    options:
+      - id: a
+        text: Returns 1 and leaves all three in place
+        correct: true
+      - id: b
+        text: Shifts all three and returns 0
+        note: >-
+          It does not shift what it can — it is all-or-nothing.
+      - id: c
+        text: Shifts all three and returns 1
+        note: >-
+          The status is 1, but nothing is shifted.
+      - id: d
+        text: Prints an error and exits the shell
+        note: >-
+          Silent, unless `set -e` is on — in which case the *shell* exits, with
+          no message.
+    explanation: >-
+      `shift` is **all-or-nothing**. So a parser doing `shift 2` for an option and
+      its value leaves everything in place when the value is missing, and re-reads
+      the same argument. Under `set -e` the failing shift ends the script silently,
+      because there is no failing command to name. Guard with a count *before*
+      the shift.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.7.2]
+    stem: "What does `--` do on a command line?"
+    options:
+      - id: a
+        text: Ends option parsing — everything after it is an operand
+        correct: true
+      - id: b
+        text: Marks the start of long options
+        note: >-
+          A long option is `--name`; a bare `--` is the terminator.
+      - id: c
+        text: Separates the script's options from the shell's
+        note: >-
+          The shell has already finished with the line by then.
+      - id: d
+        text: Nothing — it is a convention some tools happen to honour
+        note: >-
+          It is required by POSIX utility syntax, and `getopts` and `getopt(1)`
+          both implement it.
+    explanation: >-
+      It is the only reliable way to handle an operand beginning with a dash:
+      `rm -- -rf` removes a file called `-rf`, where `rm -rf` reads the name as
+      flags. A parser you write must honour it, or a dash-named path cannot be
+      passed at all.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.3]
+    stem: 'In the optstring `":vo:"`, what does the **leading** colon do?'
+    options:
+      - id: a
+        text: Turns on silent error reporting — errors come back through the option variable
+        correct: true
+      - id: b
+        text: Means `v` takes an argument
+        note: >-
+          A colon *after* a letter does that. This one is before any letter.
+      - id: c
+        text: Makes all options optional
+        note: >-
+          Options are always optional; the optstring says which exist.
+      - id: d
+        text: Allows options to be bundled
+        note: >-
+          Bundling works regardless.
+    explanation: >-
+      The optstring says two unrelated things with the same character: a
+      **trailing** colon means that option takes a value; a **leading** colon
+      switches error reporting to silent. That collision is most of why the
+      leading one gets left out.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.3]
+    stem: >-
+      In silent mode, `getopts` sets the option variable to `:`. What happened?
+    options:
+      - id: a
+        text: An option that requires an argument was given without one — `OPTARG` names it
+        correct: true
+      - id: b
+        text: An unknown option was found
+        note: >-
+          That sets it to `?`. Distinguishing the two is the point of silent
+          mode.
+      - id: c
+        text: Parsing finished normally
+        note: >-
+          `getopts` returns non-zero when it is done; it does not set a value.
+      - id: d
+        text: A `--` was encountered
+        note: >-
+          `--` simply ends parsing.
+    explanation: >-
+      `?` means unknown option, `:` means missing argument, and `OPTARG` holds the
+      offending letter in both cases. The noisy mode collapses them into one
+      message and names `$0` rather than the operation, which is why silent mode
+      plus your own `die` is better.
+
+  - id: q7
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B08.7.3]
+    stem: >-
+      With optstring `":abo:"`, which of these does `getopts` handle as you would
+      hope?
+    options:
+      - id: a
+        text: "`-ab` — bundled"
+        correct: true
+      - id: b
+        text: "`-ofile` — attached value"
+        correct: true
+      - id: c
+        text: "`-o file` — separated value"
+        correct: true
+      - id: d
+        text: "`-o=file`"
+        note: >-
+          `OPTARG` becomes `=file` — the equals sign is part of the value.
+      - id: e
+        text: "`--about`"
+        note: >-
+          Split into letters: `a` and `b` are enabled, and `-o` swallows `ut` as
+          its argument.
+    explanation: >-
+      Bundling and both value forms work. `-o=file` silently produces a value
+      beginning with `=`, and `--about` is read as bundled letters — which is how
+      a `--dry-run` on a script with `-d` for delete becomes a deletion.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.4]
+    stem: >-
+      A function parses options with `getopts` and works the first time it is
+      called and not the second. Why?
+    options:
+      - id: a
+        text: "`OPTIND` is global and was left past the end of the list"
+        correct: true
+      - id: b
+        text: "`OPTARG` was not cleared between calls"
+        note: >-
+          `OPTARG` is set per option; a stale value is not what stops parsing.
+      - id: c
+        text: The optstring is consumed by the first parse
+        note: >-
+          It is a literal argument to `getopts` and is re-read every call.
+      - id: d
+        text: "`getopts` can only be used once per shell"
+        note: >-
+          It can be used any number of times — it just needs `OPTIND` reset.
+    explanation: >-
+      `OPTIND` is the index of the next argument to read. Left at 4 by the first
+      call, the second asks for argument 4 of a three-argument list, finds
+      nothing, and falls straight through to the defaults. And
+      `shift $((OPTIND - 1))` shifts the same number as before, so `$1` still
+      lands correctly — which is why the output looks right.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.4]
+    stem: >-
+      Why `local OPTIND=1` inside a function rather than a bare `OPTIND=1`?
+    options:
+      - id: a
+        text: So the caller's `OPTIND` is restored on return, in case it was itself parsing
+        correct: true
+      - id: b
+        text: Because `getopts` refuses to read a global `OPTIND`
+        note: >-
+          It reads whatever `OPTIND` is in scope.
+      - id: c
+        text: Because a bare assignment does not reset it
+        note: >-
+          It does reset it — the problem is what it does to the caller.
+      - id: d
+        text: Purely style; the two behave identically
+        note: >-
+          They differ whenever a caller is mid-parse.
+    explanation: >-
+      A bare `OPTIND=1` fixes this call and **rewinds the caller's parse**, so an
+      outer loop re-reads the same option indefinitely. `local` scopes the reset
+      to the call, which is dynamic scope being useful rather than dangerous. Note
+      a top-level parse needs no reset at all, so the bug appears only when
+      somebody adds a second call — often long after review.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.5]
+    stem: >-
+      A script parses with `getopts ":dn"` — `-d` deletes, `-n` is a dry run. An
+      operator runs it with `--dry-run`. What happens?
+    options:
+      - id: a
+        text: Both `d` and `n` are set, because the long option is read as bundled letters
+        correct: true
+      - id: b
+        text: Nothing is set, and the script reports an unknown option
+        note: >-
+          Unknown letters *are* reported — on stderr — but `d` and `n` both match.
+      - id: c
+        text: "`--dry-run` is treated as an operand, so the dry run silently does not happen"
+        note: >-
+          That is what happens with a flag *after* an operand. A leading `--…` is
+          parsed as options.
+      - id: d
+        text: "`getopts` returns non-zero and the loop ends immediately"
+        note: >-
+          It keeps going, reporting the unknown letters as it finds them.
+    explanation: >-
+      `getopts` splits `--dry-run` into `-`,`d`,`r`,`y`,`-`,`r`,`u`,`n`. The `d`
+      sets delete and the `n` sets dry-run; which wins is decided by the order of
+      the script's own `if`s. The unknown-letter warnings go to **stderr**, so a
+      cron log keeping only stdout records the deletions with no evidence that the
+      operator asked for the opposite.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.5]
+    stem: >-
+      Given `prog -v file -v` and optstring `":v"`, how many `-v` does `getopts`
+      see?
+    options:
+      - id: a
+        text: One — it stops at the first non-option
+        correct: true
+      - id: b
+        text: Two — it scans the whole line
+        note: >-
+          That is GNU **permutation**, done by the C library in GNU tools, not by
+          `getopts`.
+      - id: c
+        text: Two, but only if `--` is used
+        note: >-
+          `--` ends parsing; it does not enable a second pass.
+      - id: d
+        text: "None — a non-option anywhere aborts parsing"
+        note: >-
+          The options *before* the operand are parsed normally.
+    explanation: >-
+      `getopts` stops at `file`, leaving `file -v` as operands. GNU tools permute
+      — `ls -l /tmp -a` works — so an operator used to them will type
+      `prune.sh /srv/data -n` and get no dry run, **with no error**, because `-n`
+      is now just an operand. `getopt(1)` permutes, which is a strong argument for
+      it on a script humans type.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.6]
+    stem: >-
+      Why must `parsed=$(getopt …)` be followed by a check of its exit status?
+    options:
+      - id: a
+        text: >-
+          On a bad option it exits non-zero and still prints a usable list with
+          the bad option removed
+        correct: true
+      - id: b
+        text: Because it prints nothing, so the `eval` would clear all arguments
+        note: >-
+          It does print something — that is exactly the problem.
+      - id: c
+        text: Because `eval` fails on an empty string
+        note: >-
+          `eval set -- ""` is harmless; it just empties the list.
+      - id: d
+        text: To catch the case where `getopt(1)` is not installed
+        note: >-
+          Worth checking separately, but not what the status after a parse tells
+          you.
+    explanation: >-
+      ```console
+      $ getopt -o v --long verbose -n demo -- --nope a b
+      demo: unrecognized option '--nope'      ← stderr
+       -- 'a' 'b'                              ← stdout, rc=1
+      ```
+      Without the guard the script runs on, having **silently discarded the flag
+      the operator typed** — this topic's failure mode again. The status is the
+      only thing that tells you.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.6]
+    stem: >-
+      Which combination should never ship?
+    options:
+      - id: a
+        text: "`getopts` with long options documented in the help text"
+        correct: true
+      - id: b
+        text: "`getopts` with short options only"
+        note: >-
+          The normal, portable choice for most operational scripts.
+      - id: c
+        text: "`getopt(1)` with `eval set --` and an exit-status check"
+        note: >-
+          The correct idiom.
+      - id: d
+        text: A hand-rolled parser that handles `--opt=value` and `--`
+        note: >-
+          Perfectly reasonable — no dependency, no `eval`.
+    explanation: >-
+      On a script whose optstring contains any of the letters in the advertised
+      long option, that documentation is not merely wrong — **it is an instruction
+      to enable features the operator did not ask for**. The prune incident was, at
+      bottom, a help text that had drifted away from the code.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.7]
+    stem: >-
+      A hand-rolled parser has no `-*)` catch-all before its `*)` branch. What is
+      the consequence?
+    options:
+      - id: a
+        text: An unknown option falls through and is treated as an operand
+        correct: true
+      - id: b
+        text: The parser loops forever
+        note: >-
+          Only if the branch also fails to `shift` or `break`.
+      - id: c
+        text: "`--` stops working"
+        note: >-
+          That is a separate missing branch.
+      - id: d
+        text: Nothing — `*)` handles unknown options correctly
+        note: >-
+          `*)` cannot tell a mistyped flag from a filename.
+    explanation: >-
+      `*)` cannot distinguish `--verbsoe` from a path, so the typo becomes the
+      script's target. The four branches people leave out are `--opt=*`, `--`, the
+      `-*)` catch-all, and a `$#` check before taking `$2` — each one line, each a
+      real defect without it.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.7.8]
+    stem: >-
+      A prune script defaults to reporting and has `-d` to delete. Which change
+      most reduces the risk of a mis-parsed flag destroying data?
+    options:
+      - id: a
+        text: Default to a dry run and require an explicit `--apply` to delete
+        correct: true
+      - id: b
+        text: Switch to `getopt(1)` so long options work
+        note: >-
+          Fixes this parser and not the next one. It makes the mistake unlikely
+          rather than harmless.
+      - id: c
+        text: Add a `-*` catch-all so unknown options are refused
+        note: >-
+          Valuable, and still only catches the errors you anticipated.
+      - id: d
+        text: Log every invocation with its full argument list
+        note: >-
+          Helps the postmortem, not the outage — and puts arguments in a log,
+          which is its own hazard.
+    explanation: >-
+      The others catch errors; this one decides **which way an error falls when
+      you fail to catch it**. With deletion opt-in, a mis-parsed flag can only turn
+      a destructive run safe. It is the one change that would still have saved the
+      data if the parser had been wrong anyway.

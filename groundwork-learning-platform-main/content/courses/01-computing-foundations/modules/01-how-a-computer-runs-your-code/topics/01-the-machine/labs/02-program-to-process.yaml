@@ -1,0 +1,187 @@
+id: lab.program-to-process
+topic: topic.the-machine
+title: Watch a program become a process
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A01.1.5, OBJ-A01.1.2, OBJ-A01.1.3]
+
+intro: >-
+  Twenty minutes that seed the entire Linux and container tracks. You will take
+  source code, compile it, look inside the binary, run it, and watch every
+  system call it makes.
+
+
+  If you do only one lab in this topic, do this one. Compilation, binary format,
+  architecture tagging, dynamic linking, process creation and syscalls all show
+  up here at once, and each of them reappears later wearing container clothing.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Create /tmp/hello.c containing a C program that prints "hello" and exits.
+      Three lines is enough.
+    hint: |
+      ```c
+      #include <stdio.h>
+      int main(void) { printf("hello\n"); return 0; }
+      ```
+    walkthrough: |
+      cat > /tmp/hello.c <<'EOF'
+      #include <stdio.h>
+      int main(void) { puts("hello"); return 0; }
+      EOF
+    verify:
+      - type: file_exists
+        path: /tmp/hello.c
+        describe: The source file exists
+      - type: file_matches
+        path: /tmp/hello.c
+        pattern: "main"
+        describe: It contains a main function
+
+  - id: s2
+    instruction: >-
+      Compile it to /tmp/hello. Notice that the source file and the output are
+      completely different kinds of thing — one is text you can read, the other
+      is instructions for a specific CPU.
+    hint: "`gcc -o /tmp/hello /tmp/hello.c`"
+    walkthrough: |
+      gcc -o /tmp/hello /tmp/hello.c
+    verify:
+      - type: file_exists
+        path: /tmp/hello
+        describe: The binary was produced
+      - type: command_exit
+        command: "test -x /tmp/hello"
+        exit_code: 0
+        describe: The binary is executable
+
+  - id: s3
+    instruction: >-
+      Ask the system what kind of file the binary is. Write the output to
+      /tmp/answer-file. Read it carefully — it names the format, the word size,
+      the architecture, and whether it is dynamically linked.
+    hint: "`file /tmp/hello > /tmp/answer-file`"
+    walkthrough: |
+      file /tmp/hello > /tmp/answer-file
+    verify:
+      - type: file_matches
+        path: /tmp/answer-file
+        pattern: "ELF"
+        describe: The binary is in ELF format
+      - type: file_matches
+        path: /tmp/answer-file
+        pattern: "dynamically linked|static"
+        describe: The linkage type was captured
+
+  - id: s4
+    instruction: >-
+      Read the ELF header directly and record which architecture the binary is
+      tagged for, in /tmp/answer-binary-arch. This single header field is what
+      produces `Exec format error` when it does not match the CPU.
+    hint: "`readelf -h /tmp/hello | grep Machine`"
+    walkthrough: |
+      readelf -h /tmp/hello | grep Machine > /tmp/answer-binary-arch
+    verify:
+      - type: file_matches
+        path: /tmp/answer-binary-arch
+        pattern: "X86-64|AArch64|Advanced Micro Devices"
+        describe: The architecture field was captured from the ELF header
+
+  - id: s5
+    instruction: >-
+      Your three-line program does not contain the code for printf. Find out
+      which shared libraries it needs at runtime and save the list to
+      /tmp/answer-libs.
+    hint: "`ldd /tmp/hello > /tmp/answer-libs`"
+    walkthrough: |
+      ldd /tmp/hello > /tmp/answer-libs
+    verify:
+      - type: file_matches
+        path: /tmp/answer-libs
+        pattern: "libc"
+        describe: The C library dependency is listed
+
+  - id: s6
+    instruction: >-
+      Run the program, then run it again under strace, capturing the system
+      calls to /tmp/answer-strace. You are about to see everything your program
+      asked the kernel to do.
+    hint: "`strace -o /tmp/answer-strace /tmp/hello`"
+    walkthrough: |
+      /tmp/hello
+      strace -o /tmp/answer-strace /tmp/hello
+    verify:
+      - type: file_exists
+        path: /tmp/answer-strace
+        describe: The syscall trace was captured
+      - type: file_matches
+        path: /tmp/answer-strace
+        pattern: "execve"
+        describe: The trace contains the execve that started the process
+      - type: file_matches
+        path: /tmp/answer-strace
+        pattern: "write"
+        describe: The trace contains the write that produced the output
+
+  - id: s7
+    instruction: >-
+      Count the lines in the strace output and write the number to
+      /tmp/answer-syscall-count. Then consider the question this raises: your
+      program had one line of logic. How many syscalls did it take?
+    hint: "`wc -l < /tmp/answer-strace > /tmp/answer-syscall-count`"
+    walkthrough: |
+      wc -l < /tmp/answer-strace | tr -d ' ' > /tmp/answer-syscall-count
+    verify:
+      - type: file_matches
+        path: /tmp/answer-syscall-count
+        pattern: '^\d+$'
+        describe: The syscall count was recorded
+
+solution: |
+  ```bash
+  cat > /tmp/hello.c <<'EOF'
+  #include <stdio.h>
+  int main(void) { printf("hello\n"); return 0; }
+  EOF
+
+  gcc -o /tmp/hello /tmp/hello.c
+  file /tmp/hello        > /tmp/answer-file
+  readelf -h /tmp/hello | grep Machine > /tmp/answer-binary-arch
+  ldd /tmp/hello         > /tmp/answer-libs
+  strace -o /tmp/answer-strace /tmp/hello
+  wc -l < /tmp/answer-strace > /tmp/answer-syscall-count
+  ```
+
+  **What you just watched.**
+
+  `file` told you the output is an **ELF** binary for a specific architecture,
+  dynamically linked. Three facts that each cause a distinct production failure.
+
+  `readelf -h` showed you the architecture field itself. When a binary refuses to
+  start with `Exec format error`, the kernel read this field, compared it to the
+  CPU, and stopped. Nothing in your program ran. This is why an architecture
+  mismatch is never an application bug.
+
+  `ldd` showed that your three-line program depends on the C library. `printf`
+  is not in your binary — it is loaded at startup by the dynamic linker. If that
+  library is missing, or older than the one you compiled against, the process
+  dies before `main` with `version GLIBC_2.34 not found`. That is the single most
+  common cause of "works in my container, not on the server".
+
+  `strace` showed the boundary between your program and the kernel. Typically 25
+  to 30 syscalls for a program with one line of logic — because `execve` had to
+  start it, the linker had to `openat` and `mmap` libc, and only then did a
+  single `write` produce your output.
+
+  **Why this seeds the container tracks.** A container image is a filesystem
+  containing exactly these things: a binary, its libraries, and the loader. Image
+  size is dominated by how many of them you need. A statically linked Go binary
+  needs none of it, which is why it ships in a 5MB image, and a Python service
+  ships in 50MB before you write a line. `strace` reappears as the tool that
+  shows what a container is actually doing when it will not start.

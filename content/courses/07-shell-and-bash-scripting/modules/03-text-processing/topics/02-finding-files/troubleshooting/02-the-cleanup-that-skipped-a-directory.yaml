@@ -1,0 +1,260 @@
+id: troubleshooting.the-cleanup-that-skipped-a-directory
+topic: topic.finding-files
+title: The disk that filled while the cleanup job reported success
+level: L2
+objectives: [OBJ-B08.4.5, OBJ-B08.4.7]
+reveal_policy: progressive
+
+situation: >-
+  A build server's disk filled at 03:40 and stopped the pipeline. The nightly
+  cleanup job had run at 02:00, printed `cleanup complete`, and exited 0 — as it
+  has every night for four months.
+
+
+  The disk is 94% artefacts under `/srv/builds`. Most of them are months old and
+  should have been removed long ago.
+
+
+  Running the job by hand as root clears 180 GB immediately.
+
+
+  Nothing in the job, the crontab or the retention period has changed. What did
+  change, four months ago, is that builds started running under a per-project
+  user rather than a single shared one.
+
+
+  Work out why a job that reports success has not deleted anything under
+  `/srv/builds` for four months.
+
+symptoms:
+  - "Disk filled despite a nightly cleanup reporting success for four months"
+  - "Running the same job by hand as root clears 180 GB"
+  - "The job exits 0 and prints its completion message every night"
+  - "Nothing in the job or its schedule has changed"
+  - "Builds moved to per-project users four months ago"
+
+artifacts:
+  - type: config
+    label: The cleanup job and its crontab entry
+    content: |
+      # /opt/jobs/clean-builds.sh
+      find /srv/builds -type f -mtime +14 -exec rm {} \;
+      echo "cleanup complete"
+
+      # crontab, unchanged
+      0 2 * * * /opt/jobs/clean-builds.sh >> /var/log/clean-builds.log 2>&1
+
+  - type: log
+    label: /var/log/clean-builds.log
+    content: |
+      2026-08-15 02:00 cleanup complete
+      2026-08-16 02:00 cleanup complete
+      2026-08-17 02:00 cleanup complete
+      2026-08-18 02:00 cleanup complete
+
+  - type: command_output
+    label: Running it as the cron user, with stderr visible
+    content: |
+      $ sudo -u ci /opt/jobs/clean-builds.sh
+      find: '/srv/builds/proj-a/work': Permission denied
+      find: '/srv/builds/proj-b/work': Permission denied
+      find: '/srv/builds/proj-c/work': Permission denied
+      cleanup complete
+      $ echo $?
+      0
+
+  - type: command_output
+    label: The directory permissions
+    content: |
+      $ ls -ld /srv/builds/proj-a/work
+      drwx------ 8 proj-a proj-a 4096 Apr 12 09:14 /srv/builds/proj-a/work
+
+      $ id ci
+      uid=1200(ci) gid=1200(ci) groups=1200(ci)
+
+  - type: command_output
+    label: What find alone reports
+    content: |
+      $ sudo -u ci find /srv/builds -type f -mtime +14 >/dev/null; echo $?
+      1
+
+      $ sudo -u ci find /srv/builds -type f -mtime +14 -exec false \; ; echo $?
+      0
+
+  - type: log
+    label: The change four months ago
+    content: |
+      2026-04-12  builds now run as per-project users (proj-a, proj-b, ...)
+                  work directories created mode 0700 by the build harness
+
+diagnostic_questions:
+  - "The job prints 'cleanup complete' every night. What is that line's exit status?"
+  - "What does find return when it cannot read a directory, and where did that go?"
+  - "Why does the script exit 0 even when find returns 1?"
+  - "What would `-exec rm {} \\;` report if every rm failed?"
+  - "Why did running it as root work?"
+
+hints:
+  - "Run the job as the cron user and read stderr."
+  - "Check find's exit status separately from the script's."
+  - "What is the script's last command, and what does it return?"
+  - "Look at the directory mode and the cron user's groups."
+
+root_cause: >-
+  **The cron user cannot read the per-project work directories, so find never
+  sees the files — and three separate mechanisms ensure nobody is told.**
+
+
+  Four months ago builds moved to per-project users, and the harness creates
+  work directories mode **0700**. The cleanup job runs as `ci`, which is not in
+  any of those groups, so `find` gets `Permission denied` on every one of them
+  and walks past.
+
+
+  **Mechanism one: find's error goes to stderr and its status is never
+  checked.** `find` correctly returns **1** when it could not read part of the
+  tree — the artifacts show it. The script ignores that.
+
+
+  **Mechanism two: the script's exit status is its last command's.** That is
+  `echo "cleanup complete"`, which always succeeds. So the script exits 0 no
+  matter what find did.
+
+
+  **Mechanism three: `-exec rm {} \;` would not have helped either.** That form
+  **discards the command's exit status entirely** — as the artifacts show,
+  `-exec false \;` still gives find rc=0. Even if the files had been visible and
+  every `rm` had failed on ownership, the job would still have reported success.
+
+
+  So the job has three independent ways to report success while doing nothing,
+  and the redirection `>> log 2>&1` did capture the `Permission denied` lines —
+  into a log that says `cleanup complete` on every visible line and which nobody
+  reads when there is no alert.
+
+
+  **Why root works.** Root bypasses the directory permissions, so find sees
+  everything and the deletions succeed. That is why the manual test "proves" the
+  job is fine — it was run by a user with different privileges from the one cron
+  uses, which is the same trap as testing a job in your own shell.
+
+
+  **Nothing broke.** The permissions change was correct and deliberate, find
+  behaved correctly, cron behaved correctly. The job was written assuming it
+  could read everything under its target, and that assumption became false
+  without anything noticing.
+
+method: >-
+  **1. Run the job as the user that actually runs it.** `sudo -u ci` reproduces
+  it immediately and prints the `Permission denied` lines. Running it as yourself
+  — or as root — tests a different program.
+
+
+  **2. Check find's exit status separately from the script's.** They are
+  different questions, and here they have different answers:
+
+
+  ```bash
+  sudo -u ci find /srv/builds -type f -mtime +14 >/dev/null; echo $?   # 1
+  ```
+
+
+  **3. Ask what the script's last command is.** `echo` succeeds, so the script's
+  status is 0 regardless of everything before it. That is worth checking in any
+  script that ends with a completion message.
+
+
+  **4. Test what `-exec … \;` does with a failing command.** `-exec false \;`
+  gives rc 0. Once you know that form discards the command's status, you know the
+  job could not have reported a failed deletion either — which widens the finding
+  from "a permissions problem" to "this job cannot report failure at all".
+
+
+  **5. Read the log for what is missing rather than what is there.** Four months
+  of `cleanup complete` with `Permission denied` lines interleaved. The success
+  message is not evidence; the stderr lines were the evidence, sitting in the same
+  file.
+
+
+  **6. Ask what changed in the environment, not in the code.** The job is
+  unchanged; the *permissions of the tree it walks* changed. When a job stops
+  working without being edited, its inputs or its privileges moved.
+
+
+  The habit: **a job's exit status must be about its work, not about its last
+  print statement** — and a job that walks a filesystem it does not own needs to
+  treat a permission error as a failure, not as fewer files.
+
+resolution: >-
+  **Immediately:** clear the backlog and confirm the disk recovers, then decide
+  the access model before re-enabling the job — running it as root is the
+  tempting fix and the wrong first move.
+
+
+  **Fix the reporting first**, because that is what turned a permissions problem
+  into a four-month outage:
+
+
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+
+  DIR=/srv/builds
+  LIST=$(mktemp); trap 'rm -f "$LIST"' EXIT
+
+  if ! find "$DIR" -type f ! -newermt '-14 days' -print0 > "$LIST"; then
+    echo "find could not read part of $DIR — refusing to act on a partial list" >&2
+    exit 1
+  fi
+
+  n=$(tr -dc '\0' < "$LIST" | wc -c)
+  xargs -0 -r rm -- < "$LIST"
+  printf '%s deleted=%d remaining=%d\n' "$(date -Is)" "$n" \
+    "$(find "$DIR" -type f | wc -l)"
+  ```
+
+
+  Four changes. find's status is **checked**, and a partial walk **refuses** —
+  deleting what it can see would be worse, because it hides the problem while
+  appearing to work. `xargs -0 -r rm --` reports failures where `-exec … \;`
+  would not. The list is computed once. And the final line reports numbers rather
+  than a message.
+
+
+  **Then choose the access model deliberately:**
+
+
+  - **Add `ci` to each project group** and make the work directories `0750`. Least
+    privilege, and it needs the build harness to set the group.
+  - **Give each project its own cleanup**, running as that project's user. No
+    cross-user access at all, and it scales with the number of projects.
+  - **Run the cleanup as root** — simplest, and it means a nightly root job with
+    `rm` walking a tree that unprivileged users can write to, which is a bad
+    trade for a disk-space problem.
+
+
+  The first two are both better than the third.
+
+
+  **And monitor the outcome, not the run:**
+
+
+  ```text
+  deleted=N remaining=M   emitted every run
+  alert if: remaining grows run over run
+            deleted=0 for several consecutive runs
+            free space on /srv falls below a threshold
+  ```
+
+
+  The third would have fired four months ago. **Whether the job ran is a proxy;
+  whether the disk is getting emptier is the outcome** — and this job reported
+  success every night while the answer to the real question was no.
+
+
+  **For the postmortem:** the permissions change was correct, find was correct,
+  cron was correct, and the cleanup job had three independent ways to report
+  success while deleting nothing — an unchecked find status, a trailing `echo`
+  determining the exit code, and an `-exec` form that discards failures. The
+  errors were written to the log file every night for four months, in the same
+  file as the success messages, and no alert pointed at either.

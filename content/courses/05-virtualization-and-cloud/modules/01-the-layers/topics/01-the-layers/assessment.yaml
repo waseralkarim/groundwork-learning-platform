@@ -1,0 +1,172 @@
+id: assessment.the-layers
+topic: topic.the-layers
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a saturated container that reports 4%
+    kind: explain
+    objectives: [OBJ-A05.1.4, OBJ-A05.1.5]
+    prompt: >-
+      A pod is limited to 500m CPU on a 64-core node. Its dashboard shows 4% CPU,
+      its p99 is five times the budget, and its throughput is unchanged from
+      before it was containerised. `nproc` inside it reports 64.
+
+
+      In about 200 words: explain what is happening, why the dashboard hides it,
+      and why unchanged throughput with worse latency is diagnostic.
+    rubric:
+      - "Identifies that the process sized its concurrency from the host's CPU count"
+      - "States that cpu.max is the real limit and there is no CPU namespace"
+      - "Explains the dashboard divides by the node's capacity rather than the container's limit"
+      - "Reads unchanged throughput with worse latency as a queueing signature"
+      - "Names throttled_usec or nr_throttled as a fraction of nr_periods as the evidence"
+    model_answer: >-
+      The process asked how many CPUs it had, got the node's answer, and sized
+      itself for a machine it is not running on.
+
+
+      `nproc` and `/proc/cpuinfo` describe the machine — there is no CPU
+      namespace. Limits are enforced by cgroups, a separate mechanism that
+      constrains usage without changing what any file reports. So `cpu.max` says
+      500m and the runtime started something like 64 workers on half a core.
+
+
+      **The dashboard hides it by dividing by the wrong denominator.** Container
+      usage over the *node's* 64 cores puts a fully saturated container at under
+      1%, smoothed to about 4%. Divided by the container's own limit it is
+      98% — the panel that would have made this obvious immediately.
+
+
+      **Unchanged throughput with much worse latency is a queueing signature.**
+      Total work is bounded by the quota and the quota did not change, so
+      completion rate holds. What changed is that each request now waits behind
+      63 other workers for slices of half a core, so time-in-system multiplied
+      while requests per second did not.
+
+
+      The evidence is `nr_throttled` as a *fraction* of `nr_periods` — an absolute
+      count always looks large on a long-lived pod — plus `throttled_usec`, which
+      is where the latency actually lives.
+    common_failures:
+      - "Blaming the network or the node, which the unchanged throughput contradicts"
+      - "Accepting 4% as evidence that CPU is not the problem"
+      - "Proposing more replicas, when each new pod reads the same wrong number"
+      - "Citing nr_throttled as a raw count rather than a fraction of periods"
+
+  - id: B
+    title: Reason about an isolation requirement
+    kind: reason
+    objectives: [OBJ-A05.1.8, OBJ-A05.1.3]
+    prompt: >-
+      A team plans to run customer-submitted code in containers, hardened with
+      seccomp, dropped capabilities, a read-only root filesystem and a non-root
+      user. They argue this is equivalent to a VM boundary at a fraction of the
+      cost.
+
+
+      In about 200 words: assess the argument, say what would change your answer,
+      and give the design you would propose.
+    rubric:
+      - "Concedes the hardening is correct and worth doing"
+      - "States that the boundary is kernel-enforced and the kernel is shared with the hostile code"
+      - "Concludes a kernel vulnerability is an escape, so the boundaries are not equivalent"
+      - "Proposes a hypervisor boundary — microVM, gVisor or Kata — for hostile tenancy"
+      - "Notes that this is the constraint that eliminates rather than trades"
+    model_answer: >-
+      The hardening is correct and I would want all of it regardless. It is not
+      equivalent to a hypervisor boundary, and the difference matters
+      specifically here.
+
+
+      Every control listed — seccomp, capabilities, read-only root, non-root — is
+      enforced by **the same kernel the hostile code is running on**. They raise
+      the cost of an attack substantially and they do not change what is being
+      defended: a kernel vulnerability is a container escape, and the code in
+      question is written by someone deliberately looking for one.
+
+
+      A hypervisor boundary is different in kind rather than degree. A fully
+      compromised guest kernel is still contained, with hardware assistance
+      enforcing it. That is why cloud providers put different customers on one
+      physical machine and are comfortable doing so.
+
+
+      **Hostile tenancy is the constraint that eliminates options rather than
+      trading them off.** Cost, density and startup are all arguable; this is not.
+
+
+      What I would propose: a **microVM** — Firecracker or equivalent — which
+      gives a hypervisor boundary at roughly 125 ms of startup and ~5 MB of
+      overhead, so the cost objection largely disappears. gVisor is a middle
+      option, intercepting syscalls in userspace, with a real performance cost.
+      In practice a managed function platform gets you this, because that is what
+      they are built on.
+
+
+      What would change my answer: if the code were our own, containers would be
+      the right default.
+    common_failures:
+      - "Dismissing the hardening, which is correct and should be kept"
+      - "Treating the difference as one of degree rather than of kind"
+      - "Accepting the cost argument without knowing microVM overhead is small"
+      - "Failing to state what would change the answer"
+
+  - id: C
+    title: Diagnose across two layers
+    kind: diagnose
+    objectives: [OBJ-A05.1.2, OBJ-A05.1.6]
+    prompt: >-
+      Two incidents, a week apart:
+
+
+      **A.** Pods on one node are 40% slower. Inside the node CPU, memory, disk
+      and network are all normal. The provider reports no hardware fault. It is
+      worst in the afternoon.
+
+
+      **B.** One service is slow on every node. Its CPU shows 3%, its
+      `nr_throttled` is high, and its thread count is 65.
+
+
+      Diagnose each, name the metric that reveals it, say which layer each belongs
+      to, and explain why neither is visible from where the other is measured.
+    rubric:
+      - "A: steal time — the hypervisor is not giving the VM the CPU it asks for"
+      - "Identifies the burstable instance type and credit exhaustion as the likely cause of A"
+      - "B: concurrency sized from the host's CPU count, causing throttling at the container layer"
+      - "Places A at the VM/hypervisor layer and B at the container/cgroup layer"
+      - "Explains that each metric is only observable from within its own layer"
+    model_answer: >-
+      **A — steal time, at the VM layer.** The `st` field on `top`'s CPU line is
+      the percentage of time a vCPU was runnable and the hypervisor ran something
+      else. It is the only metric inside a guest that reports on the layer above
+      it, and it is normally 0.0 — so a figure like 22% is conclusive. Everything
+      else looks fine because everything else is measured from *inside* the guest,
+      and the time went somewhere the guest cannot see.
+
+
+      The afternoon pattern and the clean hardware report both point at a
+      **burstable instance type** that has exhausted its CPU credits and is being
+      throttled to baseline. That is documented behaviour, not a fault, which is
+      why the provider found nothing.
+
+
+      **B — concurrency sized from the wrong number, at the container layer.** 65
+      threads on a fraction of a core: something read the node's CPU count and
+      sized itself for it. `nr_throttled` as a fraction of `nr_periods` is the
+      evidence, and `throttled_usec` is where the latency sits. The 3% is the
+      dashboard dividing by the node's capacity instead of the container's limit.
+
+
+      **Why neither is visible from the other's vantage point.** Steal time is
+      reported by the guest kernel about the hypervisor; a container cannot see it
+      because it is not a property of the cgroup. Cgroup throttling is reported per
+      cgroup; the node-level view aggregates it away. They are the same idea —
+      *something above me is not giving me the CPU I asked for* — one layer apart,
+      and each needs to be measured where it happens.
+    common_failures:
+      - "Diagnosing A as a hardware fault, which the provider has already excluded"
+      - "Diagnosing B as needing a higher limit, leaving the thread ratio broken"
+      - "Conflating the two, since both are throttling with different mechanisms"
+      - "Missing that the observation point, not the metric, is why each was invisible"

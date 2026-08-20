@@ -1,0 +1,8 @@
+id: module.failure-domains
+slug: failure-domains
+title: Failure Domains
+summary: >-
+  Regions and availability zones are boundaries against specific failures.
+  Working out which failures, and computing what a topology actually survives,
+  turns "highly available" from a claim into a number.
+order: 3

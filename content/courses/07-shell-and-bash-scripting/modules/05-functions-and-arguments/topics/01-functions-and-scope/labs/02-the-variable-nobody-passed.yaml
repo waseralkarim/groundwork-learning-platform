@@ -1,0 +1,377 @@
+id: lab.the-variable-nobody-passed
+topic: topic.functions-and-scope
+title: Find the variable a helper read but was never given
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.6.4, OBJ-B08.6.7]
+
+intro: >-
+  `/tmp/funcs/deploy.sh` is asked for `production` and deploys to `staging`.
+  Nothing is unset, `set -u` never fires, and no command fails.
+
+
+  Find the line, then prove the scope rule that makes it invisible — including
+  the part where a helper can *write* to its caller's variables.
+
+setup:
+  - /opt/lab/seed-functions.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Run it, establish the symptom precisely, and save to /tmp/answer-symptom.
+    hint: >-
+      Try it with an explicit argument and with none.
+    walkthrough: |
+      {
+        echo "asked for production:"
+        bash /tmp/funcs/deploy.sh production 2>&1 | sed 's/^/    /'
+        echo "asked for canary:"
+        bash /tmp/funcs/deploy.sh canary 2>&1 | sed 's/^/    /'
+        echo "no argument at all:"
+        bash /tmp/funcs/deploy.sh 2>&1 | sed 's/^/    /'
+        echo "    exit status: $(bash /tmp/funcs/deploy.sh >/dev/null 2>&1; echo $?)"
+        echo
+        echo "the argument makes NO DIFFERENCE. every run reports staging, and every"
+        echo "run exits 0. so the value is not being lost in transit - something else"
+        echo "is being read instead."
+      } > /tmp/answer-symptom
+      cat /tmp/answer-symptom
+    verify:
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: "(?s)asked for production:.*against staging"
+        describe: It ignores the argument
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: "(?s)asked for canary:.*against staging"
+        describe: Whatever the argument is
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: "exit status: 0"
+        describe: And nothing fails
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: "(?i)NO DIFFERENCE"
+        describe: And you stated the symptom precisely
+
+  - id: s2
+    instruction: >-
+      Find the line and explain why neither `set -u` nor a reader catches it.
+      Save to /tmp/answer-cause.
+    hint: >-
+      Compare the name `run_step` reads with the name `deploy` sets.
+    walkthrough: |
+      {
+        echo "the two functions, side by side:"
+        sed -n '/^run_step/,/^}/p;/^deploy/,/^}/p' /tmp/funcs/deploy.sh | sed 's/^/    /'
+        echo
+        echo "run_step reads   \$target"
+        echo "deploy sets      \$targt      <- one transposed letter"
+        echo "and line 17 sets \$target=staging as a default"
+        echo
+        echo "so THREE things are true at once, and each one alone would be harmless:"
+        echo "  1. deploy's local is misspelled, so the argument goes into a variable"
+        echo "     nothing ever reads"
+        echo "  2. run_step is never PASSED anything - it reads a variable from its"
+        echo "     caller's scope, which is legal and normal in shell"
+        echo "  3. a global default exists with the correctly spelled name"
+        echo
+        echo "why set -u does not fire: \$target IS SET. it was set on line 17. -u"
+        echo "objects to a variable that was never set, not to the wrong one."
+        echo
+        echo "why a reader does not catch it: the misspelling is in deploy and the"
+        echo "read is in run_step. neither function is wrong ON ITS OWN. you have to"
+        echo "hold both in your head at once, and the connection between them is"
+        echo "invisible - there is no argument list joining the two."
+        echo
+        echo "delete the default and it becomes loud immediately:"
+        sed 's/^target=staging/#removed/' /tmp/funcs/deploy.sh > /tmp/nodefault.sh
+        bash /tmp/nodefault.sh production 2>&1 | sed 's/^/    /'
+        echo
+        echo "which is the uncomfortable finding: THE DEFAULT IS WHAT HID THE BUG."
+      } > /tmp/answer-cause
+      cat /tmp/answer-cause
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "local targt="
+        describe: You found the line
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)IS SET"
+        describe: And why set -u is silent
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)ON ITS OWN"
+        describe: And why review misses it
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)<unset>"
+        describe: And showed it becomes loud without the default
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)WHAT HID THE BUG"
+        describe: And drew the conclusion about defaults
+
+  - id: s3
+    instruction: >-
+      Demonstrate the scope rule itself, in both directions — that a callee can
+      read *and write* its caller's variables. Save to /tmp/answer-scope.
+    walkthrough: |
+      {
+        echo "reading, three frames deep:"
+        bash -c '
+          log()    { echo "    log() sees stage=[${stage:-<unset>}] region=[${region:-<unset>}]"; }
+          step()   { log; }
+          deploy() { local stage=production; step; }
+          region=eu
+          deploy
+          log'
+        echo
+        echo "log was passed nothing and declares nothing. it read deploy's LOCAL two"
+        echo "frames up, and a global. called outside deploy, stage is gone."
+        echo
+        echo "writing:"
+        bash -c '
+          inner() { x=changed-by-inner; }
+          outer() { local x=before; inner; echo "    after inner, outer sees x=[$x]"; }
+          outer
+          echo "    and the global x is [${x:-<unset>}]"'
+        echo
+        echo "inner assigned to a name it never declared. it did NOT create a global -"
+        echo "it wrote to outer's local, because that is the x currently in scope."
+        echo
+        echo "so local does not ISOLATE a variable. it hides any outer one of the same"
+        echo "name FOR THE DURATION OF THE CALL, INCLUDING EVERYTHING THE CALL MAKES."
+        echo
+        echo "this is DYNAMIC SCOPE - what a function can see follows the CALL STACK,"
+        echo "not the text of the file. every language that says 'let' is lexical, and"
+        echo "that mental model is what makes this bug hard to see."
+      } > /tmp/answer-scope
+      cat /tmp/answer-scope
+    verify:
+      - type: file_matches
+        path: /tmp/answer-scope
+        pattern: "stage=\\[production\\] region=\\[eu\\]"
+        describe: A helper reads a caller's local two frames up
+      - type: file_matches
+        path: /tmp/answer-scope
+        pattern: "stage=\\[<unset>\\]"
+        describe: And loses it outside that call
+      - type: file_matches
+        path: /tmp/answer-scope
+        pattern: "outer sees x=\\[changed-by-inner\\]"
+        describe: And a callee writes to its caller's local
+      - type: file_matches
+        path: /tmp/answer-scope
+        pattern: "global x is \\[<unset>\\]"
+        describe: Without creating a global
+      - type: file_matches
+        path: /tmp/answer-scope
+        pattern: "(?i)CALL STACK"
+        describe: And you named the rule
+
+  - id: s4
+    instruction: >-
+      Show the same rule silently corrupting a loop, and the one word that fixes
+      it. Save to /tmp/answer-loop.
+    hint: >-
+      A helper that loops with `i`, called from a loop that also uses `i`.
+    walkthrough: |
+      {
+        echo "an outer loop over environments, calling a helper that retries:"
+        bash -c '
+          retry() { for i in 1 2 3; do :; done; }
+          for i in alpha beta gamma delta; do retry; printf "    [%s]" "$i"; done; echo'
+        echo
+        echo "four iterations, and every one reports 3. the outer loop still RUNS four"
+        echo "times - for re-assigns i from its list each time - but any use of i after"
+        echo "the call sees the helper's leftover value."
+        echo
+        echo "one word:"
+        bash -c '
+          retry() { local i; for i in 1 2 3; do :; done; }
+          for i in alpha beta gamma delta; do retry; printf "    [%s]" "$i"; done; echo'
+        echo
+        echo "and note a loop variable is not scoped to its loop either:"
+        bash -c 'for i in a b c; do :; done; echo "    after the loop, i=[$i]"'
+        echo
+        echo "so the hazard is any helper that uses a COMMON name without declaring it:"
+        echo "i, f, n, line, count, file, tmp, out, status. every one of those is a"
+        echo "name a caller is also likely to be using."
+        echo
+        echo "there is no warning, because nothing is wrong. shell has no notion of a"
+        echo "variable a function was not supposed to touch."
+      } > /tmp/answer-loop
+      cat /tmp/answer-loop
+    verify:
+      - type: file_matches
+        path: /tmp/answer-loop
+        pattern: "\\[3\\] *\\[3\\] *\\[3\\] *\\[3\\]"
+        describe: The helper corrupts the caller's loop variable
+      - type: file_matches
+        path: /tmp/answer-loop
+        pattern: "\\[alpha\\] *\\[beta\\] *\\[gamma\\] *\\[delta\\]"
+        describe: And local fixes it
+      - type: file_matches
+        path: /tmp/answer-loop
+        pattern: "after the loop, i=\\[c\\]"
+        describe: And a loop variable leaks past its loop
+      - type: file_matches
+        path: /tmp/answer-loop
+        pattern: "(?i)no warning"
+        describe: And you said why nothing catches it
+
+  - id: s5
+    instruction: >-
+      Fix deploy.sh properly and write /tmp/answer-fix explaining what makes your
+      version resistant rather than merely correct.
+    walkthrough: |
+      cat > /tmp/fixed-deploy.sh <<'FIX'
+      #!/bin/bash
+      set -euo pipefail
+
+      run_step() {
+        local step=$1
+        local target=$2          # PASSED, not read from the caller
+        echo "  [$step] against $target"
+      }
+
+      deploy() {
+        local target=$1
+        run_step build    "$target"
+        run_step push     "$target"
+        run_step activate "$target"
+      }
+
+      deploy "${1:?usage: deploy.sh TARGET}"
+      FIX
+
+      {
+        echo "fixed:"
+        bash /tmp/fixed-deploy.sh production 2>&1 | sed 's/^/    /'
+        bash /tmp/fixed-deploy.sh canary 2>&1 | sed 's/^/    /'
+        printf '    no argument -> '; bash /tmp/fixed-deploy.sh 2>&1 | tail -1
+        echo
+        echo "correcting the spelling would also have worked, and would have fixed"
+        echo "nothing. the same class of bug comes back with the next helper."
+        echo
+        echo "what makes this version RESISTANT:"
+        echo
+        echo "  1. run_step takes target as a PARAMETER. now the connection between"
+        echo "     the two functions is written down, and a misspelling in deploy is"
+        echo "     a wrong ARGUMENT rather than an invisible non-effect. this is the"
+        echo "     one that matters."
+        echo
+        echo "  2. every parameter is named in a local on the first lines, so the"
+        echo "     function's signature is readable without scanning the body."
+        echo
+        echo "  3. the global default is GONE. \${1:?...} fails immediately with a"
+        echo "     message naming the problem. a default that silently substitutes"
+        echo "     for a missing required value is not a safety net - it is what"
+        echo "     converted a loud failure into a wrong deployment."
+        echo
+        echo "  4. nothing reads a variable it was not given, so no future helper"
+        echo "     inherits state by accident."
+        echo
+        echo "the rule i would put in review: A FUNCTION THAT READS A VARIABLE IT WAS"
+        echo "NOT PASSED MUST SAY SO IN A COMMENT. dynamic scope is genuinely useful"
+        echo "for things like LOG_LEVEL, where threading it through every call would"
+        echo "be worse - but an UNDOCUMENTED read is exactly this bug waiting."
+      } > /tmp/answer-fix
+      cat /tmp/answer-fix
+    verify:
+      - type: file_exists
+        path: /tmp/fixed-deploy.sh
+        describe: You wrote the fix
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "against production"
+        describe: And it honours the argument
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "against canary"
+        describe: Whatever the argument is
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?i)usage: deploy.sh TARGET"
+        describe: And refuses a missing one
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?i)would have fixed\\s+nothing"
+        describe: And you rejected the spelling fix
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: "(?i)NOT PASSED MUST SAY SO"
+        describe: And stated a reviewable rule
+
+solution: >-
+  **The symptom is precise and worth stating before diagnosing:** the argument
+  makes *no difference*. Every run reports `staging`, every run exits 0. So the
+  value is not being lost in transit — something else is being read.
+
+
+  **The line:**
+
+
+  ```bash
+  run_step() { echo "  [$1] against ${target:-<unset>}"; }   # reads target
+  deploy()   { local targt=$1; ... }                          # sets targt
+  target=staging                                              # the default
+  ```
+
+
+  **Three things are true at once, and each alone would be harmless:** the local
+  is misspelled; `run_step` is never *passed* anything and reads from its
+  caller's scope, which is normal in shell; and a global default exists with the
+  correctly spelled name.
+
+
+  **`set -u` is silent because `target` is set** — on line 17. Nounset objects to
+  a variable that was never set, not to the wrong one. And review misses it
+  because neither function is wrong *on its own*; the connection between them is
+  invisible, since there is no argument list joining the two.
+
+
+  Delete the default and it fails loudly at once — which is the uncomfortable
+  finding: **the default is what hid the bug.**
+
+
+  **The rule underneath.** Scope is dynamic: a helper reads its caller's
+  variables however far up, and can **write** to them too —
+
+
+  ```console
+  $ inner() { x=changed-by-inner; }
+  $ outer() { local x=before; inner; echo "outer sees x=$x"; }
+  $ outer
+  outer sees x=changed-by-inner
+  ```
+
+
+  `inner` assigned a name it never declared and did *not* create a global; it
+  wrote to `outer`'s local. So `local` does not isolate — it **hides** an outer
+  name for the duration of the call, including everything the call makes.
+
+
+  **The same rule corrupts loops.** A helper looping with `i` makes an outer loop
+  over `alpha beta gamma delta` print `[3] [3] [3] [3]`. One word — `local i` —
+  fixes it. Every common name (`i`, `n`, `line`, `count`, `file`, `tmp`, `out`,
+  `status`) is a name a caller is also likely to be using, and there is no
+  warning because nothing is wrong.
+
+
+  **The fix that resists rather than merely corrects:** pass `target` as a
+  parameter. Correcting the spelling would have worked and fixed nothing — the
+  same bug returns with the next helper. Passing it makes the connection written
+  down, so a misspelling becomes a wrong *argument* instead of an invisible
+  non-effect. Drop the global default for `${1:?...}`; a default that silently
+  substitutes for a missing required value is not a safety net.
+
+
+  **A function that reads a variable it was not passed must say so in a
+  comment.** Dynamic scope is genuinely useful for `LOG_LEVEL`-shaped things —
+  but an undocumented read is this bug waiting.

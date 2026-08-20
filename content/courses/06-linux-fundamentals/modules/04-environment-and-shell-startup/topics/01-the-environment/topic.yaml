@@ -1,0 +1,151 @@
+id: topic.environment-and-shell-startup
+slug: environment-and-shell-startup
+title: "The Environment: What Your Process Actually Inherits"
+summary: >-
+  "It works in my shell" is the most common bug report in operations, and it has
+  one cause: the shell you typed in read startup files that cron, systemd and CI
+  do not. This topic measures which files each of the four shell modes reads,
+  why PATH is narrower after logging in, and why a secret in the environment
+  survives being unset.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 115
+status: published
+
+prerequisites:
+  - topic: topic.the-filesystem-hierarchy
+    hardness: required
+  - topic: topic.processes
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B06.4.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify which startup files a shell reads, given whether it is a login
+      shell and whether it is interactive.
+    assessed_by: [quiz.q1, quiz.q2, quiz.q3, lab.which-files-run, exercise.e1]
+
+  - id: OBJ-B06.4.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe how a process obtains its environment, and why it is inherited
+      rather than looked up.
+    assessed_by: [quiz.q4, quiz.q5, lab.which-files-run]
+
+  - id: OBJ-B06.4.3
+    level: L2
+    verb: predict
+    statement: >-
+      Predict the PATH a given invocation will have, and explain what
+      constructed it.
+    assessed_by: [quiz.q6, quiz.q7, lab.the-path-you-actually-get, exercise.e2]
+
+  - id: OBJ-B06.4.4
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a command that works interactively and fails under cron, systemd
+      or CI.
+    assessed_by: [quiz.q8, quiz.q9, lab.works-in-my-shell, troubleshooting.the-job-that-only-runs-by-hand, exercise.e3]
+
+  - id: OBJ-B06.4.5
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish a process's live environment from the snapshot recorded at
+      exec, and say which each tool reports.
+    assessed_by: [quiz.q10, quiz.q11, lab.the-environment-snapshot, exercise.e4]
+
+  - id: OBJ-B06.4.6
+    level: L2
+    verb: explain
+    statement: >-
+      Explain the ways an environment variable is exposed, and why that makes it
+      a poor channel for a secret.
+    assessed_by: [quiz.q12, quiz.q13, lab.the-environment-snapshot, troubleshooting.the-secret-that-would-not-unset]
+
+  - id: OBJ-B06.4.7
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret a difference between two environments and locate which file or
+      mechanism produced it.
+    assessed_by: [quiz.q14, lab.the-path-you-actually-get, lab.works-in-my-shell, assessment.B]
+
+  - id: OBJ-B06.4.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify how configuration and secrets should reach a process, naming what
+      each route exposes.
+    assessed_by: [quiz.q15, lab.works-in-my-shell, exercise.e5, assessment.A, assessment.C]
+
+terminology:
+  - term: environment
+    definition: >-
+      A list of KEY=VALUE strings handed to a program at `execve`. It is
+      inherited from whoever started the process — there is no lookup and no
+      central registry.
+  - term: export
+    definition: >-
+      Marks a shell variable to be included in the environment of processes the
+      shell starts. Without it the variable exists only inside that shell.
+  - term: login shell
+    definition: >-
+      A shell started as part of logging in, or with `-l`. It reads
+      `/etc/profile` and one of the user's profile files, and nothing else
+      distinguishes it.
+  - term: interactive shell
+    definition: >-
+      A shell reading commands from a terminal. It reads `/etc/bash.bashrc` and
+      `~/.bashrc`. Orthogonal to whether it is a login shell.
+  - term: /etc/profile
+    definition: >-
+      Read by login shells only. On Debian it rewrites PATH, and it gives root a
+      different PATH from everyone else.
+  - term: /etc/bash.bashrc
+    definition: >-
+      Read by interactive bash only. Where a distribution puts prompts, aliases
+      and history settings — none of which a script ever sees.
+  - term: BASH_ENV
+    definition: >-
+      The one startup file a non-interactive bash will read, if the variable is
+      set. Almost never set, and the only hook available to a script.
+  - term: /etc/environment
+    definition: >-
+      Read by PAM, not by any shell. In a container there is usually no PAM, so
+      it does nothing at all.
+  - term: environ
+    definition: >-
+      `/proc/PID/environ` — the environment as it was at `execve`. A snapshot: it
+      never updates, and unsetting a variable does not remove it.
+  - term: PATH
+    definition: >-
+      The ordered list of directories searched for a command. Constructed
+      differently by the image, by `/etc/profile` and by the shell's compiled-in
+      fallback.
+  - term: sbin
+    definition: >-
+      Directories for administrative tools. Debian's `/etc/profile` omits them
+      for non-root users, so a login shell can fail to find a command a script
+      finds easily.
+  - term: hermetic environment
+    definition: >-
+      An environment constructed explicitly rather than inherited — `env -i`, or
+      a systemd unit with its own `Environment=`. What makes a job reproducible.
+  - term: secret file
+    definition: >-
+      A secret delivered as a file with restrictive permissions instead of a
+      variable. Not inherited by children, absent from `ps` and from the exec
+      snapshot, and revocable by deletion.
+
+foreshadows:
+  - "B08's shell mechanics build on the expansion rules this topic assumes."
+  - "B07's systemd units are where Environment= and EnvironmentFile= replace startup files entirely."
+  - "C14's container ENV and docker inspect are the exposure this topic measures."
+  - "E27's CI runners are non-interactive non-login shells, which is why half of CI debugging is this topic."
+
+tags: [linux, shell, environment, path, secrets, fundamentals]

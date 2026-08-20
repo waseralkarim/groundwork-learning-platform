@@ -1,0 +1,209 @@
+id: assessment.finding-files
+topic: topic.finding-files
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a retention window that is one day too long
+    kind: explain
+    objectives: [OBJ-B08.4.3, OBJ-B08.4.8]
+    prompt: >-
+      A compliance audit finds exports at 8 days old — and none older — against a
+      seven-day retention policy. The nightly job reports success every night and
+      deletes a plausible number of files.
+
+
+      ```bash
+      find /srv/archive/exports -type f -name '*.csv' -mtime +7 -delete
+      echo "prune complete"
+      ```
+
+
+      In about 200 words: explain it, and say what you would change.
+    rubric:
+      - "States that -mtime truncates to whole 24-hour periods and + means strictly greater"
+      - "Concludes the window is eight days rather than seven"
+      - "Reads 'files at 8 days and none older' as a uniform one-day overrun"
+      - "Proposes ! -newermt '-7 days' and says why it is preferable to -mtime +6"
+      - "Adds an assertion on the resulting state rather than on the job's exit status"
+    model_answer: >-
+      **`-mtime` truncates the age to whole 24-hour periods, and `+7` means
+      strictly more than seven of them.** A file exactly seven days old has
+      completed seven, so it is excluded until it completes its eighth. The
+      retention window is **eight days**, not seven.
+
+
+      The audit's shape confirms it: files at 8 days and **none older** is a
+      uniform one-day overrun. An intermittently failing job would scatter ages;
+      a stopped job would leave everything.
+
+
+      Nothing failed. find, `-delete` and cron all behaved correctly, and the
+      nightly count looks plausible because the same volume is deleted, shifted
+      by 24 hours.
+
+
+      What I would change:
+
+
+      ```bash
+      # RET-04: retained seven days from creation.
+      # ! -newermt is used rather than -mtime +7, which truncates and would
+      # keep everything for eight days.
+      find "$DIR" -type f -name '*.csv' ! -newermt '-7 days' -delete
+
+      over=$(find "$DIR" -type f ! -newermt '-7 days' | wc -l)
+      [ "$over" -eq 0 ] || { echo "RET-04 violation: $over files" >&2; exit 1; }
+      ```
+
+
+      `-mtime +6` selects the same files and reads as "six" to whoever audits it
+      against a seven-day policy — which is how it gets "corrected" back later.
+      And the assertion checks the **state of the archive**, because the job's
+      success was never in question.
+    common_failures:
+      - "Reading -mtime +7 as 'seven or more days'"
+      - "Concluding the job is failing intermittently"
+      - "Fixing to -mtime +6 without noting it is unreviewable against the policy"
+      - "Adding logging without asserting the resulting state"
+
+  - id: B
+    title: Reason about a job that reports success and does nothing
+    kind: reason
+    objectives: [OBJ-B08.4.5, OBJ-B08.4.7]
+    prompt: >-
+      A disk fills despite this running nightly for four months and exiting 0.
+      Run as the cron user it prints `Permission denied` for several
+      subdirectories; run as root it clears 180 GB.
+
+
+      ```bash
+      find /srv/builds -type f -mtime +14 -exec rm {} \;
+      echo "cleanup complete"
+      ```
+
+
+      In about 250 words: give every reason the failure was invisible, and
+      rewrite it.
+    rubric:
+      - "Identifies that find returns 1 on an unreadable directory and it is unchecked"
+      - "Identifies the trailing echo as determining the script's exit status"
+      - "Identifies that -exec … \\; discards the command's exit status"
+      - "Notes that testing as root exercises different privileges from cron"
+      - "Rewrites so a partial walk refuses, and monitors the outcome"
+    model_answer: >-
+      **Three independent reasons, in one short script.**
+
+
+      **find's status is unchecked.** It correctly returns 1 when it cannot read
+      part of the tree, and nothing looks at that. The files it never saw are
+      exactly the ones never deleted.
+
+
+      **The script's exit status is its last command's** — `echo`, which always
+      succeeds. So the script exits 0 regardless.
+
+
+      **`-exec … \;` discards the command's exit status.** Even with the files
+      visible, failing removals would have reported success. `-exec false \;`
+      gives find rc 0.
+
+
+      And **testing as root proves nothing**, because root bypasses the directory
+      permissions — a different program from the one cron runs.
+
+
+      ```bash
+      set -euo pipefail
+      LIST=$(mktemp); trap 'rm -f "$LIST"' EXIT
+
+      if ! find /srv/builds -type f ! -newermt '-14 days' -print0 > "$LIST"; then
+        echo "find could not read part of the tree — refusing" >&2; exit 1
+      fi
+
+      n=$(tr -dc '\0' < "$LIST" | wc -c)
+      xargs -0 -r rm -- < "$LIST"
+      printf '%s deleted=%d remaining=%d\n' "$(date -Is)" "$n" \
+        "$(find /srv/builds -type f | wc -l)"
+      ```
+
+
+      It **refuses on a partial walk** rather than deleting what it can see —
+      deleting less while appearing to work is worse than stopping. `xargs`
+      reports failures that `\;` would not. And it emits numbers, so the alert can
+      be **remaining growing run over run**: whether the job ran is a proxy,
+      whether the disk is emptying is the outcome.
+
+
+      A free-space alert would also have fired four months earlier.
+    common_failures:
+      - "Stopping at the permissions and missing the three reporting failures"
+      - "Proposing to run the job as root as the primary fix"
+      - "Deleting what is visible rather than refusing on a partial walk"
+      - "Adding an exit-code alert rather than monitoring the outcome"
+
+  - id: C
+    title: Diagnose a test that proved nothing
+    kind: diagnose
+    objectives: [OBJ-B08.4.7, OBJ-B08.4.2]
+    prompt: >-
+      A colleague validates a retention job by running `cp -r /srv/archive
+      /tmp/test` and then the job against `/tmp/test`. It deletes nothing, and
+      they conclude the job is broken and open a ticket.
+
+
+      They also note the job uses `-exec rm {} \;` and say "at least it would
+      have told us if the deletes failed".
+
+
+      In about 250 words: correct both claims, and say how you would test it.
+    rubric:
+      - "Identifies that cp -r resets mtimes so nothing is old enough to match"
+      - "States the result is equally consistent with the job working"
+      - "Corrects the second claim: -exec … \\; discards the command's exit status"
+      - "Generalises to tarballs without -p, container builds and git checkouts"
+      - "Proposes a constructed fixture with touch -d on both sides of the boundary"
+    model_answer: >-
+      **Both claims are wrong, in different ways.**
+
+
+      **`cp -r` sets every copy's mtime to now**, so nothing in `/tmp/test` is
+      old enough to match an age-based predicate. The job deleted nothing because
+      there was nothing to delete — a result **equally consistent with the job
+      being correct**. The conclusion was stronger than the evidence, and the
+      ambiguity got resolved by assumption. `cp -a` or `cp -rp` preserves
+      timestamps.
+
+
+      The same trap appears with a tarball extracted without `-p`, a `COPY` in a
+      container build, and a **git checkout**, which sets every file's mtime to
+      the checkout time — so any age-based logic tested against fresh fixtures
+      appears to do nothing.
+
+
+      **And `-exec rm {} \;` would not have told them.** That form **discards the
+      command's exit status entirely** — `-exec false \;` gives find rc 0. So
+      every `rm` could fail and the job would still report success. `-exec rm {}
+      +` propagates the failure, and also runs one process instead of one per
+      file.
+
+
+      How I would test it: build the fixture rather than copying production data.
+
+
+      ```bash
+      touch -d '6 days ago' t/keep.csv
+      touch -d '7 days ago' t/delete-me.csv
+      touch -d '8 days ago' t/also-delete.csv
+      ```
+
+
+      That puts a file on each side of the boundary deliberately — which is
+      exactly where `-mtime` truncation shows up, and where a copied production
+      directory is unlikely to have anything. It also documents the intended
+      boundary more reliably than a comment.
+    common_failures:
+      - "Correcting the cp -r claim but accepting that \\; reports failures"
+      - "Not stating that the result was consistent with the job working"
+      - "Proposing cp -a without moving to a constructed fixture"
+      - "Missing that git checkout has the same effect"

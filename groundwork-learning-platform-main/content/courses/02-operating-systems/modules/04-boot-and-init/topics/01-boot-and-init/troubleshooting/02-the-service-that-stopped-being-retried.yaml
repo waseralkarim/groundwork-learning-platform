@@ -1,0 +1,243 @@
+id: troubleshooting.the-service-that-stopped-being-retried
+topic: topic.boot-and-init
+title: We fixed it two hours ago and it is still down
+level: L3
+objectives: [OBJ-A02.5.8, OBJ-A02.5.6]
+reveal_policy: progressive
+
+situation: >-
+  At 02:14 a certificate renewal replaced `/etc/ingest/client.pem` with a file
+  the ingest service could not parse. Ingest started crashing on every node in
+  the pool.
+
+
+  At 02:31 the on-call engineer identified the bad certificate and restored the
+  previous one from backup, on all twelve nodes. They verified the file: correct
+  permissions, correct owner, parses with `openssl x509`.
+
+
+  It is now 04:50. Ingest is still down on all twelve nodes. Nothing has changed
+  since 02:31 and no errors have appeared in its log since 02:14.
+
+
+  The team have escalated to the certificate vendor, on the theory that
+  something about the restored certificate is still subtly wrong. Two engineers
+  are now reading X.509 specifications.
+
+
+  Work out what is happening before reading on.
+
+symptoms:
+  - "Ingest failed on all twelve nodes at 02:14, when the certificate was replaced"
+  - "The certificate was restored at 02:31 and verified by hand"
+  - "The service has been down for over two hours since the fix"
+  - "Its journal contains nothing at all after 02:14 — no errors, no attempts"
+  - "`systemctl status` shows it as failed, with no running process"
+  - "Starting it by hand on one node worked immediately"
+
+artifacts:
+  - type: config
+    label: The unit file
+    content: |
+      # systemctl cat ingest.service
+      [Unit]
+      Description=Telemetry ingest
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/ingest --tls-cert /etc/ingest/client.pem
+      Restart=always
+      RestartSec=0
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - type: log
+    label: The journal, in full, from 02:14 onwards
+    content: |
+      Aug 16 02:14:03 node-1 ingest[3312]: FATAL: load /etc/ingest/client.pem: failed to parse PEM block
+      Aug 16 02:14:03 node-1 systemd[1]: ingest.service: Main process exited, code=exited, status=1
+      Aug 16 02:14:03 node-1 systemd[1]: ingest.service: Scheduled restart job, restart counter is at 1.
+      Aug 16 02:14:03 node-1 ingest[3315]: FATAL: load /etc/ingest/client.pem: failed to parse PEM block
+      Aug 16 02:14:03 node-1 systemd[1]: ingest.service: Scheduled restart job, restart counter is at 2.
+      Aug 16 02:14:03 node-1 ingest[3318]: FATAL: load /etc/ingest/client.pem: failed to parse PEM block
+      Aug 16 02:14:03 node-1 systemd[1]: ingest.service: Scheduled restart job, restart counter is at 3.
+      Aug 16 02:14:03 node-1 ingest[3321]: FATAL: load /etc/ingest/client.pem: failed to parse PEM block
+      Aug 16 02:14:03 node-1 systemd[1]: ingest.service: Scheduled restart job, restart counter is at 4.
+      Aug 16 02:14:03 node-1 ingest[3324]: FATAL: load /etc/ingest/client.pem: failed to parse PEM block
+      Aug 16 02:14:04 node-1 systemd[1]: ingest.service: Start request repeated too quickly.
+      Aug 16 02:14:04 node-1 systemd[1]: ingest.service: Failed with result 'start-limit-hit'.
+      Aug 16 02:14:04 node-1 systemd[1]: Failed to start Telemetry ingest.
+
+  - type: command_output
+    label: Status now, at 04:50
+    content: |
+      $ systemctl status ingest.service
+      ● ingest.service - Telemetry ingest
+           Loaded: loaded (/etc/systemd/system/ingest.service; enabled)
+           Active: failed (Result: start-limit-hit) since Sun 2026-08-16 02:14:04 UTC
+         Main PID: 3324 (code=exited, status=1)
+
+  - type: command_output
+    label: The certificate, checked again
+    content: |
+      $ ls -l /etc/ingest/client.pem
+      -rw-r----- 1 ingest ingest 3243 Aug 16 02:31 /etc/ingest/client.pem
+
+      $ openssl x509 -in /etc/ingest/client.pem -noout -subject -dates
+      subject=CN=ingest.internal
+      notBefore=Aug  1 00:00:00 2026 GMT
+      notAfter=Nov  1 00:00:00 2026 GMT
+
+  - type: command_output
+    label: What the engineer tried on one node
+    content: |
+      $ systemctl start ingest.service
+      $ systemctl is-active ingest.service
+      active
+
+diagnostic_questions:
+  - "What is the last thing systemd recorded, and what time is it?"
+  - "How many restart attempts happened, and over what interval?"
+  - "What does 'Result: start-limit-hit' mean about what systemd is doing now?"
+  - "Why does the journal contain nothing between 02:14 and 04:50?"
+  - "Why did starting it by hand work immediately?"
+
+hints:
+  - "The absence of log lines after 02:14 is the finding, not a gap in the evidence."
+  - "Count the restart attempts and read their timestamps. They fit inside one second."
+  - "Look up what StartLimitBurst and StartLimitIntervalSec default to."
+  - "Ask what would have to happen for the service to try again."
+
+root_cause: >-
+  systemd stopped retrying at 02:14:04 and has not tried since. The service is
+  not failing — nothing is attempting to start it.
+
+
+  `Restart=always` with `RestartSec=0` restarts a crashing service immediately.
+  The defaults are `StartLimitBurst=5` within `StartLimitIntervalSec=10`, so five
+  instant restarts inside one second exceeded the limit. systemd recorded `Start
+  request repeated too quickly`, set the result to `start-limit-hit`, and gave
+  up — permanently.
+
+
+  The certificate fix at 02:31 was correct and complete. It changed nothing
+  observable because no process was ever going to read the new file: the
+  restart machinery had already stopped.
+
+
+  The empty journal after 02:14 is the strongest evidence and reads as an
+  absence of information. There are no errors because there are no attempts. A
+  service that was still failing every ten seconds would be producing a line
+  every ten seconds.
+
+
+  Starting it by hand worked immediately, which confirms both halves: the
+  certificate is fine, and the only thing missing was somebody asking systemd to
+  try again.
+
+
+  Two hours of escalation to a certificate vendor followed from reading "still
+  down" as "still failing".
+
+method: >-
+  **1. Read the last journal line and its timestamp before anything else.**
+  `Start request repeated too quickly` at 02:14:04 says systemd stopped. Every
+  later observation has to be interpreted in the light of nothing having run
+  since.
+
+
+  **2. Treat the empty log as data.** "No errors since 02:14" was reported as
+  reassuring and is the opposite. A failing service produces failures. A silent
+  one is either working or not being tried, and `systemctl status` distinguishes
+  them in one line.
+
+
+  **3. Read `Result:` rather than `Active:`.** "failed" says the state;
+  `Result: start-limit-hit` says the reason, and it is a different reason from
+  `exit-code`. The four values sort most incidents: `exit-code` means it ran and
+  exited badly, `timeout` means it ran and did not report ready, `dependency`
+  means it never ran, and `start-limit-hit` means it is not being retried.
+
+
+  **4. Do the arithmetic on the restart counter.** Five attempts, all
+  timestamped 02:14:03, against defaults of five in ten seconds. `RestartSec=0`
+  made hitting the limit certain rather than possible — a service that fails
+  instantly cannot avoid it.
+
+
+  **5. Notice that the manual start is the experiment.** It worked, immediately,
+  with the same certificate the vendor is being asked about. That single result
+  falsifies the entire X.509 theory and takes four seconds.
+
+
+  The general habit: "it is still broken" and "nobody has tried it since the
+  fix" look identical from a dashboard, and only the second one is fixed by
+  typing something.
+
+resolution: >-
+  **Right now: clear the counter and start it, on all twelve nodes.**
+
+
+  ```bash
+  systemctl reset-failed ingest.service
+  systemctl start ingest.service
+  ```
+
+
+  `reset-failed` clears the start-limit state. Without it, `systemctl start`
+  works — as the engineer found — but the counter is still there for next time.
+
+
+  **Then make the limit unreachable for a real service.** The correct fix is
+  `RestartSec`, not a bigger burst:
+
+
+  ```ini
+  [Service]
+  Restart=always
+  RestartSec=5
+  ```
+
+
+  Five attempts at five-second intervals take twenty-five seconds, so a
+  five-in-ten-seconds limit cannot be reached. The protection stays — it exists
+  to stop an instantly-crashing service consuming a core and filling a disk with
+  logs — and a service with a genuine transient problem now gets a sane number
+  of attempts spread over a sane interval.
+
+
+  Raising `StartLimitBurst` instead removes the protection and leaves the busy
+  loop.
+
+
+  **Then alert on the state that caused the two-hour gap.** Nothing was watching
+  for a unit in `start-limit-hit`, which is the one failure mode where waiting
+  is guaranteed not to help:
+
+
+  ```bash
+  systemctl list-units --state=failed
+  systemctl show ingest.service -p Result --value
+  ```
+
+
+  A check that reports any failed unit, with its `Result`, would have made this
+  a two-minute incident. It is worth adding for the whole fleet rather than for
+  this service.
+
+
+  **And write down the general lesson somewhere the next on-call will see it.**
+  After fixing the cause of a systemd failure, confirm the service is actually
+  being retried. It usually is; when it is not, no amount of further fixing will
+  produce any change at all, and the silence is easy to read as the fix not
+  having worked.
+
+
+  The Kubernetes equivalent is worth noting in the same entry, because it is
+  different in a way that matters: `CrashLoopBackOff` keeps retrying, with the
+  interval growing to a five-minute cap. A pod does recover on its own after a
+  fix — but possibly not for five minutes, so "still broken" there often means
+  "has not tried yet" for the opposite reason.

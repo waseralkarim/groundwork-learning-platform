@@ -1,0 +1,342 @@
+id: lab.the-masked-failure
+topic: topic.set-euo-pipefail
+title: Find the one line masking a migration's failure
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.5.3, OBJ-B08.5.4, OBJ-B08.5.6]
+
+intro: >-
+  `/tmp/strict/migrate.sh` has `set -euo pipefail` on line 3 and has never
+  reported a failure. One of its two migrations fails every single run, and its
+  error message is printed to the log.
+
+
+  Find the line responsible, fix it two ways, and decide which you would ship.
+
+setup:
+  - /opt/lab/seed-strict.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Run the migration and capture what it claims. Save to /tmp/answer-symptom.
+    hint: >-
+      `fake_psql` must be on PATH — prefix the run with `PATH=/tmp/strict:$PATH`.
+    walkthrough: |
+      {
+        echo "the run:"
+        PATH=/tmp/strict:$PATH bash /tmp/strict/migrate.sh 2>&1 | sed 's/^/    /'
+        rc=$(PATH=/tmp/strict:$PATH bash /tmp/strict/migrate.sh >/dev/null 2>&1; echo $?)
+        echo "    exit status: $rc"
+        echo
+        echo "so the error IS printed - 'ERROR: relation already exists' - and the script"
+        echo "then reports 'applied 2 migrations' and exits 0. a CI job checking the exit"
+        echo "status sees a clean deploy."
+        echo
+        echo "worse: it claims 002-index.sql was APPLIED. it was not."
+      } > /tmp/answer-symptom
+      cat /tmp/answer-symptom
+    verify:
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: "(?i)relation already exists"
+        describe: The failure is printed
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: "applied 2 migrations"
+        describe: And the script still claims both applied
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: "exit status: 0"
+        describe: And exits clean
+
+  - id: s2
+    instruction: >-
+      Confirm the failure is real — that fake_psql genuinely returns non-zero for
+      the second migration. Save to /tmp/answer-confirm.
+    hint: >-
+      Run fake_psql directly on each schema file and print its status.
+    walkthrough: |
+      {
+        for f in /tmp/strict/schema/*.sql; do
+          rc=$(/tmp/strict/fake_psql < "$f" >/dev/null 2>&1; echo $?)
+          printf '  %-20s rc=%s\n' "$(basename "$f")" "$rc"
+        done
+        echo
+        echo "002-index.sql returns 1. the status exists and is correct - so the loss"
+        echo "happens somewhere between fake_psql returning and errexit deciding."
+      } > /tmp/answer-confirm
+      cat /tmp/answer-confirm
+    verify:
+      - type: file_matches
+        path: /tmp/answer-confirm
+        pattern: "001-create.sql +rc=0"
+        describe: The first migration succeeds
+      - type: file_matches
+        path: /tmp/answer-confirm
+        pattern: "002-index.sql +rc=1"
+        describe: The second genuinely fails
+
+  - id: s3
+    instruction: >-
+      Name the line responsible and prove it in isolation. Save to
+      /tmp/answer-cause.
+    hint: >-
+      There are only three candidate lines in the function. Two are innocent.
+    walkthrough: |
+      {
+        echo "the function:"
+        sed -n '/^apply_migration/,/^}/p' /tmp/strict/migrate.sh | sed 's/^/    /'
+        echo
+        echo "the guilty line is:"
+        echo "    local output=\$(fake_psql < \"\$file\")"
+        echo
+        echo "isolating it - same command, with and without the word 'local':"
+        printf '  %-40s rc=%s\n' 'x=$(false)'                     "$(bash -c 'set -e; x=$(false)' 2>/dev/null; echo $?)"
+        printf '  %-40s rc=%s\n' 'f(){ local x=$(false); }; f'    "$(bash -c 'set -e; f(){ local x=$(false); }; f' 2>/dev/null; echo $?)"
+        echo
+        echo "a plain assignment TAKES the exit status of the command substitution, so"
+        echo "errexit sees the 1 and fires. but 'local' is A COMMAND IN ITS OWN RIGHT."
+        echo "its exit status is whether the declaration succeeded - which it did. the"
+        echo "substitution's failure is discarded before errexit ever sees it."
+        echo
+        echo "and there is a second layer. even if local propagated the status, errexit"
+        echo "would abort the FUNCTION - but the function's last command is a successful"
+        echo "echo, so apply_migration returns 0 regardless, the loop continues, and the"
+        echo "counter increments. two independent masks over the same failure."
+        echo
+        echo "note what the comment above the line says: 'capture the output so we can"
+        echo "log it on failure'. somebody added error handling and removed it in the"
+        echo "same line."
+        echo
+        echo "the same applies to declare, export, readonly and typeset. shellcheck"
+        echo "reports it as SC2155."
+      } > /tmp/answer-cause
+      cat /tmp/answer-cause
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "local output="
+        describe: You named the line
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)COMMAND IN ITS OWN RIGHT"
+        describe: And what local really is
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)two independent masks"
+        describe: And found the second mask
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "SC2155"
+        describe: And named the check that catches it
+
+  - id: s4
+    instruction: >-
+      Fix it two different ways in /tmp/fix-a.sh and /tmp/fix-b.sh, and prove
+      each now fails. Save your comparison to /tmp/answer-fixes.
+    hint: >-
+      One fix is minimal — separate the declaration from the assignment. The
+      other reports which migration failed and why.
+    walkthrough: |
+      # fix A: declare, then assign. a genuine one-line diff.
+      cp /tmp/strict/migrate.sh /tmp/fix-a.sh
+      sed -i 's|^  local output=.*|  local output\n  output=$(fake_psql < "$file")|' /tmp/fix-a.sh
+
+      # fix B: handle the status explicitly, and say which file failed
+      cp /tmp/strict/migrate.sh /tmp/fix-b.sh
+      cat > /tmp/new-function <<'FN'
+      apply_migration() {
+        local file=$1
+        local output status=0
+        output=$(fake_psql < "$file" 2>&1) || status=$?
+        if [ "$status" -ne 0 ]; then
+          echo "FAILED $(basename "$file") (rc=$status): $output" >&2
+          return "$status"
+        fi
+        echo "applied $(basename "$file")"
+      }
+      FN
+      # splice the replacement in place of the old function
+      awk '/^apply_migration\(\)/ { while ((getline l < "/tmp/new-function") > 0) print l; skip=1 }
+           skip && /^}/          { skip=0; next }
+           !skip' /tmp/fix-b.sh > /tmp/fix-b.new && mv /tmp/fix-b.new /tmp/fix-b.sh
+
+      {
+        echo "=== fix A: declare, then assign ==="
+        sed -n '/^apply_migration/,/^}/p' /tmp/fix-a.sh | sed 's/^/    /'
+        PATH=/tmp/strict:$PATH bash /tmp/fix-a.sh 2>&1 | sed 's/^/    /'
+        echo "    rc=$(PATH=/tmp/strict:$PATH bash /tmp/fix-a.sh >/dev/null 2>&1; echo $?)"
+        echo
+        echo "=== fix B: handle the status explicitly ==="
+        sed -n '/^apply_migration/,/^}/p' /tmp/fix-b.sh | sed 's/^/    /'
+        PATH=/tmp/strict:$PATH bash /tmp/fix-b.sh 2>&1 | sed 's/^/    /'
+        echo "    rc=$(PATH=/tmp/strict:$PATH bash /tmp/fix-b.sh >/dev/null 2>&1; echo $?)"
+      } > /tmp/answer-fixes
+      cat /tmp/answer-fixes
+    verify:
+      - type: file_exists
+        path: /tmp/fix-a.sh
+        describe: You wrote the minimal fix
+      - type: file_exists
+        path: /tmp/fix-b.sh
+        describe: And the explicit one
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "applied 001-create.sql"
+        describe: Both still apply the first migration
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "(?i)FAILED 002-index.sql"
+        describe: And fix B names the failing file
+      - type: file_matches
+        path: /tmp/answer-fixes
+        pattern: "rc=1"
+        describe: And both now exit non-zero
+
+  - id: s5
+    instruction: >-
+      State which you would ship, and what else you would change about this
+      script. Save to /tmp/answer-ship.
+    walkthrough: |
+      {
+        echo "ship B."
+        echo
+        echo "A is correct and is a one-line diff, which is exactly what you want in an"
+        echo "incident. but it leaves the operator with a script that exits 1 having"
+        echo "printed 'applied 001-create.sql' and an error from something called"
+        echo "fake_psql, with nothing tying the two together. at 3am that is a second"
+        echo "investigation."
+        echo
+        echo "B costs four lines and reports:"
+        echo "    FAILED 002-index.sql (rc=1): ERROR: relation already exists"
+        echo
+        echo "which names the file, the status and the database's own words. that is the"
+        echo "difference between an alert and a diagnosis."
+        echo
+        echo "what else i would change:"
+        echo
+        echo "1. the count is a LIE, not just a bug. 'applied 2 migrations' was printed"
+        echo "   after applying one. count should increment only after a confirmed apply,"
+        echo "   and the summary should be asserted:"
+        echo "       [ \"\$count\" -eq \"\$total\" ] || { echo \"applied \$count of \$total\" >&2; exit 1; }"
+        echo
+        echo "2. the glob is unguarded. if SCHEMA_DIR is empty or wrong, \"\$SCHEMA_DIR\"/*.sql"
+        echo "   expands to the literal pattern, apply_migration runs on a file that does"
+        echo "   not exist, and with the bug present the script would have reported"
+        echo "   'applied 1 migrations' having applied none. shopt -s nullglob, and then"
+        echo "   fail if the list is empty."
+        echo
+        echo "3. no ordering guarantee is stated. it happens to work because C-locale"
+        echo "   glob order matches the numeric prefixes, and that is worth a comment"
+        echo "   because it stops working at 010-*.sql."
+        echo
+        echo "4. no check that fake_psql exists at all. command -v at the top."
+        echo
+        echo "and the general lesson: THE PREAMBLE WAS PRESENT AND CORRECT AND CAUGHT"
+        echo "NOTHING, because the failure never reached it. set -e is a floor. the"
+        echo "assertion that the applied count matches the migration count is what would"
+        echo "actually have caught this."
+      } > /tmp/answer-ship
+      cat /tmp/answer-ship
+    verify:
+      - type: file_matches
+        path: /tmp/answer-ship
+        pattern: "(?i)ship B"
+        describe: You chose and justified a fix
+      - type: file_matches
+        path: /tmp/answer-ship
+        pattern: "(?i)count is a LIE"
+        describe: And caught the false count
+      - type: file_matches
+        path: /tmp/answer-ship
+        pattern: "nullglob"
+        describe: And the unguarded glob
+      - type: file_matches
+        path: /tmp/answer-ship
+        pattern: "(?i)CAUGHT\\s+NOTHING"
+        describe: And stated what the preamble was worth here
+
+solution: >-
+  **The symptom.** The error is printed, and the script still exits 0:
+
+
+  ```console
+  $ PATH=/tmp/strict:$PATH bash /tmp/strict/migrate.sh; echo "rc=$?"
+  applied 001-create.sql
+  ERROR: relation already exists
+  applied 002-index.sql
+  applied 2 migrations
+  rc=0
+  ```
+
+
+  It even claims `002-index.sql` was applied. It was not.
+
+
+  **The line.**
+
+
+  ```bash
+  apply_migration() {
+    local file=$1
+    # capture the output so we can log it on failure
+    local output=$(fake_psql < "$file")     # ← here
+    echo "applied $(basename "$file")"
+  }
+  ```
+
+
+  A plain assignment takes the command substitution's status; `local` is **a
+  command in its own right**, and its status is its own success. The failure is
+  discarded before errexit sees it. Note the comment: somebody added error
+  handling and removed it in the same line. `shellcheck` reports this as
+  **SC2155**, and `declare`, `export`, `readonly` and `typeset` behave the same.
+
+
+  **There are two masks, not one.** Even if `local` propagated the status, the
+  function's last command is a successful `echo`, so `apply_migration` would
+  return 0 anyway.
+
+
+  **Fix A — minimal:**
+
+
+  ```bash
+  local output
+  output=$(fake_psql < "$file")
+  ```
+
+
+  **Fix B — explicit:**
+
+
+  ```bash
+  local output status=0
+  output=$(fake_psql < "$file" 2>&1) || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "FAILED $(basename "$file") (rc=$status): $output" >&2
+    return "$status"
+  fi
+  ```
+
+
+  **Ship B.** A is a one-line diff and correct — right for an incident — but it
+  leaves an operator with `rc=1`, a success line, and an unattributed error.
+  B prints `FAILED 002-index.sql (rc=1): ERROR: relation already exists`: the
+  file, the status, and the database's own words. That is the difference between
+  an alert and a diagnosis.
+
+
+  **What else is wrong:** `applied 2 migrations` is a false count — increment
+  only after a confirmed apply and assert the total; the glob is unguarded, so an
+  empty or wrong `SCHEMA_DIR` would have reported applying a file that does not
+  exist; the ordering only works because C-locale glob order matches the numeric
+  prefixes, which stops at `010-*.sql`; and nothing checks that `fake_psql` exists.
+
+
+  **The preamble was present and correct and caught nothing**, because the failure
+  never reached it. An assertion that the applied count matches the migration
+  count would have.

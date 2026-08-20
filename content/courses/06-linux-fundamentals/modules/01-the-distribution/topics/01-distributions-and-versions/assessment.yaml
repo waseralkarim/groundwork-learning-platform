@@ -1,0 +1,170 @@
+id: assessment.distributions-and-versions
+topic: topic.distributions-and-versions
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a rollback that did nothing
+    kind: explain
+    objectives: [OBJ-B06.1.4, OBJ-B06.1.7]
+    prompt: >-
+      During an incident, a rollback to `2024.11.3-1` reported success on every
+      machine and changed nothing. The installed version is `1:2.1.0-1`. The
+      package manager said *already the newest version*.
+
+
+      In about 200 words: explain what happened, why nothing errored, and what
+      you would change.
+    rubric:
+      - "Identifies the epoch and that it is compared before anything else"
+      - "States that 1:2.1.0-1 is therefore newer than 2024.11.3-1"
+      - "Explains 'already the newest version' as an accurate conclusion rather than a failure"
+      - "Notes that a state: present check cannot distinguish a no-op from a downgrade"
+      - "Proposes asserting the installed version after the operation"
+    model_answer: >-
+      The requested version is older than the installed one, so there was nothing
+      to do.
+
+
+      `1:2.1.0-1` carries an **epoch** — the `1:` — and an epoch is compared
+      before anything else and decisively. A version without one is treated as
+      epoch 0, so `1:2.1.0-1` beats `2024.11.3-1` and nothing after the colon is
+      ever examined. The package manager was asked to install something older
+      than what is present, concluded correctly that there was no work, and said
+      so: *already the newest version*. That message is the answer, not noise.
+
+
+      The epoch almost certainly exists because upstream renumbering went
+      backwards — a move from date-based versions to semantic ones. It made the
+      *upgrade* work, and it made rollback across that boundary impossible by the
+      normal route. It cannot be removed either: dropping it would make the next
+      release compare as older.
+
+
+      **Nothing errored because nothing failed.** Every component behaved
+      correctly, and a task checking `state: present` cannot tell a no-op from a
+      downgrade — the package is present either way.
+
+
+      What I would change: roll back to a version on the same side of the
+      boundary, and make the task assert that the installed version equals the
+      requested one. An operation that cannot fail cannot be trusted to have
+      happened.
+    common_failures:
+      - "Blaming the package manager or the repository rather than reading the comparison"
+      - "Proposing to remove the epoch, which strands every machine on the next release"
+      - "Missing that the failure is silent because the state check is satisfied"
+      - "Treating 'already the newest version' as a generic message rather than the diagnosis"
+
+  - id: B
+    title: Reason about a version-based finding
+    kind: reason
+    objectives: [OBJ-B06.1.5, OBJ-B06.1.8]
+    prompt: >-
+      A scanner reports 47 critical findings against your container images. Spot
+      checks show most are packages where the installed version is below the
+      "fixed in" version quoted by the CVE.
+
+
+      In about 250 words: assess the finding count, say what you would check, and
+      what you would change.
+    rubric:
+      - "States that version-based scanning against a stable distribution is wrong by default"
+      - "Explains backporting — the fix applied to the old version, upstream number unchanged"
+      - "Checks the distribution security tracker rather than comparing upstream numbers"
+      - "Notes that packages from outside the archive receive no backports and must be checked separately"
+      - "Identifies unactionable findings as a tooling problem with a real cost"
+    model_answer: >-
+      The count is probably close to meaningless, and that is a tooling problem
+      rather than a security one.
+
+
+      Stable distributions **backport**: the fix from a newer upstream release is
+      applied to the older one, so the bug goes away and the upstream version does
+      not move. What moves is the revision — the part after the hyphen. A scanner
+      comparing `3.5.6` against "fixed in 3.5.9" reports a vulnerability that was
+      addressed weeks ago, and it will do so for every package we run, forever.
+
+
+      What I would check, in order. **The full version** from `dpkg-query -W`, not
+      the scanner's summary — a `~deb13u2` suffix says the distribution has
+      revised it. **The distribution's security tracker**, which states
+      authoritatively which package version carries which fix; on a full system
+      the changelog names the CVE too, though slim images strip changelogs
+      entirely. And **where each package came from**: something installed from a
+      third-party repository carries a version string that looks identical and
+      receives none of the distribution's backports, so those findings may be
+      real.
+
+
+      I would also check whether each package is in the supported subset, since
+      LTS commitments frequently cover less than the whole archive.
+
+
+      What I would change: a scanner that consumes distribution security data
+      rather than comparing upstream numbers. And I would treat the current state
+      as urgent for a reason people underweight — **unactionable findings train
+      people to ignore actionable ones**, so 47 false criticals is actively worse
+      than none.
+    common_failures:
+      - "Accepting the 47 as real and planning remediation"
+      - "Dismissing all of them, when third-party packages genuinely receive no backports"
+      - "Checking only the version rather than the distribution's security data"
+      - "Treating the noise as harmless rather than as something that erodes response"
+
+  - id: C
+    title: Choose a release and record it
+    kind: diagnose
+    objectives: [OBJ-B06.1.8, OBJ-B06.1.6]
+    prompt: >-
+      You are choosing an operating system for two things at once: a container
+      base image for services rebuilt many times a day, and a fleet of appliances
+      shipped to customer sites for five years with a custom kernel module.
+
+
+      In about 250 words: give both answers, say why they differ, and what you
+      would write down.
+    rubric:
+      - "For the image: a fixed release with frequent point updates — current at build time, not longest LTS"
+      - "Raises the tag-versus-digest decision for reproducibility against patching"
+      - "For the appliance: identifies the kernel module as the constraint that decides it"
+      - "Explains that kernel updates may require rebuilding the module, so the support lifetime is shorter than it appears"
+      - "Records what runs outside the archive, with an owner, and what would change the decision"
+    model_answer: >-
+      **The container image: a fixed release with frequent point updates** —
+      Debian stable slim or equivalent. Rebuilt many times a day, the image's
+      lifetime collapses: it does not need a five-year support commitment, it
+      needs to be **current at build time**. That argues for short point-release
+      cycles rather than the longest LTS available, which is the opposite of the
+      appliance answer for the same family.
+
+
+      The decision that matters more than the distribution name is
+      **tag versus digest**. A tag moves as point releases ship, so two builds a
+      month apart differ — which is what you want for patching and is not
+      reproducible. Track the tag in CI so fixes arrive, pin the digest in
+      release manifests so a deploy can be reproduced, and have something raise a
+      pull request when the tag moves so the drift is reviewable.
+
+
+      **The appliance: the kernel module decides it, not the lifetime.** A module
+      is built against specific kernel internals that are not stable between
+      releases, so every kernel update — including a security update inside the
+      same LTS — can require rebuilding and re-testing. That forces pinning the
+      kernel and therefore *not* taking kernel security updates automatically, or
+      a DKMS rebuild in the field that can fail there, or a commercial
+      distribution selling a stable module interface.
+
+
+      So a five-year commitment whose kernel updates you cannot take is much
+      shorter than it appears.
+
+
+      **What to write down:** the release and why, the support end date and what
+      it covers, everything running outside the archive with a named owner, and
+      what would change the decision.
+    common_failures:
+      - "Choosing the longest LTS for both, missing that rebuild frequency inverts the argument"
+      - "Treating the appliance's lifetime as the deciding constraint rather than the kernel module"
+      - "Omitting the tag-versus-digest decision for the image"
+      - "Producing a decision with no reversal conditions and no outside-the-archive list"

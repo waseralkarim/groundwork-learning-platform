@@ -1,0 +1,6 @@
+graph TD
+    A["A response arrives.<br/><b>How does the client know<br/>when the body is finished?</b>"] --> B{"Which header?"}
+    B -->|"Content-Length: 5"| C["Read exactly 5 bytes.<br/><i>Requires knowing the size up front</i>"]
+    B -->|"Transfer-Encoding: chunked"| D["Read size-prefixed chunks<br/>until a chunk of size 0.<br/><i>For content generated as it goes</i>"]
+    B -->|"neither"| E["Read until the connection closes.<br/><i>HTTP/1.0 style — cannot keep-alive,<br/>and a truncated response is<br/>indistinguishable from a complete one</i>"]
+    C --> F["<b>If the length is wrong,<br/>the client hangs or truncates.</b><br/>Not an error — it is doing<br/>exactly what it was told"]

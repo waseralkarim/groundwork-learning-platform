@@ -1,0 +1,30 @@
+flowchart TB
+    subgraph TWO["3 nodes across 2 zones — quorum is 2"]
+        direction LR
+        subgraph A1["AZ-a"]
+            N1["node 1"]
+            N2["node 2"]
+        end
+        subgraph B1["AZ-b"]
+            N3["node 3"]
+        end
+    end
+
+    subgraph THREE["3 nodes across 3 zones — quorum is 2"]
+        direction LR
+        subgraph A2["AZ-a"]
+            M1["node 1"]
+        end
+        subgraph B2["AZ-b"]
+            M2["node 2"]
+        end
+        subgraph C2["AZ-c"]
+            M3["node 3"]
+        end
+    end
+
+    TWO --> R1["lose AZ-a → 1 node left → QUORUM LOST<br/>lose AZ-b → 2 nodes left → quorum held<br/><br/><b>Survives a random zone loss 50% of the time.</b>"]
+    THREE --> R2["lose any one zone → 2 nodes left → quorum held<br/><br/><b>Survives any single zone loss.</b>"]
+
+    R1 --> NOTE["Both are 'redundant across zones'.<br/>Only one tolerates a zone failure.<br/>Adding a 4th node to 2 zones does not fix it —<br/>it makes quorum 3, and a 2-node zone loss still fails."]
+    R2 --> NOTE

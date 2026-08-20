@@ -1,0 +1,278 @@
+id: lab.where-does-the-body-end
+topic: topic.http
+title: Break the framing three ways and watch each one
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A03.4.4, OBJ-A03.4.7]
+
+intro: >-
+  TCP is a byte stream with no message boundaries, so HTTP has to say where a
+  response ends. There are exactly three mechanisms, and getting one wrong does
+  not produce an error — it produces a client doing precisely what it was told,
+  which is worse.
+
+
+  You will serve a correct `Content-Length`, then one that is too large, then
+  hand-write a chunked response, then break the chunked terminator. Each failure
+  looks like a network problem and none of them is.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Serve a correct response — `Content-Length: 5` with a five-byte body — and
+      record the status, the bytes downloaded and curl's exit status in
+      /tmp/answer-correct.
+    hint: >-
+      `curl -m 3 -o /dev/null -w 'code=%{http_code} size=%{size_download}\n'`,
+      then `echo "rc=$?"`.
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello' \
+        | timeout 10 nc -l 127.0.0.1 8201 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -m 3 -o /dev/null -w 'code=%{http_code} size=%{size_download}\n' \
+        http://127.0.0.1:8201/ > /tmp/answer-correct
+      echo "rc=$?" >> /tmp/answer-correct
+      cat /tmp/answer-correct
+    verify:
+      - type: file_matches
+        path: /tmp/answer-correct
+        pattern: 'code=200 size=5'
+        describe: Five bytes promised and five delivered
+      - type: file_matches
+        path: /tmp/answer-correct
+        pattern: '^rc=0$'
+        describe: And curl finished cleanly
+
+  - id: s2
+    instruction: >-
+      Now lie about the size. Serve `Content-Length: 100` with the same
+      five-byte body, and record the same three values in /tmp/answer-toolong.
+
+
+      Use a short timeout — the point of this step is that without one it would
+      never return.
+    hint: >-
+      Same command, and `curl -m 3` bounds the wait. Watch how long it takes
+      before curl gives up.
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nhello' \
+        | timeout 10 nc -l 127.0.0.1 8202 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -m 3 -o /dev/null -w 'code=%{http_code} size=%{size_download}\n' \
+        http://127.0.0.1:8202/ > /tmp/answer-toolong
+      echo "rc=$?" >> /tmp/answer-toolong
+      cat /tmp/answer-toolong
+    verify:
+      - type: file_matches
+        path: /tmp/answer-toolong
+        pattern: 'code=200 size=5'
+        describe: A 200, and only five of the promised hundred bytes
+      - type: file_matches
+        path: /tmp/answer-toolong
+        pattern: '^rc=28$'
+        describe: And curl exited 28 — operation timed out — on a response that arrived instantly
+
+  - id: s3
+    instruction: >-
+      Explain that result in /tmp/answer-why-hang: what the client was doing for
+      three seconds, and why this is not a network problem.
+    hint: >-
+      `Content-Length` is an instruction. What was the client told to do, and
+      had it finished?
+    walkthrough: |
+      echo "content-length is an instruction to read exactly that many bytes, so after five arrived the client still had ninety-five outstanding and blocked on the socket waiting for them; nothing was wrong from its point of view and nothing was slow on the network, the server simply finished responding immediately and declared a size it did not send" > /tmp/answer-why-hang
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-hang
+        pattern: "exactly|instruction|told"
+        describe: You read Content-Length as an instruction rather than a hint
+      - type: file_matches
+        path: /tmp/answer-why-hang
+        pattern: "wait|block|outstanding"
+        describe: And identified the client waiting for bytes that were never coming
+
+  - id: s4
+    instruction: >-
+      Now the other mechanism. Hand-write a chunked response that delivers
+      `hello world` in two chunks, and save what curl reassembled to
+      /tmp/answer-chunked.
+
+
+      Each chunk is its size in hexadecimal on a line, then the bytes. A chunk of
+      size `0` ends the body.
+    hint: >-
+      `5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n` after a
+      `Transfer-Encoding: chunked` header. Note the space before `world` — that
+      is why the second chunk is 6.
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n' \
+        | timeout 10 nc -l 127.0.0.1 8203 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -m 3 http://127.0.0.1:8203/ > /tmp/answer-chunked
+      echo >> /tmp/answer-chunked
+      cat /tmp/answer-chunked
+    verify:
+      - type: file_matches
+        path: /tmp/answer-chunked
+        pattern: '^hello world$'
+        describe: curl reassembled two hand-written chunks into one body
+
+  - id: s5
+    instruction: >-
+      Break it. Serve the same chunked response **without** the final zero-size
+      chunk, and record the result in /tmp/answer-nochunkend.
+    hint: >-
+      Send the two chunks and stop. Again, bound it with `-m 3`.
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n' \
+        | timeout 10 nc -l 127.0.0.1 8204 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -m 3 -o /dev/null -w 'code=%{http_code} size=%{size_download}\n' \
+        http://127.0.0.1:8204/ > /tmp/answer-nochunkend
+      echo "rc=$?" >> /tmp/answer-nochunkend
+      cat /tmp/answer-nochunkend
+    verify:
+      - type: file_matches
+        path: /tmp/answer-nochunkend
+        pattern: 'size=11'
+        describe: All eleven bytes arrived
+      - type: file_matches
+        path: /tmp/answer-nochunkend
+        pattern: '^rc=28$'
+        describe: And curl still timed out, waiting for a terminator that never came
+
+  - id: s6
+    instruction: >-
+      Compare the two mechanisms. Write to /tmp/answer-two-mechanisms when you
+      would use each, and what each requires of the server.
+    hint: >-
+      One needs the size before the first byte is sent. The other does not.
+    walkthrough: |
+      {
+        echo "content-length: the server must know the total size before sending anything, so it has to buffer the whole response or already know the file size; simple and cheap when that is true"
+        echo "chunked: the server sends size-prefixed pieces and a zero-size chunk at the end, so it can start responding before it knows the length, which is what streamed output and generated reports need"
+      } > /tmp/answer-two-mechanisms
+      cat /tmp/answer-two-mechanisms
+    verify:
+      - type: file_matches
+        path: /tmp/answer-two-mechanisms
+        pattern: "buffer|know the (total )?size|before"
+        describe: You named what Content-Length requires
+      - type: file_matches
+        path: /tmp/answer-two-mechanisms
+        pattern: "stream|before it knows|generated"
+        describe: And why chunked exists
+
+  - id: s7
+    instruction: >-
+      There is a third way a body can end, used when neither header is present.
+      Serve a response with no framing header at all and save what curl gets to
+      /tmp/answer-noheader.
+    hint: >-
+      Status line, blank line, body, and let `nc` close the connection. This is
+      HTTP/1.0 behaviour.
+    walkthrough: |
+      printf 'HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nno framing header here' \
+        | timeout 6 nc -l 127.0.0.1 8205 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -m 5 http://127.0.0.1:8205/ > /tmp/answer-noheader
+      echo >> /tmp/answer-noheader
+      echo "rc=$?" >> /tmp/answer-noheader
+      cat /tmp/answer-noheader
+    verify:
+      - type: file_matches
+        path: /tmp/answer-noheader
+        pattern: 'no framing header here'
+        describe: The body arrived, delimited by the connection closing
+      - type: file_matches
+        path: /tmp/answer-noheader
+        pattern: '^rc=0$'
+        describe: And curl finished, because the close is the terminator
+
+  - id: s8
+    instruction: >-
+      Last one. Write to /tmp/answer-close-problem the flaw in ending a body by
+      closing the connection, and what it costs in performance.
+    hint: >-
+      Two things. One is about telling a complete response from a truncated
+      one. The other is about what you cannot do with that connection
+      afterwards.
+    walkthrough: |
+      echo "a truncated response is indistinguishable from a complete one, because both end with the connection closing and there is no declared length to check against; and the close is the delimiter, so keep-alive is impossible and every request pays a fresh tcp handshake and, over https, a tls handshake as well" > /tmp/answer-close-problem
+    verify:
+      - type: file_matches
+        path: /tmp/answer-close-problem
+        pattern: "truncat"
+        describe: You named the correctness flaw
+      - type: file_matches
+        path: /tmp/answer-close-problem
+        pattern: "keep.?alive|handshake"
+        describe: And the performance cost
+
+solution: |
+  ```bash
+  # correct
+  printf 'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello'      | nc -l 127.0.0.1 8201 &
+  # lies about the size
+  printf 'HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nhello'    | nc -l 127.0.0.1 8202 &
+  # chunked, correct
+  printf 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n' | nc -l 127.0.0.1 8203 &
+  # chunked, no terminator
+  printf 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n' | nc -l 127.0.0.1 8204 &
+  ```
+
+  **The four results:**
+
+  | Response | `size_download` | curl exit | What happened |
+  |---|---|---|---|
+  | `Content-Length: 5`, 5 bytes | 5 | 0 | Correct |
+  | `Content-Length: 100`, 5 bytes | 5 | **28** | Waited for 95 bytes that never came |
+  | chunked with `0` terminator | 11 | 0 | Correct |
+  | chunked without terminator | 11 | **28** | All data arrived; waited for the end marker |
+
+  **Both failures were timeouts on responses that arrived instantly.** That is
+  the lesson. `Content-Length: 100` is not a hint — it is an instruction to read
+  exactly 100 bytes, and the client obeyed it. Nothing errored, nothing was
+  slow, and the reported symptom is "the request timed out", which points at the
+  network.
+
+  In the chunked case every byte of the body arrived and curl still hung, because
+  chunked framing ends with a zero-size chunk and there was none. `size_download`
+  of 11 with an exit of 28 is a distinctive pair: **all the data, none of the
+  terminator.**
+
+  **The mirror case is worse and you should know its shape.** A `Content-Length`
+  that is too *small* makes the client stop early — and on a keep-alive
+  connection the leftover bytes become the beginning of the next response. The
+  failure lands on a *different request*, often for a different user, as a parse
+  error with no connection to the request that caused it. That is also the
+  mechanism behind **request smuggling**: a proxy and a server disagreeing about
+  where one message ends and the next begins.
+
+  Which is why a response carrying *both* `Content-Length` and
+  `Transfer-Encoding: chunked` is ambiguous and rejected by careful proxies. It
+  is a security problem, not a tidiness one.
+
+  **The three mechanisms, and when each is right:**
+
+  | Mechanism | Requires | Use when |
+  |---|---|---|
+  | `Content-Length` | Knowing the size before sending | The size is known — a file, a buffered response |
+  | `Transfer-Encoding: chunked` | Nothing | Generating output as you go — streams, reports, slow queries |
+  | Connection close | Nothing | Almost never. HTTP/1.0 legacy |
+
+  **Closing the connection has two flaws.** A truncated response is
+  indistinguishable from a complete one — both end the same way, and there is no
+  declared length to check against, so a network failure mid-response is silently
+  delivered as success. And the close *is* the delimiter, so keep-alive is
+  impossible: every request pays a fresh TCP handshake, plus a TLS handshake over
+  HTTPS. On a 50ms path that is 150ms per request instead of 50ms.
+
+  **The diagnostic pair to remember:** when curl reports a timeout, check
+  `size_download`. If bytes arrived and it still timed out, the framing is wrong
+  and the network is fine.

@@ -1,0 +1,216 @@
+id: troubleshooting.the-digest-that-changed
+topic: topic.hashing-and-passwords
+title: The image we shipped is not the image that is running
+level: L2
+objectives: [OBJ-A04.1.3, OBJ-A04.1.1]
+reveal_policy: progressive
+
+situation: >-
+  A payments service began returning 500s at 02:14. The on-call engineer rolled
+  back to the previous release and the errors stopped.
+
+
+  The confusion started afterwards. The release that broke had been running
+  without incident for nine days, and nothing was deployed on the night it
+  failed — the deployment controller shows no rollout, no config change and no
+  scaling event between 20:00 and the incident.
+
+
+  The team's conclusion in the review draft is "intermittent upstream
+  dependency", with an action item to add retries.
+
+
+  You have the build record, the manifest and what was actually running. Work out
+  what happened before reading on.
+
+symptoms:
+  - "Errors began at 02:14 with no deployment, config change or scaling event"
+  - "The same release had run for nine days without incident"
+  - "A rollback to the previous release resolved it immediately"
+  - "No upstream dependency reported an incident in that window"
+  - "The failing behaviour cannot be reproduced by redeploying the same manifest"
+
+artifacts:
+  - type: config
+    label: The deployment manifest, unchanged for nine days
+    content: |
+      spec:
+        containers:
+          - name: payments
+            image: registry.internal/payments:2.7
+
+  - type: command_output
+    label: What was actually running, before and after the incident
+    content: |
+      # captured 20:00, nine hours before the incident
+      $ kubectl get pods -l app=payments -o jsonpath='{..imageID}'
+      registry.internal/payments@sha256:1a4f9c22e0b7d3f81c6a5e94b2d70f38ac91e5d6b840f27c3a9e1d5b6c8f4a20
+
+      # captured 02:30, after the errors began
+      $ kubectl get pods -l app=payments -o jsonpath='{..imageID}'
+      registry.internal/payments@sha256:7e2b81d4a6c50f39e8b7241fa9d63c05e14b8a72d0f6c9835b2e4710ad83f6c1
+
+  - type: log
+    label: Registry audit log
+    content: |
+      2026-08-14 01:58:41  PUT  /v2/payments/manifests/2.7
+        actor: ci-runner@build-4471
+        digest: sha256:7e2b81d4a6c50f39e8b7241fa9d63c05e14b8a72d0f6c9835b2e4710ad83f6c1
+        note: tag 2.7 reassigned (previous: sha256:1a4f9c22e0b7...)
+
+  - type: log
+    label: CI job 4471
+    content: |
+      branch: release/2.7
+      trigger: manual re-run by a.patel — "flaky test, re-running"
+      commit: 9c1e4f2  (release/2.7 HEAD — 4 commits ahead of the 2.7 tag build)
+      steps: build, test, push registry.internal/payments:2.7
+      result: success
+
+  - type: command_output
+    label: Node events around the incident
+    content: |
+      02:11  Node worker-7  MemoryPressure -> evicted 3 pods (payments-* x2)
+      02:12  Scheduler      created payments-8f4d2, payments-b91cc
+      02:14  Kubelet        pulled registry.internal/payments:2.7
+      02:14  First 500s observed
+
+diagnostic_questions:
+  - "The manifest never changed. What, then, changed about what was running?"
+  - "Why did the change take nine hours to have any effect?"
+  - "What does the registry audit log record at 01:58, and what does 'reassigned' mean?"
+  - "Why can the team not reproduce it by redeploying the same manifest?"
+  - "What one change to the manifest would have made this impossible?"
+
+hints:
+  - "Compare the two `imageID` values. They are not the same, and nobody deployed anything."
+  - "A tag is a pointer. What kind of pointer can be moved, and who moved it?"
+  - "Look at what happened at 02:11, and what that forced the kubelet to do at 02:14."
+  - "The CI job built a different commit from the one the tag originally referred to."
+
+root_cause: >-
+  **A mutable tag was reassigned, and an eviction three hours later caused the
+  new image to be pulled.**
+
+
+  At 01:58 a re-run of CI job 4471 pushed a *different* build to the same tag.
+  The registry log records it exactly: `tag 2.7 reassigned`, from
+  `sha256:1a4f9c22…` to `sha256:7e2b81d4…`. The engineer who triggered it
+  believed they were re-running a flaky test; the branch had moved four commits
+  ahead of the original 2.7 build, so the re-run built and shipped different
+  code under a name that was already in production.
+
+
+  Nothing happened at that moment, which is the part that makes this hard. The
+  running pods already had their image and had no reason to fetch it again, so
+  the change sat inert for three hours.
+
+
+  At 02:11 `worker-7` came under memory pressure and evicted two payments pods.
+  The scheduler replaced them, and at 02:14 the kubelet pulled
+  `registry.internal/payments:2.7` — resolving the tag *now* — and got
+  `sha256:7e2b81d4…`. The new pods ran code nobody had deployed, and the 500s
+  began.
+
+
+  The two `imageID` captures are the direct evidence, and they are the only place
+  in the system where this is visible. The manifest says `payments:2.7` before
+  and after; the digest says two different images.
+
+
+  It cannot be reproduced by redeploying the manifest because a redeploy pulls
+  the tag and gets the *current* target — which is the broken image. The
+  reproduction attempt was running the new code and comparing it against itself.
+
+
+  "Intermittent upstream dependency" is a diagnosis that fits the shape of the
+  symptom — sudden, unexplained, correlated with nothing — and is contradicted by
+  every artefact here.
+
+method: >-
+  **1. When nothing was deployed and behaviour changed, ask what resolves at run
+  time.** A manifest is a description; several things it names are resolved
+  later. A tag is the most common, and it is the one that can change without
+  anybody deploying.
+
+
+  **2. Read the digest, not the tag.** `kubectl get pods -o jsonpath='{..imageID}'`
+  gives you the content address of what is *actually running*. It is frequently
+  not what the manifest implies, and comparing two captures of it across an
+  incident is the single highest-value observation available here.
+
+
+  This is the whole point of a content address: the digest is derived from the
+  bytes, so two different digests are two different images, and no argument about
+  intent changes that.
+
+
+  **3. Ask the registry who wrote to the tag.** Registry audit logs record tag
+  reassignment explicitly. The 01:58 entry names the actor, the job and both
+  digests, and it converts "something changed" into "this person's CI re-run
+  changed it".
+
+
+  **4. Explain the delay, or you have not finished.** A cause three hours before
+  the symptom is suspicious until you can name the mechanism that connected them.
+  Here it is the eviction at 02:11 forcing a fresh pull — and until you find
+  that, the timeline does not support the conclusion.
+
+
+  **5. Distrust a reproduction that uses the same mutable reference.** Redeploying
+  `:2.7` pulls whatever `:2.7` means today. The team compared the new image with
+  itself and concluded the problem was not in the image.
+
+
+  The habit worth taking away: **a tag is a claim about identity and a digest is
+  a proof of it.** When those two disagree, the digest is right.
+
+resolution: >-
+  **Immediately:** the rollback already fixed the outage. Pin it so it stays
+  fixed — deploy by digest rather than by tag, because the tag currently points
+  at the broken build and any eviction will pull it again.
+
+
+  ```yaml
+  image: registry.internal/payments@sha256:1a4f9c22e0b7d3f81c6a5e94b2d70f38ac91e5d6b840f27c3a9e1d5b6c8f4a20
+  ```
+
+
+  **Then fix the class of problem, not this instance.**
+
+
+  *Deploy by digest everywhere.* A tag is a label a human moves; a digest is the
+  content. Resolve the tag once at release time and write the digest into the
+  manifest. This makes the failure structurally impossible rather than less
+  likely — the pull either gets exactly those bytes or fails.
+
+
+  *Make tags immutable in the registry.* Most registries support it. The 01:58
+  push would have been rejected, and the engineer would have discovered the
+  problem while looking at their own CI output rather than at 02:14 through an
+  outage.
+
+
+  *Make CI refuse to reuse a version.* A re-run that builds a different commit
+  under an existing version is the actual mistake, and it was made by someone
+  doing something reasonable. If the pipeline had failed with "2.7 already
+  published from commit 4a9f1c, refusing to overwrite", nothing else here
+  happens.
+
+
+  **And correct the review.** "Intermittent upstream dependency" points the
+  remediation at retries, which would not have helped — the new code was failing
+  deterministically. The finding is that a released version was silently
+  redefined, and the action items are digest pinning and immutable tags.
+
+
+  Worth noting explicitly in the writeup: **nobody did anything wrong that they
+  could have known was wrong.** Re-running a job after a flaky test is normal.
+  The system permitted a version number to change meaning, and that is the defect.
+
+
+  **Finally, audit for the same exposure.** Registry logs will show every tag
+  reassignment in the last quarter, and each one is a running image that may not
+  be what its manifest claims. Comparing every workload's `imageID` against its
+  manifest's tag is a single query, and it is worth running before anyone assumes
+  this was the only one.

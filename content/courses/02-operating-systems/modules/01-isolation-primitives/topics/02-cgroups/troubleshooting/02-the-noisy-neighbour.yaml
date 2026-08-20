@@ -1,0 +1,216 @@
+id: troubleshooting.the-noisy-neighbour
+topic: topic.cgroups
+title: The pod that keeps dying is not the one that grew
+level: L3
+objectives: [OBJ-A02.2.8, OBJ-A02.2.6]
+reveal_policy: progressive
+
+situation: >-
+  An order service runs as a two-container pod: the application, and a log
+  shipper sidecar that every team on the platform inherits from a shared base
+  chart.
+
+
+  Twice a day, at no consistent time, the application container is OOM-killed
+  and restarts. It loses in-flight requests when it does. The team has raised
+  the application's memory limit twice — 384Mi, then 448Mi — and the kills
+  continued at the same rate both times.
+
+
+  The application's own memory graph is flat and unremarkable, sitting around
+  420 MiB against a 448 MiB limit. Its heap profile shows no leak. The team's
+  conclusion is that the platform's node memory is oversubscribed, and there is
+  a ticket open against the platform team.
+
+
+  You have node access. Work out what is happening before reading on.
+
+symptoms:
+  - "The application container is OOM-killed roughly twice a day, at irregular times"
+  - "Its own memory usage is stable at about 420 MiB and shows no growth trend"
+  - "Raising its limit from 384Mi to 448Mi did not reduce the kill rate"
+  - "Heap profiles show no leak in the application"
+  - "The sidecar has never been killed"
+  - "The node has 8 GiB free at the time of the kills"
+
+artifacts:
+  - type: command_output
+    label: The pod's cgroup tree, from the node
+    content: |
+      $ P=/sys/fs/cgroup/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod7c2b.slice
+      $ for d in "$P" "$P"/cri-containerd-*.scope; do
+      >   printf '%-24s max=%-12s current=%-12s peak=%s\n' "$(basename $d)" \
+      >     "$(cat $d/memory.max)" "$(cat $d/memory.current)" "$(cat $d/memory.peak)"
+      > done
+      kubepods-burstable-pod7c2b.slice max=536870912  current=524288000  peak=536870912
+      cri-containerd-c3d4.scope        max=469762048  current=440401920  peak=463470592
+      cri-containerd-e5f6.scope        max=max        current=83886080   peak=297795584
+
+  - type: command_output
+    label: memory.events for both containers
+    content: |
+      $ cat "$P"/cri-containerd-c3d4.scope/memory.events     # the application
+      low 0
+      high 0
+      max 41
+      oom 14
+      oom_kill 14
+
+      $ cat "$P"/cri-containerd-e5f6.scope/memory.events     # the log shipper
+      low 0
+      high 0
+      max 0
+      oom 0
+      oom_kill 0
+
+  - type: config
+    label: The pod spec, abridged
+    content: |
+      containers:
+        - name: app
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+            limits:   { cpu: 1,    memory: 448Mi }
+        - name: log-shipper
+          resources:
+            requests: { cpu: 50m,  memory: 64Mi }
+            # no limits block
+
+  - type: log
+    label: The log shipper, around one of the kills
+    content: |
+      2026-08-15T03:59:58Z INFO  flush ok batch=512 bytes=1048576
+      2026-08-15T04:00:01Z WARN  upstream collector unreachable, buffering in memory
+      2026-08-15T04:00:31Z WARN  buffer 64MiB
+      2026-08-15T04:01:14Z WARN  buffer 128MiB
+      2026-08-15T04:02:39Z WARN  buffer 210MiB
+      2026-08-15T04:03:02Z INFO  upstream collector reachable, draining buffer
+
+diagnostic_questions:
+  - "What is the application container's effective memory limit, and is it the number in its own file?"
+  - "Add the two containers' peak usage. What does the sum tell you?"
+  - "Why did raising the application's limit from 384Mi to 448Mi not help?"
+  - "Which container grew, and which one was killed?"
+  - "Why has the sidecar never been OOM-killed despite being the one that grows?"
+
+hints:
+  - "Read the pod slice's memory.max, not just the containers'."
+  - "memory.peak remembers a spike that memory.current will never show you."
+  - "The kernel chooses an OOM victim by roughly how much killing it would free."
+  - "Compare the timestamps in the shipper's log with 'twice a day, at no consistent time'."
+
+root_cause: >-
+  The log shipper has no memory limit. When its upstream collector is briefly
+  unreachable it buffers in memory, and `memory.peak` records that it has
+  reached 284 MiB doing so — against a steady-state 80 MiB.
+
+
+  The pod slice caps both containers together at 512 MiB. The application holds
+  420 MiB of that. When the shipper's buffer grows past about 90 MiB, the *pod*
+  cgroup hits its limit, and the kernel has to free memory from inside it.
+
+
+  It picks by `oom_score`, which is roughly "how much would killing this free" —
+  and the application at 420 MiB is four times the size of the shipper at 100
+  MiB. So the container that grew is never the one that dies. The application's
+  `memory.events` shows `oom_kill 14` and `max 41`; the shipper's shows zeros
+  throughout.
+
+
+  Raising the application's own limit could not help, and made it slightly
+  worse. Its own limit was never the binding constraint — the pod's was — and
+  the pod's limit is the sum of its containers' limits, so raising the app's
+  limit from 384Mi to 448Mi raised the pod's from 448Mi to 512Mi *and* let the
+  app hold more of it. The headroom the shipper had to spike into shrank.
+
+
+  The node having 8 GiB free is true and irrelevant. This is a pod-level limit
+  being enforced, not node memory pressure.
+
+method: >-
+  **1. Read the whole path, not the container.** The application's own file says
+  448Mi and that is not its effective limit. The pod slice above it says 512Mi,
+  shared. Any diagnosis that starts and ends inside one container's cgroup was
+  never going to find this, which is why the team's investigation could not
+  converge.
+
+
+  **2. Use `memory.peak`, not `memory.current`.** The shipper reads 80 MiB right
+  now and has reached 284 MiB. `memory.current` is a sample and will never show
+  you a spike that happened at four in the morning; `memory.peak` remembers it.
+  This single file is the difference between "the sidecar is small" and "the
+  sidecar is small most of the time".
+
+
+  **3. Add the peaks.** 442 + 284 = 726 MiB against a 512 MiB pod limit. They
+  cannot both peak, and when they try, something in the pod dies.
+
+
+  **4. Work out who the kernel will choose.** `oom_score` is roughly
+  proportional to memory used, so the largest process is the likeliest victim.
+  The application is four times the size of the shipper. The container that
+  caused the problem is structurally the one least likely to be killed for it,
+  which is why the evidence points away from the cause.
+
+
+  **5. Check the failed fix as evidence.** Raising a limit twice with no change
+  in kill rate is a strong signal that the limit being raised is not the binding
+  one. Treat "we tried the obvious thing and nothing happened" as data rather
+  than as an argument for trying it harder.
+
+
+  **6. Correlate the timestamps.** "Twice a day at no consistent time" matches an
+  upstream collector's availability, not a workload cycle. The shipper's own
+  logs name the spike, in words, with sizes.
+
+resolution: >-
+  **Set a memory limit on the sidecar.** This is the actual fix and it is one
+  line:
+
+
+  ```yaml
+  - name: log-shipper
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits:   { cpu: 100m, memory: 128Mi }
+  ```
+
+
+  Two things happen. The pod's limit becomes an explicit sum rather than an
+  emergent one, and the shipper is now bounded — so when its buffer grows past
+  128 MiB it is killed instead of the application. That is the correct outcome:
+  the container that failed is the container that restarts, and log shipping is
+  the thing you can afford to lose.
+
+
+  **Cap the buffer in the shipper's own configuration too**, if it supports it.
+  An unbounded in-memory buffer on an unreliable upstream is the underlying
+  defect; the cgroup limit turns it into a survivable one rather than fixing it.
+  Since every team inherits this sidecar from a shared chart, this is worth
+  fixing in the chart — the platform ticket was aimed at the wrong problem, but
+  it was aimed at the right team.
+
+
+  **Set `memory.oom.group` on the pod** if your runtime exposes it. A pod whose
+  containers are useless without each other should die as a unit rather than
+  leaving a half-dead container that still passes its liveness probe.
+
+
+  **Then add the alert that was missing.** `oom_kill` had reached 14 before
+  anyone connected it to anything:
+
+
+  ```promql
+  increase(container_oom_events_total[10m]) > 0
+  ```
+
+
+  Label it by container. Fourteen kills is fourteen chances to have seen this,
+  and the counter was sitting there the whole time.
+
+
+  **A note for the review that follows.** A sidecar with no limits, inherited by
+  every team from a shared chart, is a platform-wide version of this bug that
+  happens to have surfaced here first. It is worth checking how many other pods
+  have a limitless sidecar sharing a slice with an application — that query
+  takes minutes and this incident took a week.

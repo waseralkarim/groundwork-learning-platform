@@ -1,0 +1,486 @@
+id: quiz.ports-and-sockets
+topic: topic.ports-and-sockets
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.2.1]
+    stem: What does a port number identify?
+    options:
+      - id: a
+        text: Which socket on a machine a packet belongs to
+        correct: true
+      - id: b
+        text: Which physical network interface the packet arrived on
+        note: >-
+          That is the address's job, and even then an interface can hold several
+          addresses.
+      - id: c
+        text: The type of traffic, so the kernel knows how to handle it
+        note: >-
+          Conventions like 443 meaning HTTPS are conventions only. Nothing stops
+          any application binding any port.
+      - id: d
+        text: A priority level for the packet in the network
+        note: >-
+          Priority is carried in the DSCP field of the IP header and has
+          nothing to do with ports.
+    explanation: >-
+      An address gets a packet to a machine; a port gets it to a socket on that
+      machine. Ports are 16 bits and namespaced per protocol, so TCP 53 and UDP
+      53 are different sockets that different processes could hold — which is
+      exactly what DNS does.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.2.1]
+    stem: >-
+      Why can two different applications both use "port 8080" on one machine
+      without conflict?
+    options:
+      - id: a
+        text: If they bind different addresses — one on 127.0.0.1 and one on 10.0.1.5 — the sockets differ
+        correct: true
+      - id: b
+        text: They cannot; the second bind always fails
+        note: >-
+          It fails only when the full address and port pair collides. Different
+          addresses, same port, is allowed.
+      - id: c
+        text: The kernel time-slices the port between them
+        note: >-
+          There is no sharing mechanism of that kind. A packet is delivered to
+          exactly one socket.
+      - id: d
+        text: One uses TCP and the other UDP, which is the only way
+        note: >-
+          That is one way and not the only one. Binding different addresses with
+          the same protocol also works.
+    explanation: >-
+      A bind claims an address *and* a port, so the uniqueness constraint is on
+      the pair. `127.0.0.1:8080` and `10.0.1.5:8080` are two different sockets.
+      Binding `0.0.0.0:8080` claims every address at once, which is why it
+      conflicts with both.
+
+  - id: q3
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.2.2]
+    stem: Which command shows what is listening, on which address, and which process owns it?
+    options:
+      - id: a
+        text: '`ss -tlnp`'
+        correct: true
+      - id: b
+        text: '`ps aux | grep <service>`'
+        note: >-
+          It shows the process is running, which is a weaker claim. A process
+          can run without ever calling listen.
+      - id: c
+        text: '`ip addr`'
+        note: >-
+          Addresses on interfaces, not sockets. It cannot tell you what is bound
+          to them.
+      - id: d
+        text: '`netstat -r`'
+        note: >-
+          That is the routing table. `netstat -tlnp` would be the old equivalent
+          of the right answer.
+    explanation: >-
+      `-t` TCP, `-l` listening only, `-n` numeric, `-p` processes. It answers
+      three questions in one line: whether anything is bound, on which address,
+      and owned by what — and the middle one is the answer more often than either
+      of the others.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-A03.2.2]
+    stem: >-
+      On a row in state LISTEN, what do the `Recv-Q` and `Send-Q` columns
+      mean?
+    options:
+      - id: a
+        text: Connections waiting to be accepted, and the accept backlog
+        correct: true
+      - id: b
+        text: Bytes received and bytes sent, as on any other socket
+        note: >-
+          That is their meaning on an established socket. On LISTEN the same two
+          columns are reused for something else entirely.
+      - id: c
+        text: Packets dropped in each direction
+        note: >-
+          Drops are counted elsewhere — `ListenOverflows` for the accept queue
+          in particular.
+      - id: d
+        text: Memory allocated to the socket's buffers
+        note: >-
+          Buffer sizes are shown by `ss -m`, and are not these columns.
+    explanation: >-
+      The columns change meaning by state, which catches everyone once. On
+      LISTEN, `Recv-Q` is the number of completed connections the application has
+      not yet accepted and `Send-Q` is the backlog limit. A non-zero `Recv-Q`
+      means the application is not calling `accept()` fast enough, and when it
+      reaches `Send-Q` new connections are dropped silently.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.3]
+    stem: >-
+      A service binds `127.0.0.1:9000`. What happens when a client on another
+      machine connects to `10.0.1.5:9000`?
+    options:
+      - id: a
+        text: Connection refused, immediately — no socket matches that address and port
+        correct: true
+      - id: b
+        text: It connects, because the machine has both addresses
+        note: >-
+          Having the address is not enough. The socket claimed one specific
+          address and the kernel matches against it.
+      - id: c
+        text: It times out, because the packet is silently dropped
+        note: >-
+          A drop produces a timeout; this produces a reset. The distinction is
+          the most useful evidence in the whole scenario.
+      - id: d
+        text: It connects but the service sees the wrong source address
+        note: >-
+          Nothing rewrites addresses here. The connection is refused before any
+          data flows.
+    explanation: >-
+      The socket bound one specific address. A packet for a different address on
+      the same machine matches no socket, so the kernel replies with a TCP reset
+      and the client reports connection refused. The refusal is informative: it
+      proves the packet arrived and was answered, so routing worked and nothing
+      dropped it — the fault is the binding.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.3]
+    stem: >-
+      A container publishes a port with `-p 8080:9000`, the process is running,
+      and connections are refused. What is the most likely cause?
+    options:
+      - id: a
+        text: The process bound 127.0.0.1 inside the container, which nothing outside shares
+        correct: true
+      - id: b
+        text: The port mapping is the wrong way round
+        note: >-
+          Worth checking, and it produces a different symptom: the published
+          port would simply not be the one you expected.
+      - id: c
+        text: The container has no route to the host
+        note: >-
+          Published ports are forwarded into the container, and a missing route
+          would produce a timeout rather than a refusal.
+      - id: d
+        text: The host firewall is blocking port 8080
+        note: >-
+          A firewall drop gives a timeout. A refusal means something answered.
+    explanation: >-
+      A process bound to `127.0.0.1` inside a container is bound to the
+      *container's* loopback, which is in its own network namespace and shared
+      with nothing. The published port dutifully forwards traffic to port 9000 on
+      an address where no socket is listening, so every connection through a
+      correct mapping is refused. The fix is `0.0.0.0` inside the container.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.4]
+    stem: >-
+      A web server has 40000 clients connected to port 443. How is that
+      possible with only 65535 ports?
+    options:
+      - id: a
+        text: A connection is identified by a four-tuple, so the server port is reused for every client
+        correct: true
+      - id: b
+        text: The server opens a new listening port per client behind the scenes
+        note: >-
+          The listener stays on 443. Accepted connections get new sockets, not
+          new ports.
+      - id: c
+        text: The server is using SO_REUSEPORT to share the port between processes
+        note: >-
+          That shares one port between listening processes for load balancing.
+          It is not what allows many clients.
+      - id: d
+        text: Connections are multiplexed over a smaller number of TCP sessions
+        note: >-
+          HTTP/2 does multiplex requests over one connection, and this is true
+          of separate TCP connections regardless.
+    explanation: >-
+      The kernel identifies a connection by source address, source port,
+      destination address and destination port together. Every client's
+      connection has a different source side, so all 40000 are distinct while
+      sharing a destination port. A busy server's limits are file descriptors,
+      memory and CPU — not ports.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.4]
+    stem: >-
+      In `ss` output, how do you tell a listening socket from an established one
+      at a glance?
+    options:
+      - id: a
+        text: The peer column — a listener shows a wildcard, an established socket shows a real address and port
+        correct: true
+      - id: b
+        text: Listening sockets always show port 0 locally
+        note: >-
+          A listener shows the port it bound, which is the whole point of
+          reading the row.
+      - id: c
+        text: Established sockets are always listed first
+        note: >-
+          There is no ordering guarantee, and `ss` groups by state only if you
+          ask it to.
+      - id: d
+        text: Only established sockets have a process listed
+        note: >-
+          `-p` shows the owning process for both, subject to permissions.
+    explanation: >-
+      A listening socket has no peer — that is what LISTEN means — so `ss` shows
+      `0.0.0.0:*`, a wildcard meaning "from any address and any port". An
+      established socket has a full four-tuple with a real peer. The State column
+      says the same thing explicitly; the peer column is the one that makes it
+      obvious when scanning.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.5]
+    stem: Where does the source port of an outbound connection come from?
+    options:
+      - id: a
+        text: The kernel picks one from `ip_local_port_range`, usually 32768–60999
+        correct: true
+      - id: b
+        text: The application chooses it, usually matching the destination port
+        note: >-
+          An application *may* bind a source port and almost never does. Left
+          alone, the kernel chooses.
+      - id: c
+        text: It is always the same as the destination port
+        note: >-
+          That would make it impossible to hold two connections to the same
+          service from one client.
+      - id: d
+        text: It is negotiated with the server during the handshake
+        note: >-
+          The source port is in the very first SYN. There is nothing to
+          negotiate.
+    explanation: >-
+      The kernel allocates an ephemeral port from a configurable range — about
+      28000 ports by default, not the 65535 people quote. The range matters
+      because it overlaps the registered range: a service listening on 40000 can
+      find its port already taken by an outbound connection.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.5]
+    stem: >-
+      A client is exhausting ephemeral ports. What is the real constraint, and
+      what usually fixes it?
+    options:
+      - id: a
+        text: The limit is per destination address and port; the fix is connection reuse, not a wider range
+        correct: true
+      - id: b
+        text: The limit is 65535 connections per client; the fix is more client machines
+        note: >-
+          The range is about 28000 by default, and it binds per destination
+          rather than per client.
+      - id: c
+        text: The limit is the number of file descriptors; the fix is raising ulimit
+        note: >-
+          Descriptors are a separate real limit that produces a different error.
+          Port exhaustion has its own.
+      - id: d
+        text: The limit is TIME-WAIT sockets; the fix is enabling tcp_tw_recycle
+        note: >-
+          TIME-WAIT does consume tuples, and `tcp_tw_recycle` was removed from
+          Linux for breaking clients behind NAT.
+    explanation: >-
+      The four-tuple only has to be unique overall, so the same source port can
+      serve a different destination. Exhaustion therefore requires tens of
+      thousands of connections to *one* destination — which means short-lived
+      connections that should have been reused. Connection pooling or keep-alive
+      fixes the cause; widening the range postpones it and leaves the TIME-WAIT
+      accumulation intact.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.6]
+    stem: A machine has thousands of sockets in TIME-WAIT. What should you do?
+    options:
+      - id: a
+        text: Nothing — it is the expected result of closing many connections, and they expire in about a minute
+        correct: true
+      - id: b
+        text: Enable `tcp_tw_recycle` to clear them faster
+        note: >-
+          That option was removed from Linux because it broke connections from
+          clients behind NAT. Reaching for it signals a misdiagnosis.
+      - id: c
+        text: Restart the service to release them
+        note: >-
+          They belong to the kernel, not the process, and survive a restart.
+          They expire on their own.
+      - id: d
+        text: Widen the ephemeral port range to compensate
+        note: >-
+          Occasionally useful under genuine exhaustion, and not a response to
+          TIME-WAIT existing.
+    explanation: >-
+      TIME-WAIT is held by whichever side closed first, for about twice the
+      maximum segment lifetime, so that a delayed duplicate from the old
+      connection cannot be mistaken for part of a new one reusing the same tuple.
+      It is correct behaviour and it expires by itself. If the count is genuinely
+      causing exhaustion, the answer is fewer connections — pooling — not faster
+      recycling.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.6]
+    stem: A service has a growing number of sockets in CLOSE-WAIT. What does that mean?
+    options:
+      - id: a
+        text: The application is not calling `close()` — a file descriptor leak in your own code
+        correct: true
+      - id: b
+        text: The peer is slow to close, and it will resolve itself
+        note: >-
+          The peer has already closed; that is what put the socket in this
+          state. The local side is the one holding it.
+      - id: c
+        text: The network is dropping the final packets of the handshake
+        note: >-
+          No packet is outstanding. The kernel is waiting on a local system
+          call, not on the network.
+      - id: d
+        text: The kernel is running out of memory for socket buffers
+        note: >-
+          That produces different errors entirely, and would not concentrate in
+          one state.
+    explanation: >-
+      CLOSE-WAIT means the peer sent a FIN and the local application has not
+      called `close()`. The kernel cannot proceed and there is no timeout, so the
+      socket — and its file descriptor — is held until the process closes it or
+      exits. A count that only rises ends with the process hitting
+      `RLIMIT_NOFILE` and failing in ways that look nothing like a socket leak.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.7]
+    stem: >-
+      Which tells you more about the network path: "connection refused" or
+      "connection timed out"?
+    options:
+      - id: a
+        text: Refused — the packet arrived and was answered, so routing and firewalls are all working
+        correct: true
+      - id: b
+        text: Timed out, because it means the packet was definitely delivered
+        note: >-
+          It means nothing came back. Whether the packet arrived is exactly what
+          you do not know.
+      - id: c
+        text: They carry the same information; only the wording differs
+        note: >-
+          They are produced by completely different events — an active reset
+          versus silence.
+      - id: d
+        text: Refused, because it proves the service has crashed
+        note: >-
+          It proves nothing is bound to that address and port. The service may
+          never have started, or bound elsewhere.
+    explanation: >-
+      A refusal is a TCP reset: the machine received the SYN and actively
+      answered. That eliminates routing, firewall drops and host availability in
+      one observation, leaving a binding or a missing process. A timeout
+      eliminates nothing — it is consistent with a firewall, a wrong route, or a
+      dead host. The timing corroborates it: refusals come back in milliseconds,
+      timeouts take seconds.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.8]
+    stem: >-
+      A process is in `ps`, nothing is in `ss -tlnp` for its port, and clients
+      are refused. What is the diagnosis?
+    options:
+      - id: a
+        text: The process never called `listen()` — running and listening are different things
+        correct: true
+      - id: b
+        text: '`ss` cannot see the socket because it belongs to another user'
+        note: >-
+          Without `-p` and permissions `ss` hides the *process name*, and the
+          socket row itself is still listed.
+      - id: c
+        text: The socket exists but is in a state `ss` does not display by default
+        note: >-
+          `-l` shows listening sockets, and `-a` would show every state. A bound
+          socket appears in one of them.
+      - id: d
+        text: The kernel is dropping the connections before they reach the socket
+        note: >-
+          Then the client would time out rather than be refused, and something
+          would be bound to see.
+    explanation: >-
+      A process in the process table has proved only that it started. Binding and
+      listening are separate steps it may never have reached — a crash during
+      start-up, a configuration error, or a path that returned early. This is why
+      a health check that greps `ps`, or that only tests whether PID 1 is alive,
+      reports such a service healthy forever.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-A03.2.8]
+    stem: >-
+      A server looks healthy — low CPU, no errors — and clients report
+      intermittent timeouts on connect. Which counter would explain it?
+    options:
+      - id: a
+        text: '`ListenOverflows` — the accept queue filled and connections were dropped silently'
+        correct: true
+      - id: b
+        text: '`OutRsts` — the machine is sending resets'
+        note: >-
+          Resets produce *refusals*, not timeouts, and they arrive immediately.
+          Worth watching for other reasons.
+      - id: c
+        text: '`RetransSegs` — segments are being retransmitted'
+        note: >-
+          A real signal for a lossy path, and it would usually show as slowness
+          on established connections rather than failures to connect.
+      - id: d
+        text: '`AttemptFails` — outbound connections from this machine failed'
+        note: >-
+          That counts connections *this* machine initiated. The problem here is
+          inbound.
+    explanation: >-
+      When the accept queue fills — because the application is not calling
+      `accept()` fast enough — new connections are dropped without a reset. The
+      client sees a timeout and the server has no error to report, because from
+      its point of view nothing happened. `ListenOverflows` is the only place it
+      is recorded, and it is the counter most often missing from a dashboard.
+      Raising the backlog buys queueing, not throughput.

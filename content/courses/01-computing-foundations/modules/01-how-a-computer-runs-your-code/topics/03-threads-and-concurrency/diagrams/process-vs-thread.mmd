@@ -1,0 +1,16 @@
+graph TB
+    subgraph P1["Process 4211 · one address space"]
+        MEM["heap · globals · open files<br/>SHARED by every thread"]
+        T1["thread 4211<br/>own stack, own registers"]
+        T2["thread 4218<br/>own stack, own registers"]
+        T3["thread 4219<br/>own stack, own registers"]
+        T1 --> MEM
+        T2 --> MEM
+        T3 --> MEM
+    end
+    subgraph P2["Process 4300 · a different address space"]
+        MEM2["its own heap and globals"]
+        T4["thread 4300"]
+        T4 --> MEM2
+    end
+    P1 -.->|"cannot see each other's memory"| P2

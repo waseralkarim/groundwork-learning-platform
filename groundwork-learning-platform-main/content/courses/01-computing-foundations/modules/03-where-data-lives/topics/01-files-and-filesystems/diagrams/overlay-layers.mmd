@@ -1,0 +1,14 @@
+graph TB
+    subgraph container["What the container sees at /"]
+        MERGED["merged view"]
+    end
+    UPPER["upperdir · this container's writes<br/>empty at start, discarded at exit"] --> MERGED
+    L1["layer: your application"] --> MERGED
+    L2["layer: pip/npm install"] --> MERGED
+    L3["layer: apt-get install"] --> MERGED
+    L4["layer: debian base"] --> MERGED
+    L1 -.->|"read-only, shared by every<br/>container from this image"| SHARED["one copy on the host"]
+    L2 -.-> SHARED
+    L3 -.-> SHARED
+    L4 -.-> SHARED
+    MERGED -->|"write to an existing file"| COW["copy-up: the whole file is<br/>copied into upperdir first"]

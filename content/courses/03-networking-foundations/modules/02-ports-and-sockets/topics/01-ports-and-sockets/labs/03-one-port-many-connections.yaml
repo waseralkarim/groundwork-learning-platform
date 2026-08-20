@@ -1,0 +1,295 @@
+id: lab.one-port-many-connections
+topic: topic.ports-and-sockets
+title: Open several connections to one port and watch the tuples
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A03.2.4, OBJ-A03.2.5, OBJ-A03.2.6]
+
+intro: >-
+  A server does not run out of port 443. Understanding why is the difference
+  between guessing at connection limits and knowing them.
+
+
+  You will open several simultaneous connections to a single listening port and
+  read the four-tuples that distinguish them, watch the kernel allocate
+  ephemeral ports from a range you can read, decode the same sockets out of
+  `/proc/net/tcp` in hexadecimal, and then close a connection and find it sitting
+  in TIME-WAIT afterwards.
+
+
+  Because both ends are in this container, you can see both halves of every
+  connection at once — which is not usually possible.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Start a listener on `127.0.0.1` port 9200 that stays up across multiple
+      connections, and confirm it is listening. Save the row to
+      /tmp/answer-listener.
+    hint: "`nohup nc -l -k 127.0.0.1 9200 >/dev/null 2>&1 &` — the `-k` keeps it alive."
+    walkthrough: |
+      nohup nc -l -k 127.0.0.1 9200 >/dev/null 2>&1 &
+      sleep 1
+      ss -tln | grep ':9200' > /tmp/answer-listener
+      cat /tmp/answer-listener
+    verify:
+      - type: file_matches
+        path: /tmp/answer-listener
+        pattern: 'LISTEN.*127\.0\.0\.1:9200'
+        describe: One listening socket, on one port
+
+  - id: s2
+    instruction: >-
+      Read the range the kernel picks source ports from, and save it to
+      /tmp/answer-range along with how many ports that is.
+    hint: "`/proc/sys/net/ipv4/ip_local_port_range` has two numbers."
+    walkthrough: |
+      read -r lo hi < /proc/sys/net/ipv4/ip_local_port_range
+      {
+        echo "range=$lo-$hi"
+        echo "count=$((hi - lo + 1))"
+      } > /tmp/answer-range
+      cat /tmp/answer-range
+    verify:
+      - type: file_matches
+        path: /tmp/answer-range
+        pattern: 'range=[0-9]+-[0-9]+'
+        describe: The ephemeral port range was read
+      - type: command_exit
+        command: "awk -F= '/count/ { exit ($2 > 10000 && $2 < 65536) ? 0 : 1 }' /tmp/answer-range"
+        exit_code: 0
+        describe: Which is a good deal fewer than 65535
+
+  - id: s3
+    instruction: >-
+      Open three simultaneous connections to that one port and hold them open,
+      then save every socket involving port 9200 to /tmp/answer-tuples.
+    hint: >-
+      Bash can open a TCP connection with `exec 3<>/dev/tcp/127.0.0.1/9200`.
+      Open three in background subshells that sleep, then run `ss -tn`.
+    walkthrough: |
+      for i in 1 2 3; do
+        ( exec 3<>/dev/tcp/127.0.0.1/9200; sleep 8 ) &
+      done
+      sleep 2
+      ss -tn | grep ':9200' > /tmp/answer-tuples
+      cat /tmp/answer-tuples
+    verify:
+      - type: command_exit
+        command: "test $(grep -c ':9200' /tmp/answer-tuples) -ge 6"
+        exit_code: 0
+        describe: Six rows — three connections, both ends of each, all in this namespace
+      - type: file_matches
+        path: /tmp/answer-tuples
+        pattern: '127\.0\.0\.1:9200'
+        describe: Every one of them involves the same server port
+
+  - id: s4
+    instruction: >-
+      Extract just the client-side source ports from those rows and save them,
+      sorted, to /tmp/answer-clientports.
+
+
+      They should all be different, and all inside the range from step 2.
+    hint: >-
+      The client rows are the ones whose *peer* is port 9200; their local port
+      is the ephemeral one. Count fields from the end — `ss` adds a State column
+      for some filters and not others, so fixed field numbers break.
+    walkthrough: |
+      awk '$NF ~ /:9200$/ { split($(NF-1), a, ":"); print a[2] }' /tmp/answer-tuples | sort -n | uniq > /tmp/answer-clientports
+      cat /tmp/answer-clientports
+    verify:
+      - type: command_exit
+        command: "test $(wc -l < /tmp/answer-clientports) -ge 3"
+        exit_code: 0
+        describe: Three distinct source ports
+      - type: command_exit
+        command: "awk 'NR==FNR { lo=$1; hi=$2; next } { if ($1 < lo || $1 > hi) exit 1 } END { exit 0 }' /proc/sys/net/ipv4/ip_local_port_range /tmp/answer-clientports"
+        exit_code: 0
+        describe: All of them inside the ephemeral range the kernel advertised
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-why-distinct what makes those three connections
+      distinct to the kernel, given that they share three of their four numbers.
+    hint: >-
+      Name all four components of the identity, and say which one differs.
+    walkthrough: |
+      echo "a connection is identified by the four tuple of source address, source port, destination address and destination port; all three share the source address, destination address and destination port, and the kernel tells them apart by the source port alone, which is why one listening port can serve many clients at once" > /tmp/answer-why-distinct
+    verify:
+      - type: file_matches
+        path: /tmp/answer-why-distinct
+        pattern: "four|4.tuple|source port"
+        describe: You named the four-tuple
+      - type: command_exit
+        command: "test $(wc -w < /tmp/answer-why-distinct) -ge 20"
+        exit_code: 0
+        describe: You wrote a real explanation
+
+  - id: s6
+    instruction: >-
+      The same sockets are in /proc/net/tcp, in hexadecimal. Save the lines
+      mentioning port 9200 to /tmp/answer-hex.
+
+
+      Port 9200 in hex is 0x23F0.
+    hint: >-
+      `grep -i 23F0 /proc/net/tcp`. Addresses are little-endian hex; ports are
+      big-endian hex.
+    walkthrough: |
+      grep -i '23F0' /proc/net/tcp > /tmp/answer-hex
+      cat /tmp/answer-hex
+      echo "0100007F is 127.0.0.1 read backwards; 23F0 is 9200; st 0A is LISTEN and 01 is ESTABLISHED"
+    verify:
+      - type: file_matches
+        path: /tmp/answer-hex
+        pattern: '0100007F:23F0'
+        describe: 127.0.0.1 little-endian, port 9200 big-endian
+      - type: command_exit
+        command: "test $(wc -l < /tmp/answer-hex) -ge 3"
+        exit_code: 0
+        describe: The listener and the connections are all there
+
+  - id: s7
+    instruction: >-
+      Open one more connection and let it close immediately, then look for
+      sockets in TIME-WAIT involving port 9200 and save them to
+      /tmp/answer-timewait.
+    hint: >-
+      `( exec 3<>/dev/tcp/127.0.0.1/9200 )` opens and closes in one go. Then
+      `ss -tan state time-wait`.
+    walkthrough: |
+      # open one connection and let it close immediately — the side that closes
+      # first is the one that holds TIME-WAIT, and here that is us
+      ( exec 3<>/dev/tcp/127.0.0.1/9200 )
+      sleep 1
+      ss -tan state time-wait | grep ':9200' > /tmp/answer-timewait
+      cat /tmp/answer-timewait
+      echo "count: $(wc -l < /tmp/answer-timewait)"
+    verify:
+      - type: command_exit
+        command: "test $(wc -l < /tmp/answer-timewait) -ge 1"
+        exit_code: 0
+        describe: At least one socket is in TIME-WAIT after closing
+      - type: file_matches
+        path: /tmp/answer-timewait
+        pattern: '127\.0\.0\.1:9200'
+        describe: And it still names the four-tuple it is holding
+
+  - id: s8
+    instruction: >-
+      Last one. Write to /tmp/answer-two-states the difference between TIME-WAIT
+      and CLOSE-WAIT — which side each is on, whether it expires, and which one
+      is a bug.
+    hint: >-
+      One is held by whichever side closed first. The other is held by a side
+      that has *not* closed.
+    walkthrough: |
+      {
+        echo "time-wait is on whichever side closed first, is held about 60 seconds so late duplicate packets cannot be mistaken for a new connection using the same tuple, expires by itself, and thousands of them on a busy client are normal"
+        echo "close-wait is on the side that has not closed: the peer sent a fin and the local application has not called close, so it never expires on its own and a growing count is a file descriptor leak in your own code"
+      } > /tmp/answer-two-states
+      cat /tmp/answer-two-states
+    verify:
+      - type: file_matches
+        path: /tmp/answer-two-states
+        pattern: "time-wait.*closed first|closed first"
+        describe: TIME-WAIT belongs to the side that closed first
+      - type: file_matches
+        path: /tmp/answer-two-states
+        pattern: "leak|bug|not called close|has not closed"
+        describe: And CLOSE-WAIT is the application's bug
+
+solution: |
+  ```bash
+  nohup nc -l -k 127.0.0.1 9200 >/dev/null 2>&1 &
+  cat /proc/sys/net/ipv4/ip_local_port_range          # 32768 60999
+
+  for i in 1 2 3; do ( exec 3<>/dev/tcp/127.0.0.1/9200; sleep 8 ) & done
+  ss -tn | grep :9200
+  grep -i 23F0 /proc/net/tcp
+  ss -tan state time-wait | grep :9200
+  ```
+
+  **What you just observed.**
+
+  ```text
+  127.0.0.1:9200   127.0.0.1:41338      <- server side of connection 1
+  127.0.0.1:41338  127.0.0.1:9200       <- client side of the same connection
+  127.0.0.1:9200   127.0.0.1:41352
+  127.0.0.1:41352  127.0.0.1:9200
+  127.0.0.1:9200   127.0.0.1:41366
+  127.0.0.1:41366  127.0.0.1:9200
+  ```
+
+  Six rows for three connections, because both ends are in this container's
+  network namespace and `ss` shows every socket in it. That is unusual and
+  useful: you are seeing both halves of each connection at once.
+
+  **Three connections, one server port, all distinct.** They share the source
+  address, the destination address and the destination port. Only the source
+  port differs, and the four-tuple — source address, source port, destination
+  address, destination port — is what identifies a connection. That is the whole
+  reason a server does not "run out of port 443": each accepted connection gets
+  its own socket with a full tuple, and the listener goes back to waiting.
+
+  A busy server's limits are file descriptors, memory and CPU. Not ports.
+
+  **The client's limit is the interesting one**, and it is smaller than people
+  say and larger than they fear. The range is about 28000 ports, not 65535 — and
+  it binds *per destination*, because the tuple only has to be unique overall. A
+  client can hold 28000 connections to one server and another 28000 to a
+  different one simultaneously.
+
+  So running out of ephemeral ports is a real and specific failure: one client
+  making tens of thousands of short-lived connections to one destination. The
+  fix is connection pooling or keep-alive, not a wider range — and note that
+  every one of those closed connections also leaves a TIME-WAIT for a minute,
+  which is the thing that actually consumes the tuple.
+
+  **The hex is `ss`'s own data source.**
+
+  ```text
+  0100007F:23F0 00000000:0000 0A     <- LISTEN, 127.0.0.1:9200, no peer
+  0100007F:23F0 0100007F:A17A 01     <- ESTABLISHED
+  ```
+
+  Addresses are little-endian hex — `0100007F` read backwards is `7F.00.00.01`,
+  `127.0.0.1` — and ports are big-endian, so `23F0` is 9200. The `st` column is
+  the state: `0A` LISTEN, `01` ESTABLISHED, `06` TIME-WAIT. You would normally
+  use `ss`, and knowing where it reads from matters the day you are in a
+  container that has `cat` and nothing else.
+
+  **TIME-WAIT is on the side that closed first**, and it is correct. The tuple is
+  held for about sixty seconds so that a delayed duplicate from the old
+  connection cannot be mistaken for part of a new one reusing the same numbers.
+  Thousands of them on a busy client are expected, and they expire by
+  themselves.
+
+  There is a great deal of advice online about eliminating them with
+  `tcp_tw_recycle`. That option was **removed from Linux** because it broke
+  connections from clients behind NAT, and reaching for it is a reliable sign
+  that something else has been misdiagnosed.
+
+  **CLOSE-WAIT is the opposite in every respect:**
+
+  | | TIME-WAIT | CLOSE-WAIT |
+  |---|---|---|
+  | Which side | The one that closed **first** | The one that has **not** closed |
+  | Expires? | Yes, ~60s | **No** — waits for the application |
+  | Normal? | Yes, on a busy client | **Never**, if the count grows |
+  | Fix | None needed | Call `close()`. It is your bug |
+
+  Each `CLOSE-WAIT` socket holds a file descriptor that is never released, so the
+  count only rises until the process hits `RLIMIT_NOFILE` and can no longer open
+  anything at all — which presents as failures that look nothing like a socket
+  leak.
+
+  ```bash
+  ss -tan state close-wait          # if this is large and growing, it is your code
+  ```

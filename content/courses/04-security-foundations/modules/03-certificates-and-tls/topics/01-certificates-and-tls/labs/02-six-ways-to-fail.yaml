@@ -1,0 +1,297 @@
+id: lab.six-ways-to-fail
+topic: topic.certificates-and-tls
+title: Produce every verification failure, and read the code rather than guess
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A04.3.4, OBJ-A04.3.5]
+
+intro: >-
+  /tmp/broken holds six certificates. All six claim to be `lab.internal` — one of
+  them is lying about even that — and exactly one is entirely correct.
+
+
+  You will verify all six twice: once checking only the chain, and once also
+  checking the hostname. The difference between those two passes is a lesson in
+  itself, and one of the six will pass both while still being broken.
+
+setup:
+  - /opt/lab/seed-tls.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read /tmp/broken/README.txt, then verify all six certificates against the
+      root with the intermediate supplied — chain only, no hostname check. Save
+      the table to /tmp/answer-chain-pass.
+    hint: >-
+      `openssl verify -CAfile root.crt -untrusted int.crt <cert>` in a loop.
+      Capture the error code line, not just pass or fail.
+    walkthrough: |
+      cd /tmp/broken
+      cat README.txt
+      {
+        for c in good expired selfsigned wrongname cnonly unknownca; do
+          printf '%-12s ' "$c"
+          openssl verify -CAfile root.crt -untrusted int.crt "$c.crt" 2>&1 \
+            | grep -oE "OK|error [0-9]+ at [0-9]+ depth lookup: .*" | head -1
+        done
+      } > /tmp/answer-chain-pass
+      cat /tmp/answer-chain-pass
+    verify:
+      - type: file_matches
+        path: /tmp/answer-chain-pass
+        pattern: "expired *error 10"
+        describe: The expired certificate reported code 10
+      - type: file_matches
+        path: /tmp/answer-chain-pass
+        pattern: "selfsigned *error 18"
+        describe: The self-signed one reported code 18
+      - type: file_matches
+        path: /tmp/answer-chain-pass
+        pattern: "unknownca *error 20"
+        describe: And the one from an unknown issuer reported code 20
+      - type: command_exit
+        command: "test $(grep -c 'OK' /tmp/answer-chain-pass) -eq 3"
+        exit_code: 0
+        describe: Three of the six passed a chain-only check
+
+  - id: s2
+    instruction: >-
+      Three passed. Verify those three again, this time adding
+      `-verify_hostname lab.internal`, and save the result to
+      /tmp/answer-hostname-pass.
+    hint: >-
+      The name check is separate from the chain check and is skipped unless you
+      ask for it. One of the three will now fail.
+    walkthrough: |
+      cd /tmp/broken
+      {
+        for c in good wrongname cnonly; do
+          printf '%-12s ' "$c"
+          openssl verify -CAfile root.crt -untrusted int.crt -verify_hostname lab.internal "$c.crt" 2>&1 \
+            | grep -oE "OK|error [0-9]+ at [0-9]+ depth lookup: .*" | head -1
+        done
+        echo
+        echo "the chain check and the name check are separate. a certificate that openssl verify calls OK can still be rejected by every real client, because a real client always checks the name."
+      } > /tmp/answer-hostname-pass
+      cat /tmp/answer-hostname-pass
+    verify:
+      - type: file_matches
+        path: /tmp/answer-hostname-pass
+        pattern: "wrongname *error 62"
+        describe: The hostname check exposed a fault the chain check missed
+      - type: file_matches
+        path: /tmp/answer-hostname-pass
+        pattern: "good *OK"
+        describe: And the correct certificate still passes
+      - type: file_matches
+        path: /tmp/answer-hostname-pass
+        pattern: "separate"
+        describe: And you recorded that the two checks are independent
+
+  - id: s3
+    instruction: >-
+      Two certificates still pass both checks, and only one of them is correct.
+      Compare their extensions and save the difference to /tmp/answer-hidden.
+    hint: >-
+      Look at `subjectAltName` on each. One of them does not have one — and
+      OpenSSL verified it against the hostname anyway.
+    walkthrough: |
+      cd /tmp/broken
+      {
+        for c in good cnonly; do
+          echo "== $c"
+          openssl x509 -in "$c.crt" -noout -subject
+          echo -n "  SAN: "
+          openssl x509 -in "$c.crt" -noout -ext subjectAltName 2>&1 | tail -1
+        done
+        echo
+        echo "cnonly has no subjectAltName at all. openssl still verified it against lab.internal, because it falls back to the common name when no SAN is present."
+        echo "browsers do not. chrome has required a SAN since 2017, so this certificate is valid to openssl and to curl, and invalid to every browser."
+        echo "verification is policy, not arithmetic: the signature check is identical everywhere, and the rules about what counts as a name are decisions each verifier makes."
+      } > /tmp/answer-hidden
+      cat /tmp/answer-hidden
+    verify:
+      - type: file_matches
+        path: /tmp/answer-hidden
+        pattern: "No extensions in certificate|SAN: *$"
+        describe: You found the certificate with no subject alternative name
+      - type: file_matches
+        path: /tmp/answer-hidden
+        pattern: "(?i)falls back to the common name|common name"
+        describe: And identified why OpenSSL accepted it anyway
+      - type: file_matches
+        path: /tmp/answer-hidden
+        pattern: "(?i)policy, not arithmetic|browsers do not"
+        describe: And that a different verifier reaches a different verdict
+
+  - id: s4
+    instruction: >-
+      Confirm the codes against a live server rather than a file. Serve the
+      expired certificate and the self-signed one, connect to each, and save the
+      `Verify return code` lines to /tmp/answer-live.
+    hint: >-
+      `/tmp/serve-tls <port> <cert> <key> [chain]` starts a server. Connect with
+      `openssl s_client -connect 127.0.0.1:<port> -CAfile root.crt </dev/null`.
+    walkthrough: |
+      cd /tmp/broken
+      /tmp/serve-tls 4461 expired.crt expired.key int.crt >/dev/null
+      /tmp/serve-tls 4462 selfsigned.crt selfsigned.key >/dev/null
+      /tmp/serve-tls 4463 good.crt good.key int.crt >/dev/null
+      {
+        for p in 4461:expired 4462:selfsigned 4463:good; do
+          port=${p%%:*}; name=${p##*:}
+          printf '%-12s ' "$name"
+          openssl s_client -connect "127.0.0.1:$port" -CAfile root.crt </dev/null 2>&1 \
+            | grep -m1 "Verify return code"
+        done
+      } > /tmp/answer-live
+      cat /tmp/answer-live
+    verify:
+      - type: file_matches
+        path: /tmp/answer-live
+        pattern: "expired *Verify return code: 10"
+        describe: The live handshake reported the same code as the file check
+      - type: file_matches
+        path: /tmp/answer-live
+        pattern: "good *Verify return code: 0"
+        describe: And the correct certificate verified against a real connection
+
+  - id: s5
+    instruction: >-
+      Write the diagnosis table to /tmp/answer-table: for each of the six, the
+      code it produced and the fix that specifically addresses it. Say which fix
+      is wrong for every one of them.
+    hint: >-
+      Six faults, six different fixes. There is one thing people reach for that
+      appears to fix all six and fixes none.
+    walkthrough: |
+      {
+        echo "good        code 0   nothing to fix"
+        echo "expired     code 10  renew it, and automate renewal so it does not recur"
+        echo "selfsigned  code 18  add that certificate to the client trust store, or obtain one from a ca the client already trusts"
+        echo "unknownca   code 20  the issuer is not known to the client - either serve the intermediate that chains to a trusted root, or trust the issuing root deliberately"
+        echo "wrongname   code 62  connect by a name in the SAN, or reissue the certificate with the name you actually use"
+        echo "cnonly      code 0   reissue with a subjectAltName - openssl accepts it and browsers do not, so nothing in this output would have told you"
+        echo
+        echo "the fix that is wrong for all six: -k, --insecure, verify=False, insecureSkipTLSVerify. none of these trusts the certificate in front of you - they stop verifying anything at all, on that connection, permanently. any certificate from anyone is then accepted, including from someone sitting between you and the server. the encryption remains and the assurance about who you are talking to is gone, which was the part doing the work."
+      } > /tmp/answer-table
+      cat /tmp/answer-table
+    verify:
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "expired *code 10"
+        describe: You matched each certificate to its code
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "(?i)renew"
+        describe: And gave expiry a fix that addresses expiry
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "(?i)subjectaltname|reissue with a subject"
+        describe: And caught that the CN-only certificate needs reissuing despite passing
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "(?i)insecure|verify=False|-k"
+        describe: And named the workaround that appears to fix all six
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "(?i)stop verifying|any certificate from anyone"
+        describe: And stated precisely what that workaround actually does
+
+solution: >-
+  **Two passes, and the difference is the lesson.**
+
+
+  Chain only — three failures:
+
+
+  ```text
+  expired      error 10  certificate has expired
+  selfsigned   error 18  self-signed certificate
+  unknownca    error 20  unable to get local issuer certificate
+  ```
+
+
+  Then the same three that passed, with the hostname checked — and one of them
+  falls over:
+
+
+  ```text
+  wrongname    error 62  hostname mismatch
+  ```
+
+
+  `wrongname` has a flawless chain and valid dates. Its SAN says
+  `other.internal`. `openssl verify` calls it `OK` unless you ask for the name
+  check, and **every real client always checks the name** — so a verification
+  that omits `-verify_hostname` is not testing what your users experience.
+
+
+  That is the first thing to carry out of this lab: the chain check and the name
+  check are separate, and only one of them is on by default.
+
+
+  **The one that passes everything and is still wrong.**
+
+
+  `cnonly` returns `OK` from both passes. It has `CN=lab.internal` and **no
+  subjectAltName at all**, and OpenSSL falls back to the Common Name when no SAN
+  is present.
+
+
+  Browsers do not. Chrome has required a SAN since 2017. So this certificate is
+  valid to `curl`, valid to `openssl`, valid to your monitoring check, and
+  invalid to every human visitor — and nothing in any output you just produced
+  would tell you.
+
+
+  **Verification is policy, not arithmetic.** The signature check is mathematics
+  and is identical everywhere. Whether a CN fallback is permitted, whether SHA-1
+  is acceptable, what maximum lifetime is allowed, whether Certificate
+  Transparency is required — those are decisions each verifier makes
+  independently. When two clients disagree about one certificate, neither is
+  broken; their policies differ.
+
+
+  This is also why the reflex "check it with curl" is not sufficient. It answers
+  a different question from the one your users are asking.
+
+
+  **Six codes, six fixes.**
+
+
+  | Fault | Code | Fix |
+  |---|---|---|
+  | expired | 10 | Renew, and automate it |
+  | self-signed | 18 | Trust that certificate, or get one from a trusted CA |
+  | unknown issuer | 20 | Serve the intermediate, or trust the root deliberately |
+  | wrong name | 62 | Use a name in the SAN, or reissue with the right one |
+  | no SAN | 0 | Reissue with `subjectAltName` — nothing here flags it |
+  | correct | 0 | — |
+
+
+  Notice how little the fixes have in common. Renewing a certificate with a
+  hostname mismatch achieves nothing. Adding an intermediate does not help an
+  expired one. **The code is the diagnosis**, and reading it takes a second.
+
+
+  **And the fix that is wrong for all of them.**
+
+
+  `-k`, `--insecure`, `verify=False`, `insecureSkipTLSVerify: true`. Each one
+  makes every fault in this lab disappear, and none of them trusts the
+  certificate in front of you. They stop verification entirely, on that
+  connection, permanently — any certificate from anyone is accepted, including
+  from somebody sitting between you and the server.
+
+
+  The traffic is still encrypted. It is encrypted to whoever answered, which is
+  the assurance you had actually been relying on.
+
+
+  They are fine for sixty seconds while you test a hypothesis. They are a
+  disaster when they survive into a manifest, because they fail silently forever:
+  everything works, and nothing ever alerts.

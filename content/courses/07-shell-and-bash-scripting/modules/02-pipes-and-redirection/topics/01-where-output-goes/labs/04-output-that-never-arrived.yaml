@@ -1,0 +1,375 @@
+id: lab.output-that-never-arrived
+topic: topic.where-output-goes
+title: "Challenge: output that is produced but does not appear"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.2.6, OBJ-B08.2.8]
+
+intro: >-
+  `/tmp/pipes/drip` emits one line per second and stamps each with the time it
+  was produced. `/tmp/pipes/stamp` reports when each line **arrived**.
+
+
+  Put a filter between them and the two sets of timestamps stop agreeing.
+  Nothing is dropped, nothing errors, and the program is behaving correctly.
+
+
+  Find out what is holding the lines, prove it, fix it, and then decide what a
+  scheduled job's logging should look like given what you have learned.
+
+setup:
+  - /opt/lab/seed-pipes.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Establish a baseline: run drip straight into stamp with nothing between
+      them, and confirm emission and arrival agree. Save to /tmp/answer-baseline.
+    walkthrough: |
+      cd /tmp/pipes
+      {
+        echo "drip straight into stamp, no filter between:"
+        S=$(date +%s)
+        DRIP_START=$S STAMP_START=$S ./drip 3 | ./stamp | sed 's/^/  /'
+        echo
+        echo "emitted and arrived agree: each line shows up when it was produced. so the pipe itself does not delay anything - it is not a buffer that holds data back on its own."
+      } > /tmp/answer-baseline
+      cat /tmp/answer-baseline
+    verify:
+      - type: file_matches
+        path: /tmp/answer-baseline
+        pattern: "arrived \\+0s : line 1"
+        describe: The first line arrived immediately
+      - type: file_matches
+        path: /tmp/answer-baseline
+        pattern: "arrived \\+[1-9][0-9]*s : line 3"
+        describe: And the third arrived later, so the stream was spread out
+      - type: file_matches
+        path: /tmp/answer-baseline
+        pattern: "(?i)does not delay"
+        describe: And you established the pipe is not the cause
+
+  - id: s2
+    instruction: >-
+      Now put grep between them. Record what changes, and be precise about what
+      is and is not lost. Save to /tmp/answer-delayed.
+    hint: >-
+      Compare the emitted times with the arrival times line by line.
+    walkthrough: |
+      cd /tmp/pipes
+      {
+        echo "with grep between drip and stamp:"
+        S=$(date +%s)
+        DRIP_START=$S STAMP_START=$S ./drip 3 | grep . | ./stamp | sed 's/^/  /'
+        echo
+        echo "every line was EMITTED on time - +0s, +1s, +2s - and every line ARRIVED at +3s, together, at the very end."
+        echo
+        echo "nothing was lost. all three lines are present, in order, with their original content intact. no error was printed and grep exited 0."
+        echo
+        echo "what changed is only WHEN they appeared, and they appeared when grep exited."
+      } > /tmp/answer-delayed
+      cat /tmp/answer-delayed
+    verify:
+      - type: file_matches
+        path: /tmp/answer-delayed
+        pattern: "arrived \\+[3-9][0-9]*s : line 1 emitted at \\+0s"
+        describe: A line emitted at +0s arrived at +3s
+      - type: file_matches
+        path: /tmp/answer-delayed
+        pattern: "arrived \\+[3-9][0-9]*s : line 3"
+        describe: And all three arrived together
+      - type: file_matches
+        path: /tmp/answer-delayed
+        pattern: "(?i)nothing was lost"
+        describe: And you established nothing was dropped
+      - type: file_matches
+        path: /tmp/answer-delayed
+        pattern: "(?i)when grep exited"
+        describe: And when the output was released
+
+  - id: s3
+    instruction: >-
+      Explain the cause, and prove it by making the same pipeline stream
+      correctly in two different ways. Save to /tmp/answer-cause.
+    walkthrough: |
+      cd /tmp/pipes
+      {
+        echo "the cause: the C standard library chooses a buffering mode based on WHAT STDOUT IS CONNECTED TO."
+        echo
+        echo "  connected to a terminal -> line-buffered, flushed at every newline"
+        echo "  connected to a pipe     -> BLOCK-buffered, flushed when the buffer"
+        echo "                             fills (4-8 KB) or when the program exits"
+        echo
+        echo "grep's stdout here is a pipe into stamp, so grep block-buffered. three short lines never came close to filling 4 KB, so nothing was flushed until grep exited."
+        echo
+        echo "the program is behaving CORRECTLY. it is the same optimisation that makes writing a megabyte cheap instead of a million syscalls - and the operational consequence is a log that arrives late."
+        echo
+        echo "proof 1 - grep's own option:"
+        S=$(date +%s)
+        DRIP_START=$S STAMP_START=$S ./drip 3 | grep --line-buffered . | ./stamp | sed 's/^/  /'
+        echo
+        echo "proof 2 - stdbuf, which works on any stdio program:"
+        S=$(date +%s)
+        DRIP_START=$S STAMP_START=$S ./drip 3 | stdbuf -oL grep . | ./stamp | sed 's/^/  /'
+        echo
+        echo "in both cases arrival matches emission again."
+        echo
+        echo "stdbuf's limitation is worth knowing exactly: it preloads a library that changes stdio's defaults, so it cannot affect a program that does not use stdio - a Go binary, say - or one that sets its own buffering. tee is the documented example of the second case."
+      } > /tmp/answer-cause
+      cat /tmp/answer-cause
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)BLOCK-buffered"
+        describe: You named the buffering mode
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)what stdout is connected to"
+        describe: And what selects it
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)behaving CORRECTLY"
+        describe: And that the program is not at fault
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "arrived \\+0s : line 1"
+        describe: And you made it stream correctly
+      - type: file_matches
+        path: /tmp/answer-cause
+        pattern: "(?i)does not use stdio"
+        describe: And stated stdbuf's limitation
+
+  - id: s4
+    instruction: >-
+      A colleague says the pipeline works fine when they run it by hand. Explain
+      why, and give the diagnostic that locates a buffering stage in a longer
+      pipeline. Save to /tmp/answer-by-hand.
+    walkthrough: |
+      cd /tmp/pipes
+      {
+        echo "why it works by hand: when they run 'drip | grep .' at a terminal, grep's stdout IS a terminal, so stdio picks line buffering and everything streams. the moment another stage is added - or the output is redirected to a file, or piped to a log shipper - grep's stdout becomes a pipe and the mode changes."
+        echo
+        echo "so the reproduction that 'works' differs from the failing case in exactly the property that causes the bug. that is what makes this maddening to diagnose: every attempt to observe it removes it."
+        echo
+        echo "and the same applies in production. a container's stdout is usually NOT a terminal, so anything that behaves differently when piped will behave the PIPED way in production - the local run is the unrepresentative one."
+        echo
+        echo "the diagnostic: timestamp arrivals at each stage and find where the times stop matching."
+        echo
+        echo "  cmd | while IFS= read -r l; do printf '%s %s\\n' \"\$(date +%T)\" \"\$l\"; done"
+        echo
+        echo "inserting that after each stage in turn shows which stage is holding lines. demonstrating on a two-filter pipeline:"
+        echo
+        echo "  after drip (should stream):"
+        S=$(date +%s); DRIP_START=$S STAMP_START=$S ./drip 2 | ./stamp | sed 's/^/    /'
+        echo "  after grep (should stall):"
+        S=$(date +%s); DRIP_START=$S STAMP_START=$S ./drip 2 | grep . | ./stamp | sed 's/^/    /'
+        echo
+        echo "the stage after which arrival times stop matching emission times is the one buffering."
+      } > /tmp/answer-by-hand
+      cat /tmp/answer-by-hand
+    verify:
+      - type: file_matches
+        path: /tmp/answer-by-hand
+        pattern: "(?i)stdout IS a terminal"
+        describe: You explained why it works interactively
+      - type: file_matches
+        path: /tmp/answer-by-hand
+        pattern: "(?i)every attempt to observe it removes it"
+        describe: And why that makes it hard to diagnose
+      - type: file_matches
+        path: /tmp/answer-by-hand
+        pattern: "(?i)container|production"
+        describe: And which behaviour production actually gets
+      - type: file_matches
+        path: /tmp/answer-by-hand
+        pattern: "(?i)stop matching"
+        describe: And gave a diagnostic that locates the stage
+
+  - id: s5
+    instruction: >-
+      Write the logging design you would use for a nightly job, given everything
+      in this topic. Save to /tmp/answer-design.
+    walkthrough: |
+      cat > /tmp/answer-design <<'DESIGN'
+      # crontab
+      0 2 * * * /opt/jobs/nightly.sh >> /var/log/nightly.out 2>> /var/log/nightly.err
+
+      # inside nightly.sh
+      #!/bin/bash
+      set -euo pipefail
+
+      log() { printf '%s %s\n' "$(date -Is)" "$*"; }
+
+      log "starting reconciliation"
+
+      # the interesting command is not last, so check PIPESTATUS explicitly
+      pg_dump "$DB" | gzip > "$DEST/db.sql.gz"
+      st=("${PIPESTATUS[@]}")
+      if [ "${st[0]}" -ne 0 ]; then
+        log "pg_dump failed with ${st[0]}" >&2
+        exit 1
+      fi
+
+      # assert the artifact, not just the exit status
+      [ -s "$DEST/db.sql.gz" ] || { log "backup is empty" >&2; exit 1; }
+
+      log "done"
+      DESIGN
+      {
+        echo
+        echo "# what each decision makes visible, and which failure it answers:"
+        echo "#"
+        echo "#  two files (.out/.err)   'did it produce results' and 'did it complain'"
+        echo "#                          become separately answerable at 08:00, instead"
+        echo "#                          of one interleaved stream to grep through"
+        echo "#"
+        echo "#  >> not >                cron runs repeatedly; > would keep only the"
+        echo "#                          last run, which is the one least likely to"
+        echo "#                          be the one you need"
+        echo "#"
+        echo "#  2>> at the END          so stderr follows its own file. '2>&1 >file'"
+        echo "#                          would send errors to cron's mail instead,"
+        echo "#                          and the log would look clean"
+        echo "#"
+        echo "#  date -Is per line       records when the EVENT happened. buffering"
+        echo "#                          means the write time can be much later, so a"
+        echo "#                          timestamp added by the log shipper is a lie"
+        echo "#"
+        echo "#  PIPESTATUS checked      pg_dump | gzip returns gzip's status, so a"
+        echo "#                          failed dump is invisible behind a successful"
+        echo "#                          compression of nothing"
+        echo "#"
+        echo "#  [ -s ] on the artifact  the exit status is the job's opinion of"
+        echo "#                          itself. the file's size is evidence"
+        echo "#"
+        echo "# and what I would NOT do:"
+        echo "#   2>/dev/null            hides the error that explains everything"
+        echo "#   one .log with 2>&1     merges the two questions permanently"
+        echo "#   no rotation            a disk-full incident with no date on it yet"
+      } >> /tmp/answer-design
+      cat /tmp/answer-design
+    verify:
+      - type: file_matches
+        path: /tmp/answer-design
+        pattern: "nightly.out 2>> /var/log/nightly.err"
+        describe: You separated the streams
+      - type: file_matches
+        path: /tmp/answer-design
+        pattern: "PIPESTATUS"
+        describe: And checked the stage that actually matters
+      - type: file_matches
+        path: /tmp/answer-design
+        pattern: "(?i)date -Is"
+        describe: And timestamped events rather than writes
+      - type: file_matches
+        path: /tmp/answer-design
+        pattern: "(?i)-s .*artifact|size is evidence"
+        describe: And asserted the artifact rather than the exit status
+      - type: file_matches
+        path: /tmp/answer-design
+        pattern: "(?i)hides the error"
+        describe: And said what you would not do
+
+solution: >-
+  **Baseline: the pipe itself delays nothing.**
+
+
+  `drip | stamp` shows arrival matching emission — +0s, +1s, +2s. So a pipe is
+  not a buffer that holds data back on its own.
+
+
+  **Add `grep` and the times stop agreeing.**
+
+
+  ```text
+  arrived +3s : line 1 emitted at +0s
+  arrived +3s : line 2 emitted at +1s
+  arrived +3s : line 3 emitted at +2s
+  ```
+
+
+  Every line emitted on time; every line arriving three seconds late, together,
+  when `grep` exited. **Nothing was lost** — three lines, in order, content
+  intact, exit status 0, no error.
+
+
+  **The cause.** The C library chooses a buffering mode from **what stdout is
+  connected to**:
+
+
+  | connected to | mode |
+  |---|---|
+  | a terminal | line-buffered — flush at every newline |
+  | a pipe or file | **block-buffered** — flush at 4–8 KB, or at exit |
+
+
+  `grep`'s stdout here is a pipe, so it block-buffered, and three short lines
+  never approached 4 KB.
+
+
+  **The program is behaving correctly.** It is the same optimisation A01.4
+  measured — a syscall per byte would be a million crossings per megabyte — and
+  the operational consequence is a log that arrives late.
+
+
+  Two fixes, both restoring the baseline timings:
+
+
+  ```bash
+  drip 3 | grep --line-buffered . | stamp
+  drip 3 | stdbuf -oL grep .      | stamp
+  ```
+
+
+  `stdbuf` preloads a library that changes stdio's defaults, so it cannot affect
+  a program that does not use stdio — a Go binary — or one that sets its own
+  buffering; `tee` is the documented example.
+
+
+  **Why it "works by hand".**
+
+
+  Run interactively, `grep`'s stdout **is a terminal**, so stdio picks line
+  buffering and everything streams. Adding a stage, redirecting to a file, or
+  piping to a log shipper turns it into a pipe and changes the mode.
+
+
+  So the reproduction that works differs from the failing case in exactly the
+  property that causes the bug — **every attempt to observe it removes it.** And
+  in production a container's stdout is usually not a terminal, which means
+  anything that behaves differently when piped behaves the *piped* way there. The
+  local run is the unrepresentative one.
+
+
+  **The diagnostic** is to timestamp arrivals and find where they stop matching:
+
+
+  ```bash
+  cmd | while IFS= read -r l; do printf '%s %s\n' "$(date +%T)" "$l"; done
+  ```
+
+
+  Insert it after each stage in turn; the stage after which arrival stops
+  tracking emission is the one buffering.
+
+
+  **And the design.**
+
+
+  ```text
+  0 2 * * * /opt/jobs/nightly.sh >> /var/log/nightly.out 2>> /var/log/nightly.err
+  ```
+
+
+  Two files, so "did it produce results" and "did it complain" stay separately
+  answerable. `>>` because cron repeats. `2>>` at the end, because `2>&1 >file`
+  would send errors to cron's mail and leave a clean-looking log.
+
+
+  Inside: `date -Is` per line, because buffering means the write time can be much
+  later than the event; `PIPESTATUS` checked explicitly, because `pg_dump | gzip`
+  returns *gzip's* status and a failed dump hides behind a successful compression
+  of nothing; and `[ -s ]` on the artifact, because **the exit status is the job's
+  opinion of itself and the file's size is evidence.**

@@ -1,0 +1,264 @@
+topic: topic.arguments-and-options
+
+questions:
+  - id: i1
+    level: L1
+    question: "How do you parse options in a shell script?"
+    model_answer: >-
+      `getopts`, for most operational scripts — it is a builtin, so there is no
+      dependency, and the whole parser is about eight lines:
+
+
+      ```bash
+      while getopts ":vo:" OPT; do
+        case $OPT in
+          v)  verbose=1 ;;
+          o)  out=$OPTARG ;;
+          :)  die "-$OPTARG requires a value" ;;
+          \?) die "unknown option -$OPTARG" ;;
+        esac
+      done
+      shift $((OPTIND - 1))
+      ```
+
+
+      Two details I would want a reviewer to notice. The **leading colon** in the
+      optstring switches on silent error reporting, which is not the same thing as
+      the trailing colon on `o` that says it takes a value — the same character
+      meaning two unrelated things is most of why the leading one gets left out.
+      Silent mode is what I want, because it distinguishes an unknown option (`?`)
+      from a missing argument (`:`), lets me write a message that names the option,
+      and lets me choose the exit status — 64 for a usage error, so a wrapper can
+      tell "you called it wrong" from "it went wrong".
+
+
+      And **`shift $((OPTIND - 1))`** at the end, so the operands land as `$1`,
+      `$2`.
+
+
+      The two things `getopts` cannot do are worth saying in the same breath. It
+      has **no long options** — it reads `--dry-run` as bundled single letters —
+      and it **stops at the first non-option**, so `prog file -v` never sees the
+      `-v`. For a script humans type I would use `getopt(1)` from util-linux
+      instead, which handles both.
+    signal: >-
+      Reciting the loop is table stakes. The discriminator is the **leading
+      colon** — knowing it means silent errors rather than "takes an argument",
+      and preferring it for a stated reason. Volunteering the two things `getopts`
+      cannot do, unprompted, separates someone who has shipped a CLI from someone
+      who has copied one.
+    follow_ups:
+      - "What is in OPTARG when the option variable is `:`?"
+      - "Why shift $((OPTIND - 1)) rather than a fixed number?"
+  - id: i2
+    level: L2
+    question: >-
+      A script's `--dry-run` flag deleted the files it was previewing. How?
+    model_answer: >-
+      `getopts` has no concept of a long option. It sees a word starting with a
+      dash and reads the rest as **bundled single letters** — so `--dry-run`
+      becomes `-`, `d`, `r`, `y`, `-`, `r`, `u`, `n`.
+
+
+      On the script I have in mind the optstring was `:dn`, where `-d` deleted and
+      `-n` was the dry run. The **`d`** in "dry" matched and set delete; the
+      **`n`** in "run" matched and set dry-run. Both flags were enabled by one
+      typed word, and the script checked `delete` first.
+
+
+      Three things made it survive. The unmatched letters produced
+      `ignoring unknown option` warnings on **stderr**, and the wrapper captured
+      stdout only — so the log read `delete=1 dry=1` and 40,000 removals with no
+      evidence at all. The nightly job used `-n`, so two years of safe runs were
+      exercising a completely different path from the runbook. And the commit that
+      caused it was fourteen months old and added `--dry-run` to a **usage
+      comment** — a diff with no executable change, which nothing tests and which
+      reads as harmless.
+
+
+      The parser fix is `getopt(1)` so the documented options exist, plus refusing
+      unknown options rather than "ignoring" them — a destructive script that does
+      not understand its arguments must not run.
+
+
+      But the change I would actually push for is different: **make deletion
+      opt-in.** Default to a dry run and require `--apply`. Then a mis-parsed flag
+      can only ever turn a destructive run *safe*. Everything else on the list
+      catches errors; that one decides which way an error falls when you fail to
+      catch it, and it is the only change that would still have saved the archive
+      if the parser had been wrong anyway.
+    signal: >-
+      Getting to "bundled letters" is the technical answer. The discriminator is
+      noticing that the *warnings went to stderr* and the log kept only stdout —
+      that is why it was invisible. Pivoting to "make deletion opt-in so errors
+      fail safe", and explaining why that beats fixing the parser, is the senior
+      answer.
+    follow_ups:
+      - "The commit that caused this had no executable change. What was it?"
+      - "How would you find other scripts with the same exposure?"
+  - id: i3
+    level: L2
+    question: >-
+      An option-parsing function works the first time it is called and ignores its
+      flags after that. What is going on?
+    model_answer: >-
+      `OPTIND` is a global, and nothing resets it between calls.
+
+
+      It is the index of the next argument `getopts` will read. After a call that
+      consumed three arguments it is 4; the next call asks for argument 4 of its
+      own three-argument list, finds nothing, returns non-zero immediately, and the
+      loop body never runs. Every option falls through to its default.
+
+
+      What makes this survive review is that the output still looks right.
+      `shift $((OPTIND - 1))` shifts the same number as last time, so `$1` still
+      lands where it should — correct names, right order, exit 0. Only the flag
+      values are wrong, and only from the second call on.
+
+
+      The fix is one line, `local OPT OPTIND=1`, and both halves matter. `=1`
+      starts this call at the beginning. `local` restores the caller's `OPTIND` on
+      return, which matters if the caller is itself mid-parse — a bare `OPTIND=1`
+      fixes this call and rewinds the caller's, turning a silent wrong value into
+      an infinite loop.
+
+
+      The part I find most instructive is *when* it appears. A top-level parse
+      needs no reset, because `OPTIND` starts at 1 in a fresh shell. So the defect
+      is latent from the day the function is written and becomes reachable the
+      moment somebody wraps the call in a loop — a diff that adds no options and
+      touches no parsing. I have seen that exact commit blamed and cleared, because
+      "it does not touch that code". A change that alters **how many times**
+      something runs can expose a defect in code it never touched.
+
+
+      So I treat `local OPT OPTIND=1` as unconditional rather than as a fix applied
+      when needed. It costs one word.
+    signal: >-
+      Naming OPTIND is expected. The discriminator is explaining why the output
+      still looks correct — the shift consumes the same count, so `$1` lands
+      right — because that is what makes it survive review. Knowing why `local`
+      matters as well as `=1`, and that the defect is latent until a second call
+      is added, is rare.
+    follow_ups:
+      - "Why is a top-level parse fine without the reset?"
+      - "What would a bare OPTIND=1 break?"
+  - id: i4
+    level: L2
+    question: "When would you use `getopt(1)` instead of `getopts`?"
+    model_answer: >-
+      When a **human** types the command, especially under pressure.
+
+
+      `getopt(1)` from util-linux handles long options, `--opt=value`, unambiguous
+      abbreviations, and it **permutes** — so `deploy.sh prod --dry-run` works the
+      way GNU tools have trained everyone to expect, where `getopts` would stop at
+      `prod` and silently ignore the flag. In an incident, `--dry-run` in a runbook
+      is self-documenting and `-n` is not.
+
+
+      The idiom:
+
+
+      ```bash
+      parsed=$(getopt -o vo: --long verbose,out: -n "${0##*/}" -- "$@") || exit 64
+      eval set -- "$parsed"
+      ```
+
+
+      `getopt` **requotes** its output, which is what makes the `eval` safe — an
+      argument containing whitespace survives. And the `|| exit 64` is not
+      optional for a reason people find surprising: on a bad option `getopt` exits
+      non-zero **and still prints a usable list with the bad option removed**. So
+      an unguarded script does not crash — it runs, having silently discarded the
+      flag the operator typed. The status is the only thing that tells you.
+
+
+      What I would weigh against it: it is an external dependency and it does use
+      `eval`, both fine on an image I control. The bigger one is portability —
+      **macOS ships the BSD `getopt`**, which has no long options and mangles
+      whitespace, so the idiom breaks by producing wrong arguments rather than an
+      error. For anything running on developer laptops I would hand-roll the
+      `while`/`case` loop instead; it is about twelve lines and behaves identically
+      everywhere. That is also where the old "never use `getopt`" advice comes
+      from — it was true of the BSD one, and on macOS it still is.
+
+
+      And I would name the combination that is always wrong: **`getopts` with long
+      options in the help text.** On a script whose optstring shares letters with
+      the advertised flag, that documentation is an instruction to enable features
+      nobody asked for.
+    signal: >-
+      "Long options" is the obvious answer. The discriminators are the
+      `|| exit 64` and *why* — that getopt still prints a usable list on failure —
+      and the macOS/BSD portability caveat, which is the actual reason the old
+      "never use getopt" advice persists. Naming getopts-plus-documented-long-
+      options as always wrong shows they connect it to the failure mode.
+    follow_ups:
+      - "Why is the eval safe here?"
+      - "What would you use on a script shipped to laptops?"
+  - id: i5
+    level: L2
+    question: >-
+      What does a script owe the people who run it, on the command line?
+    model_answer: >-
+      A short contract, and each item exists because of a specific failure.
+
+
+      **A usage line on stderr and exit 64 when called wrong** — `EX_USAGE`, so a
+      wrapper can distinguish "you called it wrong", which is pointless to retry,
+      from "it went wrong", which may not be. `-h` is the exception: requested help
+      goes to **stdout** and exits 0, because the user asked for it and may be
+      piping it to `less`.
+
+
+      **Errors that name the input.** `--older-than must be a whole number, got
+      'abc'` beats `invalid argument`, and both beat silence.
+
+
+      **`--` honoured**, so a path beginning with a dash can be passed at all.
+
+
+      **Validation immediately after parsing, before any work.** A bad value caught
+      at line 20 is a message; caught at line 200 it is a half-finished job.
+
+
+      **Long options that exist if the help text mentions them.**
+
+
+      **A real, tested dry run on anything destructive** — an untested dry run is
+      the most dangerous flag in the script.
+
+
+      And the one that outranks all of them: **safe defaults, with destruction
+      opt-in.** If deletion needs `--apply`, then every parsing mistake, every
+      mis-remembered flag and every future bug in the parser fails in the safe
+      direction. The rest of the list catches errors; this decides what happens
+      when you fail to.
+
+
+      Two things I would add outside the parser. **Never put a secret in an
+      argument** — `/proc/PID/cmdline` is world-readable, so `ps` shows it to
+      every user on the machine; the environment is better and a file with tight
+      permissions is better still. And **test the parser**, because it is the part
+      most likely to be wrong and the easiest to test: seven invocations covering
+      no arguments, unknown option, long option, missing value,
+      operand-before-option, `--`, and `--help`. Most parsers fail at least one,
+      and seven lines in CI catch the whole class on the day it is written.
+
+
+      Once I want subcommands, mutually exclusive flags, enum-validated values and
+      help generated from the option definitions, I am reimplementing `argparse`
+      badly in a language with no data structures — and a generated help text is
+      the one that cannot drift away from the code, which is what caused the
+      incident in the first place.
+    signal: >-
+      Most people list usage, help and exit codes. The discriminator is ranking
+      **safe defaults with destruction opt-in** above the rest, with the reason —
+      it decides which way an error falls rather than catching it. Secrets not in
+      argv, and a concrete parser test, show someone who has operated these
+      scripts rather than only written them.
+    follow_ups:
+      - "Which exit code for a usage error, and why does it matter?"
+      - "Where would you put a secret instead?"

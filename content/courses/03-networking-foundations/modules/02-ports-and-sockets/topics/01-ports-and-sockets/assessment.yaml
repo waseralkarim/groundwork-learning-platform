@@ -1,0 +1,180 @@
+id: assessment.ports-and-sockets
+topic: topic.ports-and-sockets
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a service that works locally and nowhere else
+    kind: explain
+    objectives: [OBJ-A03.2.3, OBJ-A03.2.7]
+    prompt: >-
+      A colleague has deployed a service. It logs `listening on port 8080`,
+      `curl localhost:8080` on the server returns 200, and every client on every
+      other machine gets "connection refused". They believe a firewall is
+      blocking it.
+
+
+      In about 200 words: explain what is actually happening, give the one
+      command that proves it, explain why the *refusal* rules out their firewall
+      theory, and say what you would change — including a caution about the
+      obvious fix.
+    rubric:
+      - "Identifies a bind to 127.0.0.1 rather than 0.0.0.0 as the cause"
+      - "Gives `ss -tlnp` and names the Local Address column as the evidence"
+      - "Explains that a refusal is a TCP reset, so the packet arrived and was answered — eliminating firewalls, routing and host availability"
+      - "Contrasts it with a timeout, which is what a firewall drop would produce"
+      - "Recommends 0.0.0.0 or a specific interface, with a caution about exposing the service on every address"
+    model_answer: >-
+      The service is bound to `127.0.0.1:8080` rather than `0.0.0.0:8080`. A bind
+      claims an *address* as well as a port, and the kernel matches incoming
+      packets against the pair — so a packet for the machine's real address finds
+      no matching socket and the kernel replies with a reset.
+
+
+      One command proves it:
+
+
+      ```bash
+      ss -tlnp | grep :8080
+      ```
+
+
+      The Local Address column is the answer. `127.0.0.1` means loopback only;
+      `0.0.0.0` means every address.
+
+
+      The refusal is what rules out the firewall. A reset means the packet
+      arrived at the machine and the machine actively answered — so routing
+      worked, nothing dropped it, and the host is up. A firewall configured to
+      DROP produces the opposite: silence, then a timeout after several seconds.
+      The timing is corroboration, since a refusal returns in milliseconds.
+
+
+      The fix is to bind `0.0.0.0`, or the specific interface the service should
+      serve. The caution is that `0.0.0.0` means *every* address, including a
+      management interface or a VPN — on a host with public addressing, a
+      wildcard bind and a missing firewall rule is how databases end up on the
+      internet. Inside a pod it is straightforwardly right, because the pod has
+      its own namespace and address.
+    common_failures:
+      - "Accepting the firewall theory, which the refusal already disproves"
+      - "Naming the port but not the address as the thing to check"
+      - "Recommending 0.0.0.0 with no caution about multi-homed hosts"
+      - "Confusing refused with timed out, which reverses the diagnosis"
+
+  - id: B
+    title: Reason about connection identity and limits
+    kind: reason
+    objectives: [OBJ-A03.2.4, OBJ-A03.2.5, OBJ-A03.2.6]
+    prompt: >-
+      A proxy at `10.0.2.7` forwards to a single upstream virtual IP,
+      `10.0.9.1:443`. Under load it begins failing to open new connections, while
+      CPU and memory are low. `ss -tan state time-wait | wc -l` returns 27400.
+      The ephemeral port range is 32768–60999.
+
+
+      In about 200 words: explain what is exhausted and why, show the arithmetic,
+      explain why the same proxy could hold far more connections to eight
+      separate upstreams, and give the fixes in order of preference.
+    rubric:
+      - "Identifies ephemeral port exhaustion against a single destination"
+      - "Shows that the range is 28232 ports and that 27400 TIME-WAIT sockets is nearly all of it"
+      - "Explains that the four-tuple must be unique, so the limit binds per destination address and port"
+      - "Explains that eight upstreams multiply the budget because the destination differs"
+      - "Orders the fixes: keep-alive first, more source addresses second, wider range last"
+    model_answer: >-
+      Ephemeral ports against one destination.
+
+
+      The range 32768–60999 is 28232 ports. Every outbound connection needs a
+      source port, and a connection is identified by the four-tuple — source
+      address, source port, destination address, destination port. With one
+      upstream address and one upstream port, three of those four are fixed, so
+      the source port is the only thing that can vary and there are 28232 of
+      them.
+
+
+      27400 sockets in TIME-WAIT is nearly all of that budget. TIME-WAIT holds
+      the tuple for about sixty seconds after close, so a high rate of
+      short-lived connections consumes ports far faster than the concurrent
+      connection count suggests.
+
+
+      Eight separate upstreams would multiply the budget to roughly 225000,
+      because each is a different destination address — the same source port may
+      be reused for each. A single virtual IP collapses that back to one budget,
+      which is why a proxy in front of a VIP is one of the few places this is
+      genuinely reached.
+
+
+      Fixes in order: **keep-alive**, so connections are reused rather than
+      reopened, which removes both the port churn and the TIME-WAIT
+      accumulation; **more source addresses** on the proxy, which multiplies the
+      budget exactly as distinct destinations do; and only then a **wider
+      ephemeral range**, which postpones the problem without addressing it.
+    common_failures:
+      - "Blaming TIME-WAIT itself and proposing tcp_tw_recycle, which was removed from Linux"
+      - "Claiming the limit is 65535 rather than the configured range"
+      - "Missing that the constraint is per destination, so the eight-upstream case reads the same"
+      - "Putting a wider port range first, which treats the symptom"
+
+  - id: C
+    title: Diagnose three unreachable services
+    kind: diagnose
+    objectives: [OBJ-A03.2.8, OBJ-A03.2.2]
+    prompt: >-
+      Three services should be reachable on `10.0.4.18` at ports 9301, 9302 and
+      9303. All three processes are running. All three connection attempts fail.
+
+
+      ```text
+      $ ss -tlnp | grep -E ':93[0-9][0-9]'
+      LISTEN 0 1  127.0.0.1:9301  0.0.0.0:*  users:(("svc-a",pid=41,fd=3))
+      LISTEN 0 1    0.0.0.0:9312  0.0.0.0:*  users:(("svc-b",pid=52,fd=3))
+
+      $ ps -eo pid,comm | grep svc
+      41 svc-a
+      52 svc-b
+      63 svc-c
+      ```
+
+
+      Diagnose each, give the fix for each, and say which monitoring check would
+      have reported svc-c as healthy and why that matters.
+    rubric:
+      - "svc-a is bound to 127.0.0.1 only, so it is refused on any other address"
+      - "svc-b is bound correctly but on port 9312, not 9302"
+      - "svc-c is running with no socket bound at all — it never called listen()"
+      - "Gives concrete fixes: bind 0.0.0.0, correct the port, investigate why svc-c never listened"
+      - "Identifies a process-based check (ps, or PID 1 liveness) as the one that would call svc-c healthy, and explains why a connect-based check is needed"
+    model_answer: >-
+      **svc-a — bound to loopback.** `127.0.0.1:9301` means only this machine can
+      reach it; a packet for `10.0.4.18:9301` matches no socket and gets a reset.
+      The service is entirely healthy and every local test passes. Fix: bind
+      `0.0.0.0`, or the address it should serve.
+
+
+      **svc-b — bound correctly, on the wrong port.** `0.0.0.0` is right and 9312
+      is not 9302. Two digits transposed, which survives review well because the
+      line looks correct at a glance, and the service reports itself healthy
+      because from its point of view nothing is wrong. Fix: correct the port in
+      its configuration.
+
+
+      **svc-c — running and never listening.** It is in `ps` and has no socket at
+      all. Binding and listening are steps it never reached — a crash during
+      start-up, a configuration error, or an early return. Fix: read its logs;
+      the process starting is not evidence it did anything.
+
+
+      **The check that would call svc-c healthy** is any process-based one: a
+      `ps` grep, a PID file, or a container liveness check that only asks whether
+      PID 1 is alive. It would report healthy forever while every connection is
+      refused. That is the argument for connect-based checks over process checks
+      — and for HTTP over plain TCP, since a TCP check would pass for a process
+      that accepts and then fails every request.
+    common_failures:
+      - "Treating all three identically because all three connection attempts failed the same way"
+      - "Missing svc-b's transposed port by reading the configuration rather than the socket table"
+      - "Describing svc-c as crashed, when it is running and simply never bound"
+      - "Omitting why the monitoring point matters, which is the transferable half of the answer"

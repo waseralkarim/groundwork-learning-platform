@@ -1,0 +1,259 @@
+topic: topic.the-layers
+
+questions:
+  - id: i1
+    level: L1
+    question: What is the difference between a container and a virtual machine?
+    model_answer: >-
+      A VM virtualises **hardware**: it gets virtual CPUs, virtual disks and
+      virtual network cards, and it boots its own kernel on them. A container
+      virtualises the **operating system's view**: it is a process on the host
+      kernel, with namespaces limiting what it can see and cgroups limiting what
+      it can use.
+
+
+      The single difference everything else follows from is **the kernel**. A
+      container does not have one of its own.
+
+
+      From that: no kernel to boot, so startup is milliseconds to about a second
+      rather than tens of seconds. No kernel and page cache duplicated per
+      workload, so density goes from tens per machine to hundreds — which is the
+      commercial argument that actually decided the industry, more than any
+      technical one.
+
+
+      And the boundary. A container's isolation is namespaces, cgroups and
+      seccomp, which are software running in the same kernel as the thing being
+      contained, so a kernel vulnerability is a container escape. A VM's boundary
+      is enforced by the hypervisor with hardware assistance, so a fully
+      compromised guest kernel is still contained — which is why cloud providers
+      are comfortable putting different customers on one physical machine.
+
+
+      You can prove the sharing in one command: read `/proc/modules` inside a
+      fresh container and you get the *host's* loaded kernel modules. You loaded
+      none of them.
+    signal: >-
+      "It shares the kernel" is the baseline. The discriminator is deriving the
+      rest from it rather than listing properties — startup, density and boundary
+      strength are all consequences of that one fact. Knowing you can demonstrate
+      it with `/proc/modules` suggests they have actually looked rather than
+      recited a diagram.
+    follow_ups:
+      - "When would you need a VM instead?"
+      - "What is a microVM, and what problem does it solve?"
+      - "How would you prove which one you are running in?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A service moved from VMs to Kubernetes and its p99 got five times worse,
+      with CPU showing 4%. Where do you look?
+    model_answer: >-
+      At the gap between what the process thinks it has and what it is actually
+      allowed, and I would expect to find it in two commands.
+
+
+      `nproc` inside the pod reports the **node's** CPU count, because
+      `/proc/cpuinfo` describes the machine and there is no CPU namespace.
+      `cat /sys/fs/cgroup/cpu.max` gives the real limit — quota over period. I
+      have seen 64 against 0.5 cores, a ratio of 128.
+
+
+      What usually caused it is a setting that says `auto`. On the VM, `auto` read
+      4 vCPUs and started 4 workers — correct, because the VM *was* the machine.
+      In a pod the same config reads 64 and starts 64 workers on half a core.
+      Same image, same configuration, and the environment changed underneath a
+      value that depends on the environment.
+
+
+      Confirm with `nr_throttled` against `nr_periods` — as a **fraction**, not a
+      count, because a count always looks big on a long-lived pod. 99% of periods
+      throttled is conclusive.
+
+
+      **And the 4% is the dashboard dividing by the wrong denominator.** Container
+      CPU usage over the *node's* capacity: 0.49 cores of 64 is under 1%. Divided
+      by the container's limit it is 98%, which is the panel that would have made
+      this obvious.
+
+
+      The signature to recognise: **unchanged throughput with much worse latency**
+      is a queueing problem. Total work is bounded by the same quota, so
+      completion rate holds; each request now waits behind 63 others, so
+      time-in-system multiplies.
+
+
+      The fix is an explicit worker count derived from the limit. Raising the CPU
+      limit helps a little and leaves the ratio broken; adding replicas
+      multiplies it, because each new pod also reads 64.
+    signal: >-
+      Going straight to nproc-versus-cpu.max is the practical discriminator.
+      Identifying the dashboard's denominator as the reason it was invisible for
+      weeks is the systems-thinking part. Recognising unchanged-throughput-worse-
+      latency as a queueing signature, and knowing that both proposed fixes make
+      it worse or no better, is a senior answer.
+    follow_ups:
+      - "Why does adding replicas not help?"
+      - "Which runtimes get this right without configuration?"
+      - "What would you change on the dashboard?"
+
+  - id: i3
+    level: L2
+    question: >-
+      Why does `/proc/meminfo` show the host's memory inside a container, and
+      what breaks because of it?
+    model_answer: >-
+      Because namespaces and cgroups are different mechanisms answering different
+      questions, and nobody joined them up.
+
+
+      Namespaces virtualise process ids, network interfaces, mounts, hostnames
+      and users. **There is no memory namespace.** Limits are enforced by cgroups,
+      which constrain *usage* without altering what any file *reports*. So
+      `/proc/meminfo` reports the machine's memory, accurately, and you asked
+      about your cgroup.
+
+
+      The same applies to `/proc/cpuinfo`, `/proc/uptime`, `/proc/loadavg` and
+      `df`. Anything that describes "the system" describes the host.
+
+
+      What breaks, in order of how often I have seen it: a **JVM with no explicit
+      heap setting** reads `MemTotal` and takes roughly a quarter of it. On a
+      128 GB host in a 2 GB container that is 32 GB of intended heap. Nothing
+      fails immediately, because the JVM only commits as the heap grows — so it
+      runs fine under light load and gets **OOM-killed** the first time real
+      traffic fills it. Exit code 137, no stack trace, days or weeks after the
+      mistake.
+
+
+      Then thread pools and worker counts from `nproc`, GC thread counts, and
+      connection pools sized against the wrong number.
+
+
+      The fix is to read the limit — `/sys/fs/cgroup/memory.max` — or to use
+      settings that derive from it, like `-XX:MaxRAMPercentage=75` rather than a
+      fixed `-Xmx`. The percentage form matters because it survives somebody
+      changing the limit without telling anybody.
+
+
+      The rule I would give someone: **in a container, `auto` means auto from the
+      machine.** Any setting that says auto, default, or "number of CPUs" is
+      suspect until you know which file it read.
+    signal: >-
+      Explaining it as two subsystems answering different questions — rather than
+      as a bug or an oversight — shows real understanding. The JVM failure mode
+      with its delay is the discriminator: knowing it fails *later*, under load,
+      with no application error is what makes it recognisable in the wild.
+      Preferring MaxRAMPercentage over -Xmx is a small detail that suggests they
+      have shipped this.
+    follow_ups:
+      - "How would you find every place in an estate that has this bug?"
+      - "Which runtimes are cgroup-aware now?"
+      - "What does exit code 137 mean?"
+
+  - id: i4
+    level: L2
+    question: >-
+      A VM is slow and every metric inside it looks normal. What is your first
+      check?
+    model_answer: >-
+      Steal time — the `st` field on `top`'s CPU line, or
+      `node_cpu_seconds_total{mode="steal"}`.
+
+
+      It is the percentage of time a vCPU was runnable and the hypervisor was
+      running something else instead. It is the **only metric inside a guest that
+      reports on the layer above it**, and it is almost always 0.0 on a healthy
+      VM, so anything sustained above a few percent is a real finding. I have seen
+      22% while CPU, memory, disk and network all looked entirely normal.
+
+
+      That is exactly why the symptom is confusing: everything inside the guest is
+      measured from inside the guest, and from there nothing is wrong. The work
+      simply takes longer per unit of CPU, and the time went to a layer the guest
+      cannot observe.
+
+
+      The fastest way to it is to **diff `top` headers between a slow node and a
+      healthy one**. Eight fields, one differs, and comparing a broken thing
+      against a working one beats reasoning about either alone.
+
+
+      Then I would look at the instance type, because on cloud VMs the common
+      cause is not a noisy neighbour but a **burstable type** — AWS `t`-family and
+      equivalents — that has exhausted its CPU credits and is being throttled to
+      its baseline. That is documented behaviour rather than a fault, which is why
+      a hardware ticket comes back clean, and it explains time-of-day patterns:
+      credits earned overnight, spent by the afternoon.
+
+
+      The general habit is knowing which layer you are asking about. Container
+      throttling shows as `throttled_usec` and is visible inside the pod;
+      hypervisor throttling shows as steal and is visible only on the node. Same
+      idea one level apart, and each is invisible from the other's vantage point.
+    signal: >-
+      Knowing `st` exists at all is the discriminator — most people have never
+      read the last field of that line. Connecting it to burstable instance
+      credits shows cloud-specific experience, and the observation that container
+      throttling and steal are the same phenomenon at different layers is the kind
+      of framing that makes someone good at this.
+    follow_ups:
+      - "Why would a hardware ticket come back with no fault found?"
+      - "How would you alert on it?"
+      - "What is the container-layer equivalent?"
+
+  - id: i5
+    level: L2
+    question: How do you choose between a VM, a container and a function?
+    model_answer: >-
+      I start by looking for a constraint that **eliminates** a layer, rather than
+      comparing them on merit — because most workloads run acceptably on most
+      layers, and the comparison is unbounded while the elimination is quick.
+
+
+      **Hostile tenancy** is the big one. If you run code your customers wrote, a
+      container boundary is not sufficient: it is enforced by kernel features
+      running in the same kernel as the hostile code, so a kernel vulnerability is
+      an escape. That needs a hypervisor boundary — a microVM, gVisor, Kata. It is
+      why every function platform runs one underneath.
+
+
+      **A kernel requirement** — a specific version, a module, a non-namespaced
+      sysctl — means a VM, because none of those are a container's to change.
+
+
+      **A different operating system** is the only one no configuration can work
+      around. Capabilities can be granted and seccomp relaxed; a Linux kernel
+      still cannot run a Windows binary.
+
+
+      **Hardware access**, and **hard tail-latency floors** where the hypervisor
+      tax matters, round it out.
+
+
+      Absent one of those, containers by default — for density and for how fast
+      they can be replaced, which usually matters more than anything else if the
+      team deploys often. Functions when the workload is genuinely idle much of
+      the time and the cold start fits the latency budget; the economics there are
+      decisive rather than marginal.
+
+
+      And when nothing eliminates anything, I would say so in the design document.
+      Most documents present a layer choice as forced, which stops reviewers
+      arguing with it. "This is a trade, here is what the runner-up would have
+      cost, and here is what would change our mind" is both more honest and more
+      useful later, when the traffic profile has changed and nobody remembers why.
+    signal: >-
+      Reframing from "compare four options" to "find what eliminates one" is the
+      answer, and it is what someone who has actually run these decisions does.
+      Naming the OS as the only non-negotiable constraint shows precision.
+      Volunteering that a choice was a trade rather than forced — and writing
+      reversal conditions — is a maturity signal well beyond the technical
+      content.
+    follow_ups:
+      - "When is a function more expensive than a container?"
+      - "What would make you move a workload back from containers to VMs?"
+      - "How would you write the reversal conditions?"

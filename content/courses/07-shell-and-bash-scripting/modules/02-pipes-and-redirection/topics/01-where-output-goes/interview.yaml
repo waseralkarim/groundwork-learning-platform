@@ -1,0 +1,263 @@
+topic: topic.where-output-goes
+
+questions:
+  - id: i1
+    level: L1
+    question: What is the difference between `cmd > f 2>&1` and `cmd 2>&1 > f`?
+    model_answer: >-
+      The first captures both streams in the file. The second puts stdout in the
+      file and sends stderr wherever stdout was pointing **before** — usually the
+      terminal.
+
+
+      The reason is that `2>&1` does not mean "send stderr to stdout". It means
+      **make descriptor 2 a copy of wherever descriptor 1 points at that
+      moment**. It duplicates the target, not the name, and afterwards the two
+      descriptors are independent.
+
+
+      Redirections are applied left to right, so:
+
+
+      ```text
+      cmd >f 2>&1     1→file, then 2 = copy of 1 = file      both captured
+      cmd 2>&1 >f     2 = copy of 1 = terminal, then 1→file   errors escape
+      ```
+
+
+      So `2>&1` goes at the **end**, after the redirection it should follow.
+      `&>file` is bash's shorthand for the correct order.
+
+
+      The reason I care about this one specifically is the symptom it produces:
+      **a clean log for a job that is failing.** I have seen a nightly job run
+      broken for six weeks with `2>&1 >> /var/log/job.log` in its crontab, while
+      the log filled up with success lines and every error went to cron's mail,
+      unread. The absence of errors got read as evidence of health.
+
+
+      The swapped order is not useless, though — `cmd 2>&1 >file | grep x` pipes
+      *stderr* while stdout goes to a file. It is deliberate, and it deserves a
+      comment when written.
+    signal: >-
+      Stating that `2>&1` copies the current target rather than linking the
+      streams is the discriminator — people who have only memorised "put it at
+      the end" cannot explain the second form. Naming the clean-log symptom shows
+      they have debugged it rather than read about it.
+    follow_ups:
+      - "Where would the errors actually end up in a cron job?"
+      - "When would you deliberately write the other order?"
+      - "How would you lay out logging for a nightly job?"
+
+  - id: i2
+    level: L2
+    question: >-
+      Why does `sort data.txt > data.txt` leave you with an empty file?
+    model_answer: >-
+      Because the shell sets up redirections **before** it starts the command.
+      The order is: open `data.txt` for writing, which truncates it to zero
+      bytes; start `sort` with descriptor 1 attached to the now-empty file; and
+      `sort` then opens the file to read and finds nothing.
+
+
+      It is fully deterministic, not a race, and it exits 0.
+
+
+      Some tools do notice — GNU `grep` prints `input file is also the output`
+      and exits 2 — and the file is destroyed anyway, because the truncation
+      happened before `grep` started and nothing can undo it. `sort` says nothing
+      at all. So "the tool will stop me" is not a defence.
+
+
+      The fix I would write:
+
+
+      ```bash
+      sort data.txt > data.tmp && mv data.tmp data.txt
+      ```
+
+
+      The `&&` is load-bearing — without it, a failed command still renames a
+      truncated temp file over the original. The rename is also **atomic**, so a
+      concurrent reader sees either the old file or the new one, never half of
+      each.
+
+
+      `sed -i` is the other common answer and worth knowing precisely: it is not
+      really in place. It writes a new file and renames it, so it breaks hard
+      links and changes the inode — which matters if something is watching the
+      file by inode, or if it is a bind-mounted config in a container.
+
+
+      What makes this worth asking about is that the broken version reads exactly
+      like the sentence "filter this file into this file". It is not
+      carelessness; the shell's behaviour is the surprising part.
+    signal: >-
+      Getting the ordering right is the baseline. The discriminator is the `&&`
+      and knowing why the rename matters — atomicity — plus knowing that `sed -i`
+      changes the inode, which is the detail that bites in containers and with
+      hard links.
+    follow_ups:
+      - "What does noclobber protect against?"
+      - "Why is the rename atomic and the redirect not?"
+      - "When would sed -i be the wrong choice?"
+
+  - id: i3
+    level: L2
+    question: >-
+      A counter incremented inside `cmd | while read` is zero afterwards. Why,
+      and how would you fix it?
+    model_answer: >-
+      Because every stage of a pipeline runs in its own **subshell** — a separate
+      process with its own copy of the shell's variables. The loop ran, the
+      increments happened, and they happened in a child process that then exited.
+      Nothing was lost or overwritten; the parent's copy was never touched.
+
+
+      The fix I reach for first is process substitution, because it removes the
+      pipeline entirely:
+
+
+      ```bash
+      while IFS= read -r line; do count=$((count+1)); done < <(cmd)
+      ```
+
+
+      `< <(cmd)` presents a command's output as a file, so the loop is not part
+      of a pipeline and runs in the current shell.
+
+
+      `shopt -s lastpipe` is the bash-specific alternative — it runs the *last*
+      stage in the parent. Two conditions worth knowing: bash only, and it needs
+      job control off, which it is in a script and is **not** in an interactive
+      shell. So testing it in a terminal can convince you it does not work.
+
+
+      While I am there I would fix the `read` too: `while IFS= read -r line`.
+      `IFS=` stops leading and trailing whitespace being trimmed, and `-r` stops
+      backslashes being interpreted — without it a line containing `C:\new` loses
+      the backslash.
+
+
+      The same subshell fact explains a related surprise: a `cd` or a variable
+      assignment inside `( )` or inside any pipeline stage does not affect the
+      parent either. Once you know it is a separate process, all of those stop
+      being special cases.
+    signal: >-
+      "Separate process, own copy" is the core. Reaching for process substitution
+      rather than restructuring the whole script is the practical discriminator,
+      and knowing lastpipe's job-control condition is the detail that separates
+      people who have actually tried it.
+    follow_ups:
+      - "Why does IFS= matter in that read?"
+      - "What else does the subshell explain?"
+      - "When would lastpipe be the better choice?"
+
+  - id: i4
+    level: L2
+    question: >-
+      `pg_dump db | gzip > backup.gz` has never reported a failure. Should you
+      trust it?
+    model_answer: >-
+      No, and for a specific reason: a pipeline's exit status is the status of
+      its **last** command. If `pg_dump` fails, `gzip` still succeeds — at
+      compressing nothing — and the pipeline exits 0.
+
+
+      The tell is the artifact. A gzip stream containing no data is about 20
+      bytes, so the file exists, is recent, and is empty. Every "does the backup
+      exist and is it fresh" check passes.
+
+
+      What I would write:
+
+
+      ```bash
+      pg_dump "$DB" | gzip > backup.sql.gz
+      st=("${PIPESTATUS[@]}")
+      [ "${st[0]}" -eq 0 ] || { echo "pg_dump failed: ${st[0]}" >&2; exit 1; }
+      [ "$(stat -c %s backup.sql.gz)" -gt 1000000 ] || { echo "backup too small" >&2; exit 1; }
+      ```
+
+
+      `set -o pipefail` also catches it and is the right default. I keep
+      `PIPESTATUS` as well because it says **which** stage failed, which is the
+      difference between an alert somebody can act on and one that says
+      "something went wrong". It has to be copied immediately — the next command
+      overwrites it, including an `echo`.
+
+
+      The size assertion is the part I would argue hardest for. **The exit status
+      is the job's opinion of itself; the file's size is evidence.** It also
+      catches failures nobody predicted — a dump that succeeded against an empty
+      database, a disk that filled mid-write, a credential that authenticated and
+      selected nothing.
+
+
+      One interaction to be aware of once `pipefail` is on: a pipeline ending in
+      `head` will report failure, because the producer gets SIGPIPE and exits
+      141. That is normal and needs a deliberate `|| true` with a comment saying
+      why.
+    signal: >-
+      Knowing the exit status comes from the last command is the baseline. The
+      20-byte-empty-gzip detail and the size assertion are what indicate someone
+      who has found this in production. Volunteering the pipefail/SIGPIPE
+      interaction is a strong sign of having actually enabled it.
+    follow_ups:
+      - "Why does PIPESTATUS have to be copied immediately?"
+      - "What would you monitor rather than the job's exit code?"
+      - "What breaks when you turn on pipefail?"
+
+  - id: i5
+    level: L2
+    question: >-
+      During an incident, `tail -f log | grep ERROR` showed nothing, then a burst
+      of lines when it ended. What happened?
+    model_answer: >-
+      Buffering, and specifically `grep`'s own output buffering.
+
+
+      The C standard library picks a buffering mode from **what stdout is
+      connected to**: line-buffered to a terminal, block-buffered — 4 to 8 KB —
+      to a pipe or a file. In a longer pipeline, or when the output is redirected,
+      `grep`'s stdout is a pipe, so it holds lines until the buffer fills or the
+      process exits.
+
+
+      The burst at the end is the flush on exit. Nothing was dropped and nothing
+      was replayed — everything arrives, late, in order.
+
+
+      The strongest evidence for that reading is that the lines' **own**
+      timestamps are correct and spread across the incident, while their arrival
+      times are all identical. Event time and delivery time are different
+      quantities and buffering separates them — which is also why a timestamp
+      added by a log shipper is less trustworthy than one the program printed
+      itself.
+
+
+      Fixes: `grep --line-buffered`, `sed -u`, `awk` with `fflush()`, or `stdbuf
+      -oL` for anything using stdio. `stdbuf` cannot help with a program that
+      does not use stdio — a Go binary — or one that sets its own buffering.
+
+
+      The part I would emphasise in a review is why it is hard to diagnose:
+      **running it by hand fixes it**, because interactively `grep`'s stdout is a
+      terminal and the mode changes. Every attempt to observe the bug removes it.
+
+
+      And the general rule, which matters beyond this case: **production stdout
+      is almost never a terminal.** A container's, a systemd service's, a CI
+      step's — none are ptys. So anything that behaves differently when piped
+      behaves the piped way in production, and the local run is the
+      unrepresentative one.
+    signal: >-
+      Naming buffering rather than blaming the log shipper is the whole answer.
+      The discriminator is using the embedded-versus-arrival timestamps as
+      evidence, and recognising that a successful local reproduction is
+      meaningless here. The "production stdout is not a terminal" generalisation
+      is the senior half.
+    follow_ups:
+      - "How would you find which stage is buffering?"
+      - "Why would you not just replace the log shipper?"
+      - "What would you monitor to catch this before an incident?"

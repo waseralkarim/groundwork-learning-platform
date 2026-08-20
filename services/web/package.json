@@ -1,0 +1,35 @@
+{
+  "name": "groundwork-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0 --port 3000",
+    "build": "next build",
+    "start": "node server.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "mermaid": "^11.16.1",
+    "next": "^16.3.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-directive": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "unist-util-visit": "^5.1.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.8.0"
+  },
+  "packageManager": "pnpm@10.11.0"
+}

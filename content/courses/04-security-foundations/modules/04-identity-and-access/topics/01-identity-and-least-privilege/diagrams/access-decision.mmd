@@ -1,0 +1,16 @@
+flowchart TB
+    OP["A process opens<br/>/tmp/perms/listable/data.txt"]
+
+    OP --> D1{"Traverse /tmp?<br/>needs x on the directory"}
+    D1 -->|no| DENY1["EACCES<br/><i>error names the file</i>"]
+    D1 -->|yes| D2{"Traverse perms?<br/>needs x"}
+    D2 -->|no| DENY1
+    D2 -->|yes| D3{"Traverse listable?<br/>needs x — mode is 644,<br/>so there is no x"}
+    D3 -->|no| DENY1
+    D3 -->|yes| D4{"Read data.txt?<br/>needs r — mode is 644,<br/>so yes"}
+    D4 -->|yes| OK["Contents returned"]
+
+    DENY1 --> NOTE["The file was readable all along.<br/>Every directory on the path is<br/>part of the decision, and the<br/>error names only the last object."]
+
+    CLS["Bits are read by the FIRST<br/>matching class, not the union:<br/>owner, then group, then other.<br/><br/>A file you own with mode 077<br/>is unreadable to you and<br/>readable to everyone else."]
+    D4 -.-> CLS

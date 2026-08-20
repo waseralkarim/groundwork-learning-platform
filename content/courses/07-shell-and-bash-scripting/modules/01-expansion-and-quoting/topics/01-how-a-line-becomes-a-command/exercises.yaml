@@ -1,0 +1,239 @@
+topic: topic.how-a-line-becomes-a-command
+
+exercises:
+  - id: e1
+    title: Order the stages
+    level: L1
+    objectives: [OBJ-B08.1.1]
+    kind: ordering
+    prompt: >-
+      Put these in the order the shell performs them, and say which one decides
+      the argument count:
+
+
+      globbing · word splitting · brace expansion · quote removal ·
+      parameter expansion · command substitution
+    answer: >-
+      1. **brace expansion** — `{1..3}`
+
+      2. **parameter expansion** — `$var`
+
+      3. **command substitution** — `$(cmd)`
+
+      4. **word splitting** — the results of 2 and 3 are broken at `IFS`
+         characters
+
+      5. **globbing** — `*` and `?` replaced by filenames
+
+      6. **quote removal** — the quotes you typed are deleted
+
+
+      (Tilde expansion sits between 1 and 2; arithmetic expansion sits with 3.)
+
+
+      **Word splitting decides the argument count**, and it is fourth — after the
+      variable has been substituted and before filenames are generated.
+    explanation: >-
+      Two consequences follow from the positions rather than from any rule.
+
+
+      Brace expansion being **first** means a variable cannot appear in a brace
+      range: `{1..$n}` produces the literal text `{1..3}`, because the brace stage
+      ran before `$n` existed.
+
+
+      Globbing being **after** word splitting means glob results are never
+      re-split — which is the whole reason `for f in *.log` is safe with a
+      filename containing a space and `for f in $files` is not.
+
+  - id: e2
+    title: Predict six argument counts
+    level: L2
+    objectives: [OBJ-B08.1.3]
+    kind: interpretation
+    prompt: >-
+      Given `f='a b'`, `e=''`, `g='*.txt'`, and a directory containing exactly
+      three `.txt` files, how many arguments does each pass?
+
+
+      1. `cmd $f`
+
+      2. `cmd "$f"`
+
+      3. `cmd $e`
+
+      4. `cmd "$e"`
+
+      5. `cmd $g`
+
+      6. `cmd "$g"`
+    answer: >-
+      1. **2** — split at the space.
+
+      2. **1**.
+
+      3. **0** — an empty expansion produces no words at all.
+
+      4. **1** — an empty string, preserved by the quotes.
+
+      5. **3** — split into one word, then globbed against the directory.
+
+      6. **1** — the literal text `*.txt`.
+    explanation: >-
+      Items 3 and 5 are the ones people get wrong, and in opposite directions.
+
+
+      **3** is why `[ $x = y ]` breaks on an empty variable: the test becomes
+      `[ = y ]`, two operands where three were expected. It is also why an empty
+      value and an unset value fail differently and confusingly, and why
+      `${VAR:?}` is worth using.
+
+
+      **5** is the one that surprises people most: a variable holding a pattern
+      **is** a pattern. Stage 3 substituted the text, stage 6 made it one word,
+      stage 7 globbed it. Which means the result depends not only on the data but
+      on the **current working directory** — the same script run from elsewhere
+      passes a different number of arguments.
+
+  - id: e3
+    title: Fix a loop three ways
+    level: L2
+    objectives: [OBJ-B08.1.4]
+    kind: short_answer
+    prompt: >-
+      This loop fails on filenames with spaces and does something strange when
+      the directory is empty:
+
+
+      ```bash
+      for f in $(ls /var/log/app/*.log); do
+        gzip $f
+      done
+      ```
+
+
+      Give the fix, and say what each change addresses.
+    answer: >-
+      ```bash
+      shopt -s nullglob
+      for f in /var/log/app/*.log; do
+        gzip -- "$f"
+      done
+      ```
+
+
+      **Drop `$(ls ...)`.** Command substitution output is word-split, so every
+      space in a filename becomes a new loop iteration. Globbing directly is both
+      simpler and correct, because glob results are never re-split.
+
+
+      **Quote `"$f"`.** The same split again, once per use.
+
+
+      **`shopt -s nullglob`.** Without it, an empty directory leaves the pattern
+      literal and the loop body runs **once** with a filename that does not
+      exist.
+
+
+      **`--`.** A log filename beginning with a hyphen is otherwise read by
+      `gzip` as an option.
+
+
+      If `nullglob` is unwelcome — it applies for the rest of the script — the
+      local alternative is `[ -e "$f" ] || continue` as the first line of the
+      body.
+    explanation: >-
+      The instructive part is that removing `ls` fixes two problems at once and
+      adds none. Parsing `ls` is never necessary for "the files in this
+      directory", and every argument for it turns out to be an argument for a
+      glob or for `find -print0`.
+
+
+      It is also worth noticing that three of the four changes are about things
+      the *data* might contain, and none of them are about what the script is
+      trying to do. That is the signature of this whole class of bug: **the code
+      is correct for the filenames somebody had in mind**, and nothing about the
+      script changes on the day it stops working.
+
+  - id: e4
+    title: Choose a forwarding form
+    level: L2
+    objectives: [OBJ-B08.1.5]
+    kind: interpretation
+    prompt: >-
+      For each, say which of `$@`, `"$@"` or `"$*"` is correct, and why:
+
+
+      1. An entrypoint script that runs whatever command it was given
+
+      2. Building a log line recording the arguments a script was called with
+
+      3. A wrapper adding one flag before passing everything on
+    answer: >-
+      1. **`"$@"`** — `exec "$@"`. Each argument preserved, and with none supplied
+         it expands to nothing rather than to one empty argument.
+
+
+      2. **`"$*"`** — this is its one legitimate use. You want a single string,
+         and joining with the first character of `IFS` is exactly the intent.
+         `echo "called with: $*"`.
+
+
+      3. **`"$@"`** — `exec tool --config "$CONF" -- "$@"`. Note the `--`, so a
+         caller's filename beginning with a hyphen is treated as data.
+
+
+      `$@` unquoted is correct in none of them.
+    explanation: >-
+      Item 2 is worth having an answer for, because "never use `$*`" is the usual
+      advice and it is slightly wrong. `"$*"` is right when you genuinely want one
+      string — a log line, an error message, a checksum input. It is wrong for
+      passing arguments on, which is what people reach for it for.
+
+
+      Item 1 is the case where `"$@"`'s special empty behaviour matters. An
+      entrypoint that runs `exec "$*"` with no arguments runs the command with one
+      empty argument, and the resulting error names a program that was never
+      asked for.
+
+  - id: e5
+    title: Write the review comment
+    level: L2
+    objectives: [OBJ-B08.1.8]
+    kind: short_answer
+    prompt: >-
+      A colleague's pull request contains `run_tool $EXTRA_FLAGS "$input"`.
+      Write the review comment.
+    answer: >-
+      *This may well be correct — if `EXTRA_FLAGS` is a list of separate flags,
+      leaving it unquoted is how you get them as separate arguments, and quoting
+      would pass the whole thing as one. Can you add a comment saying that is
+      deliberate?*
+
+
+      *Two things to check while you are there. If a flag's value can contain a
+      space — a path, a message — splitting will break it, and the fix is an
+      array: `run_tool "${EXTRA_FLAGS[@]}" "$input"`. And `EXTRA_FLAGS` is
+      globbed as well as split, so a flag containing `*` expands against the
+      current directory.*
+
+
+      *If it turns out the variable only ever holds one flag, quote it and the
+      question goes away.*
+    explanation: >-
+      The exercise is about not reflexively demanding quotes. The line is one of
+      the small number of cases where an unquoted expansion is right, and a
+      reviewer who insists on quoting here is wrong on the merits and loses
+      credibility for the cases that matter.
+
+
+      What the comment actually asks for is the **comment** — because that is what
+      makes the next reviewer's job possible. Without a convention marking
+      deliberate splitting, every unquoted expansion has to be litigated from
+      first principles, which is why "quote everything, comment the exceptions"
+      beats "quote everything".
+
+
+      The array suggestion is the real fix if values can contain spaces, and it is
+      worth offering rather than insisting on: it is bash-only, which matters if
+      the script is `#!/bin/sh`.

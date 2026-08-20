@@ -1,0 +1,280 @@
+topic: topic.encryption
+
+questions:
+  - id: i1
+    level: L1
+    question: >-
+      Explain symmetric and asymmetric encryption, and why systems use both.
+    model_answer: >-
+      **Symmetric** is one key for both directions. It is fast — AES-256 runs at
+      over a gigabyte a second per core, and modern CPUs have instructions for
+      it — so there is no performance reason not to encrypt bulk data. Its entire
+      difficulty is distribution: both parties need the same key, and you cannot
+      send it over the channel you are trying to protect.
+
+
+      **Asymmetric** is a key pair where what the public half encrypts only the
+      private half decrypts. That solves distribution — publish one, keep the
+      other, and anyone can encrypt to you without prior arrangement.
+
+
+      It pays for that with two limits, and the second is the one people are
+      surprised by. RSA-2048 private-key operations run at a couple of thousand a
+      second against AES's gigabyte, and it cannot encrypt more than **245
+      bytes** — the 256-byte modulus minus padding. Not "inadvisable above":
+      refused, with `data too large for key size`.
+
+
+      So neither works alone, and every real system uses **hybrid**: generate a
+      fresh random symmetric key, encrypt the data with it, encrypt that 32-byte
+      key with the recipient's public key, send both. The slow algorithm handles
+      32 bytes; the fast one handles everything else.
+
+
+      That is TLS, PGP, `age` and every encrypted-storage product. It is also why
+      a TLS certificate's key is not what encrypts your traffic — it establishes
+      a session key, and the session key does the work.
+
+
+      Modern TLS goes one step further and uses ephemeral Diffie–Hellman rather
+      than wrapping a key with RSA, so that a long-term key stolen later cannot
+      decrypt traffic recorded earlier. That is forward secrecy, and it is why
+      TLS 1.3 removed RSA key transport.
+    signal: >-
+      The 245-byte limit is the strongest single signal — it is a number you only
+      know from having hit it, and it explains hybrid encryption as a necessity
+      rather than an optimisation. Knowing that the certificate key does not
+      encrypt the traffic separates people who have reasoned about TLS from
+      people who have configured it. Forward secrecy unprompted is a senior
+      answer.
+    follow_ups:
+      - "Why can RSA not encrypt a file directly?"
+      - "What is actually encrypting your traffic in a TLS session?"
+      - "What does forward secrecy protect against, specifically?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A colleague says a config file is safe because it is encrypted with
+      `openssl enc -aes-256-cbc`. What do you say?
+    model_answer: >-
+      That it is confidential and not protected, and the distinction matters here
+      more than usual.
+
+
+      `openssl enc` supports **no authenticated mode at all**. Run
+      `openssl enc -ciphers` and you get CBC, CFB, CTR, ECB and OFB — no GCM, no
+      ChaCha20-Poly1305. Ask for one and it answers `enc: AEAD ciphers not
+      supported`. The subcommand predates AEAD and was never extended.
+
+
+      So the ciphertext is **malleable**. Anyone who can write to that file can
+      alter what it decrypts to — they cannot read it, but they can steer it, and
+      the application will treat the result as trusted precisely because it
+      decrypted without error. In counter mode the change is exact: flipping a
+      ciphertext bit flips that plaintext bit and nothing else, so knowing the
+      file's *format* is enough to make a chosen change. I have turned
+      `TRANSFER 0100` into `TRANSFER 0000` with one byte and no key.
+
+
+      The specific belief I would push back on is "a tampered file would not
+      decrypt". That is true of an authenticated mode and false of every other
+      one, and it is the assumption that makes this kind of failure invisible for
+      years.
+
+
+      The fix is not to add a hash — order, coverage and comparison are all easy
+      to get wrong, and encrypt-then-MAC is the only safe ordering. Use `age`,
+      `gpg`, or the language's AEAD API, where tampering makes decryption *fail*
+      rather than produce different plaintext.
+
+
+      One more thing I would check in passing: whether the command has `-pbkdf2`.
+      Without it OpenSSL prints `WARNING : deprecated key derivation used` and
+      proceeds anyway, so the password became a key at almost no cost.
+    signal: >-
+      Knowing that `openssl enc` structurally cannot do AEAD is the discriminator
+      — most people know "use GCM" as advice without knowing the tool in front of
+      them cannot. Distinguishing malleability from corruption, and being able to
+      name a concrete chosen change, shows they have done it rather than read it.
+      Declining to hand-roll encrypt-then-MAC is a good sign of judgement.
+    follow_ups:
+      - "What would an attacker who cannot read the file actually do with it?"
+      - "Why not just append a SHA-256 of the plaintext?"
+      - "What does the deprecated-KDF warning mean in practice?"
+
+  - id: i3
+    level: L2
+    question: >-
+      Why is a hardcoded IV a finding, when an IV is not secret?
+    model_answer: >-
+      Because secret and constant are independent properties, and only one of
+      them is safe to be.
+
+
+      An IV is transmitted in the clear — it has to be, the recipient needs it.
+      What it must be is **unique per message under one key**, which is what the
+      equivalent term makes explicit: a nonce is a *number used once*.
+
+
+      In CBC a constant IV means identical plaintexts produce identical
+      ciphertexts, so ECB's structural leak reappears at the level of whole
+      messages — an observer sees which messages repeat.
+
+
+      In counter mode it is much worse and the arithmetic is exact. CTR computes
+      `ciphertext = plaintext XOR keystream`, so two messages under the same key
+      and nonce give:
+
+
+      ```text
+      c1 XOR c2 = (p1 XOR ks) XOR (p2 XOR ks) = p1 XOR p2
+      ```
+
+
+      The keystream cancels. **The key has left the equation entirely** — a
+      4096-bit key would have cancelled just as completely, which is worth saying
+      because the instinct on seeing a break is to reach for a longer key. With
+      structured messages the shared format cancels to zero bytes and only the
+      differing data survives, and one known plaintext recovers the others
+      outright. It is the two-time pad, and I have recovered three messages from
+      four captures with one crib.
+
+
+      The shape of the mistake is what I would raise in the review, because it
+      recurs: the nonce was treated as **configuration**. Configuration is
+      written once and deployed identically everywhere, which is the exact
+      opposite of "used once". A nonce is per-message state — random, or a
+      counter that is persisted.
+
+
+      And I would check that uniqueness survives restarts and horizontal scaling.
+      An in-memory counter starting at zero is fine until the pod restarts or a
+      second replica starts, and both are ordinary operations rather than
+      failures.
+
+
+      Using GCM does not relax this. Nonce reuse there also leaks the
+      authentication subkey, so the attacker gains forgery on top of decryption.
+    signal: >-
+      The XOR derivation done from memory is the discriminator — it shows the
+      failure is understood as arithmetic rather than remembered as a rule.
+      "Treated as configuration" is the transferable diagnosis. Noting that the
+      requirement must survive restarts and replicas is the operational half that
+      developers usually miss and SREs usually get.
+    follow_ups:
+      - "What does an attacker get with no known plaintext at all?"
+      - "Is a random 64-bit nonce acceptable?"
+      - "Does using AES-GCM instead of CTR make nonce reuse safe?"
+
+  - id: i4
+    level: L2
+    question: >-
+      A company says all customer data is encrypted at rest. What does that
+      protect against?
+    model_answer: >-
+      A stolen or decommissioned disk, a copied snapshot, a datacentre theft.
+      That is a real threat and worth having. It is also close to the whole list.
+
+
+      On a running machine the volume is mounted and the key has already been
+      applied, so everything above the filesystem sees plaintext. A compromised
+      application reads plaintext. `SELECT * FROM users` returns plaintext. A
+      logical backup returns plaintext. Anyone with shell access reads plaintext.
+
+
+      So "encrypted at rest" and "an attacker who gets in cannot read the data"
+      are different claims, and only the first is usually true — while the second
+      is what a buyer reading a security questionnaire believes they are being
+      told.
+
+
+      The question I would ask instead of "is it encrypted" is **where is the key,
+      and who has already used it**. That single question resolves most of these
+      discussions. If the key is in the application's config, on the same host,
+      in the same backup, then one compromise gets both and the encryption stops
+      offline access only.
+
+
+      What changes the answer is encryption **above** the layer the attacker
+      operates at. Application-level or column-level encryption means the
+      database and its backups never hold plaintext for those fields. Better
+      still, keys in a KMS where the key never leaves: a compromised application
+      can *ask* for decryptions, which is logged and rate-limitable, but it
+      cannot walk away with the key. That is a different threat model rather than
+      a harder version of the same one, and it costs queryability on those
+      fields — which is the trade to state explicitly rather than to hide.
+
+
+      I would also want a key identifier stored with each record. Without one,
+      rotation means decrypting and re-encrypting everything in a single
+      operation you cannot pause, which is why "we rotate annually" so often
+      means "we have never rotated".
+    signal: >-
+      "Where is the key, and who has already used it" is the answer that shows
+      real understanding — it reframes the question productively rather than
+      listing controls. The distinction between hardening and changing the threat
+      model, with the KMS example, is senior. Volunteering the queryability cost
+      shows they have actually implemented this rather than recommended it.
+    follow_ups:
+      - "How would you word that claim honestly in a security questionnaire?"
+      - "What breaks when you encrypt a column the application filters on?"
+      - "How do you rotate a key across a hundred million rows?"
+
+  - id: i5
+    level: L2
+    question: >-
+      You are reviewing a design that says "customer PII will be encrypted with
+      AES-256". What do you ask?
+    model_answer: >-
+      Five questions, and the cipher is not one of them.
+
+
+      **Which mode?** AES-256 in ECB leaks structure — identical plaintext blocks
+      give identical ciphertext blocks, so on fixed-width records you can count
+      them and locate the one that differs without a key. In CBC or CTR it is
+      malleable. The answer should be AES-256-GCM or ChaCha20-Poly1305.
+
+
+      **Where does the key live, and who can read it?** Repository, environment,
+      file, secrets manager, KMS — in ascending order of worth, and this decides
+      what the encryption actually protects against. A key in a repository is
+      compromised from the moment it is committed, because the history keeps it
+      and so does every clone.
+
+
+      **How does the nonce vary, and does that survive restarts and scale-out?**
+      A constant nonce is a total break; an in-memory counter breaks the first
+      time a pod restarts or a second replica starts.
+
+
+      **Is a key identifier stored with each record?** Without one there is no
+      rotation, only a migration nobody will ever schedule.
+
+
+      **Which threat is this stopping?** If the key sits beside the data, this
+      protects against a stolen disk and not against anyone who compromises the
+      service. The document should say which it means, because someone will read
+      it as the stronger claim.
+
+
+      **Why not the cipher:** AES-256 is already correct and was never going to be
+      the weak point. It is the easiest question to ask and the only one that
+      sentence answers — which is exactly why it draws attention away from the
+      five that decide the outcome.
+
+
+      It is the same pattern as password storage, where "we use SHA-512" names an
+      algorithm and omits the work factor that decides everything. The primitive
+      is almost never the weakness, and naming it is how a design avoids
+      discussing the parts that are.
+    signal: >-
+      Explicitly declining to ask about the cipher, and explaining why, is the
+      answer. Anyone can list crypto questions; recognising that the stated
+      choice is fine and the omissions are the risk is the review skill. Drawing
+      the parallel to the hashing case shows they hold a general principle rather
+      than a checklist.
+    follow_ups:
+      - "Which of those five would you block a merge on?"
+      - "How would you check the key is not already in the repository's history?"
+      - "What would you accept as evidence that rotation actually works?"

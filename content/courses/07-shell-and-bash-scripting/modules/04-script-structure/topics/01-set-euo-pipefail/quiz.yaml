@@ -1,0 +1,449 @@
+id: quiz.set-euo-pipefail
+topic: topic.set-euo-pipefail
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.5.1]
+    stem: "What exit status does a script get when `set -u` catches an unset variable?"
+    options:
+      - id: a
+        text: "127"
+        correct: true
+      - id: b
+        text: "1"
+        note: >-
+          The obvious guess, and wrong. Bash uses 127 here.
+      - id: c
+        text: "2"
+        note: >-
+          2 is bash's usage/syntax error status, not nounset's.
+      - id: d
+        text: The status of the last command that ran
+        note: >-
+          The shell chooses the status itself; the previous command's is
+          discarded.
+    explanation: >-
+      `bash -c 'set -u; echo "$UNSET"'` exits **127**, which conventionally means
+      "command not found". So in a CI log an unset variable reads like a missing
+      binary, and people spend the first ten minutes looking for the wrong thing.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.5.1]
+    stem: >-
+      With `set -o pipefail`, what is the exit status of a pipeline?
+    options:
+      - id: a
+        text: The rightmost non-zero status, or zero if every stage succeeded
+        correct: true
+      - id: b
+        text: The status of the last command in the pipeline
+        note: >-
+          That is the behaviour *without* pipefail — the one that lets
+          `pg_dump | gzip` report gzip's success.
+      - id: c
+        text: The status of the first command that failed
+        note: >-
+          Close, but it is the last non-zero one, not the first.
+      - id: d
+        text: 1 if any stage failed
+        note: >-
+          The actual status is preserved, which matters when it is 141 from
+          SIGPIPE.
+    explanation: >-
+      pipefail makes the pipeline report the **last non-zero** status. The status
+      is preserved rather than flattened to 1, which is how you tell a genuine
+      failure from the 141 a producer gets when `head` closes the pipe.
+
+  - id: q3
+    type: multi_choice
+    level: L1
+    objectives: [OBJ-B08.5.2]
+    stem: >-
+      Under `set -e`, in which of these does a failing command **not** stop the
+      script?
+    options:
+      - id: a
+        text: "`if failing_cmd; then ...; fi`"
+        correct: true
+      - id: b
+        text: "`failing_cmd || true`"
+        correct: true
+      - id: c
+        text: "`failing_cmd | wc -l` (without pipefail)"
+        correct: true
+      - id: d
+        text: "`! failing_cmd`"
+        correct: true
+      - id: e
+        text: "`failing_cmd` on a line by itself"
+        note: >-
+          This is the one case errexit exists for.
+    explanation: >-
+      The rule underneath all of them: **errexit is suppressed wherever the shell
+      is already examining the status** — `if`/`while`/`until` conditions, `&&`
+      and `||` operands, anything after `!`, and every pipeline stage but the
+      last. None of it is a bug; without it, `if grep -q x file` could not be
+      written at all.
+
+  - id: q4
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B08.5.2]
+    stem: >-
+      A function whose body contains a failing command is called as an `if`
+      condition. What happens to the rest of the function body?
+    options:
+      - id: a
+        text: It keeps running — errexit is suppressed for the whole body
+        correct: true
+      - id: b
+        text: The function returns at the failing command, and the `if` takes that status
+        note: >-
+          That would be the behaviour if only the *call* were exempt. The
+          suppression is inherited by everything the function runs.
+      - id: c
+        text: The whole script exits, because errexit applies inside functions
+        note: >-
+          Called plainly it would. Called as a condition it does not.
+      - id: d
+        text: It depends on whether `set -E` is set
+        note: >-
+          `-E` governs ERR trap inheritance, not errexit suppression.
+    explanation: >-
+      ```console
+      $ bash -c 'set -e; f(){ false; echo "still here"; }; if f; then :; fi; echo done'
+      still here
+      done
+      ```
+      Both echoes ran. **A helper's error handling depends on how it is called**,
+      and nothing at the call site says so — a function that stops the script when
+      called plainly will run straight past failures when tested in a condition.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.3]
+    stem: >-
+      Under `set -e`, does `count=0; ((count++))` stop the script?
+    options:
+      - id: a
+        text: Yes — the post-increment evaluates to 0, so the arithmetic command returns non-zero
+        correct: true
+      - id: b
+        text: "No — `((...))` never affects the exit status"
+        note: >-
+          It does. `((...))` is an arithmetic *command* with a status derived
+          from the expression's value.
+      - id: c
+        text: "Only if `count` was unset"
+        note: >-
+          It is set, to 0. That is exactly the problem.
+      - id: d
+        text: "Only under `set -u`"
+        note: >-
+          nounset is not involved; the variable is set.
+    explanation: >-
+      `((...))` returns non-zero when the expression's **value** is zero,
+      mirroring C's notion of truth. `count++` is a post-increment whose value is
+      the **old** count — 0 on the first iteration. So a counter kills the script
+      the first time it runs. `((count+=1))` evaluates to 1 and survives; the
+      reliable form is `count=$((count + 1))`.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.3]
+    stem: >-
+      Under `set -e`, which of these exits the script?
+    options:
+      - id: a
+        text: "`x=$(false)`"
+        correct: true
+      - id: b
+        text: "`f(){ local x=$(false); }; f`"
+        note: >-
+          The one everybody expects to behave the same as (a), and it does not.
+      - id: c
+        text: "`( false ) || true`"
+        note: >-
+          The subshell's status is an operand of `||`, so it is exempt.
+      - id: d
+        text: "`while false; do :; done`"
+        note: >-
+          A loop condition is exempt, and the loop simply runs zero times.
+    explanation: >-
+      A plain assignment **takes** the exit status of the command substitution,
+      so errexit sees the failure and fires. Adding `local` changes that, because
+      `local` is a command in its own right whose status is its own success.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.3]
+    stem: >-
+      A script has `set -e` and a `trap cleanup EXIT`. A command fails and
+      errexit aborts. Does `cleanup` run?
+    options:
+      - id: a
+        text: Yes — the EXIT trap runs on every path out, including an errexit abort
+        correct: true
+      - id: b
+        text: "No — errexit terminates the shell before traps are processed"
+        note: >-
+          If this were true the whole cleanup pattern would be worthless.
+      - id: c
+        text: "Only if the trap also lists ERR"
+        note: >-
+          ERR is a different, additional trap. EXIT is enough for cleanup.
+      - id: d
+        text: "Only if `set -E` is given"
+        note: >-
+          `-E` governs ERR trap inheritance by functions.
+    explanation: >-
+      This is the property the whole pattern rests on. Normal end, explicit
+      `exit`, and errexit abort all run the EXIT handler — which is why
+      `WORKDIR=$(mktemp -d)` plus `trap cleanup EXIT` is a complete solution in
+      three lines.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.4]
+    stem: >-
+      Why does `local x=$(cmd)` discard `cmd`'s failure?
+    options:
+      - id: a
+        text: "`local` is a command, and the line reports `local`'s status, not the substitution's"
+        correct: true
+      - id: b
+        text: Command substitutions never propagate a status
+        note: >-
+          A plain `x=$(false)` propagates it fine.
+      - id: c
+        text: "Because `local` is only valid inside a function, where errexit is suppressed"
+        note: >-
+          errexit is not suppressed inside a function called plainly — that
+          case fires.
+      - id: d
+        text: Because the value is assigned before the command finishes
+        note: >-
+          The substitution completes first; its status is simply not the one
+          reported.
+    explanation: >-
+      `local`, `declare`, `export`, `readonly` and `typeset` are all commands.
+      Their exit status is whether the declaration succeeded, so the
+      substitution's failure is discarded before errexit could act. **Adding the
+      word `local` to a working line silently removes its error checking.**
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.4]
+    stem: "What is the fix for `local x=$(cmd)`?"
+    options:
+      - id: a
+        text: "Split it: `local x` then `x=$(cmd)`"
+        correct: true
+      - id: b
+        text: "Append `|| exit 1`"
+        note: >-
+          That tests `local`'s status, which is still success. It changes nothing.
+      - id: c
+        text: "Wrap it: `local x=\"$(cmd)\" || exit 1`"
+        note: >-
+          Same problem — the quoting is irrelevant, the status is still `local`'s.
+      - id: d
+        text: "Add `set -o pipefail`"
+        note: >-
+          pipefail governs pipelines. There is no pipeline here.
+    explanation: >-
+      Two lines. The declaration and the assignment are separate commands, so the
+      assignment's status is `cmd`'s and errexit sees it. `shellcheck` reports
+      the one-line form as **SC2155**, which is the single most valuable check it
+      performs on most codebases.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.5]
+    stem: >-
+      Which increment form is safe under `set -e` in every case?
+    options:
+      - id: a
+        text: "`count=$((count + 1))`"
+        correct: true
+      - id: b
+        text: "`((count++))`"
+        note: >-
+          Returns 1 whenever count was 0.
+      - id: c
+        text: "`((count += 1))`"
+        note: >-
+          Safe until the *result* is genuinely 0 — a decrement to zero, or an
+          assignment of 0.
+      - id: d
+        text: "`let count++`"
+        note: >-
+          `let` has the same value-based status as `((...))`.
+    explanation: >-
+      `count=$((count + 1))` is an **assignment**, not a command whose status is
+      derived from a value, so there is nothing to trip over. `: $((count++))`
+      also works, because `:` swallows the status. Standardise on the assignment
+      form.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.5]
+    stem: >-
+      Why does `((...))` return non-zero when the expression evaluates to zero?
+    options:
+      - id: a
+        text: It reports the expression's truth value in the C sense, where 0 is false
+        correct: true
+      - id: b
+        text: It is a bug preserved for compatibility
+        note: >-
+          It is documented and deliberate — it is what makes `if ((n > 0))` work.
+      - id: c
+        text: It returns the value itself as the exit status
+        note: >-
+          The status is 0 or 1, not the value. `((5))` exits 0, not 5.
+      - id: d
+        text: Because arithmetic errors are reported as zero
+        note: >-
+          An arithmetic *error* is a different case, and also non-zero.
+    explanation: >-
+      The behaviour exists so `if ((count > 0)); then` reads naturally. The cost
+      is that any arithmetic command whose value happens to be zero looks like a
+      failure to errexit — most commonly a post-increment from 0.
+
+  - id: q12
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B08.5.6]
+    stem: >-
+      Which of these are permitted under `set -u` when the variable is unset?
+    options:
+      - id: a
+        text: "`${VAR:-default}`"
+        correct: true
+      - id: b
+        text: "`${VAR-}`"
+        correct: true
+      - id: c
+        text: '`"$@"` with no arguments'
+        correct: true
+      - id: d
+        text: "`${VAR:?must be set}`"
+        note: >-
+          This fails *deliberately*, with your message — the point of it. It is
+          not a case `-u` permits.
+      - id: e
+        text: "`$VAR`"
+        note: >-
+          The case nounset exists to catch.
+    explanation: >-
+      `-u` objects to expanding a variable that was never set, not to every
+      mention of one. Defaults, the assign-if-unset forms, `"$@"` with zero
+      arguments and empty arrays are all fine. `${VAR:?message}` at the *top* of
+      a script beats `-u` catching it later, because the message names the
+      variable and the fix rather than reporting an unbound variable forty lines
+      in.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.7]
+    stem: >-
+      A script has `trap cleanup EXIT INT TERM`. It is sent SIGTERM mid-run.
+      What happens after `cleanup` returns?
+    options:
+      - id: a
+        text: The script resumes where it was interrupted, and cleanup runs again on exit
+        correct: true
+      - id: b
+        text: The script exits with status 143
+        note: >-
+          Only if the handler *exits*. A handler that returns does not.
+      - id: c
+        text: The script exits with status 0 immediately
+        note: >-
+          It does eventually exit 0 — but not immediately; it runs the rest of
+          the script first, which is the dangerous part.
+      - id: d
+        text: The script exits and cleanup runs once
+        note: >-
+          EXIT fires as well, so it runs twice.
+    explanation: >-
+      A trap handler **returns**, and execution resumes at the point of
+      interruption. A deploy signalled mid-run therefore printed `deploy
+      complete` *after* its working directory had been deleted, and exited **0** —
+      a CI job would record a successful deploy of a killed process. A signal
+      handler must `exit` explicitly: `trap 'cleanup; exit 143' TERM`.
+
+  - id: q14
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.7]
+    stem: >-
+      An ERR trap set with `trap '...' ERR` never fires, even though commands
+      inside the script's functions are failing. Why?
+    options:
+      - id: a
+        text: "ERR traps are not inherited by functions without `set -E`"
+        correct: true
+      - id: b
+        text: "ERR traps require `set -e` to be set"
+        note: >-
+          Worth knowing that ERR fires under the same conditions errexit would
+          act on — but the inheritance rule is what is biting here.
+      - id: c
+        text: A trap can only be set once per script
+        note: >-
+          Traps can be reset freely.
+      - id: d
+        text: "`ERR` is not a real signal name"
+        note: >-
+          It is a bash pseudo-signal, and valid.
+    explanation: >-
+      ERR is not inherited by functions, subshells or command substitutions
+      unless `set -E` (errtrace) is given — so the trap is silent in exactly the
+      places where failures are hardest to see. This is why the preamble is
+      written `set -eEuo pipefail` whenever an ERR trap is present.
+
+  - id: q15
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.5.8]
+    stem: >-
+      A script has a full `set -eEuo pipefail` preamble. Which failure will it
+      still not catch?
+    options:
+      - id: a
+        text: "A `curl` that received a 404 error page with HTTP status 200 and wrote it to the output file"
+        correct: true
+      - id: b
+        text: A misspelled variable name expanding to nothing
+        note: >-
+          `-u` catches this.
+      - id: c
+        text: "`pg_dump` failing in `pg_dump | gzip > backup.gz`"
+        note: >-
+          pipefail catches this.
+      - id: d
+        text: A command in the middle of the script exiting 1
+        note: >-
+          `-e` catches this.
+    explanation: >-
+      **The preamble catches unhandled failures, not wrong behaviour.** Every
+      command succeeded; the bytes are simply wrong. So the preamble is a
+      **floor**, and the rest of the work is asserting the outcome — that the
+      file is a plausible size, that the checksum matches, that the version now
+      running is the one you deployed. The exit status is the command's opinion
+      of itself; the resulting state is evidence.

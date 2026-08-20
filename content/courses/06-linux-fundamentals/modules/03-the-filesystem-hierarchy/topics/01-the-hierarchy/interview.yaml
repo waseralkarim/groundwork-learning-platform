@@ -1,0 +1,268 @@
+topic: topic.the-filesystem-hierarchy
+
+questions:
+  - id: i1
+    level: L1
+    question: Where would you install a tool your team wrote, and why does the location matter?
+    model_answer: >-
+      `/usr/local/bin` for a single binary, or `/opt/<name>/` if it ships a whole
+      tree with its own `bin`, `lib` and `conf`.
+
+
+      The location matters because those directories are **reserved by policy**.
+      No Debian package may install files under `/usr/local` — and you can watch
+      the policy being enforced from the database side:
+
+
+      ```console
+      $ dpkg -S /usr/local
+      dpkg-query: no path found matching pattern /usr/local
+      ```
+
+
+      Nothing owns it. On a normal image, zero packages ship a file under
+      `/usr/local` or `/opt`; the directories are created by a `base-files`
+      maintainer script precisely so they exist while remaining unowned.
+
+
+      Two consequences follow, and they are the same fact from both sides. Nothing
+      you put there will ever be **clobbered** by a package upgrade — and nothing
+      you put there will ever be **patched** by one either. So installing a tool
+      there is also accepting an obligation to patch it, which is fine as long as
+      somebody knows they accepted it.
+
+
+      That is why I would also expect the directory to appear on a register
+      somewhere. `/opt` and `/usr/local/bin` are, by construction, the software
+      the distribution is not maintaining — which makes `ls /opt /usr/local/bin`
+      the fastest available answer to "what on this machine is not being patched".
+    signal: >-
+      Naming the directories is the baseline. The discriminator is knowing the
+      package system deliberately declines to own them, and reading that as an
+      ownership handover rather than a convention. Turning it into a one-command
+      audit shows they have had to answer the question for real.
+    follow_ups:
+      - "What is the difference between /usr/local and /opt in practice?"
+      - "How would you find everything on a machine that came from outside the archive?"
+      - "What would an unowned file under /usr/bin mean?"
+
+  - id: i2
+    level: L2
+    question: >-
+      A write fails with "Permission denied" but the filesystem is mounted
+      read-write and the file mode looks correct. Walk me through it.
+    model_answer: >-
+      I would start by separating the two gates, because they are checked
+      independently and produce different messages.
+
+
+      **The mount** is checked first, applies to every process including root,
+      and refuses with `Read-only file system` — `EROFS`. **The mode** is checked
+      second and refuses with `Permission denied` — `EACCES`. So this is already
+      not a mount problem, and no amount of remounting will fix it.
+
+
+      The case I have hit most is a tmpfs mounted read-write with default
+      ownership. In our lab containers `/run` is mounted `rw` and is `755` owned
+      by root, while the process runs as uid 10001 — so the mount says yes and
+      the mode says no. The fix is `uid=` on the tmpfs or ownership on the
+      directory, and someone who has not separated the gates will spend an hour
+      trying to make the filesystem more writable.
+
+
+      Then there is a third failure that says the identical words and is neither:
+      **`Permission denied` on execute**, with a file that is `0755` and owned by
+      you. That is `noexec` on the mount, which the permission bits cannot
+      express. `/dev/shm` is the usual place to meet it — mode `1777` so anyone
+      may write, `noexec` so nobody may run what they wrote.
+
+
+      Worth noting that `/dev/shm` is a Docker default nobody configures, so it is
+      a world-writable path that appears in no manifest, made harmless by
+      `noexec`. Defence in depth working as designed.
+
+
+      Practically: read the exact message, then `findmnt -no OPTIONS <path>` for
+      the mount gate and `stat -c '%A %U:%G'` for the mode gate. Thirty seconds,
+      and it tells you which of three different fixes you need.
+    signal: >-
+      Distinguishing EROFS from EACCES is the core, and most candidates conflate
+      them. The strong answer adds the third case — noexec producing "Permission
+      denied" on a file whose permissions are fine — and reaches for the two
+      commands rather than reasoning. Knowing /dev/shm is an unconfigured default
+      is the kind of detail that comes from having looked.
+    follow_ups:
+      - "How would you fix the /run case in a compose file?"
+      - "Why would anyone mount a directory noexec?"
+      - "What does ENOSPC look like by comparison?"
+
+  - id: i3
+    level: L2
+    question: >-
+      A service whose code writes no files fails under a read-only root
+      filesystem. What is happening?
+    model_answer: >-
+      Something else in the process is writing, and it is almost never the
+      application.
+
+
+      The usual suspects are all one layer down. **The language runtime** — the
+      JVM writes `/tmp/hsperfdata_<user>` at startup, CPython writes
+      `__pycache__` next to source on first import. **The standard library** —
+      `File.createTempFile` or `tempfile.mkstemp` land in `/tmp` from inside some
+      helper three frames below anything the team thinks of as I/O. **The font
+      stack**, building a cache the first time something renders a PDF. **The TLS
+      library**, which in some configurations wants a seed file under `$HOME`.
+
+
+      None of those appear in the application's source, so "we write nothing" is
+      sincere and the conclusion drawn from it is wrong. **The false premise is
+      that the application is the only thing in the process.**
+
+
+      The shape I would look for first is a *delayed or intermittent* failure,
+      because it is diagnostic. If the write is on a rare code path — an export, a
+      PDF render — replicas fail only when they handle that request, which reads
+      as intermittent and is perfectly deterministic. Lining up which replicas
+      died against what they were doing usually settles it faster than any log.
+
+
+      The method is to stop predicting. Start it, read the error, add the
+      narrowest path that fixes it, repeat. Three or four rounds finishes most
+      services, and prefer a `tmpfs` over a volume for anything that need not
+      survive — it satisfies the write and guarantees the data cannot outlive the
+      container. Size it, since it costs memory, and add `noexec` if it holds data
+      rather than code.
+
+
+      And I would resist reverting the flag, with a specific argument rather than
+      a principle: without it, the service had an invisible dependency on a
+      writable `/tmp` that would have surfaced during an incident instead of in
+      staging. The read-only root did not create the fragility, it relocated the
+      discovery.
+    signal: >-
+      "The application is not the only thing in the process" is the reframe. The
+      discriminator is naming concrete writers — hsperfdata, __pycache__, font
+      caches — rather than gesturing at "libraries". Reading a delayed failure as
+      a rare code path rather than as flakiness is a strong debugging instinct.
+    follow_ups:
+      - "How would you find every path a running service has written?"
+      - "tmpfs or volume for /tmp, and why?"
+      - "How do you argue against reverting the flag?"
+
+  - id: i4
+    level: L2
+    question: >-
+      Files that should be in a container's directory are missing, and the image
+      definitely contains them. Where do you look?
+    model_answer: >-
+      At whether something is mounted on top of that directory, before I consider
+      deletion at all.
+
+
+      **A mount covers a directory rather than merging with it.** Mount a volume
+      at a path the image populated and the image's files become invisible
+      immediately — intact, underneath, and unreachable in that mount namespace.
+
+
+      ```bash
+      mountpoint /usr/lib/app/plugins     # is something mounted exactly here?
+      cat /proc/1/mountinfo               # everything the runtime attached
+      ```
+
+
+      `mountpoint` answers in a second and is unambiguous, and `/proc/1/mountinfo`
+      is authoritative regardless of what any manifest claims.
+
+
+      The trap worth naming: **`find` returning nothing looks like proof of
+      deletion and is not.** It proves unreachability, and from inside the
+      namespace those are indistinguishable — but only one of them is reversible,
+      so check the reversible one first because it costs nothing.
+
+
+      The usual origin is a reasonable-sounding sentence in a ticket: "the service
+      already reads that directory, so mount the extra files there." That would be
+      correct if mounts merged.
+
+
+      Two other clues I would use. **Partial failure is informative** — if five of
+      seven plugins stopped working, the surviving two do not depend on the
+      covered path, which narrows the location before you understand the
+      mechanism. And **an unchanged image digest with changed behaviour** puts the
+      fault strictly between image and process, which is a very short list:
+      mounts, entrypoint, environment.
+
+
+      The fix is usually to mount the single **file** rather than the directory,
+      or to give operators an empty directory intended for mounting so the
+      question cannot arise. And it is cheap to check in review: for each mount
+      path, ask whether the image is non-empty there.
+    signal: >-
+      Reaching for mountpoint before considering deletion is the whole answer.
+      Knowing that `find` finding nothing is not evidence of deletion is the
+      discriminator — it is the step that sends most investigations toward the
+      build system. Proposing a mechanical pre-deploy check shows they want the
+      class fixed rather than the instance.
+    follow_ups:
+      - "How would you prevent it in a compose file?"
+      - "Why did only some of the functionality break?"
+      - "Where else is this masking behaviour used deliberately?"
+
+  - id: i5
+    level: L2
+    question: >-
+      How would you decide what goes in a volume and what gets backed up for a
+      containerised service?
+    model_answer: >-
+      By sorting every path the service touches by what happens to it when the
+      container is destroyed and recreated. There are only four possible fates —
+      it comes back from the image, from configuration, from a volume, or not at
+      all — and every path has exactly one.
+
+
+      The hierarchy does most of the sorting. `/usr` comes back from the image.
+      `/etc` comes back from the config repository — **not** from a backup, since
+      a backup captures drift as faithfully as intent, and restoring it
+      reintroduces every undocumented local edit. `/var/lib` is state that cannot
+      be regenerated, so it is the volume and the backup. `/var/cache`, `/run` and
+      `/tmp` are regenerable or ephemeral and should be tmpfs.
+
+
+      Two places the directory does not decide, and they are where the money is.
+
+
+      **Caches inside `/var/lib`.** Real services do this constantly — I have seen
+      210 GB of render cache in a state directory against 59 GB of actual data. So
+      the rule cannot be "back up `/var/lib`", it has to be "back up what cannot be
+      regenerated", applied per path. You can mount a tmpfs over a subdirectory of
+      a volume to keep it out of both the volume and the restore, without asking
+      the application to move anything.
+
+
+      **Things outside the package system.** A restore procedure that says
+      "install the OS, install the package, restore the archive" assumes every
+      binary came from a package. Anything in `/opt` or `/usr/local` is by
+      construction something a reinstall will not bring back — and the hierarchy
+      predicts that in advance, which is the useful part.
+
+
+      So the manifest I would write names paths rather than trees, gives each a
+      reason, sends secrets to a secret store rather than an archive, and ends
+      with a verification step — because a restore nobody has tested is a
+      hypothesis, and the moment you find out is the moment you cannot afford to.
+
+
+      The reason column is not documentation overhead. In two years the paths will
+      have changed, and the reasons are what let somebody update the manifest
+      instead of guessing.
+    signal: >-
+      Using regenerability rather than location as the test is the core, and the
+      cache-inside-/var/lib case is what separates people who have done this from
+      people who have read about it. Restoring /etc from the repo rather than the
+      backup, and remembering /opt in the restore procedure, are both signs of
+      having been through a real recovery.
+    follow_ups:
+      - "How would you keep a 200 GB cache out of a volume without moving it?"
+      - "Why not restore /etc from the backup?"
+      - "How would you test the restore?"

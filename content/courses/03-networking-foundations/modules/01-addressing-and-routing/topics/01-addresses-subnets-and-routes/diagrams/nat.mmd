@@ -1,0 +1,6 @@
+graph LR
+    A["Container<br/><b>172.17.0.2:41234</b>"] -->|"src 172.17.0.2:41234<br/>dst 93.184.216.34:443"| B["Router / host<br/><i>rewrites the source</i>"]
+    B -->|"src <b>203.0.113.7:52001</b><br/>dst 93.184.216.34:443"| C["Server<br/>93.184.216.34:443"]
+    C -->|"src 93.184.216.34:443<br/>dst 203.0.113.7:52001"| B
+    B -->|"looks up 52001 in its table,<br/>rewrites back"| A
+    B --> D["<i>The translation table is state.</i><br/>Lose it and every connection<br/>through it dies at once"]

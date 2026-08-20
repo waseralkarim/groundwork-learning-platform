@@ -1,0 +1,168 @@
+id: assessment.regions-and-failure-domains
+topic: topic.regions-and-failure-domains
+pass_score: 70
+
+parts:
+  - id: A
+    title: Compute and explain a composed availability
+    kind: explain
+    objectives: [OBJ-A05.3.3, OBJ-A05.3.4]
+    prompt: >-
+      A team promises 99.95% for a service that requires a load balancer
+      (99.99%), a Kubernetes control plane (99.95%), a managed database (99.95%)
+      and a secrets manager (99.99%). They have three replicas across three
+      zones.
+
+
+      In about 200 words: compute what they can actually promise, explain why the
+      replicas do not raise it, and say what the number is missing.
+    rubric:
+      - "Computes the series composition — about 99.88%, roughly 52 minutes a month"
+      - "States the composite is below every individual component"
+      - "Explains the replicas are parallel within one term and the others are in series"
+      - "Notes the calculation assumes independence and is an upper bound"
+      - "Identifies dependencies missing from the list, or that changes dominate real downtime"
+    model_answer: >-
+      0.9999 × 0.9995 × 0.9995 × 0.9999 = **99.880%**, about **52 minutes a
+      month**. They cannot promise 99.95%; they are promising something they
+      cannot deliver by roughly a factor of two.
+
+
+      The composite is below every individual component because in series
+      availability multiplies, so it can only fall. Every dependency added makes
+      it worse, and that cost is rarely counted when a feature introduces one.
+
+
+      **The replicas do not raise it** because they are parallel *within* the
+      compute term only. Three replicas make compute nearly perfect, and that
+      term is then multiplied by four other required services which are not
+      replicated by adding pods. One component in series with a very good parallel
+      group sets the composite to approximately that component's own figure.
+
+
+      What the number is missing: first, the **list is short** — DNS, the
+      container registry, identity and the CI system are all required to serve or
+      deploy and appear on no diagram. Second, the parallel part **assumes
+      independence**, so it is an upper bound; three replicas sharing a node, a
+      dependency, or a deployment are not three.
+
+
+      And most importantly, this models infrastructure failure. Most real downtime
+      is **change** — deployments, config, expiring certificates — which no term
+      here represents.
+    common_failures:
+      - "Answering 99.95% by taking the weakest component"
+      - "Claiming the replicas raise the composite"
+      - "Presenting the figure as a prediction rather than an upper bound"
+      - "Omitting that changes cause most downtime and appear nowhere in the model"
+
+  - id: B
+    title: Reason about quorum placement
+    kind: reason
+    objectives: [OBJ-A05.3.5, OBJ-A05.3.2]
+    prompt: >-
+      A cluster runs 5 etcd nodes: 3 in AZ-a, 2 in AZ-b. The database primary is
+      also in AZ-a. The team is proposing to add two more etcd nodes to "improve
+      resilience".
+
+
+      In about 250 words: compute what the current placement survives, evaluate
+      the proposal, and give the placement you would use.
+    rubric:
+      - "Computes quorum as 3 and shows losing AZ-a leaves 2 — quorum lost"
+      - "States it survives only the loss of AZ-b, so one of two zone failures"
+      - "Evaluates 7 nodes across 2 zones as no improvement in zone tolerance"
+      - "Identifies the primary sharing a zone with the etcd majority as a compounding fault"
+      - "Recommends an odd number spread across three zones"
+    model_answer: >-
+      **Current placement.** Quorum for five is three. Lose AZ-a and two nodes
+      remain — quorum lost, writes stop. Lose AZ-b and three remain — quorum held,
+      with no margin. So it survives **one of two** zone failures, the same as
+      three nodes across two zones. The extra two nodes bought nothing for zone
+      tolerance.
+
+
+      **The proposal makes it no better.** Seven nodes across two zones gives a
+      quorum of four; one zone necessarily holds at least four, and losing that
+      zone leaves three. Still one of two. Adding nodes within two zones can never
+      produce zone fault tolerance, because one zone always holds a majority. If
+      the split ended up 4/3, losing the zone with four leaves three against a
+      quorum of four — worse.
+
+
+      **The second fault is placement of roles.** The database primary sits in
+      AZ-a, the same zone as the etcd majority. Losing AZ-a therefore costs
+      quorum *and* the primary simultaneously, and the database failover needs a
+      control plane that has just lost quorum. Those are not two independent
+      failures; they are one event whose recoveries depend on each other.
+
+
+      **What I would use:** five etcd nodes across three zones, 2/2/1. Losing any
+      single zone leaves three or four against a quorum of three — survives all
+      three. Or three nodes 1/1/1 if five is not needed for read throughput.
+
+
+      Once the placement is 2/2/1 there is no majority zone, so the primary
+      colocation problem disappears by construction rather than needing a rule.
+    common_failures:
+      - "Assuming five nodes tolerate two failures regardless of placement"
+      - "Accepting the proposal because more nodes sounds more resilient"
+      - "Missing that the primary and the etcd majority share a zone"
+      - "Recommending an even number of nodes"
+
+  - id: C
+    title: Advise on a failover decision
+    kind: diagnose
+    objectives: [OBJ-A05.3.8, OBJ-A05.3.7]
+    prompt: >-
+      A regional control plane is unavailable. Pods keep running and traffic is
+      normal. The runbook says to fail over to the secondary region, which has
+      never been used, runs 6 replicas against the primary's 54, and sits behind
+      DNS with a 3600-second TTL.
+
+
+      In about 250 words: say what you would do and why, and what you would change
+      afterwards.
+    rubric:
+      - "Identifies there is no user impact — frozen rather than down — and recommends waiting"
+      - "Computes or reasons that 6 replicas cannot absorb 54 replicas' traffic"
+      - "Notes the TTL governs both failover and fail-back, committing you for an hour"
+      - "Raises split brain if the old primary is reachable and still accepting writes"
+      - "Recommends changing the runbook trigger to user impact, plus capacity, TTL and testing"
+    model_answer: >-
+      **I would not fail over.** There is no user-facing impact: the data plane is
+      healthy and serving. This is **frozen, not down** — no deploys, no scaling,
+      no rescheduling — which is survivable for a period usually shorter than a
+      failover takes. I would prepare while waiting, and set a threshold for
+      changing my mind.
+
+
+      **The secondary cannot take the traffic.** Six replicas against 54 is about
+      an eighth of capacity. Even with autoscaling, node provisioning is minutes
+      and traffic arrives as DNS caches expire, so the likely outcome is
+      saturation and 5xx — converting a zero-impact event into a real outage.
+
+
+      **The TTL commits me.** 3600 seconds means failover takes up to an hour to
+      take full effect, and so does failing back. Once started I cannot reverse
+      the decision for an hour regardless of what I learn.
+
+
+      **And split brain is likely.** The control plane being unavailable does not
+      mean the primary database is down. Promoting the secondary while the old
+      primary still accepts writes from cached DNS gives two writable primaries
+      and a reconciliation problem — which turns an availability incident into a
+      data one.
+
+
+      **Afterwards:** change the runbook trigger from *provider incident* to
+      *sustained user-facing impact with no recovery*. Run the secondary warm at a
+      meaningful fraction of primary, or pre-scale as step one. Drop the TTL to 60
+      seconds. Add explicit fencing of the old primary. And test the failover
+      quarterly in business hours — two years of green monitoring established only
+      that the region can answer one request.
+    common_failures:
+      - "Failing over because the runbook says so, without checking user impact"
+      - "Missing the capacity shortfall or assuming autoscaling absorbs it"
+      - "Overlooking that the TTL applies to fail-back as well"
+      - "Not raising split brain when the old primary is unreachable rather than down"

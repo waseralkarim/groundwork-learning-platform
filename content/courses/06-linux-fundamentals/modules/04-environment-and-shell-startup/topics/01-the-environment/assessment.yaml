@@ -1,0 +1,187 @@
+id: assessment.environment-and-shell-startup
+topic: topic.environment-and-shell-startup
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain eight months of empty backups
+    kind: explain
+    objectives: [OBJ-B06.4.8, OBJ-B06.4.4]
+    prompt: >-
+      A nightly cron backup produced one file — on the day it was set up — and
+      nothing since. Monitoring stayed green throughout. The script works when
+      run by hand, including via `sudo -u backup bash -lc`.
+
+
+      The log shows, every night:
+
+
+      ```text
+      run-backup.sh: line 6: pg_dump: command not found
+      backup complete: /db-2026-08-17.sql.gz
+      ```
+
+
+      In about 200 words: explain what happened and what you would change.
+    rubric:
+      - "Identifies that cron reads no startup files, so ~/.profile's PATH and variables were absent"
+      - "Reads the leading slash in the output path as an unset variable expanding to empty"
+      - "Explains the exit 0 via pipeline exit status and the trailing echo"
+      - "Notes that the by-hand reproduction used a login shell and so proved nothing"
+      - "States that the monitoring asserted the script's exit code rather than the artifact"
+    model_answer: >-
+      **Cron reads no startup files.** The backup user's PATH addition and
+      `BACKUP_DEST` both lived in `~/.profile`, which cron never consults, so
+      `pg_dump` was not on PATH and `BACKUP_DEST` was empty.
+
+
+      With `BACKUP_DEST` unset and no `set -u`,
+      `"${BACKUP_DEST}/db-$(date +%F).sql.gz"` expands to **`/db-...`** — the path
+      collapses to the root directory. That is the zero-byte file the log names,
+      and the leading slash is the diagnosis sitting in a line everybody read as
+      success.
+
+
+      **It exited 0** because a pipeline's status is its *last* command's:
+      `pg_dump` failed, `gzip` succeeded in writing an empty file, and the
+      trailing `echo` succeeded. So the script reported completion every night.
+
+
+      **The reproduction proved nothing.** `sudo -u backup bash -lc` is a *login*
+      shell and reads `~/.profile`. Testing as the right user is not testing the
+      way it runs.
+
+
+      **And monitoring asserted `exit_code: 0`** — the script's own opinion of
+      itself. Nothing ever checked that a backup existed.
+
+
+      What I would change: `set -euo pipefail`; `${BACKUP_DEST:?}` for every
+      variable; an explicit PATH and `command -v` checks; declare the environment
+      in the crontab header; assert the artifact's size before claiming success;
+      and monitor for a recent, plausibly-sized file rather than running the job.
+    common_failures:
+      - "Blaming cron or the PATH alone and missing the empty-expansion that redirected the output"
+      - "Not explaining why the script exited 0"
+      - "Accepting the by-hand reproduction as evidence the script is fine"
+      - "Fixing the script but leaving monitoring that watches the runner rather than the result"
+
+  - id: B
+    title: Reason about two disagreeing environments
+    kind: reason
+    objectives: [OBJ-B06.4.7, OBJ-B06.4.5]
+    prompt: >-
+      A colleague reports that a command works in their terminal and fails from a
+      script, on the same machine as the same user. Separately, `env` on a running
+      service shows `DB_HOST=db-new` while `/proc/<pid>/environ` shows
+      `DB_HOST=db-old`.
+
+
+      In about 250 words: explain both, and give the commands you would run.
+    rubric:
+      - "Explains the first as shell mode — which startup files each invocation reads"
+      - "Gives the env diff as the concrete technique"
+      - "Explains /proc/PID/environ as an execve snapshot that never updates"
+      - "Concludes the service is still using the old value unless it re-reads"
+      - "Identifies that neither observation indicates a fault in itself"
+    model_answer: >-
+      **The first is shell mode.** Their terminal is a login interactive shell and
+      reads `/etc/profile`, a profile file and `~/.bashrc`; a script runs under
+      `bash -c`, which reads **nothing** — not `/etc/profile`, not
+      `/etc/bash.bashrc`, not any dotfile. So anything accumulated in their
+      dotfiles is absent.
+
+
+      I would not speculate about which setting:
+
+
+      ```bash
+      bash -lic 'env' | sort > /tmp/theirs.env
+      bash -c   'env' | sort > /tmp/script.env
+      diff /tmp/theirs.env /tmp/script.env
+      ```
+
+
+      Every line is something a startup file did, and one is the bug. I would also
+      run `type -a <cmd>` in both, since the "command" may be an alias or a shell
+      function, which no script can ever see.
+
+
+      **The second is not a disagreement.** `/proc/PID/environ` is a snapshot the
+      kernel wrote at `execve` and nothing updates it — it records what the
+      process was *started with*. `env` in my shell shows *my* environment, not the
+      service's.
+
+
+      So the reading is: the service was launched with `db-old`, and the
+      configuration has changed since. **The service is still using `db-old`**
+      unless it re-reads the value, because a running process keeps the copy it
+      was handed.
+
+
+      Next: `systemctl show -p Environment <unit>` for what is declared now, and
+      the process start time against the unit's last modification. If they
+      disagree, the finding is that the service needs a restart — and that editing
+      configuration never changes a running process.
+    common_failures:
+      - "Treating /proc/PID/environ as authoritative and concluding the service is misconfigured"
+      - "Assuming env in your own shell reports the service's environment"
+      - "Guessing at which dotfile rather than diffing the environments"
+      - "Missing that the practical conclusion is 'it needs a restart'"
+
+  - id: C
+    title: Diagnose a closed finding that was not fixed
+    kind: diagnose
+    objectives: [OBJ-B06.4.6, OBJ-B06.4.8]
+    prompt: >-
+      An API key was passed to a container as an environment variable. The fix
+      was to have the application unset it at startup; a re-test confirmed
+      `docker exec <c> env` no longer showed it, and the finding was closed. Six
+      months later the key was used by somebody else. The container has not been
+      redeployed in eleven weeks.
+
+
+      In about 250 words: say where the key remained readable, why the re-test
+      passed, and what you would change.
+    rubric:
+      - "Identifies /proc/PID/environ as an immutable execve snapshot still holding the value"
+      - "Names ps eww and docker inspect as further exposures the fix never touched"
+      - "Explains that the re-test checked a new process's live environment"
+      - "Credits the fix for closing the child-process exposure"
+      - "Proposes a file-based secret and a test that enumerates the exposures"
+    model_answer: >-
+      **The key remained readable in at least three places.**
+      `/proc/PID/environ` is written once at `execve` and never updated, so
+      deleting the variable changed only the live copy — the snapshot held the
+      value for all eleven weeks the process ran. `ps eww` reads the same region.
+      And `docker inspect` shows `Config.Env` from the **host**, with no container
+      access at all; it is stored on disk and survives the container stopping, so
+      anyone in the `docker` group could read it.
+
+
+      **The re-test passed because it tested the one thing that changed.**
+      `docker exec env` starts a *new* process from the application's modified
+      live environment. It was a correct test of the wrong property — and a
+      passing test is much harder to look at critically than a failing one.
+
+
+      **The fix was not worthless.** Children started after the deletion no longer
+      inherit the key, which is a real exposure closed for any application that
+      shells out. I would say that before dismantling it.
+
+
+      **What I would change.** Move the value to a file — `/run/secrets/...`, mode
+      `0400` — with only the *path* in the environment. That removes it from `ps`,
+      from the snapshot, from `inspect`, and from every child, and it can be
+      rotated without restarting anything.
+
+
+      Keep the unset, with a comment on what it does and does not do. Revisit the
+      `docker` group grant, which is root-equivalent. And replace the test with
+      one asserting the pattern is absent from `env`, `/proc/1/environ` **and**
+      `docker inspect`.
+    common_failures:
+      - "Dismissing the unset as useless rather than partial"
+      - "Missing docker inspect, which is the widest exposure and needs no container access"
+      - "Not explaining why the re-test passed"
+      - "Proposing a new control without a test that would detect its failure"

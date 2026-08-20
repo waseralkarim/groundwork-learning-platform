@@ -1,0 +1,231 @@
+id: troubleshooting.the-patch-that-was-announced
+topic: topic.service-models-and-responsibility
+title: The provider changed something and told us twelve months ago
+level: L2
+objectives: [OBJ-A05.2.7, OBJ-A05.2.6]
+reveal_policy: progressive
+
+situation: >-
+  At 00:00 UTC on the first of the month, four services began failing to
+  authenticate to the provider's object storage. All four use the same internal
+  library. Nothing was deployed. The failure is total for those services and
+  clean — every request returns 403.
+
+
+  The platform team's first assumption was a credential expiry. The credentials
+  are valid and were rotated six weeks ago.
+
+
+  The provider's status page is green. Support's first response was that the
+  service is operating normally.
+
+
+  A search of the provider's documentation finds a deprecation notice for the
+  authentication method the library uses. It was published thirteen months ago,
+  with a removal date of the first of this month.
+
+
+  Nobody in the company had read it.
+
+
+  Work out what should change.
+
+symptoms:
+  - "Four services failing simultaneously at exactly 00:00 UTC on the 1st"
+  - "No deployment, no configuration change, no credential expiry"
+  - "Provider status page green; support says the service is normal"
+  - "All four failures are 403, clean and total"
+  - "A deprecation notice exists, published 13 months ago"
+  - "The internal library is used by 11 services; 4 have failed so far"
+
+artifacts:
+  - type: log
+    label: The failure
+    content: |
+      2026-09-01T00:00:01Z  storage-client  403 InvalidRequest
+        "The authorization mechanism you have provided is not supported.
+         Please use AWS4-HMAC-SHA256."
+      (identical for all four services, from the first request after 00:00Z)
+
+  - type: config
+    label: The internal library
+    content: |
+      # storage-client v1.4.2, last released 2023-11
+      # signature_version = "s3v2"      <- the deprecated mechanism
+      #
+      # used by 11 services (grep across the org)
+      # 4 have deployed since 2024 and pin v1.4.2
+      # 7 pin v1.2.x, which also uses s3v2
+
+  - type: log
+    label: The deprecation notice, found afterwards
+    content: |
+      Published 2025-08-04
+      "Signature Version 2 will no longer be supported after 2026-09-01.
+       Requests using SigV2 will receive HTTP 403 after this date.
+       Migrate to Signature Version 4."
+      Delivery: provider console banner, RSS feed, email to account root address
+
+  - type: command_output
+    label: Who receives provider notices
+    content: |
+      $ account root email
+      aws-root@example.com  ->  distribution list "cloud-admins"
+      $ members of cloud-admins
+      (3 members, 2 left the company in 2024)
+
+  - type: config
+    label: The runbook for provider changes
+    content: |
+      (no such runbook)
+
+diagnostic_questions:
+  - "Why did all four fail at exactly the same instant with no deploy?"
+  - "What kind of change produces a clean, total, simultaneous failure?"
+  - "Why is the status page green?"
+  - "Where did the notice go, and who was supposed to act on it?"
+  - "Why have only 4 of the 11 affected services failed so far?"
+
+hints:
+  - "A failure at exactly 00:00 UTC on the 1st with no deploy is a date, not a fault."
+  - "Read the 403 message — it names the mechanism it wants."
+  - "A status page reports incidents. Is a planned removal an incident?"
+  - "Look at the membership of the list the notice was emailed to."
+
+root_cause: >-
+  **A planned removal of a deprecated authentication mechanism, announced
+  thirteen months in advance to an address nobody reads.**
+
+
+  Everything about the failure is consistent with a scheduled change rather than
+  a fault: it began at exactly 00:00 UTC on the first, it is total rather than
+  intermittent, it is identical across four independent services, and nothing was
+  deployed. Faults are messy and partial; **removals are clean and punctual**.
+
+
+  The 403 body says it outright — *"The authorization mechanism you have provided
+  is not supported. Please use AWS4-HMAC-SHA256."* The error names both the
+  problem and the fix, and it was read as a generic permissions failure because
+  the team's hypothesis was credential expiry.
+
+
+  **The status page is green and correct.** A status page reports *incidents* —
+  unplanned deviations from expected behaviour. A removal executed exactly as
+  announced is the service operating as specified, so it will never appear there.
+  Using a status page to detect this class of change does not work in principle,
+  not just in this instance.
+
+
+  **The notice went to a distribution list with three members, two of whom left
+  in 2024.** It was also on an RSS feed and a console banner that nobody
+  subscribes to or reads. The provider did what they said they would; the
+  delivery mechanism on this side had quietly decayed.
+
+
+  **And only 4 of 11 services have failed so far**, which is the more alarming
+  half. Seven more use the same library on an older pin and will fail as soon as
+  they next make a request against the affected path — so this is an unfolding
+  incident rather than a completed one.
+
+
+  This is a **shared layer**: the provider announces, you act. Their half was
+  performed with thirteen months of notice. Ours was assigned to nobody, and
+  nothing errored in the thirteen months it was not being done — which is the
+  defining property of shared-layer failures.
+
+method: >-
+  **1. Read the timestamp before the logs.** A failure at exactly 00:00 UTC on
+  the first, with no deployment, is a **date** rather than a fault. Faults do not
+  respect calendar boundaries. That single observation reframes the investigation
+  from "what broke" to "what was scheduled".
+
+
+  **2. Read the error body, not just the status code.** The 403 names the
+  mechanism it wants. The team's hypothesis — credential expiry — made them read
+  403 as generic denial, and the message had the answer in it from the first
+  request.
+
+
+  **3. Do not treat a green status page as evidence.** Status pages report
+  incidents. A planned removal is the service working as specified and will never
+  appear. Confirm by searching the provider's *deprecation* documentation, which
+  is a different source from their status page and is where this always is.
+
+
+  **4. Ask where notices arrive and who reads them.** The account root address
+  pointing at a list with two departed members is the actual finding. It is
+  checkable in a minute and nobody had ever checked.
+
+
+  **5. Find the full blast radius before declaring scope.** Four services failed;
+  eleven use the library. Grepping for the dependency turns a resolved incident
+  into an accurate one — and seven services yet to fail is a very different
+  situation from four that already have.
+
+
+  **6. Separate what the provider owes from what you owe.** They announced
+  thirteen months ahead through three channels. There is no provider failure
+  here, which means there is also no provider remedy — the entire fix is on your
+  side.
+
+
+  The habit: **when nothing changed on your side and something broke exactly on a
+  boundary, look for a change on theirs that was scheduled rather than
+  unplanned.**
+
+resolution: >-
+  **Immediately:** update the library to Signature Version 4 and roll it to all
+  eleven services, not the four that have failed. The other seven are failures
+  that have not been triggered yet.
+
+
+  If a fast rollout is not possible, most SDKs allow the signature version to be
+  set by configuration or environment variable, which may unblock services faster
+  than a release.
+
+
+  **Then fix the delivery path, which is the actual defect.**
+
+
+  *Repoint the account root address* at a monitored alias, and audit every
+  provider notification setting. A list with two departed members had been the
+  company's only channel for provider announcements for two years.
+
+
+  *Subscribe to the machine-readable feeds* — deprecation and health RSS — into
+  a channel people read, rather than relying on a console banner nobody logs in
+  to see.
+
+
+  *Give provider changes an owner and a cadence.* Someone reviews the deprecation
+  calendar monthly and files tickets with the removal date as the due date. This
+  is the missing half of a shared layer, and it needs a name against it because
+  nothing will ever complain that it is not being done.
+
+
+  *Write the runbook that does not exist.* Where notices arrive, who reviews
+  them, how a deprecation becomes a ticket, and how to check which services are
+  affected.
+
+
+  **Fix the class, not the instance.**
+
+
+  The deeper problem is that an internal library pinned an authentication
+  mechanism and eleven services pinned the library — four on one version, seven
+  on an older one. That is a single point of failure with no inventory. Worth
+  having: a dependency inventory that can answer "which services use X" in one
+  query, and a policy on how long a pinned internal library may go
+  unupgraded.
+
+
+  **On the status page.** Add a note to the incident runbook: *a green status
+  page does not exclude a provider-caused failure, because planned changes are
+  not incidents.* That single sentence would have saved several hours here, and
+  it will recur — deprecations are the most predictable provider-caused outage
+  there is, and the only one that arrives with a year of warning.
+
+
+  **For the postmortem:** the provider gave us thirteen months, three channels
+  and an error message naming the fix. We had no owner for the one thing we
+  needed to do, and nothing failed in the thirteen months we did not do it.

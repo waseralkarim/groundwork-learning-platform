@@ -1,0 +1,168 @@
+topic: topic.the-machine
+
+exercises:
+  - id: e1
+    title: What survives what
+    level: L1
+    objectives: [OBJ-A01.1.1]
+    kind: ordering
+    prompt: |
+      For each location, say whether the data survives (a) the process exiting,
+      (b) a clean reboot, (c) a sudden power loss.
+
+      1. A variable in your program's memory
+      2. A file written to /tmp
+      3. A file written to /var/lib/postgresql and fsynced
+      4. A file written to /var/lib/postgresql but not yet fsynced
+      5. A value in a CPU register
+      6. A key in Redis with no persistence configured
+      7. A file in the page cache, already written to disk
+      8. A Docker container's writable layer, container not removed
+    answer: |
+      | # | Location | Process exit | Reboot | Power loss |
+      |---|---|---|---|---|
+      | 1 | Program memory | No | No | No |
+      | 2 | /tmp file | Yes | Usually no (often tmpfs or cleaned) | No |
+      | 3 | Postgres data, fsynced | Yes | Yes | Yes |
+      | 4 | Postgres data, not fsynced | Yes | Yes | **No** |
+      | 5 | CPU register | No | No | No |
+      | 6 | Redis, no persistence | Yes | No | No |
+      | 7 | Page cache, already on disk | Yes | Yes | Yes |
+      | 8 | Container writable layer | Yes | Yes | Yes |
+    explanation: |
+      Row 4 is the one that matters. A write that has reached the operating
+      system has *not* necessarily reached the disk — it may be sitting in the
+      page cache. `fsync` is the call that forces it down, and it is the reason
+      databases are slower than a naive benchmark suggests.
+
+      Row 7 is the mirror image and a common confusion: data in the page cache is
+      safe if it has already been written to disk. The cache is a copy, not the
+      original.
+
+      Row 8 catches people who have heard "containers are ephemeral". A stopped
+      container's writable layer persists on the host until the container is
+      removed. It is lost on `docker rm`, not on `docker stop`.
+
+  - id: e2
+    title: The latency ladder
+    level: L2
+    objectives: [OBJ-A01.1.4]
+    kind: ordering
+    prompt: |
+      Order these from fastest to slowest, then assign each an order of
+      magnitude. You are graded on the ordering and the gaps, not on exact
+      figures.
+
+      - Read from RAM
+      - Read from L1 cache
+      - Network round trip within a datacentre
+      - Read from an NVMe SSD
+      - Read a CPU register
+      - Seek on a spinning disk
+      - Network round trip London to Sydney
+      - Read from L3 cache
+    answer: |
+      | Operation | Approx latency |
+      |---|---|
+      | CPU register | 0.3 ns |
+      | L1 cache | 1 ns |
+      | L3 cache | 15 ns |
+      | RAM | 80 ns |
+      | NVMe SSD | 50 µs |
+      | Network, same datacentre | 500 µs |
+      | Spinning disk seek | 5 ms |
+      | London → Sydney | 250 ms |
+    explanation: |
+      The exact numbers matter far less than three gaps:
+
+      - **RAM → SSD is ~1000×.** This is why swapping destroys a machine and why
+        a cache hit is transformative rather than merely nice.
+      - **SSD → spinning disk is ~100×** for random access. It is why database
+        advice written before 2015 often no longer applies.
+      - **Same-datacentre → cross-continent is ~500×.** It is why multi-region
+        architectures are hard, and why "just add a region" is never just that.
+
+      A useful sanity check: if one CPU cycle were one second, RAM would be four
+      minutes, an SSD read two days, and London→Sydney about 25 years.
+
+  - id: e3
+    title: Read the output
+    level: L2
+    objectives: [OBJ-A01.1.6]
+    kind: interpretation
+    prompt: |
+      A colleague sends you this and says "the server is out of memory, I'm
+      going to restart the app":
+
+      ```text
+                     total        used        free      shared  buff/cache   available
+      Mem:            62Gi        18Gi       587Mi       2.1Gi        44Gi        42Gi
+      Swap:          8.0Gi          0B       8.0Gi
+      ```
+
+      1. Is the server out of memory?
+      2. Which number told you?
+      3. What are `buff/cache` and why is it so large?
+      4. What does the Swap line tell you?
+      5. What should you say to your colleague?
+    answer: |
+      1. **No.** It has 42Gi available out of 62Gi.
+      2. The **available** column. `free` at 587Mi is expected and not a measure
+         of pressure.
+      3. Page cache — file data the kernel is holding in RAM in case it is read
+         again. It is large because the kernel deliberately uses spare RAM for
+         it, and it is released instantly on demand.
+      4. `used 0B` means nothing has swapped. Combined with high `available`,
+         this is a machine under no memory pressure at all.
+      5. That the server has 42Gi available, that `free` is the wrong column to
+         read, and that restarting the app will drop a warm page cache and make
+         things temporarily slower for no benefit.
+    explanation: |
+      This is a real conversation that happens constantly. The restart would have
+      "worked" in the sense that the `free` column would have gone up
+      temporarily — which is worse than doing nothing, because it confirms the
+      wrong mental model and guarantees a repeat.
+
+      The genuinely useful habit: when someone reports a memory problem, ask for
+      `available` and the Swap line before anything else. Those two numbers
+      settle it almost every time.
+
+  - id: e4
+    title: Will it fit
+    level: L3
+    objectives: [OBJ-A01.1.8]
+    kind: calculation
+    prompt: |
+      You are asked to run a service on a 16GB machine with no swap. Each worker
+      uses about 250MB RSS at steady state and up to 400MB at peak. The OS and
+      other agents use about 1.5GB.
+
+      1. How many workers fit at steady state, leaving 10% headroom?
+      2. How many fit if every worker peaks simultaneously?
+      3. What happens if you deploy the steady-state number and traffic spikes?
+      4. What would you actually deploy, and what would you measure first?
+    answer: |
+      1. Usable: 16 − 1.5 = 14.5GB. With 10% headroom: 13.05GB.
+         13,050 / 250 ≈ **52 workers**.
+      2. 13,050 / 400 ≈ **32 workers**.
+      3. At 52 workers peaking to 400MB each: 20.8GB against 14.5GB usable. With
+         no swap the OOM killer starts terminating workers immediately. If a
+         supervisor restarts them, you get a restart loop that makes the incident
+         worse rather than better.
+      4. Deploy around **32**, sized for peak rather than average. Then measure:
+         is 400MB a true ceiling or just the highest number observed? Is RSS
+         growing over time (a leak)? Do peaks correlate across workers, or are
+         they independent?
+    explanation: |
+      The trap is sizing for the average. Averages are the wrong statistic for
+      capacity because failure happens at the peak, and peaks correlate — the
+      traffic spike that pushes one worker to 400MB pushes all of them.
+
+      "No swap" makes this sharper. With swap, exceeding RAM degrades
+      catastrophically but survivably. Without it, the OOM killer fires
+      immediately. Neither is good; they fail differently, and knowing which
+      you have changes what you deploy.
+
+      The follow-up questions are the actually senior part of the answer. "Is
+      400MB a real ceiling or the highest number we happened to see?" is the
+      question that prevents the incident.

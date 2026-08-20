@@ -1,0 +1,450 @@
+id: quiz.concurrency-and-locking
+topic: topic.concurrency-and-locking
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.8.1]
+    stem: >-
+      A five-minute cron job occasionally takes six minutes. What happens?
+    options:
+      - id: a
+        text: Two runs execute at once, and neither reports a problem
+        correct: true
+      - id: b
+        text: cron skips the next run until the current one finishes
+        note: >-
+          cron starts a job when the schedule says so and does not track
+          previous runs.
+      - id: c
+        text: The second run fails to start
+        note: >-
+          Nothing prevents it.
+      - id: d
+        text: cron logs a warning about the overlap
+        note: >-
+          It has no idea the two are related.
+    explanation: >-
+      **A script that runs on a schedule will eventually run twice at once** —
+      not because anything broke, but because one run was slower than the gap
+      between runs. Measured on an unguarded report builder: ten rows where five
+      were expected, interleaved in an order belonging to neither run, both runs
+      exiting 0.
+
+  - id: q2
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.8.1]
+    stem: >-
+      Two overlapping runs both append to the same output file. How does the
+      damage usually surface?
+    options:
+      - id: a
+        text: Downstream, as data that is wrong rather than as a failure
+        correct: true
+      - id: b
+        text: As a write error on the second run
+        note: >-
+          Both writes succeed; the filesystem has no objection.
+      - id: c
+        text: As a corrupted file the shell refuses to read
+        note: >-
+          The file is perfectly well-formed. It just contains two reports.
+      - id: d
+        text: As a non-zero exit status from one of the runs
+        note: >-
+          Both exit 0 — this is the whole problem.
+    explanation: >-
+      Nothing fails. The file is syntactically fine and contains the rows of two
+      runs, and every consumer reads it as one report. This is the recurring
+      shape of the course: **the exit status is the command's opinion of itself;
+      the resulting state is evidence.**
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.8.2]
+    stem: "Why `exec 9>\"$LOCK\"` rather than redirecting on the `flock` command itself?"
+    options:
+      - id: a
+        text: The lock lasts only as long as the descriptor is open
+        correct: true
+      - id: b
+        text: "`flock` cannot accept a redirection"
+        note: >-
+          It can — `flock -n 9 9>file` is valid, and releases the lock as soon
+          as that command ends.
+      - id: c
+        text: "`exec` makes the lock exclusive rather than shared"
+        note: >-
+          Exclusive is the default; `-s` asks for shared.
+      - id: d
+        text: Because descriptor 9 is reserved for locking
+        note: >-
+          Any descriptor above 2 works; 9 and 200 are conventions.
+    explanation: >-
+      `exec 9>FILE` opens the file and leaves the descriptor open for the rest of
+      the script. A redirection attached to one command closes it when that
+      command finishes, taking the lock with it — so the script would hold the
+      lock for exactly the duration of the `flock` call.
+
+  - id: q4
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B08.8.2]
+    stem: "Which of these return non-zero when the lock is already held?"
+    options:
+      - id: a
+        text: "`flock -n 9`"
+        correct: true
+      - id: b
+        text: "`flock -w 5 9`, after five seconds"
+        correct: true
+      - id: c
+        text: "`flock -n /var/lock/f.lock ./job.sh`"
+        correct: true
+      - id: d
+        text: "`flock 9`"
+        note: >-
+          Blocks until it can acquire, then returns 0. It does not give up.
+    explanation: >-
+      `-n` and an expired `-w` both give **1**. Plain `flock` waits indefinitely.
+      Note the command form also exits 1 when refused — so in a crontab, a skip
+      registers as a job failure, which is the trade for not editing the script.
+
+  - id: q5
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.8.3]
+    stem: >-
+      A run holds a `flock`. Someone deletes the lock file. What can the next run
+      do?
+    options:
+      - id: a
+        text: Acquire the lock, because it creates and locks a new inode
+        correct: true
+      - id: b
+        text: Nothing — the lock is still held on the same path
+        note: >-
+          The lock was never on the path.
+      - id: c
+        text: Acquire it, because deleting the file released the lock
+        note: >-
+          The first run still holds its lock; it is simply on an inode with no
+          name now.
+      - id: d
+        text: Block until the first run finishes
+        note: >-
+          It is not contending with anything — its inode is brand new.
+    explanation: >-
+      A `flock` is held on an **open file description**, which points at an
+      **inode**. `rm` unlinks a *name*. The holder keeps its lock on a nameless
+      inode — `/proc/PID/fd/9 -> /path/to/lock (deleted)` — while the next run
+      opens the path, creating a **new** inode, and locks that. Two locks, two
+      inodes, no mutual exclusion.
+
+  - id: q6
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.8.3]
+    stem: >-
+      A locking script's cleanup trap runs `rm -f "$LOCK"` on exit. What is wrong
+      with it?
+    options:
+      - id: a
+        text: >-
+          Every run that finishes removes the file the next runs will contend
+          over, so overlaps become possible
+        correct: true
+      - id: b
+        text: Nothing — cleaning up the lock file is good practice
+        note: >-
+          It is the one piece of tidying that must not be done.
+      - id: c
+        text: It fails if the script is killed, leaving a stale lock
+        note: >-
+          The opposite: a `flock` cannot go stale, so nothing needs removing.
+      - id: d
+        text: It leaks a file descriptor
+        note: >-
+          The descriptor is closed by the kernel at exit regardless.
+    explanation: >-
+      The removal happens on the **success** path, so every completed run arms
+      the next collision — the more reliably the script runs, the more often it
+      happens. **Never delete the lock file.** An empty one costs an inode;
+      `/var/lock` is cleared on reboot, when no process can be holding one.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.8.4]
+    stem: >-
+      A process holding a `flock` is killed with `SIGKILL`. What does the next
+      run find?
+    options:
+      - id: a
+        text: The lock free, because the kernel closed the descriptor
+        correct: true
+      - id: b
+        text: A stale lock that must be cleared by hand
+        note: >-
+          That is a PID file or a `mkdir` lock. `flock` cannot go stale.
+      - id: c
+        text: The lock free only if the script had an EXIT trap
+        note: >-
+          `SIGKILL` cannot be caught, so no trap runs — and it does not matter.
+      - id: d
+        text: The lock file deleted
+        note: >-
+          The file remains. The file is not the lock.
+    explanation: >-
+      The kernel closes every descriptor when a process dies, however it dies,
+      and the lock is attached to the descriptor. **The property that decides
+      this is who keeps the record**: with `flock` the kernel does, and the
+      kernel always gets to run its cleanup.
+
+  - id: q8
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B08.8.4]
+    stem: "What is wrong with `[ -e \"$LOCK\" ] || touch \"$LOCK\"` as a lock?"
+    options:
+      - id: a
+        text: Two runs can pass the test before either creates the file
+        correct: true
+      - id: b
+        text: The file survives a crash, so it goes stale
+        correct: true
+      - id: c
+        text: It needs an external tool
+        note: >-
+          It needs nothing, which is part of why it is so common.
+      - id: d
+        text: "`touch` cannot create a file"
+        note: >-
+          It can. The problem is that testing and creating are two steps.
+    explanation: >-
+      This is **TOCTOU** — time-of-check to time-of-use — and it is not a lock at
+      all; it is a comment about intent with a race in the middle. The atomic
+      alternatives that need no tool are `mkdir` (fails with `EEXIST`) and
+      `set -o noclobber` with `: > file`. Both are real locks, and both still go
+      stale.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.8.4]
+    stem: >-
+      When is a PID file the right mechanism?
+    options:
+      - id: a
+        text: >-
+          As information written inside a real lock, so a human can see who holds
+          it
+        correct: true
+      - id: b
+        text: When you need the lock to survive a reboot
+        note: >-
+          Surviving a reboot is the *problem* — nothing can be holding it.
+      - id: c
+        text: When `flock` is unavailable
+        note: >-
+          `mkdir` is the answer there: atomic, and needs no tool.
+      - id: d
+        text: When several processes must coordinate
+        note: >-
+          That is what makes its race conditions matter most.
+    explanation: >-
+      As a lock it has three defects: it goes stale when a trap does not run, its
+      `kill -0` liveness check is a guess because PIDs are reused, and the
+      check-then-write is TOCTOU. As a record of *which* process holds a real
+      lock, it is genuinely useful — write it into the lock file after acquiring.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.8.5]
+    stem: >-
+      `timeout 30 ./importer` returns 124. What do you know?
+    options:
+      - id: a
+        text: The limit was reached and `TERM` was sent — not that the process stopped
+        correct: true
+      - id: b
+        text: The importer was terminated
+        note: >-
+          Only if it did not catch or ignore `TERM`. Measured: an importer with a
+          handler wrote every batch and finished.
+      - id: c
+        text: The importer failed
+        note: >-
+          124 is `timeout`'s status, not the command's.
+      - id: d
+        text: The importer was killed with `SIGKILL`
+        note: >-
+          That would be 137, and only with `-k`.
+    explanation: >-
+      **`timeout LIMIT` is a request; `timeout -k GRACE LIMIT` is a guarantee.**
+      `TERM` can be caught, so a process that handles it keeps running while
+      `timeout` reports 124 anyway. `-k` follows up with `SIGKILL` — status
+      **137**, which is 128+9 — after a grace period that lets a well-behaved
+      process finish cleanly.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.8.5]
+    stem: >-
+      Why does a lock need pairing with a timeout?
+    options:
+      - id: a
+        text: >-
+          A holder that hangs makes every later run skip and exit 0, so the job
+          silently stops running
+        correct: true
+      - id: b
+        text: Because `flock` releases the lock after a timeout
+        note: >-
+          It holds it until the descriptor closes, however long that is.
+      - id: c
+        text: To stop the lock file growing
+        note: >-
+          It is empty, or holds one line.
+      - id: d
+        text: Because blocking locks deadlock without one
+        note: >-
+          A single lock cannot deadlock; that needs two taken in different
+          orders.
+    explanation: >-
+      This is the failure mode the lock **creates**. Every scheduled run skips,
+      exits 0, and logs a reassuring message, so a job that has not run since
+      Tuesday looks exactly like one running fine. Bound the holder with
+      `timeout -k`, and alert on **consecutive skips** and **time since last
+      successful completion** — not time since last invocation.
+
+  - id: q12
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B08.8.6]
+    stem: "Which of these are safe to retry blindly?"
+    options:
+      - id: a
+        text: "`mkdir -p /srv/data`"
+        correct: true
+      - id: b
+        text: "`ln -sfn /opt/v2 /opt/current`"
+        correct: true
+      - id: c
+        text: "`rsync -a --delete src/ dest/`"
+        correct: true
+      - id: d
+        text: "`echo \"$LINE\" >> /var/log/audit`"
+        note: >-
+          Appending doubles the file — measured: two runs, two lines.
+      - id: e
+        text: "`curl -X POST /charges`"
+        note: >-
+          The classic unsafe case, and the reason idempotency keys exist.
+    explanation: >-
+      The property is whether the operation describes a **desired state** or a
+      **change**. "Make this exist", "point this here", "make these match" are
+      states — applying them twice is the same as once. "Append this",
+      "increment that", "charge this card" are changes, and no amount of care in
+      the retry loop fixes that.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.8.6]
+    stem: >-
+      A charge is applied and the response is lost. The retry loop tries twice
+      more and reports failure. What happened?
+    options:
+      - id: a
+        text: Three charges were made, and the script reported none
+        correct: true
+      - id: b
+        text: One charge was made, and the retries were rejected
+        note: >-
+          Only with an idempotency key, which is exactly the fix.
+      - id: c
+        text: No charge was made, since every attempt returned non-zero
+        note: >-
+          The status describes what the caller *heard*, not what happened.
+      - id: d
+        text: The retries were harmless because the operation failed
+        note: >-
+          It did not fail. The reply was lost.
+    explanation: >-
+      **A non-zero status means "I did not hear that it worked", not "it did not
+      work".** A lost response is what a timeout, a dropped connection or a
+      load-balancer restart looks like from the caller's side, and a retry loop
+      treats it as a failure. The fix is an idempotency key generated **once,
+      before the first attempt**, with the far side treating a repeat as success.
+
+  - id: q14
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.8.7]
+    stem: >-
+      A locking script passes "two runs at once" and "holder killed with
+      SIGKILL", and still overlaps in production. What should you test?
+    options:
+      - id: a
+        text: >-
+          The invariant — that the lock file still exists after a run that held
+          it has finished
+        correct: true
+      - id: b
+        text: The same two tests, with more runs and tighter timing
+        note: >-
+          The window is two instructions wide. A timing-based test would pass
+          almost always and fail in CI once a month.
+      - id: c
+        text: Whether `flock` is installed on the production host
+        note: >-
+          It would fail loudly if it were not.
+      - id: d
+        text: Whether the lock file has the right permissions
+        note: >-
+          Permissions govern who can open it, not whether the lock works.
+    explanation: >-
+      Both obvious tests **pass** on the broken script — it does exclude two
+      simultaneous runs, and `flock` really is crash-proof. **When a concurrency
+      bug needs timing to reproduce, find the invariant it violates and assert
+      that instead.** Here that is one deterministic line, and it fails every
+      time.
+
+  - id: q15
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.8.8]
+    stem: >-
+      A deploy script is given a blocking `flock` so concurrent deploys queue up.
+      What is the strongest objection?
+    options:
+      - id: a
+        text: >-
+          A second deploy means something is already wrong, so it should refuse
+          loudly rather than wait
+        correct: true
+      - id: b
+        text: Blocking locks are slower than `-n`
+        note: >-
+          True and irrelevant — waiting is the point of choosing it.
+      - id: c
+        text: "`flock` cannot block on a file another user owns"
+        note: >-
+          Ownership governs opening the file, not the lock mode.
+      - id: d
+        text: A queued deploy will use a stale artefact
+        note: >-
+          Possible, and a consequence rather than the objection.
+    explanation: >-
+      The four behaviours — skip, queue, wait-then-give-up, refuse loudly — are
+      design decisions, and picking by habit is the mistake. A deploy has a human
+      waiting and concurrency means something unexpected is happening: it should
+      exit non-zero with a message so it **pages** rather than passes. Queuing
+      also risks a pile-up if deploys arrive faster than they complete.

@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+.turbo
+.env
+.env.*
+!.env.example
+*.log
+test-results
+playwright-report

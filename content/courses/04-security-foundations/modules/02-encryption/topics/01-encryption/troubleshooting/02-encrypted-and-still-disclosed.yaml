@@ -1,0 +1,253 @@
+id: troubleshooting.encrypted-and-still-disclosed
+topic: topic.encryption
+title: Everything was encrypted at rest and the data still went out of the door
+level: L2
+objectives: [OBJ-A04.2.2, OBJ-A04.2.8]
+reveal_policy: progressive
+
+situation: >-
+  A SaaS company has been compromised. An attacker obtained a deployment token
+  from a public CI log, used it to exec into a running pod, and spent nine days
+  reading the customer database before egress volume triggered an alert.
+
+
+  The security questionnaire the company sends to every prospect says: *"All
+  customer data is encrypted at rest with AES-256 and in transit with TLS 1.3."*
+  Both statements are true and were true throughout.
+
+
+  The CTO's position in the incident review is that the encryption "did its job"
+  and the failure was entirely in credential handling, so the remediation is
+  short-lived tokens and CI log scrubbing.
+
+
+  The head of legal wants to know whether the questionnaire response was
+  accurate, because it was relied on by forty enterprise customers.
+
+
+  Decide what the encryption actually protected, and what the remediation is
+  missing.
+
+symptoms:
+  - "An attacker read the customer database for nine days from inside a pod"
+  - "Disk encryption and TLS were both correctly configured throughout"
+  - "No decryption keys were stolen and no cipher was attacked"
+  - "The database's own audit log shows ordinary authenticated queries"
+  - "Detection came from egress volume, not from any access control"
+
+artifacts:
+  - type: config
+    label: How the data is encrypted
+    content: |
+      # Storage
+      volume: gp3, encrypted: true, kms_key: arn:aws:kms:...:key/9f2a
+      # The volume is mounted and decrypted at boot by the CSI driver.
+
+      # Database
+      postgres 18, TLS required for all connections
+      no column-level or application-level encryption
+
+      # Application
+      DATABASE_URL=postgres://app:...@db.internal:5432/customers?sslmode=require
+
+  - type: command_output
+    label: What the attacker ran
+    content: |
+      $ kubectl exec -it api-7d9f -- /bin/sh
+      # env | grep DATABASE_URL
+      DATABASE_URL=postgres://app:Xf9...@db.internal:5432/customers?sslmode=require
+      # psql "$DATABASE_URL" -c 'SELECT count(*) FROM customers;'
+       count
+      -------
+       412887
+      # psql "$DATABASE_URL" -c '\copy customers TO /tmp/c.csv CSV'
+      COPY 412887
+
+  - type: log
+    label: The database audit log during the incident
+    content: |
+      2026-08-02 11:04:19  user=app db=customers  SELECT count(*) FROM customers
+      2026-08-02 11:04:33  user=app db=customers  COPY customers TO STDOUT
+      ... 9 days of similar, all authenticated as user=app ...
+      (no failed authentications, no privilege errors)
+
+  - type: metric
+    label: What actually detected it
+    content: |
+      egress_bytes{namespace="prod"}  baseline 40MB/day
+      2026-08-02 .. 2026-08-11        380MB - 2.1GB/day
+      alert fired 2026-08-11 04:17 (9 days after first access)
+
+  - type: config
+    label: The questionnaire response, verbatim
+    content: |
+      Q: How is customer data protected at rest?
+      A: All customer data is encrypted at rest with AES-256.
+
+      Q: How is customer data protected in transit?
+      A: TLS 1.3 with modern cipher suites.
+
+diagnostic_questions:
+  - "The volume was encrypted. Why did that not prevent the attacker reading the data?"
+  - "TLS was required and working. What did it protect against, and was that the threat here?"
+  - "What threat does each of the two controls actually stop, stated precisely?"
+  - "Is the questionnaire response accurate? Is accurate the same as not misleading?"
+  - "What control would have limited this, and where does it sit?"
+
+hints:
+  - "Ask where the key was, and who or what had already used it."
+  - "The attacker did not read the disk. They read the database, through the database."
+  - "Look at what the audit log shows: authenticated, ordinary queries by the application's own user."
+  - "Nine days. What is missing is not only prevention."
+
+root_cause: >-
+  **Both controls worked exactly as designed, and neither addresses an attacker
+  operating inside the trust boundary.**
+
+
+  Disk encryption protects against **the disk leaving the building** — a
+  decommissioned drive, a stolen device, a datacentre theft, a snapshot copied
+  out of the account. On a running node the volume is mounted and the KMS key has
+  already been used, so every read through the filesystem returns plaintext. The
+  attacker never touched the disk: they connected to PostgreSQL and ran `SELECT`.
+  The encryption layer was not bypassed; it was simply below the layer they were
+  operating at.
+
+
+  TLS protects data **on the wire between endpoints**. The attacker was an
+  endpoint. Their `psql` session negotiated TLS 1.3 correctly, and that
+  encryption protected their exfiltration from being read by anyone else.
+
+
+  So the honest statement is that no cryptography failed and none of it was
+  relevant. The attacker had the application's own credentials, from the
+  application's own environment, and did what the application is permitted to do.
+
+
+  **What the remediation is missing.**
+
+
+  Short-lived tokens and CI log scrubbing address *this* entry route. They do not
+  address the three things that turned an entry into a 412,887-record
+  disclosure:
+
+
+  *No layer where the data is protected from the application itself.* Everything
+  is encrypted at a level beneath the application, so anything that becomes the
+  application sees plaintext. Application-level or column-level encryption for
+  the sensitive fields — with keys in a KMS that logs and rate-limits decryption
+  — would have made bulk export produce ciphertext, and made 412,887 decrypt
+  calls in an afternoon a signal.
+
+
+  *A credential with no meaningful limits.* `user=app` could read every row of
+  every customer. Nothing scoped it, rate-limited it, or distinguished a bulk
+  export from ordinary serving traffic.
+
+
+  *Nine days.* Detection came from egress volume, which is a last-resort signal.
+  A `COPY customers TO STDOUT` on a serving path should be an alert on day zero.
+
+
+  **On the questionnaire.** The response is *accurate* and *misleading*, and both
+  matter. It answers "is it encrypted" — the question asked — while the question
+  the reader believes they are asking is "what happens if you are compromised".
+  Nothing in the response is false. Nothing in it would have changed if the
+  company had no protection against this incident at all, which is precisely the
+  problem.
+
+method: >-
+  **1. For any encryption claim, ask where the key is and who has already used
+  it.** That single question resolves this whole incident. The KMS key is used by
+  the CSI driver at mount time, so from that moment every process on the node
+  reads plaintext. Encryption whose key is already applied on the running system
+  protects against offline access and nothing else.
+
+
+  **2. Name the threat each control stops, in one sentence, without using the
+  word "encrypted".** Disk encryption: *someone who obtains the storage without
+  the running system.* TLS: *someone reading traffic between two endpoints.*
+  Then check whether the actual attacker is either of those. Here they were
+  neither.
+
+
+  **3. Locate the attacker relative to the control.** They were above the
+  filesystem and were themselves a TLS endpoint. A control below where the
+  attacker operates cannot see them, which is why "we have encryption" answers
+  nothing until you know where the encryption sits.
+
+
+  **4. Read the audit log for what is absent.** No failed authentications, no
+  privilege errors, nothing anomalous — because nothing anomalous happened at
+  that layer. When an audit log is clean during a confirmed breach, the attacker
+  had legitimate credentials, and the question becomes what those credentials
+  were allowed to do.
+
+
+  **5. Separate entry from impact.** Entry was the CI token. Impact was 412,887
+  records over nine days, and that was enabled by unrestricted credentials, no
+  protection from the application itself, and no detection. Remediating only the
+  entry route leaves the impact multiplier fully intact for the next entry route.
+
+
+  **6. Re-read the security claims as a customer would.** "Encrypted at rest"
+  reads to a buyer as "our data is safe if you are hacked". It does not mean
+  that. Where a claim is accurate and creates a false impression, the gap belongs
+  in the review — because forty customers relied on it.
+
+
+  The habit: **encryption is not a control until you can say which threat it
+  removes.** "Is it encrypted" is the wrong question; "what does that stop" is
+  the right one.
+
+resolution: >-
+  **Keep the proposed remediation — it is correct and insufficient.** Short-lived
+  tokens and CI log scrubbing close this entry route and should ship.
+
+
+  **Then reduce the blast radius, which is where the 412,887 came from.**
+
+
+  *Scope the credential.* The application does not need unrestricted read of
+  every customer row. Least privilege at the database — row limits, separate
+  roles for serving and reporting, no `COPY` from the serving role — turns a
+  total compromise into a partial one.
+
+
+  *Encrypt the sensitive fields above the database.* Application-level encryption
+  for the fields that would drive a notification, with keys in a KMS that logs
+  and rate-limits every decryption. This changes the threat model rather than
+  hardening it: a compromised application can *ask* for decryptions, which is
+  visible and throttleable, but a bulk export returns ciphertext. It costs
+  queryability on those fields, which is the price and should be stated plainly.
+
+
+  *Alert on the shape of access, not only its volume.* `COPY ... TO STDOUT` on a
+  serving path, or a query returning six-figure row counts, is a day-zero signal.
+  Egress volume caught this on day nine and is the wrong instrument for the job.
+
+
+  *Remove long-lived secrets from the environment.* `env` gave the attacker a
+  working database URL in one command. Short-lived, workload-identity-issued
+  credentials remove that step entirely.
+
+
+  **And answer legal directly.** The response was accurate and it was relied upon
+  to mean something it does not. Rewrite it to say what is true and what it
+  covers:
+
+
+  > Customer data is encrypted at rest at the storage layer, which protects
+  > against physical loss of storage media, and in transit with TLS 1.3. Data is
+  > not currently encrypted above the application layer, so a compromise of the
+  > application can access customer records. We are adding field-level encryption
+  > for [fields] in [quarter].
+
+
+  That is a worse-sounding answer and a true one, and it is the version that
+  does not become a second incident when a customer discovers the difference.
+
+
+  **For the postmortem, one sentence worth keeping:** every cryptographic control
+  functioned perfectly and none of them was relevant, because all of them sat
+  below the layer the attacker operated at.

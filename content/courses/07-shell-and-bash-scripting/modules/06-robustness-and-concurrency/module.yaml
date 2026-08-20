@@ -1,0 +1,9 @@
+id: module.robustness-and-concurrency
+slug: robustness-and-concurrency
+title: Robustness and Concurrency
+summary: >-
+  Scripts that run on a schedule eventually run twice at once. This module is
+  about what happens then — locks that work, locks that only look like they
+  work, timeouts that report killing a process that is still running, and
+  retries that charge a customer three times.
+order: 6

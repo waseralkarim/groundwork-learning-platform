@@ -1,0 +1,389 @@
+id: lab.the-options-parsed-once
+topic: topic.arguments-and-options
+title: Watch an option parser work once and then stop
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.7.3, OBJ-B08.7.4]
+
+intro: >-
+  `/tmp/args/report.sh` calls the same function three times with identical flags.
+  The first region is formatted as JSON and the other two are not.
+
+
+  Nothing fails, every region is reported, and the output has the right number of
+  lines in the right order with the right names — which is why this survives
+  review.
+
+setup:
+  - /opt/lab/seed-args.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Run it and state the symptom precisely. Save to /tmp/answer-symptom.
+    walkthrough: |
+      {
+        echo "the run:"
+        bash /tmp/args/report.sh 2>&1 | sed 's/^/    /'
+        echo "    exit status: $(bash /tmp/args/report.sh >/dev/null 2>&1; echo $?)"
+        echo
+        echo "the three calls, from the source:"
+        grep -n 'run_region ' /tmp/args/report.sh | sed 's/^/    /'
+        echo
+        echo "IDENTICAL ARGUMENTS. the first call honours both flags; the second and"
+        echo "third silently fall back to the defaults."
+        echo
+        echo "and note what is NOT wrong: three regions, in order, correctly named,"
+        echo "exit 0, no error. only two fields differ, and only on lines 2 and 3."
+      } > /tmp/answer-symptom
+      cat /tmp/answer-symptom
+    verify:
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: 'region=us-east verbose=1 format=json'
+        describe: The first call parses its flags
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: 'region=eu-west verbose=0 format=text'
+        describe: The second silently does not
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: 'region=ap-south verbose=0 format=text'
+        describe: Nor the third
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: 'exit status: 0'
+        describe: And nothing fails
+      - type: file_matches
+        path: /tmp/answer-symptom
+        pattern: '(?i)IDENTICAL ARGUMENTS'
+        describe: And you stated the symptom precisely
+
+  - id: s2
+    instruction: >-
+      Instrument the function to expose the state that differs between calls.
+      Save to /tmp/answer-state.
+    hint: >-
+      `getopts` keeps three pieces of state. Two are per-option. Print the third
+      on entry and exit.
+    walkthrough: |
+      cat > /tmp/traced.sh <<'T'
+      #!/bin/bash
+      set -uo pipefail
+      run_region() {
+        local OPT verbose=0 format=text region=
+        echo "    enter: OPTIND=$OPTIND args=[$*]"
+        while getopts ":vf:" OPT; do
+          case $OPT in
+            v) verbose=1 ;;
+            f) format=$OPTARG ;;
+          esac
+        done
+        echo "    after loop: OPTIND=$OPTIND"
+        shift $((OPTIND - 1))
+        region=${1:-unknown}
+        echo "    result: region=$region verbose=$verbose format=$format"
+      }
+      run_region -v -f json us-east
+      run_region -v -f json eu-west
+      run_region -v -f json ap-south
+      T
+      {
+        bash /tmp/traced.sh
+        echo
+        echo "OPTIND IS THE STATE THAT LEAKS. it enters the first call at 1, ends at 4,"
+        echo "and ENTERS THE SECOND CALL STILL AT 4."
+        echo
+        echo "getopts is told to read argument number 4 of a three-argument list, finds"
+        echo "nothing, and returns non-zero immediately. the loop body never runs, so"
+        echo "verbose and format keep their defaults."
+        echo
+        echo "and here is why the output still looks right: shift \$((OPTIND - 1)) is"
+        echo "shift 3, the same as last time, so \$1 STILL LANDS ON THE REGION NAME."
+        echo "the region is correct in every line. only the flags are gone."
+        echo
+        echo "OPTIND is a plain global. nothing resets it between calls - not the"
+        echo "function call, not the local declarations, nothing."
+      } > /tmp/answer-state
+      cat /tmp/answer-state
+    verify:
+      - type: file_matches
+        path: /tmp/answer-state
+        pattern: 'enter: OPTIND=1 args=\[-v -f json us-east\]'
+        describe: The first call starts at 1
+      - type: file_matches
+        path: /tmp/answer-state
+        pattern: 'after loop: OPTIND=4'
+        describe: And leaves it at 4
+      - type: file_matches
+        path: /tmp/answer-state
+        pattern: 'enter: OPTIND=4 args=\[-v -f json eu-west\]'
+        describe: And the second call inherits that
+      - type: file_matches
+        path: /tmp/answer-state
+        pattern: '(?i)OPTIND IS THE STATE THAT LEAKS'
+        describe: You identified it
+      - type: file_matches
+        path: /tmp/answer-state
+        pattern: '(?i)STILL LANDS ON THE REGION NAME'
+        describe: And explained why the output looks correct
+
+  - id: s3
+    instruction: >-
+      Fix it, and explain why `local OPTIND=1` rather than a bare `OPTIND=1`.
+      Save the fix to /tmp/fixed-report.sh and your reasoning to
+      /tmp/answer-fix.
+    hint: >-
+      Consider a caller that is itself mid-parse when it calls the function.
+    walkthrough: |
+      cat > /tmp/fixed-report.sh <<'F'
+      #!/bin/bash
+      set -uo pipefail
+      run_region() {
+        local OPT OPTIND=1 verbose=0 format=text region=
+        while getopts ":vf:" OPT; do
+          case $OPT in
+            v)  verbose=1 ;;
+            f)  format=$OPTARG ;;
+            :)  echo "run_region: -$OPTARG needs a value" >&2; return 64 ;;
+            \?) echo "run_region: unknown option -$OPTARG" >&2; return 64 ;;
+          esac
+        done
+        shift $((OPTIND - 1))
+        region=${1:?run_region: a region is required}
+        echo "  region=$region verbose=$verbose format=$format"
+      }
+      run_region -v -f json us-east
+      run_region -v -f json eu-west
+      run_region -v -f json ap-south
+      F
+
+      # a caller that is itself mid-parse, to show why `local` matters
+      cat > /tmp/nested.sh <<'N'
+      #!/bin/bash
+      inner_bare()  { OPTIND=1;       while getopts ":x" O; do :; done; }
+      inner_local() { local OPTIND=1; while getopts ":x" O; do :; done; }
+
+      outer() {
+        local helper=$1; shift
+        local OPT OPTIND=1 seen= guard=0
+        while getopts ":ab" OPT; do
+          seen="$seen$OPT"
+          guard=$((guard + 1))
+          [ "$guard" -gt 8 ] && { seen="$seen...LOOPING"; break; }
+          "$helper" -x                 # call the helper mid-parse
+        done
+        echo "  with $helper: outer saw options [$seen]"
+      }
+      outer inner_local -a -b
+      outer inner_bare  -a -b
+      N
+
+      {
+        echo "fixed:"
+        bash /tmp/fixed-report.sh 2>&1 | sed 's/^/  /'
+        echo
+        echo "one word: local OPTIND=1."
+        echo
+        echo "  =1     starts THIS call at the beginning of its own argument list"
+        echo "  local  restores the CALLER's OPTIND when the function returns"
+        echo
+        echo "a bare OPTIND=1 fixes this call and breaks any caller that was itself"
+        echo "mid-parse, because it resets the shared global underneath them:"
+        bash /tmp/nested.sh 2>&1 | sed 's/^/  /'
+        echo
+        echo "with local, outer sees both of its options: [ab]. with the bare"
+        echo "assignment the helper rewinds the shared OPTIND and outer re-reads the"
+        echo "same option forever - stopped here only by a deliberate loop guard."
+        echo "so the bare form converts a silent wrong value into an infinite loop."
+        echo
+        echo "note also what a top-level parse does NOT need: OPTIND starts at 1 in a"
+        echo "fresh shell, so a script that parses once at the top is fine. THE BUG IS"
+        echo "INVISIBLE UNTIL SOMEBODY ADDS A SECOND CALL, which may be months after the"
+        echo "parser was written and reviewed."
+      } > /tmp/answer-fix
+      cat /tmp/answer-fix
+    verify:
+      - type: file_exists
+        path: /tmp/fixed-report.sh
+        describe: You wrote the fix
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: 'region=eu-west verbose=1 format=json'
+        describe: And the second region now parses
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: 'region=ap-south verbose=1 format=json'
+        describe: And the third
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: 'with inner_local: outer saw options \[ab\]'
+        describe: local leaves the caller's parse intact
+      - type: file_matches
+        path: /tmp/answer-fix
+        pattern: '(?i)INVISIBLE UNTIL SOMEBODY ADDS A SECOND CALL'
+        describe: And you said when the bug appears
+
+  - id: s4
+    instruction: >-
+      Compare the two error modes of `getopts` and say which you would use.
+      Save to /tmp/answer-errors.
+    hint: >-
+      The difference is a single colon at the front of the optstring.
+    walkthrough: |
+      {
+        echo "WITHOUT a leading colon - getopts prints its own message:"
+        bash -c 'n() { while getopts "vo:" OPT; do :; done; }; n -z' 2>&1 | sed 's/^/    /'
+        bash -c 'n() { while getopts "vo:" OPT; do :; done; }; n -o' 2>&1 | sed 's/^/    /'
+        echo
+        echo "WITH a leading colon - silent, and it reports through the variables:"
+        bash -c 'q() { while getopts ":vo:" OPT; do echo "    OPT=[$OPT] OPTARG=[$OPTARG]"; done; }; q -z'
+        bash -c 'q() { while getopts ":vo:" OPT; do echo "    OPT=[$OPT] OPTARG=[$OPTARG]"; done; }; q -o'
+        echo
+        echo "note the optstring says two unrelated things with the same character:"
+        echo "    \":vo:\""
+        echo "     ^      leading colon  -> SILENT error reporting"
+        echo "        ^   trailing colon -> o TAKES AN ARGUMENT"
+        echo
+        echo "which is most of why the leading one gets left out."
+        echo
+        echo "i would always use SILENT MODE, for three reasons:"
+        echo
+        echo "  1. it distinguishes UNKNOWN OPTION (?) from MISSING ARGUMENT (:), which"
+        echo "     the noisy mode collapses into one message"
+        echo "  2. i control the message, so it can name the option and the legal values"
+        echo "  3. i control the exit status, so a usage error can be 64 rather than"
+        echo "     whatever the next command happens to return"
+        echo
+        echo "and one more: the noisy message names \$0, so a parsing function inside a"
+        echo "large script reports the WHOLE SCRIPT'S name rather than the operation"
+        echo "that actually failed."
+      } > /tmp/answer-errors
+      cat /tmp/answer-errors
+    verify:
+      - type: file_matches
+        path: /tmp/answer-errors
+        pattern: '(?i)illegal option'
+        describe: The noisy mode prints its own message
+      - type: file_matches
+        path: /tmp/answer-errors
+        pattern: '(?i)option requires an argument'
+        describe: And a second for a missing value
+      - type: file_matches
+        path: /tmp/answer-errors
+        pattern: 'OPT=\[\?\] OPTARG=\[z\]'
+        describe: Silent mode reports an unknown option through the variables
+      - type: file_matches
+        path: /tmp/answer-errors
+        pattern: 'OPT=\[:\] OPTARG=\[o\]'
+        describe: And distinguishes a missing argument
+      - type: file_matches
+        path: /tmp/answer-errors
+        pattern: '(?i)SILENT MODE'
+        describe: And you chose one with reasons
+
+  - id: s5
+    instruction: >-
+      Find where `getopts` stops reading, and say why an operator used to GNU
+      tools will be surprised. Save to /tmp/answer-stops.
+    walkthrough: |
+      {
+        echo "options, then an operand, then another option:"
+        bash -c '
+          while getopts ":v" OPT; do echo "    got -$OPT"; done
+          echo "    OPTIND=$OPTIND"
+          shift $((OPTIND - 1))
+          printf "    operands: "; printf "[%s]" "$@"; echo
+        ' _ -v file -v
+        echo
+        echo "GETOPTS STOPS AT THE FIRST ARGUMENT THAT IS NOT AN OPTION. the second -v"
+        echo "is left in the operand list and is never parsed - it will be treated as a"
+        echo "filename by whatever comes next."
+        echo
+        echo "GNU tools do not behave this way. ls -l /tmp -a works, because the GNU C"
+        echo "library PERMUTES: it scans the whole line, gathers the options and moves"
+        echo "the operands to the end. that is a libc convention, not a shell feature."
+        echo
+        echo "so an operator who lives in GNU tools will type"
+        echo "    prune.sh /srv/data -n"
+        echo "and get no dry run at all - with no error, because -n is now just an"
+        echo "operand. this is the same failure shape as everything else in this topic:"
+        echo "THE FLAG IS SILENTLY DISCARDED AND THE COMMAND RUNS ANYWAY."
+        echo
+        echo "getopt(1) permutes, which is one of the strongest arguments for it on a"
+        echo "script that humans type:"
+        getopt -o v --long verbose -- "a b" -v c 2>&1 | sed 's/^/    /'
+      } > /tmp/answer-stops
+      cat /tmp/answer-stops
+    verify:
+      - type: file_matches
+        path: /tmp/answer-stops
+        pattern: 'operands: \[file\]\[-v\]'
+        describe: The second option is left unparsed
+      - type: file_matches
+        path: /tmp/answer-stops
+        pattern: '(?i)STOPS AT THE FIRST ARGUMENT THAT IS NOT AN OPTION'
+        describe: You stated the rule
+      - type: file_matches
+        path: /tmp/answer-stops
+        pattern: '(?i)PERMUTES'
+        describe: And contrasted it with GNU behaviour
+      - type: file_matches
+        path: /tmp/answer-stops
+        pattern: "-v -- 'a b' 'c'"
+        describe: And showed getopt(1) permuting the same line
+
+solution: >-
+  **The symptom, stated precisely:** three calls with *identical* arguments; the
+  first honours both flags and the other two fall back to defaults. Exit 0, three
+  regions, in order, correctly named. Only two fields on two lines differ — which
+  is why it survives review.
+
+
+  **`OPTIND` is the state that leaks.** Instrumented:
+
+
+  ```console
+  enter: OPTIND=1 args=[-v -f json us-east]
+  after loop: OPTIND=4
+  enter: OPTIND=4 args=[-v -f json eu-west]      ← still 4
+  ```
+
+
+  The second call asks `getopts` for argument 4 of a three-argument list, finds
+  nothing, and returns immediately — the loop body never runs. And
+  `shift $((OPTIND - 1))` is `shift 3`, the same as last time, so **`$1` still
+  lands on the region name**. The region is right in every line; only the flags
+  are gone.
+
+
+  **The fix is `local OPTIND=1`, and both halves matter.** `=1` starts this call
+  at the beginning of its own list. `local` restores the *caller's* `OPTIND` on
+  return — a bare `OPTIND=1` fixes this call and rewinds any caller that was
+  itself mid-parse, turning a silent wrong value into a repeat or a hang.
+
+
+  A top-level parse needs no reset, because `OPTIND` starts at 1 in a fresh
+  shell. **The bug is invisible until somebody adds a second call**, which may be
+  months after the parser was reviewed.
+
+
+  **The two error modes.** Without a leading colon `getopts` prints its own
+  message naming `$0`; with one it is silent and reports through the variables —
+  `OPT=?` with `OPTARG` naming an unknown option, `OPT=:` for a missing argument.
+  Use silent mode: it distinguishes the two cases, and lets you own both the
+  message and the exit status.
+
+
+  Note the optstring says two unrelated things with the same character: a
+  **leading** colon switches error reporting, a **trailing** one means that option
+  takes a value.
+
+
+  **And `getopts` stops at the first operand.** Given `-v file -v`, the second
+  `-v` is left as an operand and never parsed. GNU tools **permute** — `ls -l /tmp
+  -a` works — so an operator typing `prune.sh /srv/data -n` gets no dry run, with
+  no error. `getopt(1)` permutes too, which is one of the strongest arguments for
+  it on a script humans type.

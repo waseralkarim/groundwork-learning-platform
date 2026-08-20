@@ -1,0 +1,293 @@
+id: lab.what-am-i-running
+topic: topic.distributions-and-versions
+title: Identify a system from the machine, not from memory
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-B06.1.1, OBJ-B06.1.2]
+
+intro: >-
+  "What is this box" comes up during incidents, in tickets, and every time a
+  script has to branch. There is one portable answer and several popular wrong
+  ones.
+
+
+  You will find the right answer here, discover that the tool most people reach
+  for is not installed, and then identify four other systems from captured
+  files — including one where the obvious file lies.
+
+setup:
+  - /opt/lab/seed-distro.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Identify this system — distribution, release and codename — and save the
+      evidence to /tmp/answer-identity.
+    hint: >-
+      `/etc/os-release` is written as shell assignments, so you can read it or
+      source it. `ID` and `VERSION_ID` are the machine-readable fields.
+    walkthrough: |
+      {
+        cat /etc/os-release
+        echo
+        . /etc/os-release
+        echo "sourced: ID=$ID VERSION_ID=$VERSION_ID CODENAME=$VERSION_CODENAME"
+        echo
+        echo "the file is deliberately valid shell, so sourcing it gives the fields as variables with no parsing. ID and VERSION_ID are the ones a script should use - PRETTY_NAME is for humans and its format is not guaranteed."
+      } > /tmp/answer-identity
+      cat /tmp/answer-identity
+    verify:
+      - type: file_matches
+        path: /tmp/answer-identity
+        pattern: "ID=debian"
+        describe: You identified the distribution
+      - type: file_matches
+        path: /tmp/answer-identity
+        pattern: "VERSION_ID=\"?13"
+        describe: And the release
+      - type: file_matches
+        path: /tmp/answer-identity
+        pattern: "trixie"
+        describe: And the codename the archive is addressed by
+
+  - id: s2
+    instruction: >-
+      Try the three approaches people usually reach for first, and record what
+      each one actually gives you. Save to /tmp/answer-alternatives.
+    hint: >-
+      `lsb_release`, `/etc/debian_version` and `uname`. One of them is not
+      present at all, and one of them is answering a different question.
+    walkthrough: |
+      {
+        echo "lsb_release:"
+        command -v lsb_release >/dev/null && lsb_release -a 2>&1 | head -3 || echo "  NOT INSTALLED - it is a package, not a guarantee"
+        echo
+        echo "/etc/debian_version:"
+        cat /etc/debian_version 2>/dev/null || echo "  absent"
+        echo "  identifies a lineage. on Ubuntu this file reports a DEBIAN codename, because ubuntu is built from debian - it is telling the truth about ancestry and answering a different question."
+        echo
+        echo "uname -r:"
+        uname -r
+        echo "  this is the KERNEL, and in a container it is the HOST's kernel. it says nothing about the userland i am actually running in. a script branching on uname branches on the host."
+        echo
+        echo "so the portable answer is /etc/os-release, and the popular alternatives are: missing, ambiguous, and about something else."
+      } > /tmp/answer-alternatives
+      cat /tmp/answer-alternatives
+    verify:
+      - type: file_matches
+        path: /tmp/answer-alternatives
+        pattern: "(?i)not installed"
+        describe: You found that lsb_release is absent
+      - type: file_matches
+        path: /tmp/answer-alternatives
+        pattern: "(?i)kernel"
+        describe: And that uname reports the kernel rather than the distribution
+      - type: file_matches
+        path: /tmp/answer-alternatives
+        pattern: "(?i)host"
+        describe: And that in a container that kernel belongs to the host
+
+  - id: s3
+    instruction: >-
+      Identify the four systems in /tmp/distros from their captured files. Save
+      a table of distribution, release and codename to /tmp/answer-four.
+    hint: >-
+      Read each `*-os-release.txt`. Note which ones carry `ID_LIKE`, and what
+      one of them has instead of a version.
+    walkthrough: |
+      cd /tmp/distros
+      {
+        printf '%-8s %-14s %-10s %s\n' FILE ID VERSION NOTE
+        for f in alpha bravo charlie delta; do
+          id=$(sed -n 's/^ID=//p' $f-os-release.txt | tr -d '"')
+          ver=$(sed -n 's/^VERSION_ID=//p' $f-os-release.txt | tr -d '"')
+          like=$(sed -n 's/^ID_LIKE=//p' $f-os-release.txt | tr -d '"')
+          printf '%-8s %-14s %-10s %s\n' "$f" "$id" "${ver:-none}" "${like:+like: $like}"
+        done
+        echo
+        echo "alpha   ubuntu 24.04 noble, ID_LIKE=debian - a derivative"
+        echo "bravo   rocky 9.4, ID_LIKE=rhel centos fedora - a rhel derivative"
+        echo "charlie alpine 3.20.3 - no ID_LIKE, it is its own thing"
+        echo "delta   arch - NO VERSION_ID at all, because it is a rolling release. there is no version to have."
+        echo
+        echo "delta is the interesting one: a rolling distribution has no release number because there is no release. a script requiring VERSION_ID breaks on it, and the absence is meaningful rather than missing data."
+      } > /tmp/answer-four
+      cat /tmp/answer-four
+    verify:
+      - type: file_matches
+        path: /tmp/answer-four
+        pattern: "ubuntu"
+        describe: You identified the Debian derivative
+      - type: file_matches
+        path: /tmp/answer-four
+        pattern: "rocky"
+        describe: And the RHEL derivative
+      - type: file_matches
+        path: /tmp/answer-four
+        pattern: "(?i)rolling"
+        describe: And that one of them has no version because it rolls
+
+  - id: s4
+    instruction: >-
+      Read /tmp/distros/what-else-was-tried.txt and write to
+      /tmp/answer-portable the branch logic you would use in a script that must
+      work on all five systems.
+    hint: >-
+      Handling derivatives by name does not scale. There is a field for exactly
+      this.
+    walkthrough: |
+      cat /tmp/distros/what-else-was-tried.txt
+      {
+        echo ". /etc/os-release"
+        echo "case \"\$ID \$ID_LIKE\" in"
+        echo "  *debian*) pkg=apt ;;"
+        echo "  *rhel*|*fedora*) pkg=dnf ;;"
+        echo "  *alpine*) pkg=apk ;;"
+        echo "  *) echo \"unknown distribution: \$ID\" >&2; exit 1 ;;"
+        echo "esac"
+        echo
+        echo "matching on ID and ID_LIKE TOGETHER is what makes this work without naming every derivative. ubuntu matches *debian* through ID_LIKE=debian; rocky matches *rhel* the same way. listing derivatives by name is a list that is always out of date."
+        echo
+        echo "and it fails loudly on something unknown rather than guessing, which matters because the guess would be silently wrong."
+      } > /tmp/answer-portable
+      cat /tmp/answer-portable
+    verify:
+      - type: file_matches
+        path: /tmp/answer-portable
+        pattern: "ID_LIKE"
+        describe: You used ID_LIKE to handle derivatives
+      - type: file_matches
+        path: /tmp/answer-portable
+        pattern: "(?i)without naming every derivative|always out of date"
+        describe: And explained why listing them by name does not scale
+      - type: file_matches
+        path: /tmp/answer-portable
+        pattern: "(?i)fails loudly|exit 1"
+        describe: And made the unknown case fail rather than guess
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-what-is-a-distro what a distribution actually
+      provides, and which parts of it distinguish one from another.
+    hint: >-
+      Four components. Two of them are broadly the same everywhere.
+    walkthrough: |
+      {
+        echo "a distribution is four things:"
+        echo "1. a kernel - broadly the same everywhere, give or take a version and some patches"
+        echo "2. a userland - shell, core utilities, libraries"
+        echo "3. an archive of packages built to work together and tested as a set"
+        echo "4. a policy about when any of that is allowed to change"
+        echo
+        echo "the first two are largely common property. debian and ubuntu share an enormous amount of code."
+        echo "THE ARCHIVE AND THE POLICY ARE THE DISTRIBUTION - what is in it, how it was built, and when it moves."
+        echo
+        echo "which reframes the usual argument. 'which distribution should we use' is really 'whose release policy do we want to live under', and that question has an answer that depends on how often we can tolerate being surprised and how long this has to run without a major upgrade."
+      } > /tmp/answer-what-is-a-distro
+      cat /tmp/answer-what-is-a-distro
+    verify:
+      - type: file_matches
+        path: /tmp/answer-what-is-a-distro
+        pattern: "(?i)archive"
+        describe: You identified the archive as a defining component
+      - type: file_matches
+        path: /tmp/answer-what-is-a-distro
+        pattern: "(?i)policy"
+        describe: And the release policy
+      - type: file_matches
+        path: /tmp/answer-what-is-a-distro
+        pattern: "(?i)release policy do we want|reframes"
+        describe: And reframed the choice as one about policy
+
+solution: >-
+  **One file, and it is written to be sourced.**
+
+
+  ```bash
+  . /etc/os-release
+  echo "$ID $VERSION_ID ($VERSION_CODENAME)"
+  # debian 13 (trixie)
+  ```
+
+
+  `/etc/os-release` is deliberately valid shell — `KEY=value` assignments — so
+  sourcing it gives you the fields as variables with no parsing at all. `ID` and
+  `VERSION_ID` are the machine-readable fields; `PRETTY_NAME` is for humans and
+  its format is not guaranteed.
+
+
+  **The three popular alternatives all fail, in three different ways.**
+
+
+  `lsb_release` is **not installed here**. It is a package rather than a
+  guarantee, and it is absent on minimal images, on Alpine, and by default on
+  RHEL derivatives. A script depending on it fails on a perfectly ordinary
+  system.
+
+
+  `/etc/debian_version` identifies a *lineage*. On Ubuntu it reports a Debian
+  codename, because Ubuntu is built from Debian — it is telling the truth about
+  ancestry while answering a different question from the one asked.
+
+
+  `uname` reports the **kernel**, and in a container that is the *host's* kernel.
+  A script branching on `uname` branches on the machine underneath rather than
+  on the userland it is running in, which is a wrong answer that looks like a
+  right one.
+
+
+  **The four captured systems.**
+
+
+  ```text
+  alpha    ubuntu  24.04    ID_LIKE=debian
+  bravo    rocky   9.4      ID_LIKE="rhel centos fedora"
+  charlie  alpine  3.20.3   no ID_LIKE — its own lineage
+  delta    arch    none     no VERSION_ID at all
+  ```
+
+
+  Delta is the one worth pausing on. **A rolling release has no version number
+  because there is no release.** A script requiring `VERSION_ID` breaks on it,
+  and the absence is meaningful data rather than a missing field.
+
+
+  **The portable branch.**
+
+
+  ```bash
+  . /etc/os-release
+  case "$ID $ID_LIKE" in
+    *debian*) pkg=apt ;;
+    *rhel*|*fedora*) pkg=dnf ;;
+    *alpine*) pkg=apk ;;
+    *) echo "unknown distribution: $ID" >&2; exit 1 ;;
+  esac
+  ```
+
+
+  Matching `$ID` and `$ID_LIKE` **together** is what makes this work without
+  naming every derivative — Ubuntu matches `*debian*` through `ID_LIKE`, Rocky
+  matches `*rhel*` the same way. A list of derivatives by name is a list that is
+  permanently out of date.
+
+
+  And it fails loudly on something unrecognised, which matters because the
+  alternative is a guess that is silently wrong.
+
+
+  **What a distribution actually is.**
+
+
+  A kernel, a userland, an archive, and a policy. The first two are largely
+  common property — Debian and Ubuntu share an enormous amount of code.
+  **The archive and the policy are the distribution**: what is in it, how it was
+  built, and when it is allowed to move.
+
+
+  Which reframes the argument people usually have. "Which distribution should we
+  use" is really *whose release policy do we want to live under* — and that is
+  answerable, from how often you can tolerate surprise and how long the thing has
+  to run without a major upgrade.

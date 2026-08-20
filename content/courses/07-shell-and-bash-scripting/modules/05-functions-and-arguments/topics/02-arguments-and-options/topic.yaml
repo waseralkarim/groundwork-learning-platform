@@ -1,0 +1,136 @@
+id: topic.arguments-and-options
+slug: arguments-and-options
+title: "Arguments, Options and the Two Parsers"
+summary: >-
+  `getopts` does not do long options — it parses `--dry-run` as the bundled
+  letters `d`, `r`, `y`, `r`, `u`, `n`, which on a script with `-d` for delete
+  quietly turns a dry run into a deletion. `OPTIND` is global, so a parsing
+  function called twice ignores every flag the second time and still looks
+  right. This topic measures both, and builds a command-line contract worth
+  shipping.
+order: 2
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.functions-and-scope
+    hardness: required
+  - topic: topic.how-a-line-becomes-a-command
+    hardness: required
+
+objectives:
+  - id: OBJ-B08.7.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify what `$#`, `$@`, `$*` and `$0` expand to, and how quoting changes
+      each.
+    assessed_by: [quiz.q1, quiz.q2, lab.what-the-shell-hands-you, exercise.e1]
+
+  - id: OBJ-B08.7.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe what `shift` does, what it returns, and what it does when asked
+      to shift further than it can.
+    assessed_by: [quiz.q3, quiz.q4, lab.what-the-shell-hands-you, exercise.e2]
+
+  - id: OBJ-B08.7.3
+    level: L2
+    verb: configure
+    statement: >-
+      Configure a `getopts` parser — optstring, `OPTARG`, `OPTIND`, and the two
+      error modes.
+    assessed_by: [quiz.q5, quiz.q6, quiz.q7, lab.the-options-parsed-once, exercise.e3]
+
+  - id: OBJ-B08.7.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why `OPTIND` must be reset inside a function, and what happens
+      when it is not.
+    assessed_by: [quiz.q8, quiz.q9, lab.the-options-parsed-once, troubleshooting.the-flag-that-worked-once]
+
+  - id: OBJ-B08.7.5
+    level: L2
+    verb: predict
+    statement: >-
+      Predict how `getopts` reads an argument it was not designed for — a long
+      option, an attached value, an operand before a flag.
+    assessed_by: [quiz.q10, quiz.q11, lab.make-long-options-work, troubleshooting.the-dry-run-that-deleted]
+
+  - id: OBJ-B08.7.6
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish `getopts`, `getopt(1)` and hand-rolled parsing, and choose
+      between them.
+    assessed_by: [quiz.q12, quiz.q13, lab.make-long-options-work, exercise.e4]
+
+  - id: OBJ-B08.7.7
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a script that ignored the flags it was given.
+    assessed_by: [quiz.q14, troubleshooting.the-flag-that-worked-once, troubleshooting.the-dry-run-that-deleted]
+
+  - id: OBJ-B08.7.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a command-line contract — usage, `--`, validation and exit codes —
+      naming what each part prevents.
+    assessed_by: [quiz.q15, lab.a-cli-worth-shipping, exercise.e5, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: positional parameters
+    definition: >-
+      `$1`, `$2`, … and the whole list in `$@`. `$0` is **not** one of them — it
+      is the name the shell was invoked with, and `shift` never touches it.
+  - term: "\"$@\""
+    definition: >-
+      The only expansion that reproduces the argument list exactly, one word per
+      argument, splitting nothing. `"$*"` joins them into a single word.
+  - term: shift
+    definition: >-
+      Discard the first N positional parameters. Returns **1 and does nothing at
+      all** if N is greater than `$#` — it is all-or-nothing.
+  - term: optstring
+    definition: >-
+      The letters `getopts` accepts. A trailing `:` on a letter means it takes an
+      argument; a **leading** `:` on the whole string turns on silent error
+      reporting.
+  - term: OPTARG
+    definition: >-
+      The argument of the option just parsed — or, in silent mode, the offending
+      letter for an unknown option or a missing argument.
+  - term: OPTIND
+    definition: >-
+      The index of the next argument `getopts` will read. **Global, and not
+      reset between calls**, so a parsing function must declare `local OPTIND=1`.
+  - term: silent error reporting
+    definition: >-
+      A leading `:` in the optstring. `getopts` stops printing its own messages
+      and reports through `?` and `:` in the option variable instead.
+  - term: "getopt(1)"
+    definition: >-
+      A separate program, not a builtin. The util-linux version handles **long
+      options**, `--opt=value`, unambiguous abbreviations and options after
+      operands, and emits a requoted list for `eval set --`.
+  - term: "--"
+    definition: >-
+      End of options. Everything after it is an operand, even if it starts with
+      a dash — the only way to pass a file called `-rf`.
+  - term: EX_USAGE
+    definition: >-
+      Exit status **64**, the `sysexits.h` convention for "you called it wrong",
+      as distinct from "it went wrong".
+
+foreshadows:
+  - "B08.8's traps and cleanup handle the signals a long-running CLI receives."
+  - "B11's argparse and typer give the same contract with none of this work, which is one reason to stop writing shell."
+  - "E27's CI jobs invoke these scripts non-interactively, where a mis-parsed flag has no operator to notice it."
+  - "D22's configuration management replaces flags with declared desired state."
+
+tags: [shell, bash, getopts, arguments, cli, fundamentals]

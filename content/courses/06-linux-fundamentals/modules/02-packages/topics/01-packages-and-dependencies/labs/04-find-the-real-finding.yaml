@@ -1,0 +1,350 @@
+id: lab.find-the-real-finding
+topic: topic.packages-and-dependencies
+title: "Challenge: 4,634 findings, one of which matters"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B06.2.6, OBJ-B06.2.7]
+
+intro: >-
+  Every file a package installs has a recorded checksum, which makes tampering
+  detectable. Run the check on this machine and it reports thousands of
+  discrepancies.
+
+
+  Your job is to decide whether this host is compromised. Then decide what a
+  usable version of this control would look like, because the one you just ran
+  is not it.
+
+setup:
+  - /opt/lab/seed-packages.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Run the integrity check and quantify what came back, before looking at any
+      individual finding. Save the shape of the output to /tmp/answer-shape.
+    hint: >-
+      `dpkg -V` verifies everything. Count the lines, then group them by the
+      first field rather than reading them.
+    walkthrough: |
+      dpkg -V > /tmp/v 2>&1
+      {
+        echo "total findings: $(wc -l < /tmp/v)"
+        echo
+        echo "grouped by status flag:"
+        awk '{print $1}' /tmp/v | sort | uniq -c | sort -rn | sed 's/^/  /'
+        echo
+        echo "where the findings are:"
+        for d in doc man lintian locale; do
+          printf '  /usr/share/%-9s %s\n' "$d" "$(grep -c "/usr/share/$d/" /tmp/v)"
+        done
+        echo
+        echo "one status flag appears 4633 times and another appears once. that ratio is the finding, before i have read a single path."
+      } > /tmp/answer-shape
+      cat /tmp/answer-shape
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/^total findings: //p' /tmp/answer-shape) -gt 4000"
+        exit_code: 0
+        describe: You quantified the output before reading it
+      - type: file_matches
+        path: /tmp/answer-shape
+        pattern: "missing"
+        describe: And found that almost all of it is one status
+      - type: file_matches
+        path: /tmp/answer-shape
+        pattern: "(?i)ratio is the finding"
+        describe: And read the distribution as the signal
+
+  - id: s2
+    instruction: >-
+      Explain what the 4,633 findings actually are, and prove your explanation
+      rather than asserting it. Save to /tmp/answer-noise.
+    walkthrough: |
+      {
+        echo "the claim: these files are missing because the base image removed them on purpose."
+        echo
+        echo "proving it. which file configures dpkg to exclude paths:"
+        grep -l 'path-exclude' /etc/dpkg/dpkg.cfg.d/* | sed 's/^/  /'
+        echo "and what it excludes:"
+        grep -h '^path-exclude' /etc/dpkg/dpkg.cfg.d/* | sed 's/^/  /'
+        echo
+        echo "and the excluded paths match the findings:"
+        echo "  findings under /usr/share/doc:     $(grep -c '/usr/share/doc/' /tmp/v)"
+        echo "  findings under /usr/share/man:     $(grep -c '/usr/share/man/' /tmp/v)"
+        echo "  findings under /usr/share/locale:  $(grep -c '/usr/share/locale/' /tmp/v)"
+        echo
+        echo "so this is debian:13-slim doing exactly what it was chosen to do. the image ships a dpkg configuration fragment that excludes documentation, man pages and locales; dpkg records that those files SHOULD exist because the package says so, and then the same dpkg was told not to unpack them."
+        echo
+        echo "the package database and the filesystem disagree by design, and the integrity checker reports the disagreement faithfully. nothing here is broken and nothing here is a compromise - it is a correct tool reporting a deliberate decision it was never told about."
+      } > /tmp/answer-noise
+      cat /tmp/answer-noise
+    verify:
+      - type: file_matches
+        path: /tmp/answer-noise
+        pattern: "(?i)path-exclude|excludes|exclude"
+        describe: You found the configuration that removes the files
+      - type: file_matches
+        path: /tmp/answer-noise
+        pattern: "(?i)slim"
+        describe: And identified the base image as the cause
+      - type: file_matches
+        path: /tmp/answer-noise
+        pattern: "(?i)by design|deliberate"
+        describe: And concluded the disagreement is deliberate rather than damage
+
+  - id: s3
+    instruction: >-
+      Isolate the finding that is not a missing file. Identify the file, decode
+      the flags, and determine what changed it. Save to /tmp/answer-real.
+    walkthrough: |
+      {
+        echo "the one finding that is not 'missing':"
+        grep -v '^missing' /tmp/v | sed 's/^/  /'
+        echo
+        echo "decoding it. the format is <flags> [c] <path>, nine flag positions with"
+        echo "? meaning 'not checked'. the third position is the md5, and here it is 5 -"
+        echo "the file on disk does not match the checksum recorded at install time."
+        echo "the 'c' marks it as a conffile: a file i am EXPECTED to edit."
+        echo
+        echo "which package owns it:"
+        dpkg -S /etc/bash.bashrc | sed 's/^/  /'
+        echo
+        echo "what is actually in it:"
+        tail -5 /etc/bash.bashrc | sed 's/^/  | /'
+        echo
+        echo "verdict: not a compromise. this platform's own Dockerfile appends a lab prompt and history settings to /etc/bash.bashrc, which happens to be a conffile of bash. dpkg noticed, correctly, because that is its entire job."
+        echo
+        echo "and this is the honest shape of the result: the ONE true positive in 4634 lines is a change i made myself, and i can only say that because i can read the file and recognise it. an auditor who could not would be looking at an unexplained modification to a shell startup file - which is a real persistence technique and exactly what they should be alarmed by."
+      } > /tmp/answer-real
+      cat /tmp/answer-real
+    verify:
+      - type: file_matches
+        path: /tmp/answer-real
+        pattern: "/etc/bash.bashrc"
+        describe: You isolated the file with a checksum mismatch
+      - type: file_matches
+        path: /tmp/answer-real
+        pattern: "(?i)md5|checksum"
+        describe: And decoded what the flag means
+      - type: file_matches
+        path: /tmp/answer-real
+        pattern: "bash: /etc/bash.bashrc"
+        describe: And found which package owns it
+      - type: file_matches
+        path: /tmp/answer-real
+        pattern: "(?i)not a compromise"
+        describe: And reached a verdict on whether the host is compromised
+      - type: file_matches
+        path: /tmp/answer-real
+        pattern: "(?i)persistence"
+        describe: And noted why the same finding would be alarming without that context
+
+  - id: s4
+    instruction: >-
+      Write a version of this check that a person could actually use, and show
+      what it reports. Save the check and its output to /tmp/answer-usable.
+    walkthrough: |
+      {
+        echo "the check:"
+        cat <<'CHECK' | sed 's/^/  /'
+      # Report only what a human should look at:
+      #   - drop 'missing' under paths the image deliberately excludes
+      #   - keep every checksum mismatch, conffile or not
+      dpkg -V 2>/dev/null |
+        grep -v '^missing.*/usr/share/\(doc\|man\|locale\|lintian\|info\)/' |
+        sort
+      CHECK
+        echo
+        echo "what it reports on this host:"
+        dpkg -V 2>/dev/null |
+          grep -v '^missing.*/usr/share/\(doc\|man\|locale\|lintian\|info\)/' |
+          sort | sed 's/^/  /'
+        echo
+        echo "count: $(dpkg -V 2>/dev/null | grep -vc '^missing.*/usr/share/\(doc\|man\|locale\|lintian\|info\)/')"
+        echo
+        echo "one line. a person reads that in a second and can act on it."
+        echo
+        echo "the filter is deliberately narrow: it drops MISSING files under documentation paths only. a checksum mismatch anywhere still reports, and a missing file outside those paths still reports, because those are the things that would indicate real damage."
+      } > /tmp/answer-usable
+      cat /tmp/answer-usable
+    verify:
+      - type: command_exit
+        command: "test $(sed -n 's/^count: //p' /tmp/answer-usable) -le 3"
+        exit_code: 0
+        describe: Your check reduces the output to something readable
+      - type: file_matches
+        path: /tmp/answer-usable
+        pattern: "/etc/bash.bashrc"
+        describe: While still reporting the real finding
+      - type: file_matches
+        path: /tmp/answer-usable
+        pattern: "(?i)narrow|still reports"
+        describe: And you justified the filter as narrow rather than convenient
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-argument what you would say to someone who wants the
+      unfiltered check in a compliance pipeline because filtering "hides
+      findings".
+    walkthrough: |
+      {
+        echo "their position is reasonable and the conclusion is backwards."
+        echo
+        echo "what the unfiltered check produces on a HEALTHY machine: 4634 criticals. not once - on every scan, on every host, forever, because the cause is the base image everyone deliberately chose."
+        echo
+        echo "what happens next is not a guess, it is the same two outcomes every time:"
+        echo "  - somebody writes a suppression rule broad enough to make it quiet,"
+        echo "    which usually means suppressing the whole check; or"
+        echo "  - people learn that this control is noise and stop reading it."
+        echo
+        echo "either way the control is gone. the difference is that the paperwork still says it is running, so the failure is invisible to exactly the people relying on it."
+        echo
+        echo "so the filter is not hiding findings. it is the difference between a control that exists and a control that is documented. an unfiltered check whose output nobody reads detects nothing, and it costs something real on top: the credibility i need on the day a genuine finding appears."
+        echo
+        echo "what i would propose instead of an argument:"
+        echo "  - filter the deliberate exclusions, narrowly and explicitly"
+        echo "  - alert on anything remaining, because it should be a handful of lines"
+        echo "  - ALERT ON THE FILTER ITSELF: if the suppressed count changes"
+        echo "    materially, the base image changed and somebody should know"
+        echo "  - record why each exclusion exists, so the next person can audit"
+        echo "    the filter rather than inheriting it"
+        echo
+        echo "that last pair is what makes it defensible in an audit. the filter becomes a documented, monitored decision rather than a quiet grep, and a reviewer can check it."
+        echo
+        echo "this is the same argument as the vulnerability scanner reporting 47 criticals against backported packages. the cost of an unactionable finding is never the time to triage it - it is the attention it spends, and attention is the thing in shortest supply when something is actually wrong."
+      } > /tmp/answer-argument
+      cat /tmp/answer-argument
+    verify:
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)healthy"
+        describe: You made the point that the noise appears on healthy machines
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)suppress"
+        describe: And predicted what happens to a noisy control
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)alert on the filter"
+        describe: And proposed monitoring the filter itself
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)credibility|attention"
+        describe: And named the real cost of unactionable findings
+
+solution: >-
+  **The shape, before any individual finding.**
+
+
+  ```console
+  $ dpkg -V | wc -l
+  4634
+  $ dpkg -V | awk '{print $1}' | sort | uniq -c | sort -rn
+     4633 missing
+        1 ??5??????
+  ```
+
+
+  That distribution *is* the result. One status appears 4,633 times and another
+  appears once, and you know the answer's shape before reading a path.
+
+
+  **What the noise is, proven rather than asserted.**
+
+
+  The image ships a dpkg configuration fragment excluding documentation, and the
+  findings land exactly under the excluded paths — `/usr/share/doc`,
+  `/usr/share/man`, `/usr/share/locale`, `/usr/share/lintian`.
+
+
+  So the package database and the filesystem **disagree by design**. dpkg records
+  that those files should exist, because the package says so, and the same dpkg
+  was told not to unpack them. The checker reports the disagreement faithfully.
+  Nothing is broken; a correct tool is reporting a deliberate decision it was
+  never told about.
+
+
+  **The one real finding.**
+
+
+  ```text
+  ??5?????? c /etc/bash.bashrc
+  ```
+
+
+  Nine flag positions, `?` for "not checked". The third is the md5, and `5` means
+  the file does not match the checksum recorded at install time. The `c` marks a
+  conffile — a file you are *expected* to edit. It belongs to `bash`.
+
+
+  ```console
+  $ tail -3 /etc/bash.bashrc
+  export HISTFILE=/home/learner/.bash_history
+  export PROMPT_COMMAND="history -a"
+  PS1='lab:\w$ '
+  ```
+
+
+  **Not a compromise.** This platform's own Dockerfile appends a lab prompt and
+  history settings to a file that happens to be a `bash` conffile. dpkg noticed,
+  because that is its entire job.
+
+
+  And that is the honest shape of the result: the single true positive in 4,634
+  lines is a change you made yourself, and you can only say so because you can
+  read the file and recognise it. **An auditor without that context would be
+  looking at an unexplained modification to a shell startup file — which is a
+  real persistence technique, and exactly what they should be alarmed by.**
+
+
+  **A usable check.**
+
+
+  ```bash
+  dpkg -V 2>/dev/null |
+    grep -v '^missing.*/usr/share/\(doc\|man\|locale\|lintian\|info\)/'
+  ```
+
+
+  One line of output on this host. The filter is deliberately narrow — it drops
+  *missing* files under *documentation* paths only. Any checksum mismatch still
+  reports, and a missing file anywhere else still reports, because those are what
+  would indicate real damage.
+
+
+  **And the argument about filtering.**
+
+
+  The objection is reasonable and the conclusion is backwards. Unfiltered, this
+  control produces 4,634 criticals on a **healthy** machine — every scan, every
+  host, forever, because the cause is the base image everyone deliberately chose.
+
+
+  What follows is not a guess. Either somebody writes a suppression broad enough
+  to silence it, or people learn the control is noise and stop reading it. Either
+  way the control is gone, and the paperwork still says it is running — so the
+  failure is invisible to exactly the people relying on it.
+
+
+  The filter is therefore not hiding findings; it is the difference between a
+  control that exists and a control that is documented. What makes it defensible:
+
+
+  - filter the deliberate exclusions, narrowly and explicitly
+  - alert on everything remaining, which should be a handful of lines
+  - **alert on the filter itself** — if the suppressed count moves materially, the
+    base image changed and somebody should know
+  - record why each exclusion exists, so the next person audits the filter rather
+    than inheriting it
+
+
+  That converts a quiet `grep` into a monitored decision a reviewer can check.
+
+
+  Same argument as B06.1's scanner reporting 47 criticals against backported
+  packages. **The cost of an unactionable finding is never the time to triage it —
+  it is the attention it spends**, and attention is the thing in shortest supply
+  when something is actually wrong.

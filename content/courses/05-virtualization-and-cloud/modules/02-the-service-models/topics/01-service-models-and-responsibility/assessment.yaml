@@ -1,0 +1,190 @@
+id: assessment.service-models-and-responsibility
+topic: topic.service-models-and-responsibility
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain what a service model does not transfer
+    kind: explain
+    objectives: [OBJ-A05.2.4]
+    prompt: >-
+      A director announces that moving the last workloads to SaaS "completes our
+      security programme, since the vendor is now responsible".
+
+
+      In about 200 words: explain what did and did not transfer, and what the
+      remaining work is.
+    rubric:
+      - "States that SaaS transfers most layers and that the move is broadly sound"
+      - "Names data, access control and configuration as non-transferable at any model"
+      - "Explains that those three are where most cloud breaches occur"
+      - "Gives concrete examples — public storage, over-permissive roles, weak credentials"
+      - "Concludes the remaining work is smaller, more important, and cannot be delegated"
+    model_answer: >-
+      The move is sound and the conclusion is not.
+
+
+      SaaS transfers fourteen of roughly seventeen layers — hardware, hypervisor,
+      OS, runtime, database, the application itself. That is genuinely most of
+      it, and a vendor runs those layers better than we would, because it is the
+      only thing they do.
+
+
+      Three layers do not transfer at any service model: **data, access control
+      and configuration**. That is not an opinion — take the same application
+      deployed four ways, extract the layers marked ours in each, and intersect
+      them, and exactly those three survive.
+
+
+      They are also where cloud breaches actually happen. A publicly readable
+      storage bucket. A role granting `*` on `*`. A database with a default
+      password. An account belonging to somebody who left last year. None of
+      those is a patch, none has a vendor advisory, and no service model removes
+      them.
+
+
+      So what changed is that our security work is now a **larger fraction of a
+      smaller total**. Before, those three sat alongside patching and
+      infrastructure; now they are all there is, and nobody else can do them.
+
+
+      The accurate version of the announcement is that we have handed over the
+      layers where breaches are rare and kept the ones where they are common.
+    common_failures:
+      - "Agreeing that SaaS completes the work, which is the claim being tested"
+      - "Arguing SaaS vendors are less secure, which is usually false and misses the point"
+      - "Naming data but omitting access control and configuration"
+      - "Failing to connect the three to how breaches actually occur"
+
+  - id: B
+    title: Reason about a shared layer
+    kind: reason
+    objectives: [OBJ-A05.2.7, OBJ-A05.2.5]
+    prompt: >-
+      A team on managed Kubernetes and managed PostgreSQL has had three incidents
+      in six months: a database patch during business hours, an application
+      broken by a node image change announced 30 days earlier, and a restore that
+      failed when first attempted after two years of successful backups.
+
+
+      In about 250 words: identify what the three have in common, explain why
+      this category fails, and give the mechanisms that would prevent a
+      recurrence.
+    rubric:
+      - "Identifies all three as shared-layer failures where the provider acted correctly"
+      - "Explains that shared layers have no error state on the customer's side"
+      - "Gives a specific mechanism per layer — window, node cadence, restore test"
+      - "States that each needs a named owner rather than attention"
+      - "Notes that the provider is not at fault in any of the three"
+    model_answer: >-
+      All three are the same failure. In each, the provider did exactly what they
+      said they would, and the half that belonged to this team was assigned to
+      nobody.
+
+
+      Managed patching is what a managed database *is*; the team's half was
+      choosing the window, and leaving it at "any" is a decision made by not
+      deciding. The node image change was announced with 30 days' notice; their
+      half was reading it and testing images before rolling. The provider took
+      2 years of backups faithfully; their half was ever restoring one.
+
+
+      **The category fails because it has no error state.** Never set a
+      maintenance window and nothing complains. Never roll node images and the
+      cluster is healthy — you are simply on the old one. Never restore a backup
+      and every backup still reports success. The provider does the doing and you
+      do the noticing, and noticing does not error.
+
+
+      That is why intention is not a control here. Each layer needs a **named
+      owner, a mechanism and a cadence**:
+
+
+      - **Database patches** — a maintenance window that is set, off-peak, and
+        known to on-call. Two minutes of work.
+
+      - **Node images** — a rolling upgrade cadence, an alert on node image age,
+        and a staging environment that receives images before production.
+
+      - **Backups** — a scheduled restore into a scratch environment asserting
+        the application starts and a known row is present. Count restores, not
+        backups.
+
+      - Plus the fourth they will hit next: **deprecations** — somebody owning
+        the provider's change feed.
+
+
+      No provider failure appears anywhere in the three. The remedy is entirely
+      on this side, which is also why no SLA credit will help.
+    common_failures:
+      - "Treating the three as unrelated incidents with separate causes"
+      - "Blaming the provider for the patch or the node image change"
+      - "Recommending vigilance rather than a mechanism with an owner"
+      - "Missing that success of a backup job is not the property that matters"
+
+  - id: C
+    title: Advise on a service model with its costs
+    kind: diagnose
+    objectives: [OBJ-A05.2.8, OBJ-A05.2.6]
+    prompt: >-
+      A vendor proposal reads: *"Fully managed — we handle infrastructure,
+      patching and availability. 99.9% SLA. Focus on your product, not
+      undifferentiated heavy lifting."*
+
+
+      Your platform depends on three of their services, all required to serve a
+      request.
+
+
+      In about 250 words: say what to accept, what to question, and compute
+      anything computable.
+    rubric:
+      - "Computes composite availability: 0.999³ = 99.70%, about 2h 09m per month"
+      - "States that an SLA is a refund rather than a guarantee"
+      - "Questions what 'patching' covers — not the contents of your own image"
+      - "Identifies shared layers the proposal does not mention"
+      - "Names exit cost or concentration risk as an omitted consideration"
+    model_answer: >-
+      **Accept:** they will run infrastructure better than we will, and
+      "undifferentiated heavy lifting" is a fair description of OS patching. For
+      most teams this is the right trade.
+
+
+      **Compute first**, because it changes the conversation. Three required
+      services at 99.9% each are in series, so availability multiplies:
+      0.999³ = **99.7003%** — about **2h 09m of expected downtime per month**,
+      not the 43 minutes the headline implies. That is a fivefold difference and
+      it is arithmetic they have not done for us.
+
+
+      **Question:**
+
+
+      *What does "patching" cover?* The runtime and the OS presumably. Not the
+      contents of our container images or our dependencies — those stay ours at
+      every model, and nothing will tell us a base image is vulnerable.
+
+
+      *What is the SLA's remedy?* A service credit, almost certainly — a refund
+      worth a fraction of the bill, which will not cover what an outage costs. An
+      SLA is a statement of intent with a penalty, not a promise about physics.
+
+
+      *What is measured, and over what window?* Per service, per region, per
+      calendar month. A long regional outage on one service can sit inside a
+      multi-service average.
+
+
+      *What is shared?* The proposal has two categories and there is a third.
+      Which updates must we adopt? What is the maintenance window default? Who
+      verifies restores?
+
+
+      *What does leaving look like?* Exit cost is never priced when it is
+      cheapest to consider, and three services deep is where it stops being
+      cheap.
+    common_failures:
+      - "Accepting 99.9% as the system's availability rather than each component's"
+      - "Treating the SLA as a guarantee of uptime rather than a refund"
+      - "Missing that image contents remain the customer's at every model"
+      - "Not asking what falls in the shared band, which the proposal omits entirely"

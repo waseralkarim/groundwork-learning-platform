@@ -1,0 +1,48 @@
+# Datasources as code. Nobody clicks these in.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+      # Turns a metric exemplar into a link to the trace that produced it.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # The other half of the loop: a trace links to the logs that carry its id.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        filterByTraceID: true
+      serviceMap:
+        datasourceUid: prometheus
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      derivedFields:
+        # OTLP logs carry trace_id as structured metadata, not in the message
+        # body — so this matches a label rather than parsing the line. A regex
+        # over the text finds nothing and produces a link column that is always
+        # empty, which is worse than no link at all.
+        - name: TraceID
+          matcherType: label
+          matcherRegex: trace_id
+          url: "$${__value.raw}"
+          datasourceUid: tempo

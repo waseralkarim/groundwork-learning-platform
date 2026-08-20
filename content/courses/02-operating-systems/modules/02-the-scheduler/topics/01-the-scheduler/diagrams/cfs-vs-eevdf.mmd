@@ -1,0 +1,14 @@
+graph TD
+    subgraph C["CFS — until kernel 6.5"]
+        C1["Pick the runnable task with<br/>the smallest vruntime"]
+        C2["Run it for a slice derived from<br/>a target latency ÷ task count"]
+        C1 --> C2
+        C2 --> C3["<i>Fair on throughput.</i><br/>A task that needs to run <b>often</b><br/>has no way to say so"]
+    end
+    subgraph E["EEVDF — kernel 6.6 onward"]
+        E1["A task is <b>eligible</b> if it has not<br/>run ahead of its fair share"]
+        E2["Each task has a <b>virtual deadline</b> =<br/>eligible time + its request slice"]
+        E3["Pick the eligible task with the<br/>earliest virtual deadline"]
+        E1 --> E2 --> E3
+        E3 --> E4["<i>Fair on throughput <b>and</b> bounded on latency.</i><br/>A short slice buys frequent turns"]
+    end

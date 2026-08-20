@@ -1,0 +1,255 @@
+id: lab.count-your-layers
+topic: topic.the-layers
+title: Take a census of what you are standing on
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A05.1.1, OBJ-A05.1.2]
+
+intro: >-
+  You are running on more layers than you think, and each one leaves a
+  fingerprint readable from inside. In about six commands you will identify every
+  one of them — and one of the layers announces itself by a file that is *not*
+  there.
+
+
+  Then you will compare your census against captures from a bare-metal server and
+  a cloud VM, and say what distinguishes all three.
+
+setup:
+  - /opt/lab/seed-layers.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Establish whether the CPU you are running on is virtualised, and by what.
+      Save the evidence to /tmp/answer-virtualised.
+    hint: >-
+      The CPU exposes a feature bit when a hypervisor is present. `lscpu` names
+      the vendor when it can identify one.
+    walkthrough: |
+      {
+        echo "hypervisor CPU flag:"
+        grep -o hypervisor /proc/cpuinfo | head -1 || echo "(absent)"
+        echo
+        lscpu | grep -iE 'hypervisor vendor|virtualization'
+        echo
+        echo "the flag is a feature bit the hypervisor sets to tell the guest it is virtualised. on bare metal it is absent entirely."
+      } > /tmp/answer-virtualised
+      cat /tmp/answer-virtualised
+    verify:
+      - type: file_matches
+        path: /tmp/answer-virtualised
+        pattern: "hypervisor"
+        describe: You found the hypervisor CPU flag
+      - type: file_matches
+        path: /tmp/answer-virtualised
+        pattern: "(?i)vendor|VT-x|AMD-V"
+        describe: And identified the virtualisation the machine reports
+
+  - id: s2
+    instruction: >-
+      Find out whose kernel you are running on, and whether this process booted
+      it. Save to /tmp/answer-kernel.
+    hint: >-
+      `uname -r` gives the version. Think about how long this container has
+      existed, and compare it against `/proc/uptime`.
+    walkthrough: |
+      {
+        echo "kernel: $(uname -r)"
+        echo "uptime reported to me: $(cut -d. -f1 /proc/uptime) seconds"
+        echo
+        echo "this container has existed for well under a minute, and /proc/uptime reports days. that is not my uptime - it is the machine's, because uptime is not namespaced."
+        echo "so i did not boot this kernel. i am a process on a kernel that was already running, which is the defining property of a container: it shares the host kernel rather than having one of its own."
+      } > /tmp/answer-kernel
+      cat /tmp/answer-kernel
+    verify:
+      - type: file_matches
+        path: /tmp/answer-kernel
+        pattern: "kernel: [0-9]"
+        describe: You recorded the kernel version
+      - type: command_exit
+        command: "test $(sed -n 's/uptime reported to me: \\([0-9]*\\).*/\\1/p' /tmp/answer-kernel) -gt 300"
+        exit_code: 0
+        describe: And the uptime is far longer than this container has existed
+      - type: file_matches
+        path: /tmp/answer-kernel
+        pattern: "(?i)shares the host kernel|did not boot"
+        describe: And drew the conclusion that follows
+
+  - id: s3
+    instruction: >-
+      Establish that you are in a container, and find the layer that identifies
+      itself by being absent. Save to /tmp/answer-container.
+    hint: >-
+      One well-known file marks a Docker container. Then try to read the
+      firmware identity from `/sys/class/dmi/id/` — what happens is the point.
+    walkthrough: |
+      {
+        echo "container marker:"
+        ls -l /.dockerenv 2>&1 | head -1
+        echo
+        echo "PID 1's cgroup:"
+        cat /proc/1/cgroup
+        echo
+        echo "firmware identity from DMI:"
+        ls /sys/class/dmi 2>&1 | head -1
+        echo
+        echo "a virtual machine can read /sys/class/dmi/id/sys_vendor and get something like 'Amazon EC2'. here the directory does not exist at all, because /sys is mounted with a restricted view inside a container."
+        echo "its ABSENCE is the signal: a hypervisor flag with no DMI means i am in a container that is itself inside a vm."
+      } > /tmp/answer-container
+      cat /tmp/answer-container
+    verify:
+      - type: file_matches
+        path: /tmp/answer-container
+        pattern: "/.dockerenv"
+        describe: You found the container marker
+      - type: file_matches
+        path: /tmp/answer-container
+        pattern: "(?i)No such file|does not exist"
+        describe: And that the DMI firmware identity is unreadable
+      - type: file_matches
+        path: /tmp/answer-container
+        pattern: "(?i)absence"
+        describe: And read that absence as evidence rather than as a dead end
+
+  - id: s4
+    instruction: >-
+      Find the real hardware underneath all of it, then write the complete
+      census — every layer, in order, with the evidence for each — to
+      /tmp/answer-census.
+    hint: >-
+      `lscpu` reports the actual CPU model, which the hypervisor passes through
+      even though it virtualises the machine around it.
+    walkthrough: |
+      {
+        echo "the stack, from the outside in:"
+        echo
+        printf '%-14s %-46s %s\n' "layer" "evidence" "value"
+        printf '%-14s %-46s %s\n' "container" "/.dockerenv exists" "yes"
+        printf '%-14s %-46s %s\n' "kernel" "uname -r (not booted by me)" "$(uname -r)"
+        printf '%-14s %-46s %s\n' "hypervisor" "hypervisor flag + lscpu vendor" "$(lscpu | sed -n 's/^Hypervisor vendor: *//p')"
+        printf '%-14s %-46s %s\n' "hardware" "lscpu model name" "$(lscpu | sed -n 's/^Model name: *//p')"
+        echo
+        echo "four layers. the silicon is real and passed through, the machine around it is virtual, the kernel belongs to that virtual machine, and i am a process on it wearing namespaces."
+      } > /tmp/answer-census
+      cat /tmp/answer-census
+    verify:
+      - type: file_matches
+        path: /tmp/answer-census
+        pattern: "container"
+        describe: Your census names the container layer
+      - type: file_matches
+        path: /tmp/answer-census
+        pattern: "hypervisor"
+        describe: And the hypervisor
+      - type: file_matches
+        path: /tmp/answer-census
+        pattern: "(?i)intel|amd|arm|apple"
+        describe: And the actual silicon underneath
+
+  - id: s5
+    instruction: >-
+      Compare against the captures in /tmp/captures. Write to
+      /tmp/answer-compare the single piece of evidence that distinguishes bare
+      metal from a VM, and the single piece that distinguishes a VM from a
+      container.
+    hint: >-
+      Read both capture files and look for what is present in one and absent in
+      the other. Each distinction is one line.
+    walkthrough: |
+      cat /tmp/captures/bare-metal.txt
+      cat /tmp/captures/virtual-machine.txt
+      {
+        echo "bare metal vs vm: THE HYPERVISOR FLAG. present on the vm, absent on bare metal. the dmi vendor confirms it - 'Dell Inc. PowerEdge R650' is a real machine, 'Amazon EC2 m6i.xlarge' is a virtual one."
+        echo
+        echo "vm vs container: WHETHER /sys/class/dmi EXISTS, and whether the process booted its own kernel. the vm reads its firmware identity and has its own kernel (6.5.0-1018-aws). the container has no dmi at all and reports a kernel it did not boot."
+        echo
+        echo "a second tell in the same direction: on both bare metal and the vm, cpu.max is 'max 100000' - unlimited, because nothing is constraining them. in a container it is a real quota."
+        echo
+        echo "note that a vm and bare metal both LOOK like whole machines from inside, and the difference is one cpu flag. a container does not look like a machine at all once you know where to check."
+      } > /tmp/answer-compare
+      cat /tmp/answer-compare
+    verify:
+      - type: file_matches
+        path: /tmp/answer-compare
+        pattern: "(?i)hypervisor flag"
+        describe: You identified the flag as the bare-metal/VM distinction
+      - type: file_matches
+        path: /tmp/answer-compare
+        pattern: "(?i)dmi"
+        describe: And DMI presence as part of the VM/container distinction
+      - type: file_matches
+        path: /tmp/answer-compare
+        pattern: "(?i)own kernel|booted"
+        describe: And the kernel ownership as the defining difference
+
+solution: >-
+  **Four layers, six commands.**
+
+
+  ```text
+  container     /.dockerenv exists
+  kernel        6.6.87.2-microsoft-standard-WSL2   ← not booted by this process
+  hypervisor    flag set; vendor Microsoft
+  hardware      Intel Core i7-10700 @ 2.90GHz
+  ```
+
+
+  A container, inside a WSL2 virtual machine, under Microsoft's hypervisor, on a
+  real Intel CPU. None of that appears in any manifest, and all of it is readable
+  in under a minute.
+
+
+  **The uptime tell.** `/proc/uptime` reported days on a container that had
+  existed for seconds. Uptime is not namespaced, so the value is the machine's —
+  which is the first hint of the pattern that dominates the next lab: the
+  standard interfaces describe *the machine*, accurately, while you are asking
+  about *your container*.
+
+
+  **The layer that identifies itself by absence.** A VM reads
+  `/sys/class/dmi/id/sys_vendor` and gets `Amazon EC2` or `Dell Inc.`. Inside a
+  container the directory does not exist, because `/sys` is mounted with a
+  restricted view.
+
+
+  So the combination is the diagnosis:
+
+
+  | hypervisor flag | DMI readable | Verdict |
+  |---|---|---|
+  | absent | yes | bare metal |
+  | present | yes | virtual machine |
+  | present | no | container, inside a VM |
+  | absent | no | container, on bare metal |
+
+
+  Absence of evidence is evidence here, which is worth being comfortable with —
+  a lot of infrastructure diagnosis works this way.
+
+
+  **What separates the three, in one line each.**
+
+
+  *Bare metal from VM:* the **hypervisor CPU flag**. It is a feature bit the
+  hypervisor sets specifically to tell the guest it is virtualised, and there is
+  no way to be virtualised without it. The DMI vendor confirms it — `PowerEdge
+  R650` against `m6i.xlarge`.
+
+
+  *VM from container:* **whether the process booted its own kernel.** The VM has
+  `6.5.0-1018-aws`, which it booted, along with its own virtual firmware. The
+  container reports a kernel that was already running and has no firmware at all.
+
+
+  There is a third tell worth noticing in the captures: on both bare metal and
+  the VM, `cpu.max` reads `max 100000` — unlimited, because nothing is
+  constraining a whole machine. In a container it is a real quota, and the next
+  lab is about the gap between that quota and what everything else reports.
+
+
+  **The observation to carry:** a VM and bare metal both look like whole machines
+  from inside, and one CPU flag separates them. A container does not look like a
+  machine at all, once you know the four places to check.

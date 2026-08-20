@@ -1,0 +1,372 @@
+id: lab.the-filename-that-broke-it
+topic: topic.how-a-line-becomes-a-command
+title: "Challenge: four faults in a job that ran for two years"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.1.6, OBJ-B08.1.7]
+
+intro: >-
+  `/tmp/sh/archive-logs.sh` archives logs older than N days and deletes the
+  originals. It has run nightly for two years against files named
+  `app-2026-08-18.log`.
+
+
+  A new service started writing logs whose names come from a customer-supplied
+  identifier. Find all four expansion faults, decide which one is worst, and
+  make the script safe.
+
+
+  It deletes things. Copy the test directory before you run it.
+
+setup:
+  - /opt/lab/seed-shell.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read the script and predict what will happen against /tmp/sh/files. Commit
+      your prediction to /tmp/prediction before running anything.
+    hint: >-
+      Go line by line and ask, for each expansion, whether word splitting or
+      globbing will see it.
+    walkthrough: |
+      cat /tmp/sh/archive-logs.sh
+      cat /tmp/sh/archive-logs.notes.txt
+      cat > /tmp/prediction <<'P'
+      predictions:
+      - ls $LOGDIR/*.log in a command substitution: output word-splits, so any
+        filename with a space becomes two loop iterations
+      - $f unquoted in stat, tar and rm: same split again, per use
+      - if the glob matches nothing, the loop runs once with a literal *.log
+      - rm $f will delete the wrong things, and quietly
+      P
+      cat /tmp/prediction
+    verify:
+      - type: file_exists
+        path: /tmp/prediction
+        describe: You committed a prediction before running the script
+      - type: file_matches
+        path: /tmp/prediction
+        pattern: "(?i)split"
+        describe: Naming word splitting as the mechanism
+
+  - id: s2
+    instruction: >-
+      Run the script against a COPY of /tmp/sh/files and record exactly what it
+      did. Save to /tmp/answer-damage.
+    walkthrough: |
+      rm -rf /tmp/victim /tmp/dest; mkdir -p /tmp/victim /tmp/dest
+      cp -r /tmp/sh/files/. /tmp/victim/ 2>/dev/null || true
+      find /tmp/victim -type f -exec touch -d '2020-01-01' {} + 2>/dev/null
+      {
+        echo "before - $(find /tmp/victim -type f | wc -l) files:"
+        ls -b /tmp/victim | sed 's/^/  /'
+        echo
+        echo "running: archive-logs.sh /tmp/victim /tmp/dest 30"
+        bash /tmp/sh/archive-logs.sh /tmp/victim /tmp/dest 30 2>&1 | sed 's/^/  | /' | head -20
+        echo
+        echo "after - $(find /tmp/victim -type f | wc -l) files:"
+        ls -b /tmp/victim | sed 's/^/  /'
+        echo
+        echo "archives created: $(ls /tmp/dest 2>/dev/null | wc -l)"
+        ls -b /tmp/dest 2>/dev/null | sed 's/^/  /'
+      } > /tmp/answer-damage
+      cat /tmp/answer-damage
+    verify:
+      - type: file_exists
+        path: /tmp/answer-damage
+        describe: You captured the before and after state
+      - type: file_matches
+        path: /tmp/answer-damage
+        pattern: "(?i)No such file or directory|cannot stat|before"
+        describe: And recorded what the script reported
+
+  - id: s3
+    instruction: >-
+      Name all four faults. For each, give the expansion stage responsible, the
+      input that triggers it, and what the script does instead of what was
+      intended. Save to /tmp/answer-faults.
+    walkthrough: |
+      {
+        echo "FAULT 1 - for f in \$(ls \$LOGDIR/*.log)"
+        echo "  stage:   command substitution (4), then word splitting (6)"
+        echo "  trigger: any filename containing a space, tab or newline"
+        echo "  effect:  'a file.log' becomes two loop iterations, 'a' and 'file.log',"
+        echo "           neither of which exists. also \$LOGDIR is unquoted, so a"
+        echo "           directory path with a space breaks before the glob even runs."
+        echo "  note:    parsing ls is never necessary here. 'for f in \"\$LOGDIR\"/*.log'"
+        echo "           does the same job and never re-splits, because glob results"
+        echo "           are not word-split."
+        echo
+        echo "FAULT 2 - unquoted \$f in stat, tar and rm"
+        echo "  stage:   parameter expansion (3) then word splitting (6), three times"
+        echo "  trigger: the same filenames"
+        echo "  effect:  stat -c %Y \$f gets two arguments and reports on the wrong"
+        echo "           file or errors; tar and rm likewise. each use is a separate"
+        echo "           bug even though the cause is one."
+        echo
+        echo "FAULT 3 - the unmatched glob"
+        echo "  stage:   globbing (7), with nullglob off"
+        echo "  trigger: an empty log directory - or a wrong LOGDIR"
+        echo "  effect:  \$(ls ...) fails, but if the pattern reached the loop directly"
+        echo "           it would run ONCE with the literal text *.log. either way the"
+        echo "           script proceeds as though it had work to do."
+        echo
+        echo "FAULT 4 - rm \$f, with no -- and no quoting"
+        echo "  stage:   word splitting (6), and option parsing in rm"
+        echo "  trigger: a filename containing a space, or one beginning with a hyphen"
+        echo "  effect:  DELETES THE WRONG FILES, and a name like -rf or --recursive"
+        echo "           is read by rm as a FLAG rather than a target."
+        echo
+        echo "which is worst: FAULT 4, and it is not the one that produces an error."
+        echo
+        echo "faults 1, 2 and 3 fail loudly - stat and tar complain about files that do not exist, and somebody eventually reads the cron mail. fault 4 succeeds. rm removes files that were never meant to be archived, exits 0, and the loop continues. the only record that anything went wrong is the absence of files nobody is looking for."
+        echo
+        echo "and the archive is the deletion's alibi: tar failed on the split name, so nothing was archived, and then rm deleted the pieces it could match. the data is gone and the backup was never written."
+      } > /tmp/answer-faults
+      cat /tmp/answer-faults
+    verify:
+      - type: file_matches
+        path: /tmp/answer-faults
+        pattern: "FAULT 1"
+        describe: You identified the ls parsing fault
+      - type: file_matches
+        path: /tmp/answer-faults
+        pattern: "FAULT 4"
+        describe: And all four
+      - type: file_matches
+        path: /tmp/answer-faults
+        pattern: "(?i)not the one that produces an error"
+        describe: And chose the worst on the right criterion
+      - type: file_matches
+        path: /tmp/answer-faults
+        pattern: "(?i)alibi|backup was never written"
+        describe: And noticed the archive step failed before the delete
+
+  - id: s4
+    instruction: >-
+      Rewrite the script correctly and verify it against the same hostile
+      directory. Save it to /tmp/answer-fixed and show it working.
+    walkthrough: |
+      cat > /tmp/answer-fixed <<'FIX'
+      #!/bin/bash
+      # Archive application logs older than N days, then delete the originals.
+      set -euo pipefail
+      shopt -s nullglob          # an unmatched pattern disappears instead of staying literal
+
+      LOGDIR=${1:?LOGDIR required}
+      DEST=${2:?DEST required}
+      DAYS=${3:?DAYS required}
+
+      [ -d "$LOGDIR" ] || { echo "not a directory: $LOGDIR" >&2; exit 1; }
+      mkdir -p -- "$DEST"
+
+      CUTOFF=$(date -d "-$DAYS days" +%s)
+
+      # glob directly: results are never word-split, so spaces and newlines survive
+      for f in "$LOGDIR"/*.log; do
+        mtime=$(stat -c %Y -- "$f")
+        [ "$mtime" -lt "$CUTOFF" ] || continue
+
+        base=$(basename -- "$f")
+        # archive FIRST, and only delete if it succeeded
+        if tar czf "$DEST/$base.tar.gz" -C "$LOGDIR" -- "$base"; then
+          rm -- "$f"
+        else
+          echo "archive failed, keeping: $f" >&2
+        fi
+      done
+
+      echo done
+      FIX
+      chmod +x /tmp/answer-fixed
+      rm -rf /tmp/victim2 /tmp/dest2; mkdir -p /tmp/victim2 /tmp/dest2
+      cp -r /tmp/sh/files/. /tmp/victim2/ 2>/dev/null || true
+      find /tmp/victim2 -type f -exec touch -d '2020-01-01' {} + 2>/dev/null
+      echo "before: $(find /tmp/victim2 -name '*.log' | wc -l) log files"
+      bash /tmp/answer-fixed /tmp/victim2 /tmp/dest2 30 2>&1 | tail -3
+      echo "after:  $(find /tmp/victim2 -name '*.log' | wc -l) log files remaining"
+      echo "archives: $(find /tmp/dest2 -name '*.tar.gz' | wc -l)"
+      echo "--- and against an EMPTY directory, which used to loop once:"
+      rm -rf /tmp/empty; mkdir -p /tmp/empty
+      bash /tmp/answer-fixed /tmp/empty /tmp/dest2 30 2>&1 | tail -2
+    verify:
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: 'for f in "\$LOGDIR"/\*\.log'
+        describe: You globbed directly instead of parsing ls
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "nullglob"
+        describe: And handled the unmatched-pattern case
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: 'rm -- "\$f"'
+        describe: And made the delete quoted and option-safe
+      - type: file_matches
+        path: /tmp/answer-fixed
+        pattern: "(?i)only delete if it succeeded|if tar"
+        describe: And ordered archive-before-delete
+      - type: command_exit
+        command: "test $(find /tmp/dest2 -name '*.tar.gz' | wc -l) -ge 5"
+        exit_code: 0
+        describe: And the fixed script archived the hostile filenames successfully
+
+  - id: s5
+    instruction: >-
+      The script has a fifth problem that is not about expansion at all. Find it
+      by checking whether it is really POSIX, and write what you would do. Save
+      to /tmp/answer-shell.
+    walkthrough: |
+      {
+        echo "the shebang says #!/bin/bash and the script uses shopt, which is a bashism. checking what happens if somebody 'fixes' the shebang to /bin/sh, or invokes it as 'sh archive-logs.sh':"
+        echo
+        echo "  /bin/sh on this system is: $(readlink -f /bin/sh)"
+        echo
+        echo "  bash -n on the fixed script: $(bash -n /tmp/answer-fixed 2>&1 && echo 'parses')"
+        echo "  dash -n on the fixed script: $(dash -n /tmp/answer-fixed 2>&1 && echo 'parses')"
+        echo
+        echo "it parses under both, because shopt is a runtime failure rather than a syntax error. running it under dash:"
+        dash /tmp/answer-fixed /tmp/empty /tmp/dest2 30 2>&1 | head -2 | sed 's/^/    /'
+        echo
+        echo "so a bashism can fail at parse time or at run time, and the two are diagnosed completely differently. things dash rejects at PARSE time:"
+        for feat in '[[ 1 = 1 ]]' 'a=(1 2)' 'read x <<< hi'; do
+          printf '    %-18s bash:%-5s dash:%s\n' "$feat" \
+            "$(bash -c "$feat" >/dev/null 2>&1 && echo ok || echo FAIL)" \
+            "$(dash -c "$feat" >/dev/null 2>&1 && echo ok || echo FAIL)"
+        done
+        echo "    (local, often called a bashism, works in dash too)"
+        echo
+        echo "what i would do: keep #!/bin/bash and MEAN it. the script uses shopt deliberately, so it is a bash script and should say so."
+        echo
+        echo "and add the check to CI, because the shebang is not enforced by anything - somebody can always run 'sh script.sh' and bypass it:"
+        echo "    bash -n script.sh    # syntax"
+        echo "    shellcheck -s bash script.sh"
+        echo
+        echo "the failure this prevents is specific and wastes a lot of time: a script unchanged for years produces a SYNTAX ERROR on a line nobody touched, because a container migration changed the base image and the entrypoint now calls sh instead of bash. the line number points at working code."
+      } > /tmp/answer-shell
+      cat /tmp/answer-shell
+    verify:
+      - type: file_matches
+        path: /tmp/answer-shell
+        pattern: "/usr/bin/dash"
+        describe: You identified what /bin/sh actually is
+      - type: file_matches
+        path: /tmp/answer-shell
+        pattern: "(?i)shopt"
+        describe: And which bashism the script depends on
+      - type: file_matches
+        path: /tmp/answer-shell
+        pattern: "\\[\\[ 1 = 1 \\]\\] +bash:ok +dash:FAIL"
+        describe: And which constructs dash rejects
+      - type: file_matches
+        path: /tmp/answer-shell
+        pattern: "(?i)parse time|run time"
+        describe: And that bashisms fail in two different ways
+      - type: file_matches
+        path: /tmp/answer-shell
+        pattern: "(?i)line nobody touched|points at working code"
+        describe: And the failure shape this prevents
+
+solution: >-
+  **The four faults.**
+
+
+  **1 — `for f in $(ls $LOGDIR/*.log)`.** Command substitution (stage 4) then
+  word splitting (stage 6). Any filename containing a space, tab or newline
+  becomes multiple loop iterations, none of which exist. `$LOGDIR` is unquoted
+  too, so a directory path with a space breaks before the glob runs.
+
+
+  Parsing `ls` was never necessary: `for f in "$LOGDIR"/*.log` does the same job
+  and **never re-splits**, because glob results are not word-split.
+
+
+  **2 — unquoted `$f` in `stat`, `tar` and `rm`.** The same split, three more
+  times. Each use is a separate bug with one cause.
+
+
+  **3 — the unmatched glob.** With `nullglob` off, a pattern matching nothing
+  stays literal, so the loop runs **once** with a filename that does not exist —
+  and the script proceeds as though it had work to do.
+
+
+  **4 — `rm $f`, unquoted and without `--`.** Word splitting plus option parsing.
+
+
+  **Fault 4 is the worst, and it is not the one that produces an error.**
+
+
+  Faults 1, 2 and 3 fail loudly: `stat` and `tar` complain about files that do
+  not exist, and somebody eventually reads the cron mail. **Fault 4 succeeds.**
+  `rm` removes files that were never meant to be archived, exits 0, and the loop
+  continues. The only record is the absence of files nobody is looking for.
+
+
+  And the archive step is the deletion's alibi: `tar` failed on the split name so
+  nothing was archived, and then `rm` deleted the pieces it could match. The data
+  is gone and the backup was never written.
+
+
+  **The fix.**
+
+
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+  shopt -s nullglob
+
+  LOGDIR=${1:?LOGDIR required}
+  DEST=${2:?DEST required}
+  DAYS=${3:?DAYS required}
+
+  for f in "$LOGDIR"/*.log; do
+    mtime=$(stat -c %Y -- "$f")
+    [ "$mtime" -lt "$CUTOFF" ] || continue
+
+    base=$(basename -- "$f")
+    if tar czf "$DEST/$base.tar.gz" -C "$LOGDIR" -- "$base"; then
+      rm -- "$f"
+    else
+      echo "archive failed, keeping: $f" >&2
+    fi
+  done
+  ```
+
+
+  Four changes and one that is not about quoting at all: **archive first, delete
+  only if it succeeded.** The original deleted unconditionally, so a failed `tar`
+  still cost you the file. No amount of correct quoting fixes that ordering, and
+  it is the change that would have saved the data.
+
+
+  **The fifth problem.**
+
+
+  The script uses `shopt`, which is a bashism — but `bash -n` and `dash -n` both
+  report it parses, because `shopt` fails at **run time**, not parse time. Others
+  fail at parse time:
+
+
+  | | bash | dash |
+  |---|---|---|
+  | `[[ 1 = 1 ]]` | ok | **FAIL** |
+  | `a=(1 2)` | ok | **FAIL** |
+  | `read x <<< hi` | ok | **FAIL** |
+  | `local` in a function | ok | ok |
+
+
+  `local` is commonly listed as a bashism and works in dash.
+
+
+  Keep `#!/bin/bash` and mean it. Then add `bash -n` and `shellcheck -s bash` to
+  CI, because **the shebang is not enforced by anything** — somebody can always
+  run `sh script.sh` and bypass it.
+
+
+  The failure that prevents is specific: a script unchanged for years produces a
+  **syntax error on a line nobody touched**, because a container migration
+  changed the base image and the entrypoint now calls `sh`. The line number
+  points at working code, which is why it takes so long to diagnose.

@@ -1,0 +1,208 @@
+id: lab.the-pid-1-problem
+topic: topic.processes
+title: "Challenge: the process that ignores you"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 20
+objectives: [OBJ-A01.2.7, OBJ-A01.2.6]
+
+intro: >-
+  Two processes are running in this container. Neither installs a signal
+  handler. Send SIGTERM to each.
+
+
+  One dies immediately. The other ignores you completely — and it will keep
+  ignoring you no matter how many times you ask.
+
+
+  ```text
+  $ kill <one>     # gone
+  $ kill <other>   # still running. still running. still running.
+  ```
+
+
+  Work out why. Nothing here is simulated: this is the real mechanism, and it is
+  the reason `docker stop` on a badly built image takes ten seconds and then
+  kills it anyway.
+
+
+  You are assessed on finding the evidence, not on knowing the answer.
+
+setup:
+  - /opt/lab/seed.sh
+  - /opt/lab/seed-pid1.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Before investigating, write at least two hypotheses to /tmp/hypotheses,
+      one per line.
+
+
+      Forming a guess before gathering evidence is the habit that makes
+      debugging fast. Skipping it is how people end up trying things at random
+      for an hour.
+    walkthrough: |
+      printf 'one handles the signal and one does not
+      they run as different users
+      ' > /tmp/hypotheses
+    verify:
+      - type: command_output
+        command: "grep -c . /tmp/hypotheses"
+        pattern: '^[2-9]|^[1-9][0-9]'
+        describe: At least two hypotheses were recorded first
+
+  - id: s2
+    instruction: >-
+      Find both processes. One is /tmp/ordinary-proc; the other is PID 1.
+
+
+      Record what PID 1 actually is — just the command name — to
+      /tmp/answer-pid1.
+    hint: "`ps -ef` shows everything. `ps -p 1 -o comm=` isolates PID 1."
+    walkthrough: |
+      ps -ef
+      ps -p 1 -o comm= | tr -d ' ' > /tmp/answer-pid1
+    verify:
+      - type: file_exists
+        path: /tmp/answer-pid1
+        describe: The answer file exists
+      - type: command_output
+        command: "cat /tmp/answer-pid1 | tr -d '[:space:]'"
+        equals_command: "ps -p 1 -o comm= | tr -d '[:space:]'"
+        describe: You identified what PID 1 is in this container
+
+  - id: s3
+    instruction: >-
+      Send SIGTERM to /tmp/ordinary-proc using plain `kill` — no `-9`. Confirm it
+      is gone.
+
+
+      This is the behaviour you expect from any process with no handler
+      installed: the kernel applies the default action, which is to terminate.
+    hint: "`pkill -f ordinary-proc`, or get the PID with `pgrep -f ordinary-proc` first."
+    walkthrough: |
+      pkill -f ordinary-proc || true
+      sleep 1
+    verify:
+      - type: command_output
+        # The bracket idiom stops pgrep matching the shell that is running this
+        # very check — whose own command line contains the pattern.
+        command: "pgrep -f '[o]rdinary-proc' | wc -l"
+        equals: "0"
+        describe: The ordinary process died from SIGTERM
+
+  - id: s4
+    instruction: >-
+      Now send SIGTERM to PID 1, with `kill 1`. Wait a few seconds and check
+      whether it is still there.
+
+
+      Record what happened in /tmp/answer-pid1-term — the single word `died` or
+      `survived`.
+
+
+      This is safe. If it were going to work, your terminal would already be
+      gone.
+    hint: >-
+      Both processes had no handler. One died, one did not. The difference is
+      not in the program.
+    walkthrough: |
+      kill 1 2>/dev/null || true
+      sleep 2
+      kill -0 1 && echo survived > /tmp/answer-pid1-term
+    verify:
+      - type: file_matches
+        path: /tmp/answer-pid1-term
+        pattern: '^survived$'
+        describe: You observed that PID 1 ignored SIGTERM
+      - type: command_exit
+        command: "kill -0 1"
+        exit_code: 0
+        describe: PID 1 is indeed still running
+
+  - id: s5
+    instruction: >-
+      Explain the mechanism in /tmp/answer-why — at least twenty words.
+
+
+      Neither process installed a handler. Why did the kernel terminate one and
+      not the other? The answer is not about the program.
+    hint: >-
+      The question is not what the process does with the signal. It is what the
+      *kernel* does with a signal that has no handler installed — and whether
+      that rule applies to every process.
+    walkthrough: |
+      echo 'PID 1 is exempt from default signal actions, so the kernel discards a signal with no handler installed, while an ordinary process is terminated by the default action' > /tmp/answer-why
+    verify:
+      - type: command_output
+        command: "wc -w < /tmp/answer-why"
+        pattern: '^\s*([2-9][0-9]|[1-9][0-9][0-9])'
+        describe: The explanation is at least twenty words
+
+solution: |
+  **The evidence.**
+
+  ```bash
+  ps -ef
+  # UID  PID  PPID  C STIME TTY   TIME CMD
+  # ...    1     0  0 09:14 ?  00:00:00 /bin/bash -l          <-- PID 1
+  # ...   14     1  0 09:14 ?  00:00:00 /bin/bash /tmp/ordinary-proc
+
+  pkill -f ordinary-proc   # gone immediately
+  kill 1                   # nothing at all
+  ```
+
+  **The diagnosis.** One of them is PID 1. That is the only relevant difference,
+  and it is enough.
+
+  **The mechanism.** For any ordinary process, a signal with no installed handler
+  performs its *default action* — for SIGTERM, terminate. The kernel does this,
+  not the program; the program does not have to participate at all. That is why
+  `ordinary-proc` died despite handling nothing.
+
+  PID 1 is exempt. The kernel does **not** apply default actions to PID 1. A
+  signal with no handler is discarded.
+
+  This is deliberate and sensible: PID 1 on a real machine is init, and a stray
+  signal killing init would panic the kernel. The protection assumes PID 1 is a
+  program *written* to be init — one that installs handlers for the signals it
+  should respond to.
+
+  **Why this is a container problem.** A PID namespace renumbers the first
+  process in a container to 1. In this lab that is bash. In your image it is your
+  application — a web server, a worker, a script — and it was not written to be
+  init. It installs no handlers, so:
+
+  ```text
+  $ docker stop myapp
+     ... exactly ten seconds ...
+  ```
+
+  Docker sends SIGTERM. The kernel discards it. Docker waits out the grace period
+  and sends SIGKILL, which cannot be discarded. Your shutdown code never ran,
+  in-flight requests were cut, and the exit status was 0 — nothing reported a
+  problem.
+
+  **Exactly the grace period, every time, is the signature.** If a container
+  always takes precisely 10 seconds (Docker) or 30 (Kubernetes) to stop, it is
+  not doing cleanup. It is being killed.
+
+  **The three fixes**, all of which follow from the mechanism:
+
+  1. **Install a handler.** `trap 'cleanup; exit 0' TERM` in a script, or a
+     signal handler in your language. The kernel discards signals with no
+     handler, so give it one.
+  2. **`exec` in your entrypoint.** `exec "$@"` makes your application PID 1
+     rather than a child of a shell that will not forward signals. The wrapper
+     disappears instead of sitting between Docker and your process.
+  3. **Run a real init.** `docker run --init`, or tini in the image. It becomes
+     PID 1, forwards signals to your process, and reaps orphans — the two jobs
+     your application should not have to do.
+
+  Note what is *not* on that list: sending SIGKILL. That works, and it is what
+  Docker eventually does, and it is precisely the outcome you are trying to
+  avoid.
+
+  **C14 Containers** covers all three fixes and refers back to this lab.

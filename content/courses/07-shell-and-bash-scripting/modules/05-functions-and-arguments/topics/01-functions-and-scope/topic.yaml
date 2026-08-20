@@ -1,0 +1,139 @@
+id: topic.functions-and-scope
+slug: functions-and-scope
+title: "Functions, Scope and What They Return"
+summary: >-
+  Shell scope is **dynamic**: a helper can read — and overwrite — a variable
+  belonging to the function that called it, three levels up, without being
+  passed anything. A value returned on stdout costs you every side effect,
+  because command substitution is a subshell. And the exit status is one byte,
+  so a script that exits with a count reports success at 256.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.set-euo-pipefail
+    hardness: required
+  - topic: topic.how-a-line-becomes-a-command
+    hardness: required
+
+objectives:
+  - id: OBJ-B08.6.1
+    level: L1
+    verb: identify
+    statement: >-
+      Identify how a function is defined and found, and what `command` and
+      `builtin` do to that lookup.
+    assessed_by: [quiz.q1, quiz.q2, lab.the-wrapper-that-ate-itself, exercise.e1]
+
+  - id: OBJ-B08.6.2
+    level: L1
+    verb: describe
+    statement: >-
+      Describe what a function returns when nothing says otherwise, and how
+      `return` differs from `exit`.
+    assessed_by: [quiz.q3, quiz.q4, lab.four-ways-to-return, exercise.e1]
+
+  - id: OBJ-B08.6.3
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why an exit status is one byte, and which values are already
+      spoken for.
+    assessed_by: [quiz.q5, quiz.q6, lab.four-ways-to-return, troubleshooting.the-check-that-always-passed]
+
+  - id: OBJ-B08.6.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain dynamic scope: which variables a called function can read and
+      write, and what `local` actually bounds.
+    assessed_by: [quiz.q7, quiz.q8, quiz.q9, lab.the-variable-nobody-passed, exercise.e2]
+
+  - id: OBJ-B08.6.5
+    level: L2
+    verb: predict
+    statement: >-
+      Predict whether an assignment survives the construct it was made in.
+    assessed_by: [quiz.q10, quiz.q11, lab.where-values-disappear, exercise.e3, troubleshooting.the-counter-that-stayed-at-zero]
+
+  - id: OBJ-B08.6.6
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish the ways a function can hand a value back, and what each
+      costs.
+    assessed_by: [quiz.q12, quiz.q13, lab.four-ways-to-return, exercise.e4]
+
+  - id: OBJ-B08.6.7
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose a helper that read the wrong variable, a value that vanished, or
+      a status that was never reported.
+    assessed_by: [quiz.q14, lab.the-variable-nobody-passed, troubleshooting.the-check-that-always-passed, troubleshooting.the-counter-that-stayed-at-zero]
+
+  - id: OBJ-B08.6.8
+    level: L2
+    verb: justify
+    statement: >-
+      Justify a convention for writing shell functions, naming what each rule
+      prevents.
+    assessed_by: [quiz.q15, lab.four-ways-to-return, exercise.e5, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: dynamic scope
+    definition: >-
+      A called function can read and write the variables of whatever called it,
+      however far up. Shell scope follows the **call stack**, not the text of
+      the file — which is the opposite of every language that says `let`.
+  - term: local
+    definition: >-
+      Declare a variable bounded by the current function *and everything it
+      calls*. It hides an outer variable of the same name rather than creating
+      an isolated one.
+  - term: nameref
+    definition: >-
+      `local -n dest=$1` — a variable that is an alias for another whose name is
+      given at run time. Lets a caller choose where a function writes its result.
+  - term: subshell
+    definition: >-
+      A forked copy of the shell. It inherits everything and returns nothing but
+      an exit status and whatever it wrote — so an assignment made inside one is
+      gone when it ends.
+  - term: command substitution
+    definition: >-
+      `$(...)`. Runs its contents **in a subshell** and substitutes the output
+      with trailing newlines stripped.
+  - term: exit status
+    definition: >-
+      A single unsigned byte, 0–255, that a process hands its parent. Values
+      above 255 wrap: `exit 256` is a **success**.
+  - term: "return"
+    definition: >-
+      End a function with a given status. It is an error outside a function or
+      sourced script; `exit` ends the whole shell instead.
+  - term: command
+    definition: >-
+      `command ls` runs the external or builtin `ls`, skipping any function of
+      that name. The way to write a wrapper that does not call itself.
+  - term: builtin
+    definition: >-
+      `builtin cd` runs the shell's own `cd`, skipping a function of that name.
+  - term: FUNCNEST
+    definition: >-
+      A limit on how deeply functions may nest. **Unset by default**, so runaway
+      recursion is bounded only by memory.
+  - term: "declare -g"
+    definition: >-
+      Declare a variable at global scope from inside a function — the deliberate
+      form of the thing that otherwise happens by accident.
+
+foreshadows:
+  - "B08.7's argument handling and getopts uses the scope rules this topic establishes."
+  - "B08.8's traps and cleanup rely on knowing which shell a handler runs in."
+  - "B11's Python functions are lexically scoped, and the contrast is the point."
+  - "E27's CI jobs run each step in a fresh shell, so nothing set in one survives to the next."
+
+tags: [shell, bash, functions, scope, exit-codes, fundamentals]

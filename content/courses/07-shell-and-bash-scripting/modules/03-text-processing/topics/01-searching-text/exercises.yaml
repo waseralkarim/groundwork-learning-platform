@@ -1,0 +1,230 @@
+topic: topic.searching-text
+
+exercises:
+  - id: e1
+    title: Predict four exit statuses
+    level: L1
+    objectives: [OBJ-B08.3.1]
+    kind: interpretation
+    prompt: >-
+      Give the exit status of each, and say whether `set -e` would stop a script
+      there:
+
+
+      1. `grep ERROR app.log` where the file has three ERROR lines
+
+      2. `grep ERROR app.log` where the file has none
+
+      3. `grep -c ERROR app.log` where the file has none
+
+      4. `grep ERROR /does/not/exist`
+    answer: >-
+      1. **0.** Continues.
+
+      2. **1.** `set -e` stops the script — and this is the *good* outcome.
+
+      3. **1**, and it prints `0` on stdout first. `set -e` stops the script,
+         which surprises people who assume a count that succeeded in producing a
+         number must have succeeded.
+
+      4. **2.** Stops, and this one genuinely should.
+    explanation: >-
+      Item 3 is the one worth remembering. `grep -c` reports the count on stdout
+      **and still exits 1** when that count is zero, so `n=$(grep -c ...)` under
+      `set -e` dies on a perfectly good answer of zero.
+
+
+      Items 2 and 4 are the pair that matters in design. Both are non-zero and
+      they mean opposite things: "the thing you were checking for is absent" and
+      "the check could not be performed". A bare `|| true` merges them, which is
+      why it deserves a comment naming which case it is for.
+
+  - id: e2
+    title: Say what each pattern matches
+    level: L2
+    objectives: [OBJ-B08.3.3]
+    kind: interpretation
+    prompt: >-
+      For each, say whether it matches the literal text `a+b`, or `ab`/`aab`, or
+      neither:
+
+
+      1. `grep 'a+b'`
+
+      2. `grep 'a\+b'`
+
+      3. `grep -E 'a+b'`
+
+      4. `grep -E 'a\+b'`
+
+      5. `grep -F 'a+b'`
+    answer: >-
+      1. The **literal** `a+b`. In BRE, `+` is an ordinary character.
+
+      2. `ab`, `aab`, `aaab` — the backslash turns the operator **on** in BRE.
+
+      3. `ab`, `aab`, `aaab` — `+` is an operator in ERE.
+
+      4. The **literal** `a+b` — the backslash turns the operator **off** in ERE.
+
+      5. The **literal** `a+b`. Nothing is special.
+
+
+      So 1, 4 and 5 agree, and 2 and 3 agree — the two dialects are mirror
+      images.
+    explanation: >-
+      The mirror-image structure is the thing to hold onto: **a backslash means
+      "the other one"** in whichever dialect you are in.
+
+
+      Which is why a pattern moved from `grep` to `grep -E`, or from a script to
+      a `sed` command, changes meaning without erroring. It is not a portability
+      warning you will ever see — the pattern is valid in both, and simply
+      matches something different.
+
+  - id: e3
+    title: Fix a search over data
+    level: L2
+    objectives: [OBJ-B08.3.5]
+    kind: short_answer
+    prompt: >-
+      A deploy script checks whether a release is already recorded:
+
+
+      ```bash
+      if grep -q "$VERSION" releases.txt; then
+        echo "already released"; exit 0
+      fi
+      ```
+
+
+      `VERSION` is something like `1.2.3`. What is wrong, and what would you
+      write?
+    answer: >-
+      *`$VERSION` is being used as a regular expression, and version strings are
+      made of dots.* `1.2.3` also matches `1x2y3`, `1-2-3` and `112233` — so a
+      release that has **not** shipped can be reported as already released, and
+      the deploy silently exits 0.
+
+
+      The fix has two parts:
+
+
+      ```bash
+      if grep -qxF "$VERSION" releases.txt; then
+        echo "already released"; exit 0
+      fi
+      ```
+
+
+      **`-F`** because the pattern came from data. **`-x`** because a version
+      should match a whole line — otherwise `1.2.3` matches the line `1.2.30`,
+      which is a different release and a genuinely plausible one.
+
+
+      I would also check the file is readable, since `grep` returning 2 for a
+      missing `releases.txt` currently reads the same as "not released" and would
+      re-deploy.
+    explanation: >-
+      The failure direction is what makes this worth doing carefully: the script
+      **skips work it should have done** and exits 0, so the symptom is a release
+      that silently did not happen rather than an error.
+
+
+      `-x` is the part people leave out. `-F` stops metacharacters, and does
+      nothing about a substring match — and `1.2.3` inside `1.2.30` is exactly
+      the collision a version check will meet.
+
+  - id: e4
+    title: Choose a splitting tool
+    level: L2
+    objectives: [OBJ-B08.3.6]
+    kind: interpretation
+    prompt: >-
+      Which of `cut`, `awk` or something else, and why:
+
+
+      1. The third field of `/etc/passwd`
+
+      2. The RSS column from `ps aux`
+
+      3. A column from a CSV where one field may contain a comma
+
+      4. The pod name from `kubectl get pods`
+    answer: >-
+      1. **`cut -d: -f3`.** A genuinely delimited file with a one-character
+         separator and no quoting. This is what `cut` is for.
+
+
+      2. **`awk '{print $6}'`** — or better, `ps -o rss=`, which asks the tool
+         for the field and removes the parsing entirely. `cut -d' '` returns
+         empty fields on aligned output.
+
+
+      3. **Neither.** A CSV with quoted fields is not a delimited file in the
+         `cut` sense — a comma inside quotes is data. Use a real CSV parser, or
+         a language with one.
+
+
+      4. **`kubectl get pods -o custom-columns=NAME:.metadata.name`**, or `-o
+         json | jq`. Parsing the human table works until a column is added.
+    explanation: >-
+      Items 2 and 4 have the same shape and the answer is the same: **stop
+      parsing and ask the tool.** `ps -o rss=` and `-o custom-columns` are both
+      shorter than the awk they replace, which makes it an easy argument in
+      review.
+
+
+      Item 3 is the boundary of this whole topic. Regular expressions and field
+      splitting cannot handle quoting or nesting — a CSV parser tracks state that
+      a separator cannot express. The same applies to JSON, YAML and XML, and the
+      failure is that a regex approach *succeeds* against malformed input rather
+      than rejecting it.
+
+  - id: e5
+    title: Replace a pipeline
+    level: L2
+    objectives: [OBJ-B08.3.8]
+    kind: short_answer
+    prompt: >-
+      Rewrite this as one command, and say what you gained:
+
+
+      ```bash
+      grep ERROR app.log | grep -v healthcheck | awk '{print $4}' | sort | uniq -c | sort -rn
+      ```
+    answer: >-
+      ```bash
+      awk '/ERROR/ && !/healthcheck/ {n[$4]++} END {for (k in n) print n[k], k}' app.log | sort -rn
+      ```
+
+
+      What is gained:
+
+
+      - **Six processes become two.** On a large log that is a real difference,
+        and it is one pass over the data instead of several.
+
+      - **The two greps become one condition**, which reads as the sentence it
+        was always meant to be.
+
+      - **`uniq -c` disappears**, and with it the requirement to sort first. That
+        matters because `uniq` only collapses **adjacent** duplicates, so the
+        original is silently wrong if the sort ever fails to group them — which
+        locale-dependent collation can cause.
+
+
+      What is not gained: the pipeline is more obvious to a reader who does not
+      know awk, and at a terminal on a small file that readability may be worth
+      more than the processes.
+    explanation: >-
+      The `uniq` point is the substantive one. `sort | uniq -c` is correct only
+      because the sort ran, and the dependency is invisible — an awk array counts
+      by key with no ordering requirement at all.
+
+
+      The honest last paragraph matters too. This is a judgement call, not a rule:
+      a one-off exploration at a terminal is a different artefact from a nightly
+      job, and the pipeline is genuinely easier to build incrementally by adding
+      one stage at a time. The awk version is the one to leave behind in a
+      repository.

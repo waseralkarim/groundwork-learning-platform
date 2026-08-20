@@ -1,0 +1,314 @@
+id: lab.audit-the-privilege
+topic: topic.identity-and-least-privilege
+title: "Challenge: four workloads, and what a compromise of each one reaches"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-A04.4.8, OBJ-A04.4.4]
+
+intro: >-
+  /tmp/accounts describes four workloads the way an inventory would. Exactly one
+  is correctly scoped.
+
+
+  Do not judge them against best practice. For each one answer a narrower
+  question that has an actual answer: **if this is fully compromised, what does
+  the attacker reach that they should not?**
+
+
+  Two of the three faults are things nobody decided to do.
+
+setup:
+  - /opt/lab/seed-identity.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Read all four descriptions in /tmp/accounts. Before analysing, commit to
+      which single one you believe is correctly scoped, and one line on each of
+      the others. Save to /tmp/hypotheses.
+    hint: >-
+      Look at what each holds versus what its stated job needs. Two of them hold
+      something that has nothing to do with their function.
+    walkthrough: |
+      cat /tmp/accounts/*.txt
+      {
+        echo "bravo is correct: non-root, no capabilities, a read-only credential scoped to one schema, egress only to the database."
+        echo "alpha is wrong: root and fully privileged, holding a cloud admin key it does not need to build an image."
+        echo "charlie is wrong: runs as uid 0 when a capability alone would do, so the uid is doing nothing but adding risk."
+        echo "delta is wrong: a cleanup cron holding the shared deploy key, which has nothing to do with deleting old files."
+      } > /tmp/hypotheses
+      cat /tmp/hypotheses
+    verify:
+      - type: file_exists
+        path: /tmp/hypotheses
+        describe: You committed to an answer before analysing
+      - type: command_exit
+        command: "test $(wc -l < /tmp/hypotheses) -ge 4"
+        exit_code: 0
+        describe: With a line on each of the four workloads
+
+  - id: s2
+    instruction: >-
+      Write the blast radius for alpha to /tmp/answer-alpha — list what an
+      attacker reaches, and say which single item is worst and why it is not the
+      privileged container.
+    walkthrough: |
+      {
+        echo "alpha - image build runner, root, all capabilities, cloud admin key mounted, unrestricted egress"
+        echo
+        echo "a compromise reaches:"
+        echo "- root on the host, in practice: all capabilities plus a privileged container means container isolation is not a boundary. cap_sys_admin alone is enough."
+        echo "- the registry push credentials, so any image this organisation deploys can be replaced with one the attacker built"
+        echo "- the cloud admin key, so the entire cloud account"
+        echo "- unrestricted egress, so all of it can be exfiltrated without obstacle"
+        echo
+        echo "the worst item is the CLOUD ADMIN KEY, not the privileged container. privilege on this host is bounded by this host; the admin key is bounded by nothing, and it has no connection at all to the stated job of building an image."
+        echo "the justification given - needs to run docker build - argues for the container privilege and says nothing about the credential. that is the shape to look for: a justification that covers one grant and is used to wave through several."
+        echo
+        echo "worth naming separately: the registry push credential turns this into a supply chain compromise. everything downstream that pulls an image is affected, and that is far wider than this machine."
+      } > /tmp/answer-alpha
+      cat /tmp/answer-alpha
+    verify:
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "(?i)cloud admin key"
+        describe: You identified the credential with the widest reach
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "(?i)supply chain|downstream|any image"
+        describe: And that the registry credential extends the compromise past this host
+      - type: file_matches
+        path: /tmp/answer-alpha
+        pattern: "(?i)justification"
+        describe: And noticed the justification covers only one of the grants
+
+  - id: s3
+    instruction: >-
+      Charlie's fault is subtler and is about one word in its configuration.
+      Identify it and save the analysis to /tmp/answer-charlie.
+    walkthrough: |
+      {
+        echo "charlie - log shipper, runs as uid 0, CAP_DAC_READ_SEARCH added, log backend write token, egress restricted"
+        echo
+        echo "the stated need is real: reading log files owned by many different users does require bypassing normal permission checks, and cap_dac_read_search is exactly the capability for that. adding it is correct."
+        echo
+        echo "the fault is 'runs as: uid 0'. the capability already grants what the job needs, so root adds nothing to the function and a great deal to the blast radius:"
+        echo "- root can write anywhere the filesystem allows, not just read logs"
+        echo "- root plus a full bounding set means any setuid binary or capability is reachable"
+        echo "- a bug in the log shipper becomes root rather than becoming read-any-file"
+        echo
+        echo "this is the pattern worth recognising: the capability was added AND the uid was left at 0, so the narrow grant that was supposed to replace root ended up sitting alongside it. the fix is one line - run as a non-root uid and keep cap_dac_read_search."
+        echo "note that cap_dac_read_search is read-only. cap_dac_override would grant write as well, and a log shipper never needs it."
+      } > /tmp/answer-charlie
+      cat /tmp/answer-charlie
+    verify:
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "(?i)uid 0|root"
+        describe: You identified running as root as the fault
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "(?i)capability already grants|adds nothing"
+        describe: And that the capability already covers the stated need
+      - type: file_matches
+        path: /tmp/answer-charlie
+        pattern: "(?i)dac_override|read-only"
+        describe: And distinguished the read-only capability from the write one
+
+  - id: s4
+    instruction: >-
+      Delta looks harmless. Say what it actually reaches and why this is the
+      failure most likely to be present in a real estate. Save to
+      /tmp/answer-delta.
+    walkthrough: |
+      {
+        echo "delta - nightly cleanup cron, non-root, no capabilities, the platform's SHARED deploy key mounted, unrestricted egress"
+        echo
+        echo "the identity and capability configuration are fine. the fault is entirely in what it holds."
+        echo
+        echo "a compromise reaches:"
+        echo "- the shared deploy key, which is the same key CI uses. so compromising a job that deletes files older than 30 days yields the ability to deploy to everything that key deploys to."
+        echo "- unrestricted egress, so the key leaves immediately"
+        echo
+        echo "nobody decided this. there was one deploy key because managing per-service keys meant managing more keys, and the cron job needed some credential, and the shared one was already there and worked. every step was reasonable and the result is that the lowest-value workload in the estate holds the highest-value credential."
+        echo
+        echo "this is the failure most likely to be present in a real estate because it is invisible to every review that looks at identity and capabilities - both of which are correct here - and it does not appear as privilege at all. it appears as a mounted secret."
+        echo
+        echo "fix: a credential scoped to what this job does, which is deleting files in one location. and egress restricted, so that a stolen credential cannot leave."
+        echo "the general rule: shared credentials multiply blast radius. the reach of a shared key is the union of everything it opens, granted to every workload that mounts it."
+      } > /tmp/answer-delta
+      cat /tmp/answer-delta
+    verify:
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)shared"
+        describe: You identified the shared credential as the fault
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)nobody decided|every step was reasonable|easier"
+        describe: And that it arrived through reasonable decisions rather than a bad one
+      - type: file_matches
+        path: /tmp/answer-delta
+        pattern: "(?i)identity and capabilit|both.*correct|invisible"
+        describe: And that an identity-focused review would pass it
+
+  - id: s5
+    instruction: >-
+      Write the verdict to /tmp/answer-verdict: which workload is correct and
+      why, the one question that found all three faults, and what you would
+      require in a manifest review to catch them next time.
+    walkthrough: |
+      {
+        echo "correct: bravo. non-root, capabilities dropped, a read-only database credential scoped to a single schema, and egress only to the database. a full compromise yields read access to one schema - which is exactly what the workload does, and nothing more."
+        echo
+        echo "the question that found all three: IF THIS IS FULLY COMPROMISED, WHAT DOES THE ATTACKER REACH THAT THEY SHOULD NOT?"
+        echo "it works where 'is this least privilege' does not, because it has a finite answer that can be written as a list, and two engineers produce nearly the same list. it also reframes the argument from 'you should not run as root', which invites a debate about necessity, to 'compromising the log shipper currently yields root on the node', which invites a fix."
+        echo
+        echo "what the three faults have in common: none of them is the workload's primary function. alpha's cloud admin key, charlie's uid 0 alongside a capability that already sufficed, delta's shared deploy key - each is something held rather than something done."
+        echo "and two of the three were nobody's decision. they arrived because a shared key already existed, or because a capability was added without the uid being lowered."
+        echo
+        echo "what i would require in review:"
+        echo "1. for every mounted secret, a named consumer in the code. an unnamed secret is removed."
+        echo "2. for every capability and any non-default uid, a stated reason - and the reason recorded next to the grant, so it can be revisited when the reason expires."
+        echo "3. runAsNonRoot true, capabilities drop ALL, and allowPrivilegeEscalation false as the default, with exceptions argued individually. the last two are separate controls: one lowers the floor and one lowers the ceiling."
+        echo "4. egress restricted by default, because it converts a stolen credential from a loss into an attempt."
+        echo "5. verification against the running workload rather than the manifest - kubectl exec and read id and /proc/self/status - because the manifest is intent and the process is fact."
+      } > /tmp/answer-verdict
+      cat /tmp/answer-verdict
+    verify:
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "(?i)correct: bravo"
+        describe: You identified the correctly scoped workload
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "(?i)fully compromised, what does the attacker reach"
+        describe: And named the question that found the faults
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "(?i)primary function|something held rather than"
+        describe: And the pattern the three faults share
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "(?i)allowprivilegeescalation|floor|ceiling"
+        describe: And that dropping capabilities and blocking escalation are separate controls
+      - type: file_matches
+        path: /tmp/answer-verdict
+        pattern: "(?i)running workload|manifest is intent"
+        describe: And that verification belongs against the running process
+
+solution: >-
+  **Bravo is correct**, and it is worth saying why rather than just naming it. A
+  full compromise yields read access to one database schema. That is exactly what
+  the workload does. The blast radius equals the function, which is the whole
+  definition.
+
+
+  **Alpha — the credential, not the privilege.**
+
+
+  A privileged container running as root with all capabilities is bad, and it is
+  not the worst thing here. Privilege on this host is bounded by this host. The
+  **cloud admin key** is bounded by nothing, and it has no connection whatsoever
+  to building an image.
+
+
+  The registry push credential is the other half, and it is worse than it looks:
+  it converts a compromise of one build runner into a **supply chain**
+  compromise, reaching everything downstream that pulls an image.
+
+
+  Notice the shape of the justification — *"needs to run docker build"* argues
+  for the container privilege and says nothing about either credential. **One
+  justification used to wave through several grants** is a pattern worth
+  recognising, because it reads as though everything has been considered.
+
+
+  **Charlie — one word.**
+
+
+  The stated need is genuine: reading logs owned by many users does require
+  bypassing normal permission checks, and `CAP_DAC_READ_SEARCH` is precisely the
+  capability for it. Adding it was right.
+
+
+  The fault is `runs as: uid 0`. The capability already grants what the job needs,
+  so root contributes nothing to the function and a great deal to the radius: it
+  can write anywhere, and with a full bounding set every setuid binary and every
+  other capability is reachable. A bug in the log shipper becomes root rather than
+  becoming read-any-file.
+
+
+  This is a common half-migration: the narrow grant that was supposed to *replace*
+  root was added *alongside* it, and nobody went back to lower the uid. The fix is
+  one line.
+
+
+  (Worth noting the capability chosen is the read-only one. `CAP_DAC_OVERRIDE`
+  would grant write as well, and a log shipper never needs it.)
+
+
+  **Delta — the one that will be in your estate.**
+
+
+  Identity correct. Capabilities correct. Any review that looks at *privilege*
+  passes it, because the fault is not privilege — it is a **mounted secret**.
+
+
+  A nightly job that deletes old files holds the platform's shared deploy key.
+  Compromising the lowest-value workload in the estate yields the ability to
+  deploy, and unrestricted egress means the key leaves immediately.
+
+
+  Nobody decided this. There was one deploy key because per-service keys meant
+  managing more keys; the cron needed a credential; the shared one existed and
+  worked. Every step was reasonable, and the outcome is that the least important
+  workload holds the most valuable credential.
+
+
+  **Shared credentials multiply blast radius**: the reach of a shared key is the
+  union of everything it opens, granted to every workload that mounts it.
+
+
+  **The question, and what it does.**
+
+
+  > If this is fully compromised, what does the attacker reach that they should
+  > not?
+
+
+  It works where "is this least privilege?" does not, because it has a finite
+  answer you can write as a list and two engineers produce nearly the same one.
+  And it changes the conversation: *"you should not run as root"* invites a debate
+  about necessity; *"compromising the log shipper currently yields root on the
+  node"* invites a fix.
+
+
+  All three faults share a shape: **none of them is the workload's primary
+  function.** They are things held rather than things done — a key for a job it
+  does not do, a uid alongside a capability that already sufficed, a secret from
+  a shared pool. And two of the three were nobody's decision.
+
+
+  **What to require in review:**
+
+
+  1. Every mounted secret has a named consumer in the code. Unnamed secrets are
+     removed.
+
+  2. Every capability and every non-default uid has a stated reason, recorded
+     next to the grant so it can be revisited when the reason expires. Privilege
+     granted for a reason outlives the reason, because nothing records why.
+
+  3. `runAsNonRoot: true`, `capabilities.drop: ["ALL"]` and
+     `allowPrivilegeEscalation: false` by default. The last two are separate
+     controls — one lowers the floor, the other lowers the ceiling.
+
+  4. Egress restricted by default, which turns a stolen credential from a loss
+     into an attempt.
+
+  5. Verified against the **running workload**, not the manifest. The manifest is
+     intent; `id` and `/proc/self/status` inside the pod are fact, and they differ
+     often enough that measuring is the only honest answer.

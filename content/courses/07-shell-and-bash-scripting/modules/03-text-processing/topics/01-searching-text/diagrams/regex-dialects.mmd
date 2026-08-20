@@ -1,0 +1,20 @@
+flowchart TB
+    P["the pattern you typed:  a+b"] --> Q{"which tool, which flag?"}
+
+    Q -- "grep · sed<br/><i>default</i>" --> BRE["BRE — basic<br/>+ ? | ( ) { } are LITERAL<br/><b>matches the text 'a+b'</b>"]
+    Q -- "grep -E · sed -E · awk<br/>egrep" --> ERE["ERE — extended<br/>+ ? | ( ) { } are OPERATORS<br/><b>matches 'ab', 'aab', 'aaab'</b>"]
+    Q -- "grep -F · fgrep" --> FIX["fixed string<br/>NOTHING is a metacharacter<br/><b>matches the text 'a+b'</b>"]
+    Q -- "grep -P<br/><i>where built in</i>" --> PCRE["PCRE — Perl-compatible<br/>adds \\d \\b lookaround<br/>not portable"]
+
+    BRE --> ESC["to get the operator in BRE:<br/>escape it — a\\+b"]
+    ERE --> ESC2["to get the literal in ERE:<br/>escape it — a\\+b"]
+
+    NOTE["the escaping is INVERTED between them,<br/>which is why a pattern copied<br/>from one to the other silently<br/>changes meaning"]
+    NOTE -.-> ESC
+    NOTE -.-> ESC2
+
+    DATA["pattern came from data,<br/>a variable, or a user?"] --> FIX
+
+    style FIX fill:#e8f4ea,stroke:#2f7d4f
+    style NOTE fill:#fdecea,stroke:#c0392b
+    style DATA fill:#fdf6e3,stroke:#b58900

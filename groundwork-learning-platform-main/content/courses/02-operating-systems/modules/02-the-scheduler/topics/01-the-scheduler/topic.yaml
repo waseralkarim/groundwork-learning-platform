@@ -1,0 +1,161 @@
+id: topic.the-scheduler
+slug: the-scheduler
+title: "The Scheduler: Who Runs Next"
+summary: >-
+  Every runnable process is competing for a CPU, and something decides between
+  them thousands of times a second. This topic is about how — the weights, the
+  policies, and the file that tells you how long your work spent waiting for a
+  turn rather than doing anything.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.cgroups
+    hardness: required
+  - topic: topic.threads-and-concurrency
+    hardness: required
+  - topic: topic.processes
+    hardness: recommended
+
+objectives:
+  - id: OBJ-A02.3.1
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what the scheduler must decide, and why fairness is defined as
+      proportional to weight rather than equal.
+    assessed_by: [quiz.q1, quiz.q2, lab.read-your-scheduling]
+
+  - id: OBJ-A02.3.2
+    level: L2
+    verb: identify
+    statement: >-
+      Identify a process's scheduling policy, priority, nice value and weight
+      from /proc.
+    assessed_by: [quiz.q3, quiz.q4, lab.read-your-scheduling, exercise.e1]
+
+  - id: OBJ-A02.3.3
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish a voluntary context switch from an involuntary one, and say
+      what each tells you about a workload.
+    assessed_by: [quiz.q5, quiz.q6, lab.waiting-to-run]
+
+  - id: OBJ-A02.3.4
+    level: L3
+    verb: measure
+    statement: >-
+      Measure how a nice value changes the CPU a process receives under
+      contention, and predict the ratio from the weight table.
+    assessed_by: [quiz.q7, quiz.q8, lab.nice-under-contention, exercise.e2, assessment.A]
+
+  - id: OBJ-A02.3.5
+    level: L3
+    verb: explain
+    statement: >-
+      Explain how EEVDF chooses the next task, and how that differs from CFS
+      picking the smallest virtual runtime.
+    assessed_by: [quiz.q9, quiz.q10, lab.read-your-scheduling]
+
+  - id: OBJ-A02.3.6
+    level: L3
+    verb: distinguish
+    statement: >-
+      Distinguish the scheduling policies, and say which require privilege and
+      what they risk.
+    assessed_by: [quiz.q11, quiz.q12, lab.read-your-scheduling, exercise.e3]
+
+  - id: OBJ-A02.3.7
+    level: L3
+    verb: interpret
+    statement: >-
+      Interpret run-queue wait time as a latency signal, and relate it to quota
+      throttling and to pressure.
+    assessed_by: [quiz.q13, lab.waiting-to-run, lab.slow-or-waiting, exercise.e4]
+
+  - id: OBJ-A02.3.8
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a latency problem as scheduling delay rather than slow work, from
+      per-task evidence.
+    assessed_by: [quiz.q14, quiz.q15, lab.slow-or-waiting, troubleshooting.the-cpu-is-not-busy, troubleshooting.priority-inversion-by-accident, assessment.B, assessment.C]
+
+terminology:
+  - term: run queue
+    definition: >-
+      The set of runnable tasks on a CPU. A task on it is not blocked and not
+      running — it is waiting for its turn, and that wait is measurable.
+  - term: context switch
+    definition: >-
+      Saving one task's registers and restoring another's. Cheap in isolation,
+      expensive in aggregate because it discards the CPU cache the old task had
+      warmed.
+  - term: voluntary switch
+    definition: >-
+      A task gave up the CPU because it blocked — on I/O, a lock, a sleep. It
+      had nothing to do.
+  - term: involuntary switch
+    definition: >-
+      A task was preempted while still runnable, because something else was
+      chosen or its quota ran out. It had work and was stopped.
+  - term: nice
+    definition: >-
+      A per-task hint from -20 to 19, mapping to a weight. Each step is about
+      1.25×, so nice 0 against nice 19 is roughly 68 to 1 under contention.
+  - term: weight
+    definition: >-
+      What the scheduler actually arbitrates with. Nice 0 is 1024;
+      /proc/PID/sched shows it scaled by a further 1024, so 1048576.
+  - term: vruntime
+    definition: >-
+      Virtual runtime: real time consumed, divided by the task's weight. A heavy
+      task's vruntime advances slowly, which is how weights become CPU shares.
+  - term: CFS
+    definition: >-
+      The Completely Fair Scheduler, Linux's default from 2.6.23 to 6.5. It ran
+      whichever runnable task had the smallest vruntime.
+  - term: EEVDF
+    definition: >-
+      Earliest Eligible Virtual Deadline First, the default since kernel 6.6. It
+      picks among *eligible* tasks the one with the earliest virtual deadline,
+      which bounds latency rather than only equalising throughput.
+  - term: request slice
+    definition: >-
+      How long a task asks to run for when it is picked, shown as `se.slice`.
+      Under EEVDF a task can ask for a shorter slice to be scheduled sooner and
+      more often.
+  - term: SCHED_OTHER
+    definition: >-
+      The normal policy, also called SCHED_NORMAL. Weight-based, and what
+      essentially every process you deploy uses.
+  - term: SCHED_BATCH
+    definition: >-
+      Like SCHED_OTHER but marked as non-interactive, so the scheduler stops
+      giving it wake-up preference. Useful for compute that should never
+      preempt a latency-sensitive neighbour.
+  - term: SCHED_IDLE
+    definition: >-
+      Runs only when nothing else wants the CPU. Weaker than nice 19, and the
+      right policy for genuinely discardable background work.
+  - term: SCHED_FIFO and SCHED_RR
+    definition: >-
+      Real-time policies. A runnable real-time task preempts every normal task
+      immediately and runs until it blocks, which is why creating one requires
+      CAP_SYS_NICE.
+  - term: schedstat
+    definition: >-
+      /proc/PID/schedstat — three numbers: nanoseconds on a CPU, nanoseconds
+      waiting on a run queue, and timeslices run. The second is the latency
+      nobody graphs.
+
+foreshadows:
+  - "E29's CPU requests are the weights this topic arbitrates with, and its CPU manager policies pin tasks to CPUs outright."
+  - "F34 alerts on saturation; run-queue wait is the per-task version of the pressure signal introduced in cgroups."
+  - "B07's performance tools read exactly these files — what `top`, `pidstat` and `perf sched` report is assembled from here."
+  - "E31 debugs a node where the CPU looks idle and everything is slow, which is this topic's failure mode at cluster scale."
+
+tags: [scheduler, cfs, eevdf, cpu, latency, linux, kernel]

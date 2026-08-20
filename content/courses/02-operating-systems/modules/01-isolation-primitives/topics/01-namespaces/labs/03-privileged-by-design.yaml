@@ -1,0 +1,211 @@
+id: lab.privileged-by-design
+topic: topic.namespaces
+title: Try to make a namespace, and find out what stopped you
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-A02.1.5, OBJ-A02.1.6]
+
+intro: >-
+  This lab is a sequence of failures, and each one is the finding.
+
+
+  You will try to create namespaces and be refused. The refusals look identical
+  — the same six words for every attempt — but two entirely different mechanisms
+  produced them, and telling them apart is the skill. One is answered by adding
+  a capability. The other is not answered by capabilities at all, and reaching
+  for `--privileged` because the message looked familiar is how containers end
+  up with forty privileges they did not need.
+
+setup:
+  - /opt/lab/seed.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Try to create a new PID namespace. Save the message and the exit status to
+      /tmp/answer-pid-attempt.
+    hint: >-
+      `unshare --pid --fork true > /tmp/answer-pid-attempt 2>&1; echo "exit=$?"
+      >> /tmp/answer-pid-attempt`
+    walkthrough: |
+      unshare --pid --fork true > /tmp/answer-pid-attempt 2>&1
+      echo "exit=$?" >> /tmp/answer-pid-attempt
+      cat /tmp/answer-pid-attempt
+    verify:
+      - type: file_matches
+        path: /tmp/answer-pid-attempt
+        pattern: "Operation not permitted"
+        describe: The kernel refused with EPERM
+
+  - id: s2
+    instruction: >-
+      Now try a user namespace, and save that attempt to
+      /tmp/answer-user-attempt.
+
+
+      The documentation says this one needs no privilege at all. Note what
+      happens anyway.
+    hint: >-
+      `unshare --user true > /tmp/answer-user-attempt 2>&1; echo "exit=$?" >>
+      /tmp/answer-user-attempt`
+    walkthrough: |
+      unshare --user true > /tmp/answer-user-attempt 2>&1
+      echo "exit=$?" >> /tmp/answer-user-attempt
+      cat /tmp/answer-user-attempt
+    verify:
+      - type: file_matches
+        path: /tmp/answer-user-attempt
+        pattern: "Operation not permitted"
+        describe: The unprivileged namespace was refused too
+
+  - id: s3
+    instruction: >-
+      Two identical messages. Before explaining them, prove the syscall was
+      actually attempted rather than the tool giving up early.
+
+
+      Trace the user-namespace attempt and save it to /tmp/answer-trace.
+    hint: "`strace -e trace=unshare unshare --user true > /tmp/answer-trace 2>&1`"
+    walkthrough: |
+      strace -e trace=unshare unshare --user true > /tmp/answer-trace 2>&1
+      cat /tmp/answer-trace
+    verify:
+      - type: file_matches
+        path: /tmp/answer-trace
+        pattern: "unshare\\(CLONE_NEWUSER\\)"
+        describe: The syscall was made with the user-namespace flag
+      - type: file_matches
+        path: /tmp/answer-trace
+        pattern: "EPERM"
+        describe: And the kernel returned EPERM to it
+
+  - id: s4
+    instruction: >-
+      Now gather the evidence about this process. Save its capability sets and
+      its two hardening lines to /tmp/answer-status.
+    hint: >-
+      `grep -E '^(CapEff|CapBnd|NoNewPrivs|Seccomp)' /proc/self/status >
+      /tmp/answer-status`
+    walkthrough: |
+      grep -E '^(CapEff|CapBnd|NoNewPrivs|Seccomp)' /proc/self/status > /tmp/answer-status
+      cat /tmp/answer-status
+    verify:
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: 'CapEff:\s*0+$'
+        describe: The effective capability set is empty
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: 'Seccomp:\s*2'
+        describe: A seccomp filter is installed and in filter mode
+
+  - id: s5
+    instruction: >-
+      Explain the first refusal. Creating a PID namespace requires one specific
+      capability — write its name in lowercase, capsh style, to
+      /tmp/answer-pid-cause.
+    hint: >-
+      It is the same one that covers mounting filesystems, and the one
+      conspicuously absent from Docker's default set.
+    walkthrough: |
+      echo cap_sys_admin > /tmp/answer-pid-cause
+    verify:
+      - type: file_matches
+        path: /tmp/answer-pid-cause
+        pattern: "^cap_sys_admin$"
+        describe: You named the capability that governs namespace creation
+
+  - id: s6
+    instruction: >-
+      Now the second refusal, which is the interesting one. Creating a *user*
+      namespace requires no capability — an ordinary user on an ordinary Linux
+      machine can do it.
+
+
+      So something else refused it. Given what you read in /tmp/answer-status,
+      write the mechanism's name — one word — to /tmp/answer-user-cause.
+    hint: >-
+      Two lines in that file describe restrictions that are not capabilities.
+      One of them is a syscall filter, and it is switched on.
+    walkthrough: |
+      echo seccomp > /tmp/answer-user-cause
+    verify:
+      - type: file_matches
+        path: /tmp/answer-user-cause
+        pattern: "^seccomp$"
+        describe: You identified the syscall filter rather than blaming capabilities
+
+  - id: s7
+    instruction: >-
+      Finally, the consequence. Would adding `--cap-add=SYS_ADMIN` alone let this
+      container create a user namespace?
+
+
+      Write `yes` or `no` to /tmp/answer-capadd.
+    hint: >-
+      A seccomp filter is evaluated before the kernel gets as far as any
+      capability check. Adding a capability does not remove a filter.
+    walkthrough: |
+      echo no > /tmp/answer-capadd
+    verify:
+      - type: file_matches
+        path: /tmp/answer-capadd
+        pattern: "^no$"
+        describe: You separated the two mechanisms instead of merging them
+
+solution: |
+  ```bash
+  unshare --pid --fork true  > /tmp/answer-pid-attempt  2>&1   # Operation not permitted
+  unshare --user true        > /tmp/answer-user-attempt 2>&1   # Operation not permitted
+  strace -e trace=unshare unshare --user true > /tmp/answer-trace 2>&1
+
+  grep -E '^(CapEff|CapBnd|NoNewPrivs|Seccomp)' /proc/self/status > /tmp/answer-status
+
+  echo cap_sys_admin > /tmp/answer-pid-cause
+  echo seccomp       > /tmp/answer-user-cause
+  echo no            > /tmp/answer-capadd
+  ```
+
+  **What you just established.**
+
+  **Two identical messages, two different mechanisms.** Both attempts printed
+  "Operation not permitted", and both returned `EPERM` from the same syscall.
+  Nothing in the error distinguishes them. The distinction came from knowing
+  what each operation requires:
+
+  | Attempt | Requires | Refused by | Fixed by |
+  |---|---|---|---|
+  | `unshare --pid` | `CAP_SYS_ADMIN` | Empty capability set | `--cap-add=SYS_ADMIN` |
+  | `unshare --user` | nothing | The seccomp filter | A different seccomp profile |
+
+  **The trace ruled out the boring explanations.** `unshare(CLONE_NEWUSER) = -1
+  EPERM` proves the syscall was made and the kernel answered it. The tool was
+  present, the flag was right, and the refusal came from the kernel — so the
+  investigation is about policy, not about the command line.
+
+  **`Seccomp: 2` is the line most people never read.** Mode 2 means a filter is
+  installed. Docker's default profile blocks user-namespace creation
+  specifically, on the reasoning that unprivileged user namespaces have
+  historically been a source of kernel privilege-escalation bugs — the filter
+  costs almost nobody anything, and removes a whole class of attack surface.
+
+  **Which is why `--cap-add` would not have helped.** A seccomp filter runs
+  before the kernel reaches the capability check. Adding `SYS_ADMIN` grants
+  authority for a call the filter never lets arrive. This is the practical value
+  of separating the two: it tells you that the fix is a seccomp profile, not a
+  capability, and stops the search for the right `--cap-add` before it starts.
+
+  **The connection back to the last lab.** You are in the host's user namespace,
+  and you cannot create one of your own. Those two facts together are the whole
+  container security posture: root here would be root there, and the only reason
+  it is survivable is the emptiness of `CapEff` and the presence of that filter.
+  Every hardening control in this sandbox is compensating for a namespace you
+  did not get.
+
+  **Where this goes.** **C16**'s rootless Docker and Podman exist to give you
+  that namespace — they run the whole daemon inside one, so the container's root
+  maps to your unprivileged uid. Sysbox does the same for nested containers,
+  which is how CI systems build images without `--privileged`. Both are answers
+  to the exact refusal you just produced.

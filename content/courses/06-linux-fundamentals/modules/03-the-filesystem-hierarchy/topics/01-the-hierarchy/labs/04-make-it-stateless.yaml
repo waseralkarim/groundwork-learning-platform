@@ -1,0 +1,458 @@
+id: lab.make-it-stateless
+topic: topic.the-filesystem-hierarchy
+title: "Challenge: make a stateful service disposable"
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B06.3.7, OBJ-B06.3.8]
+
+intro: >-
+  You have the ledger service's seventeen paths, a machine that shows you what a
+  read-only root refuses, and a backup manifest that has been wrong for fourteen
+  months.
+
+
+  Produce the deployment: what persists, what is thrown away, what is writable,
+  and what gets restored. Then find the failure mode nobody in the team has
+  considered — it is in the manifest, and the hierarchy predicts it.
+
+setup:
+  - /opt/lab/seed-hierarchy.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Sort the seventeen paths in /tmp/fhs/service-tree.txt by what happens to
+      each one when the container is destroyed and recreated. Save to
+      /tmp/answer-lifetimes.
+    hint: >-
+      There are only four possible fates: it comes back from the image, it comes
+      back from configuration, it comes back from a volume, or it is gone. Every
+      path has exactly one.
+    walkthrough: |
+      cat /tmp/fhs/service-tree.txt
+      {
+        echo "FROM THE IMAGE - reinstalled, identical every time"
+        echo "  /usr/bin/ledger, /usr/lib/ledger/plugins/"
+        echo
+        echo "FROM CONFIGURATION - rendered or mounted at start"
+        echo "  /etc/ledger/ledger.conf, /etc/ledger/conf.d/50-database.conf"
+        echo "  /etc/ledger/tls/server.key   <- from the SECRET STORE, not the repo"
+        echo
+        echo "FROM A VOLUME - survives because we made it survive"
+        echo "  /var/lib/ledger/ledger.db    47G"
+        echo "  /var/lib/ledger/uploads/     12G"
+        echo
+        echo "GONE, DELIBERATELY"
+        echo "  /var/lib/ledger/render-cache/  210G  regenerable"
+        echo "  /var/cache/ledger/thumbnails/   34G  regenerable"
+        echo "  /var/log/ledger/access.log           shipped to the log system"
+        echo "  /run/ledger/*                        this boot only"
+        echo "  /tmp/ledger-upload-*.part            this request only"
+        echo
+        echo "GONE, AND THAT IS A BUG"
+        echo "  /usr/local/bin/ledger-migrate   outside the archive; nothing restores it"
+        echo "  /opt/vendor-scanner/bin/scan    outside the archive; nothing restores it"
+        echo "  /var/log/ledger/audit.log       may be retained by law"
+        echo "  /root/.ledger-admin-token       a credential nobody is managing"
+        echo
+        echo "the last group is the finding. everything in it disappears on redeploy and NOTHING brings it back, because each one arrived by a route the deployment does not model."
+      } > /tmp/answer-lifetimes
+      cat /tmp/answer-lifetimes
+    verify:
+      - type: file_matches
+        path: /tmp/answer-lifetimes
+        pattern: "(?i)FROM A VOLUME"
+        describe: You identified what must persist
+      - type: file_matches
+        path: /tmp/answer-lifetimes
+        pattern: "(?i)GONE, AND THAT IS A BUG"
+        describe: And separated deliberate disposal from accidental loss
+      - type: file_matches
+        path: /tmp/answer-lifetimes
+        pattern: "ledger-migrate"
+        describe: And found the binary nothing would restore
+
+  - id: s2
+    instruction: >-
+      Write the deployment — volumes, tmpfs mounts and read-only root — as a
+      compose service. Save it to /tmp/answer-compose.
+    walkthrough: |
+      cat > /tmp/answer-compose <<'YAML'
+      services:
+        ledger:
+          image: registry.internal/ledger:2.14.3
+          read_only: true
+
+          # state: the only thing that must outlive the container
+          volumes:
+            - ledger-data:/var/lib/ledger
+            - ./conf.d:/etc/ledger/conf.d:ro
+
+          # writable, but must NOT survive
+          tmpfs:
+            - /run:size=8m,mode=0755,uid=10001
+            - /tmp:size=2g,noexec
+            - /var/cache/ledger:size=40g,noexec
+            - /var/lib/ledger/render-cache:size=220g,noexec
+
+          environment:
+            LEDGER_LOG_DEST: stdout
+
+          secrets:
+            - source: ledger-tls-key
+              target: /etc/ledger/tls/server.key
+
+          user: "10001:10001"
+
+      volumes:
+        ledger-data:
+      YAML
+      cat /tmp/answer-compose
+      {
+        echo
+        echo "# notes on the choices:"
+        echo "# - render-cache gets a tmpfs mounted OVER a path inside the volume."
+        echo "#   that keeps 210G of regenerable data out of the volume, out of the"
+        echo "#   backup and out of the restore, without asking the application to"
+        echo "#   move it. mounting over a subdirectory is the tool for exactly this."
+        echo "# - /run is tmpfs with uid=10001, because the default mode 755 root:root"
+        echo "#   is the gate that denied the pid file in the previous lab. this is"
+        echo "#   where that lesson gets paid back."
+        echo "# - /tmp and the caches are noexec. they hold data, never code."
+        echo "# - logs go to stdout, so /var/log needs no mount at all."
+        echo "# - conf.d is mounted read-only: config is an input, not state."
+      } >> /tmp/answer-compose
+      tail -12 /tmp/answer-compose
+    verify:
+      - type: file_matches
+        path: /tmp/answer-compose
+        pattern: "read_only: true"
+        describe: Your deployment runs with a read-only root
+      - type: file_matches
+        path: /tmp/answer-compose
+        pattern: "ledger-data:/var/lib/ledger"
+        describe: And persists only the state directory
+      - type: file_matches
+        path: /tmp/answer-compose
+        pattern: "render-cache"
+        describe: And keeps the regenerable cache out of the volume
+      - type: file_matches
+        path: /tmp/answer-compose
+        pattern: "uid=10001"
+        describe: And fixes the /run ownership gate from the previous lab
+      - type: file_matches
+        path: /tmp/answer-compose
+        pattern: "noexec"
+        describe: And makes the data-only mounts non-executable
+
+  - id: s3
+    instruction: >-
+      There is a failure mode in this deployment that the team has not
+      considered, and it involves a mount hiding something. Find it and save your
+      analysis to /tmp/answer-hidden.
+    hint: >-
+      Look at what the image ships under a path you just mounted something onto.
+    walkthrough: |
+      {
+        echo "the bind mount over /etc/ledger/conf.d."
+        echo
+        echo "the image ships configuration in that directory - 50-database.conf is"
+        echo "in the service tree, and images normally ship defaults alongside it."
+        echo "mounting ./conf.d over the path does NOT merge with what is there."
+        echo "it covers it."
+        echo
+        echo "so every default fragment the image shipped becomes invisible the"
+        echo "moment the container starts. the files are intact, on the image layer,"
+        echo "unreachable. the service reads only what is in ./conf.d."
+        echo
+        echo "and nothing warns. from the process's point of view the directory"
+        echo "simply contains what it contains. there is no error, no log line, and"
+        echo "the container starts successfully - which is what makes this expensive:"
+        echo "it presents later as a missing feature or a wrong default, and nobody"
+        echo "connects it to the volume."
+        echo
+        echo "i can demonstrate the mechanism here, because this machine relies on it."
+        echo "the platform's own Dockerfile puts the learner shell settings in"
+        echo "/etc/bash.bashrc and says why:"
+        echo "  'tmpfs is mounted over /home/learner at start, masking anything"
+        echo "   baked in there.'"
+        echo "anything the image writes to /home/learner is invisible once the"
+        echo "container runs, so the settings had to go somewhere no mount covers."
+        echo
+        echo "proof that something IS mounted over it right now:"
+        echo "  mountpoint /home/learner : $(mountpoint /home/learner 2>&1)"
+        echo "  mountpoint /etc          : $(mountpoint /etc 2>&1)"
+        echo
+        echo "the fix, in order of preference:"
+        echo "  1. mount the single FILE rather than the directory, so nothing else"
+        echo "     under it is covered:  ./50-database.conf:/etc/ledger/conf.d/50-database.conf:ro"
+        echo "  2. or render the whole directory at build time, so there is exactly"
+        echo "     one source of truth and no merging question to get wrong"
+        echo "  3. or have the image ship its defaults somewhere else entirely and"
+        echo "     copy them in at startup, which is the pattern that survives"
+        echo "     somebody mounting anything anywhere"
+        echo
+        echo "the habit worth keeping: when files that should exist do not, ask"
+        echo "whether something is MOUNTED ON TOP before asking whether something"
+        echo "deleted them. deletion is loud and leaves traces. masking is silent"
+        echo "and completely reversible, and mountpoint answers it in one second."
+      } > /tmp/answer-hidden
+      cat /tmp/answer-hidden
+    verify:
+      - type: file_matches
+        path: /tmp/answer-hidden
+        pattern: "(?i)conf.d"
+        describe: You found the mount that hides shipped configuration
+      - type: file_matches
+        path: /tmp/answer-hidden
+        pattern: "(?i)covers it|masking"
+        describe: And that a mount covers rather than merges
+      - type: file_matches
+        path: /tmp/answer-hidden
+        pattern: "/home/learner is a mountpoint"
+        describe: And confirmed the same mechanism is active on this machine
+      - type: file_matches
+        path: /tmp/answer-hidden
+        pattern: "(?i)mounted on top"
+        describe: And stated the diagnostic habit
+
+  - id: s4
+    instruction: >-
+      Write the restore procedure that actually works, and say what each step
+      exists to recover. Save to /tmp/answer-restore.
+    walkthrough: |
+      {
+        echo "RESTORE PROCEDURE - ledger"
+        echo
+        echo "1. deploy the image by DIGEST, not tag"
+        echo "   recovers: all code under /usr. a tag would give whatever it points"
+        echo "   at today, which is not what was running."
+        echo
+        echo "2. apply the config from the repo at the recorded commit"
+        echo "   recovers: /etc/ledger. not from the backup - from the source that"
+        echo "   generated it, which is the only copy without drift in it."
+        echo
+        echo "3. pull the TLS key from the secret store"
+        echo "   recovers: /etc/ledger/tls/server.key. never from a backup archive."
+        echo
+        echo "4. restore the volume: ledger.db and uploads/"
+        echo "   recovers: everything that cannot be regenerated. 59G, not 303G."
+        echo
+        echo "5. reinstall what lives outside the archive"
+        echo "     /usr/local/bin/ledger-migrate  - from its own build artifact"
+        echo "     /opt/vendor-scanner/           - re-run the vendor installer"
+        echo "   recovers: the two things apt-get cannot, and the reason the old"
+        echo "   procedure did not work. this step is the entire finding."
+        echo
+        echo "6. start; caches rebuild themselves"
+        echo "   render-cache and thumbnails come back cold. slower for a while,"
+        echo "   and 244G that never had to be stored, transferred or restored."
+        echo
+        echo "7. verify: run a migration and a scan"
+        echo "   this is the step that would have caught the old procedure's fault."
+        echo "   a restore nobody tested is a hypothesis, and the moment you find"
+        echo "   out is the moment you cannot afford to."
+        echo
+        echo "what changed, in one line: the old procedure assumed everything came"
+        echo "from a package. two things did not, and the hierarchy said so in"
+        echo "advance - /usr/local and /opt are exactly the directories reserved"
+        echo "for software the package system does not manage. anything there is,"
+        echo "by construction, something a reinstall will not bring back."
+      } > /tmp/answer-restore
+      cat /tmp/answer-restore
+    verify:
+      - type: file_matches
+        path: /tmp/answer-restore
+        pattern: "(?i)digest"
+        describe: Your procedure pins the image by digest
+      - type: file_matches
+        path: /tmp/answer-restore
+        pattern: "(?i)secret store"
+        describe: And recovers the key from the secret store
+      - type: file_matches
+        path: /tmp/answer-restore
+        pattern: "(?i)outside the archive"
+        describe: And reinstalls what apt cannot restore
+      - type: file_matches
+        path: /tmp/answer-restore
+        pattern: "(?i)verify|test"
+        describe: And verifies the restore rather than assuming it
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-argument what you would say to an engineer who thinks
+      the read-only root is not worth the effort.
+    walkthrough: |
+      {
+        echo "their objection is fair: it took four iterations to find every path"
+        echo "this service writes, and the service worked fine before. so the"
+        echo "argument has to be about what the effort BOUGHT, not about security"
+        echo "as a virtue."
+        echo
+        echo "what it bought, concretely:"
+        echo
+        echo "1. an explicit, tested list of everything this service writes."
+        echo "   nobody had that document. it did not exist anywhere, in any team,"
+        echo "   and it could not have been produced by reading the code - the"
+        echo "   runtime, the TLS library and the logging framework all write"
+        echo "   things the application's authors never think about. the read-only"
+        echo "   root produced it as error messages with paths in them."
+        echo
+        echo "2. the backup shrank from 303G to 59G, because classifying paths for"
+        echo "   the writable list is the SAME work as classifying them for the"
+        echo "   backup. we did it once and got both."
+        echo
+        echo "3. the restore procedure now works. it did not before, and we would"
+        echo "   have discovered that during an outage."
+        echo
+        echo "4. drift cannot accumulate. there is nowhere to write, so a"
+        echo "   container that has run for 200 days is byte-identical to one"
+        echo "   started a minute ago. that turns 'have you tried restarting it'"
+        echo "   from a joke into a reliable repair."
+        echo
+        echo "5. nothing can drop a binary into /usr/local/bin at runtime, because"
+        echo "   there is no path that is both writable and executable. a"
+        echo "   compromised process has nowhere to persist."
+        echo
+        echo "the honest framing: the security benefit is real and it is the part"
+        echo "hardest to argue for, because you cannot point at the incident that"
+        echo "did not happen. the other four are operational and immediate, and"
+        echo "they are the ones i would lead with."
+        echo
+        echo "and the cost is one-off. the four iterations happen once per service."
+        echo "the list they produce is worth having even if somebody later decides"
+        echo "to turn read_only off - which is the strongest version of the"
+        echo "argument, because it holds even if they win."
+      } > /tmp/answer-argument
+      cat /tmp/answer-argument
+    verify:
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)tested list"
+        describe: You led with the documentation it forces into existence
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)303G|59G|backup"
+        describe: And connected it to the backup work
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)drift"
+        describe: And to drift not accumulating
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)one-off|once per service"
+        describe: And addressed the cost honestly
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)even if they win|holds even if"
+        describe: And made an argument that survives losing the decision
+
+solution: >-
+  **The four fates.**
+
+
+  Every path has exactly one: it comes back from the image, from configuration,
+  from a volume, or not at all. Sorting the seventeen that way puts thirteen in
+  sensible places and isolates four that are wrong:
+
+
+  ```text
+  GONE, AND THAT IS A BUG
+    /usr/local/bin/ledger-migrate   outside the archive; nothing restores it
+    /opt/vendor-scanner/bin/scan    outside the archive; nothing restores it
+    /var/log/ledger/audit.log       may be retained by law
+    /root/.ledger-admin-token       a credential nobody is managing
+  ```
+
+
+  Each disappears on redeploy and nothing brings it back, because each arrived by
+  a route the deployment does not model.
+
+
+  **The deployment.**
+
+
+  ```yaml
+  read_only: true
+  volumes:
+    - ledger-data:/var/lib/ledger
+    - ./conf.d:/etc/ledger/conf.d:ro
+  tmpfs:
+    - /run:size=8m,mode=0755,uid=10001
+    - /tmp:size=2g,noexec
+    - /var/cache/ledger:size=40g,noexec
+    - /var/lib/ledger/render-cache:size=220g,noexec
+  ```
+
+
+  Three choices worth defending. **`render-cache` gets a tmpfs mounted over a
+  path inside the volume** — that keeps 210 GB of regenerable data out of the
+  volume, the backup and the restore without asking the application to move it.
+  **`/run` gets `uid=10001`**, because the default `755 root:root` is precisely
+  the gate that denied the pid file in the previous lab. And **logs go to
+  stdout**, so `/var/log` needs no mount at all.
+
+
+  **The failure nobody considered.**
+
+
+  `./conf.d:/etc/ledger/conf.d` does not merge with what the image ships there —
+  it **covers** it. Every default fragment in the image becomes invisible the
+  moment the container starts. The files are intact, on the image layer, and
+  unreachable.
+
+
+  Nothing warns. The container starts successfully, and it presents weeks later
+  as a missing feature or a wrong default that nobody connects to a volume.
+
+
+  This machine proves the mechanism, because the platform depends on it: the
+  Dockerfile puts the learner's shell settings in `/etc/bash.bashrc` and explains
+  that *"tmpfs is mounted over `/home/learner` at start, masking anything baked in
+  there"*. `mountpoint /home/learner` confirms it is still true right now.
+
+
+  Fix it by mounting the **file** rather than the directory, or by rendering the
+  whole directory at build time so there is one source of truth.
+
+
+  The habit: **when files that should exist do not, ask whether something is
+  mounted on top before asking whether something deleted them.** Deletion is loud
+  and leaves traces; masking is silent, reversible, and `mountpoint` answers it in
+  a second.
+
+
+  **The restore that works** adds the step the old one lacked — reinstalling what
+  lives outside the archive — and ends with a verification, because a restore
+  nobody has tested is a hypothesis, and the moment you find out is the moment
+  you cannot afford to.
+
+
+  The old procedure assumed everything came from a package. Two things did not,
+  and **the hierarchy said so in advance**: `/usr/local` and `/opt` are exactly
+  the directories reserved for software the package system does not manage, so
+  anything there is by construction something a reinstall will not bring back.
+
+
+  **And the argument for the effort.**
+
+
+  The objection is fair — it took four iterations, and the service worked before.
+  So argue from what it bought: an explicit tested list of every write, which
+  nobody had and which could not have been produced by reading the code; a backup
+  that fell from 303 GB to 59 GB, because classifying paths for the writable list
+  is the same work; a restore procedure that now functions; drift that cannot
+  accumulate, making "have you tried restarting it" a reliable repair rather than
+  a joke; and no path that is both writable and executable, so a compromised
+  process has nowhere to persist.
+
+
+  The security benefit is real and hardest to argue, because you cannot point at
+  the incident that did not happen. Lead with the other four.
+
+
+  The strongest version: the cost is one-off per service, and **the list it
+  produces is worth having even if somebody later turns `read_only` off** — an
+  argument that holds even if you lose the decision.
