@@ -88,6 +88,7 @@ COPY --chmod=0755 seed-functions.sh /opt/lab/seed-functions.sh
 COPY --chmod=0755 seed-args.sh /opt/lab/seed-args.sh
 COPY --chmod=0755 seed-lock.sh /opt/lab/seed-lock.sh
 COPY --chmod=0755 seed-bats.sh /opt/lab/seed-bats.sh
+COPY --chmod=0755 seed-git.sh /opt/lab/seed-git.sh
 
 # Lab helpers are compiled here rather than shipped as scripts. Both need real
 # fork and real page-touching semantics, which a shell cannot provide — bash
