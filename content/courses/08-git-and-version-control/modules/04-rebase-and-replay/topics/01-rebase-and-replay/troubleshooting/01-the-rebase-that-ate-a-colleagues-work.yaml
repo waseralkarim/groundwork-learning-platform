@@ -1,0 +1,193 @@
+id: troubleshooting.the-rebase-that-ate-a-colleagues-work
+topic: topic.rebase-and-replay
+title: The rebase that ate a colleague's work
+level: L3
+objectives: [OBJ-B10.4.5, OBJ-B10.4.6]
+reveal_policy: progressive
+
+situation: >-
+  Two engineers are on a shared feature branch. One tidies the branch history —
+  squashing some commits, rewording others — rebases it onto `main`, and
+  force-pushes.
+
+
+  The other had pushed two commits that morning.
+
+
+  After the force-push, those two commits are not on the remote branch. The
+  engineer who rebased says they never saw them and that their rebase only
+  touched their own commits. The engineer who lost them has already run `git
+  pull` and now has a working tree that does not contain their changes either.
+
+
+  Nobody has run `gc`. The force-push used `--force`, not `--force-with-lease`.
+
+
+  Work out where the two commits are and how to get them back.
+
+symptoms:
+  - "Two pushed commits are absent from the remote branch after a colleague force-pushed"
+  - "The engineer who rebased did not see those commits during their rebase"
+  - "The affected engineer has already pulled, so their working tree lacks the changes"
+  - "The force-push used --force rather than --force-with-lease"
+  - "No garbage collection has run"
+
+artifacts:
+  - type: command_output
+    label: What the remote branch looks like now
+    content: |
+      $ git log --oneline origin/feature -4
+      7f2a9c1 tidy: squash review fixes
+      3b8e0d4 add the exporter
+      a91f775 wire up config
+      2c4d106 base
+
+  - type: command_output
+    label: The affected engineer's reflog, after pulling
+    content: |
+      $ git reflog --date=short
+      7f2a9c1 HEAD@{0}: pull: Fast-forward
+      d5e6f70 HEAD@{1}: commit: handle the empty-batch case
+      9a1b2c3 HEAD@{2}: commit: add batch validation
+      a91f775 HEAD@{3}: pull: Fast-forward
+
+  - type: command_output
+    label: Are the lost commits still objects?
+    content: |
+      $ git cat-file -t d5e6f70
+      commit
+      $ git cat-file -p d5e6f70:batch.py | head -1
+      def validate_batch(rows):
+
+  - type: command_output
+    label: What the rebasing engineer had fetched
+    content: |
+      $ git reflog show origin/feature --date=short
+      7f2a9c1 refs/remotes/origin/feature@{0}: update by push
+      a91f775 refs/remotes/origin/feature@{1}: fetch
+
+hints:
+  - "The affected engineer pulled AFTER the force-push. What does their reflog still record from before?"
+  - "The commits are unreachable, not deleted. What makes an unreachable commit reachable again?"
+  - "Look at what the rebasing engineer had fetched. Had they ever seen the two commits at all?"
+
+diagnostic_questions:
+  - "Where exactly are the two commits right now — deleted, or unreachable?"
+  - "Which reflog still names them, and why does the pull not remove that record?"
+  - "Why did the rebasing engineer's rebase not include them?"
+  - "What would --force-with-lease have done differently here?"
+  - "Whose repository has to be repaired, and who can do it?"
+
+method: >-
+  **1. Establish that the commits still exist before doing anything else.**
+  `git cat-file -t d5e6f70` reports `commit` and the file contents are readable
+  through it. This is a recovery, not a reconstruction, and knowing that changes
+  every subsequent decision.
+
+
+  **2. Find a reflog that still names them.** The affected engineer's own reflog
+  does: `HEAD@{1}` and `HEAD@{2}` are the two commits, recorded when they made
+  them. A `pull` adds an entry; it does not remove the earlier ones. Their
+  machine holds the only convenient record, which is worth noticing — the person
+  who lost the work is the one who can recover it.
+
+
+  **3. Give the commits a ref before anything else touches the repository.**
+  `git branch rescue d5e6f70` makes them reachable again and stops any future
+  `gc` from being a factor. Do this before experimenting.
+
+
+  **4. Work out why the rebase did not include them.** The rebasing engineer's
+  remote-tracking reflog shows their last fetch was at `a91f775` — before the two
+  commits were pushed. They rebased what they had, which genuinely did not
+  contain the missing work, and force-pushed the result over commits they had
+  never seen.
+
+
+  **5. Reintegrate rather than reset.** The remote also contains the rebased,
+  tidied history, which is real work. Rebasing the rescued commits onto the new
+  remote tip keeps both, and is what the affected engineer would have had to do
+  anyway if the push had been refused.
+
+root_cause: >-
+  **The force-push overwrote commits the pusher had never fetched.**
+
+
+  The rebasing engineer's remote-tracking reflog shows their last fetch was
+  `a91f775`. The two commits were pushed after that, so their local
+  `origin/feature` never contained them. Their rebase operated on the history
+  they had, which was complete as far as they could tell, and `--force` then
+  replaced the remote branch with it unconditionally.
+
+
+  **`--force-with-lease` would have refused.** The lease compares the remote's
+  current tip against what the pusher last fetched. Those differed — the remote
+  was at the colleague's commits, the pusher's last fetch was two commits earlier
+  — so the push would have been rejected with a message telling them to fetch.
+  That is exactly the case the lease exists for, and it was one flag away.
+
+
+  **Nothing was deleted.** The commits are objects in the affected engineer's
+  repository, unreachable after the pull moved their branch. They are also in the
+  remote's object store until it collects them. "Force-push destroyed the
+  commits" is the natural description and the wrong one: it moved a ref, and a
+  ref movement leaves objects alone.
+
+
+  **The deeper cause is a shared branch being rebased at all.** Two people
+  committing to one branch means two people hold its commits, so rewriting it is
+  the case the golden rule names. No amount of care with flags makes that
+  routinely safe — the flag would have prevented this instance, and the practice
+  is what prevents the class.
+
+resolution: >-
+  **Recover first, and give the commits a name before anything else.**
+
+
+  ```console
+  $ git branch rescue d5e6f70
+  ```
+
+
+  That makes them reachable and takes `gc` out of the picture. Confirm with
+  `git log rescue -2` that both commits are there.
+
+
+  **Then reintegrate onto the rebased history**, because the tidied history on
+  the remote is also real work and resetting to the old state would discard it:
+
+
+  ```console
+  $ git fetch
+  $ git rebase --onto origin/feature 9a1b2c3^ rescue
+  ```
+
+
+  Replay the two rescued commits onto the current remote tip, check the result,
+  and push normally. If they conflict, that is an ordinary conflict against work
+  that genuinely changed.
+
+
+  **Then fix the practice, in order of how much it prevents.**
+
+
+  **Stop rebasing shared branches.** Two committers means two holders, which is
+  precisely the case the golden rule covers. If the branch needs tidying, do it
+  when it is one person's, or squash at merge time instead.
+
+
+  **Use `--force-with-lease`, always.** It would have refused this push. Pair it
+  with fetching immediately beforehand so the lease reflects reality rather than a
+  stale idea of it. There is no situation where plain `--force` is the better
+  choice.
+
+
+  **Enable branch protection on shared branches** if the tooling allows it, since
+  a convention that only holds while everyone remembers is not a control.
+
+
+  **What not to conclude.** Not "never rebase" — the rebase itself was fine and
+  produced useful history. Not "always merge" either; that would prevent this
+  incident by preventing a capability. The specific defect is rewriting a branch
+  with more than one holder and pushing without a lease, and a rule that names
+  those two things will prevent the recurrence without costing anything else.

@@ -1,0 +1,126 @@
+topic: topic.rebase-and-replay
+
+questions:
+  - id: i1
+    level: L2
+    question: >-
+      What does a rebase actually do to the commits it rebases?
+    model_answer: >-
+      It does not move them. It replays each commit's change onto a new base and
+      writes a new commit — same change, same message, same author, new parent,
+      new committer timestamp, and therefore a new id.
+
+
+      The originals are neither modified nor deleted. They become unreachable,
+      and `ORIG_HEAD` and the reflog both still name them.
+    signal: >-
+      "It moves the commits" is the answer the name encourages. Listen for the
+      reason ids must change — the parent is part of what gets hashed — because
+      that is what makes the golden rule derivable rather than memorised.
+
+  - id: i2
+    level: L2
+    question: >-
+      Why should you not rebase a branch other people have pulled?
+    model_answer: >-
+      Because they still hold the commits you abandoned, and their branch still
+      points at them. You now have different commits containing the same changes,
+      and Git establishes relatedness by ids and parents — so it cannot tell the
+      two sets are the same work.
+
+
+      Their next pull merges both histories. They get every change twice, and the
+      conflicts are between two copies of their own work. You cannot fix it for
+      them, because the repositories needing repair are on their machines.
+    signal: >-
+      The good answer is about other people's repositories rather than about
+      danger to yourself. Candidates who say "it loses commits" have not checked
+      — nothing is lost locally, and that misconception usually comes with
+      avoiding rebase entirely.
+
+  - id: i3
+    level: L2
+    question: >-
+      During a rebase conflict, which side is "ours"?
+    model_answer: >-
+      The branch you are replaying onto — not your work. Git checks out the new
+      base and applies your commits to it, so `HEAD` is that branch, and "ours"
+      always means `HEAD`. Your own commit is "theirs".
+
+
+      It is the opposite of a merge, and the practical effect is that `git
+      checkout --ours` during a rebase discards the change being replayed.
+      `git status` names the operation in progress, which is the reliable way to
+      know which meaning is active.
+    signal: >-
+      A strong discriminator. Getting it right usually means having been burned;
+      being able to explain *why* — ours is HEAD, and a rebase moves HEAD — means
+      having understood rather than memorised.
+
+  - id: i4
+    level: L2
+    question: >-
+      You rebase and immediately regret it. What do you do?
+    model_answer: >-
+      `git reset --hard ORIG_HEAD`. It is written before any operation that moves
+      `HEAD` substantially, so straight after a rebase it names exactly where the
+      branch was.
+
+
+      If more has happened since, `git reflog` holds the same information with
+      more history. And `git branch rescue <sha>` is often better than either:
+      it names the abandoned commits so both histories exist and can be compared
+      before deciding anything.
+    signal: >-
+      Reaching for a rescue branch rather than a reset suggests real experience —
+      it is the move of someone who has wanted to look at both versions rather
+      than gamble on undo.
+
+  - id: i5
+    level: L3
+    question: >-
+      Someone says a rebase makes you resolve the same conflict once per commit.
+      Is that right?
+    model_answer: >-
+      Only conditionally, and the condition is how you resolve each one.
+
+
+      A rebase replays commits one at a time, and each lands on the tree the
+      previous one left. If you resolve toward the new base, the tree holds
+      something the next commit was not written against, so it conflicts again.
+      If you resolve toward your own change, the tree holds what the next commit
+      expects and it usually applies cleanly.
+
+
+      So the recurrence follows from the resolution rather than being automatic.
+      That matters practically: it means you can steer it, and it means someone
+      resolving toward main every time may be quietly discarding their branch's
+      work.
+    signal: >-
+      Almost everyone repeats the absolute version. A candidate who knows the
+      condition has usually watched it happen and thought about why, and the
+      follow-up about discarding the branch's work is a good sign.
+
+  - id: i6
+    level: L3
+    question: >-
+      What is the difference between `--force` and `--force-with-lease`, and what
+      does the lease not protect against?
+    model_answer: >-
+      `--force` overwrites the remote unconditionally. `--force-with-lease`
+      compares the remote's current tip against what you last fetched and refuses
+      if they differ — which catches exactly the case where somebody pushed while
+      you were rebasing.
+
+
+      What it does not protect against is a colleague who pulled an hour ago and
+      is working locally. Nothing on the remote records that, so the lease has
+      nothing to compare. Only a convention about who owns a branch covers that,
+      and a convention is not a control — branch protection is.
+
+
+      There is no case where plain `--force` is the better choice.
+    signal: >-
+      Many people know to prefer the lease. Fewer can say what it misses, and
+      that gap is where the incidents actually happen — so the second half of the
+      answer is the informative one.

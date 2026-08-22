@@ -1,0 +1,10 @@
+id: module.rebase-and-replay
+slug: rebase-and-replay
+title: Rebase and Replay
+summary: >-
+  Rebase is usually argued about as a matter of taste — linear history versus
+  honest history — which skips the part that matters: it does not move commits,
+  it creates new ones and abandons the originals. Once that is visible, every
+  rule about when rebasing is safe stops being etiquette and becomes a
+  consequence of who else is holding the commits you are about to abandon.
+order: 4
