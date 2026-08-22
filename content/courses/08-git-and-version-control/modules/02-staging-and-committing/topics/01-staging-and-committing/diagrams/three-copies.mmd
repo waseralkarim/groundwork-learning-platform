@@ -1,0 +1,22 @@
+flowchart RL
+    HEAD["<b>committed</b><br/>HEAD's tree<br/><i>objects</i>"]
+    IDX["<b>staged</b><br/>.git/index<br/><i>object id + stat cache</i>"]
+    WT["<b>working</b><br/>the filesystem<br/><i>ordinary files</i>"]
+
+    WT -->|"git add<br/><i>writes a blob now</i>"| IDX
+    IDX -->|"git commit<br/><i>builds a tree</i>"| HEAD
+
+    HEAD -.->|"git reset --mixed"| IDX
+    HEAD -.->|"git reset --hard"| WT
+
+    D1["git diff"]
+    D2["git diff --cached"]
+    D3["git diff HEAD"]
+
+    WT --- D1 --- IDX
+    IDX --- D2 --- HEAD
+    WT --- D3 --- HEAD
+
+    style D1 fill:none,stroke-dasharray: 3 3
+    style D2 fill:none,stroke-dasharray: 3 3
+    style D3 fill:none,stroke-dasharray: 3 3

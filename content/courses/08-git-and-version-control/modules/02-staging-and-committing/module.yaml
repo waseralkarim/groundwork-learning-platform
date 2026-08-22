@@ -1,0 +1,10 @@
+id: module.staging-and-committing
+slug: staging-and-committing
+title: Staging and Committing
+summary: >-
+  The index is the part of Git with no counterpart in any other tool, and it is
+  where most day-to-day confusion lives. This module treats it as what it
+  actually is — a third copy of the project, sitting between what you have
+  edited and what you have committed — and shows that `status`, `diff`, `add`
+  and `reset` are all just ways of reading or moving between those three.
+order: 2
