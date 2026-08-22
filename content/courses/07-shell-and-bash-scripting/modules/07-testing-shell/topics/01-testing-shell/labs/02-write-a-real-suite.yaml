@@ -1,0 +1,385 @@
+id: lab.write-a-real-suite
+topic: topic.testing-shell
+title: Write the suite that catches both bugs
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.9.2, OBJ-B08.9.3, OBJ-B08.9.8]
+
+intro: >-
+  You have found two bugs and an untested parameter. Now write the suite that
+  would have caught them, watch it fail against the broken script, fix the
+  script, and watch it pass.
+
+
+  Failing first is the point. A test that has never failed has not been tested.
+
+setup:
+  - /opt/lab/seed-bats.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Write /tmp/bats/real.bats covering the boundary, the empty case and the
+      DAYS argument. Run it against the unmodified script and expect failures.
+    hint: >-
+      `run` is what lets you assert on a failure. Build fixtures in
+      `$BATS_TEST_TMPDIR`.
+    walkthrough: |
+      cat > /tmp/bats/real.bats <<'B'
+      setup() {
+        WORK="$BATS_TEST_TMPDIR/work"
+        mkdir -p "$WORK"
+        for d in 6 7 8 30; do
+          touch -d "$d days ago" "$WORK/age-${d}d.log"
+        done
+      }
+
+      # --- the boundary -------------------------------------------------
+
+      @test "a file older than the window is expired" {
+        run /tmp/bats/retention.sh "$WORK"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"age-8d.log"* ]]
+      }
+
+      @test "a file inside the window is kept" {
+        run /tmp/bats/retention.sh "$WORK"
+        [[ "$output" != *"age-6d.log"* ]]
+      }
+
+      @test "a file at exactly the boundary is expired" {
+        run /tmp/bats/retention.sh "$WORK"
+        [[ "$output" == *"age-7d.log"* ]]
+      }
+
+      # --- the DAYS argument --------------------------------------------
+
+      @test "DAYS=5 expires more than the default" {
+        run /tmp/bats/retention.sh "$WORK" 5
+        [ "${#lines[@]}" -eq 4 ]
+      }
+
+      @test "DAYS=100 expires nothing" {
+        run /tmp/bats/retention.sh "$WORK" 100
+        [ -z "$output" ]
+      }
+
+      # --- the empty case -----------------------------------------------
+
+      @test "an empty directory is distinguishable from nothing expiring" {
+        empty="$BATS_TEST_TMPDIR/empty"; mkdir -p "$empty"
+        run /tmp/bats/retention.sh "$empty"
+        [ "$status" -eq 2 ]
+      }
+
+      @test "a missing directory exits 1" {
+        run /tmp/bats/retention.sh "$BATS_TEST_TMPDIR/nope"
+        [ "$status" -eq 1 ]
+      }
+      B
+
+      cd /tmp/bats
+      bats --print-output-on-failure real.bats 2>&1 | tail -30
+      echo "suite rc=$(bats real.bats >/dev/null 2>&1; echo $?)"
+    verify:
+      - type: file_exists
+        path: /tmp/bats/real.bats
+        describe: You wrote the suite
+      - type: command_exit
+        command: "cd /tmp/bats && bats real.bats >/dev/null 2>&1"
+        exit_code: 1
+        describe: And it fails against the unmodified script
+      - type: command_output
+        command: "cd /tmp/bats && bats real.bats 2>&1 | grep -c '^not ok'"
+        pattern: "[2-9]"
+        describe: With more than one failing case
+
+  - id: s2
+    instruction: >-
+      Record exactly which cases failed and what each failure told you. Save to
+      /tmp/answer-red.
+    walkthrough: |
+      cd /tmp/bats
+      {
+        echo "the run:"
+        bats --print-output-on-failure real.bats 2>&1 | sed 's/^/    /'
+        echo
+        echo "WHICH CASES FAILED, AND WHAT EACH PROVES:"
+        echo
+        echo "  'a file at exactly the boundary is expired'"
+        echo "     the seven-day file is not in the output. -mtime +7 means MORE"
+        echo "     than seven whole periods, so the window is eight days."
+        echo
+        echo "  'an empty directory is distinguishable from nothing expiring'"
+        echo "     expected rc=2, got 0. the script cannot say 'there was nothing"
+        echo "     here' as distinct from 'nothing was old enough'."
+        echo
+        echo "AND THE CASES THAT PASSED ARE INFORMATIVE TOO. the DAYS tests pass"
+        echo "against the broken script, because that parameter works - it was"
+        echo "untested, not broken. an untested path is not the same as a wrong one,"
+        echo "and writing the test is how you find out which it was."
+        echo
+        echo "note --print-output-on-failure: without it a failure shows only the"
+        echo "expression that failed, not what the output actually was."
+      } > /tmp/answer-red
+      cat /tmp/answer-red
+    verify:
+      - type: file_matches
+        path: /tmp/answer-red
+        pattern: 'not ok .*exactly the boundary'
+        describe: The boundary case fails
+      - type: file_matches
+        path: /tmp/answer-red
+        pattern: 'not ok .*empty directory'
+        describe: And the empty case
+      - type: file_matches
+        path: /tmp/answer-red
+        pattern: '(?i)untested, not broken'
+        describe: You distinguished an untested path from a wrong one
+      - type: file_matches
+        path: /tmp/answer-red
+        pattern: '(?i)print-output-on-failure'
+        describe: And noted what the flag buys
+
+  - id: s3
+    instruction: >-
+      Fix retention.sh so the suite passes, without weakening any test. Save your
+      reasoning to /tmp/answer-green2.
+    hint: >-
+      One fix is the boundary predicate. The other is an exit status the caller
+      can act on.
+    walkthrough: |
+      cat > /tmp/bats/retention.sh <<'R'
+      #!/bin/bash
+      # Decide which files in a directory are past their retention window.
+      #
+      # Exit status is the interface:
+      #   0  something expired, and is listed on stdout
+      #   1  the directory is missing or unreadable
+      #   2  the directory exists and nothing expired
+      set -uo pipefail
+
+      DIR=${1:?usage: retention.sh DIR [DAYS]}
+      DAYS=${2:-7}
+
+      if [ ! -d "$DIR" ]; then
+        echo "retention: not a directory: $DIR" >&2
+        exit 1
+      fi
+
+      # ! -newermt compares against a real moment, with no truncation to whole
+      # days — so "older than $DAYS days" means exactly that. B08.4 measured why
+      # -mtime +N is one day wider than it reads.
+      found=$(find "$DIR" -maxdepth 1 -type f ! -newermt "-$DAYS days" -print) || exit 1
+
+      [ -n "$found" ] || exit 2
+      printf '%s\n' "$found"
+      R
+      chmod 0755 /tmp/bats/retention.sh
+
+      cd /tmp/bats
+      {
+        echo "the fixed suite:"
+        bats real.bats 2>&1 | sed 's/^/    /'
+        echo "    suite rc=$(bats real.bats >/dev/null 2>&1; echo $?)"
+        echo
+        echo "TWO CHANGES."
+        echo
+        echo "1. ! -newermt \"-\$DAYS days\" instead of -mtime \"+\$DAYS\"."
+        echo "   -mtime truncates to whole 24-hour periods and + means strictly"
+        echo "   greater, which together cost a full day. -newermt compares against"
+        echo "   a real moment, so the boundary means what the policy says."
+        echo
+        echo "2. an exit status a caller can act on:"
+        echo "     0  something expired, listed on stdout"
+        echo "     1  the directory is missing or unreadable"
+        echo "     2  the directory is fine and nothing expired"
+        echo
+        echo "   the old script returned find's status, and find succeeds when it"
+        echo "   matches nothing - so a caller could not tell a quiet night from a"
+        echo "   vanished directory."
+        echo
+        echo "and the old suite still passes:"
+        bats first.bats 2>&1 | tail -4 | sed 's/^/    /'
+        echo
+        echo "which matters. THE FIX DID NOT BREAK THE BEHAVIOUR THE ORIGINAL TESTS"
+        echo "DESCRIBED - they were true statements about the script, just not"
+        echo "enough of them."
+      } > /tmp/answer-green2
+      cat /tmp/answer-green2
+    verify:
+      - type: command_exit
+        command: "cd /tmp/bats && bats real.bats >/dev/null 2>&1"
+        exit_code: 0
+        describe: The new suite passes
+      - type: command_exit
+        command: "cd /tmp/bats && bats first.bats >/dev/null 2>&1"
+        exit_code: 0
+        describe: And the original suite still does
+      - type: file_matches
+        path: /tmp/answer-green2
+        pattern: 'newermt'
+        describe: You fixed the boundary with a real moment
+      - type: file_matches
+        path: /tmp/answer-green2
+        pattern: '(?i)DID NOT BREAK THE BEHAVIOUR'
+        describe: And noted the original tests still hold
+
+  - id: s4
+    instruction: >-
+      Prove the boundary fix by measuring it, rather than trusting the suite.
+      Save to /tmp/answer-proof.
+    walkthrough: |
+      W=/tmp/proof; rm -rf "$W"; mkdir -p "$W"
+      for d in 6 7 8; do touch -d "$d days ago" "$W/age-${d}d.log"; done
+      {
+        echo "files at 6, 7 and 8 days, policy of 7:"
+        echo
+        printf '  %-14s %s\n' "expired:" "$(/tmp/bats/retention.sh "$W" | sed "s|$W/||" | tr '\n' ' ')"
+        echo
+        echo "the seven-day file is now expired, which is what a seven-day policy"
+        echo "means. under the old predicate it was kept for another full day."
+        echo
+        echo "and the statuses now carry information:"
+        E=/tmp/proof-empty; rm -rf "$E"; mkdir -p "$E"
+        printf '  %-28s rc=%s\n' "something expired" "$(/tmp/bats/retention.sh "$W" >/dev/null 2>&1; echo $?)"
+        printf '  %-28s rc=%s\n' "nothing expired (empty dir)" "$(/tmp/bats/retention.sh "$E" >/dev/null 2>&1; echo $?)"
+        printf '  %-28s rc=%s\n' "directory missing" "$(/tmp/bats/retention.sh /nope >/dev/null 2>&1; echo $?)"
+        echo
+        echo "a caller can now write:"
+        echo "    if retention.sh \"\$DIR\" | xargs -r rm --; then"
+        echo "      log \"pruned\""
+        echo "    elif [ \$? -eq 2 ]; then"
+        echo "      log \"nothing to prune\""
+        echo "    else"
+        echo "      alert \"retention could not read \$DIR\""
+        echo "    fi"
+        echo
+        echo "which is the point of an exit status: it is the only part of a"
+        echo "script's output that another program can act on without parsing."
+      } > /tmp/answer-proof
+      cat /tmp/answer-proof
+    verify:
+      - type: file_matches
+        path: /tmp/answer-proof
+        pattern: 'age-7d.log'
+        describe: The seven-day file is now expired
+      - type: file_matches
+        path: /tmp/answer-proof
+        pattern: 'nothing expired \(empty dir\) +rc=2'
+        describe: And an empty directory reports 2
+      - type: file_matches
+        path: /tmp/answer-proof
+        pattern: 'directory missing +rc=1'
+        describe: And a missing one reports 1
+      - type: file_matches
+        path: /tmp/answer-proof
+        pattern: '(?i)without parsing'
+        describe: And you said why the status matters
+
+  - id: s5
+    instruction: >-
+      Say what this suite is worth and where it stops. Save to
+      /tmp/answer-limits.
+    walkthrough: |
+      {
+        echo "WHAT IT ESTABLISHES:"
+        echo "  - the boundary falls where the policy says"
+        echo "  - the DAYS argument changes behaviour, in both directions"
+        echo "  - the three exit statuses mean three different things"
+        echo "  - a missing directory is refused rather than silently skipped"
+        echo
+        echo "WHERE IT STOPS - and being explicit about this is the point:"
+        echo
+        echo "  IT DOES NOT DELETE ANYTHING. retention.sh only LISTS. whatever"
+        echo "  consumes that list is where the data actually gets lost, and none"
+        echo "  of this tests it. the riskiest line is in a caller nobody wrote a"
+        echo "  suite for."
+        echo
+        echo "  IT PROVES NOTHING ABOUT TIMEZONES OR DST. touch -d and find agree"
+        echo "  here because they share a clock; a policy expressed in local time"
+        echo "  and evaluated on a UTC host is a bug this suite cannot see."
+        echo
+        echo "  IT PROVES NOTHING ABOUT SCALE. a directory with a million files"
+        echo "  behaves differently, and the fixture has four."
+        echo
+        echo "  IT CANNOT SEE TONIGHT. no test knows the disk filled up, the mount"
+        echo "  went read-only, or the directory now holds someone else's data."
+        echo "  that is what a PRODUCTION ASSERTION is for, and it is a different"
+        echo "  tool from a test:"
+        echo "      A TEST PROVES THE SCRIPT IS RIGHT."
+        echo "      AN ASSERTION PROVES THE RUN WAS."
+        echo
+        echo "so I would ship this suite AND an assertion in the caller - that the"
+        echo "number of files removed matches the number listed, and that the"
+        echo "directory is not empty afterwards when it was not empty before."
+      } > /tmp/answer-limits
+      cat /tmp/answer-limits
+    verify:
+      - type: file_matches
+        path: /tmp/answer-limits
+        pattern: '(?i)DOES NOT DELETE ANYTHING'
+        describe: You named what the suite does not cover
+      - type: file_matches
+        path: /tmp/answer-limits
+        pattern: '(?i)TIMEZONES OR DST'
+        describe: And a class of bug it structurally cannot see
+      - type: file_matches
+        path: /tmp/answer-limits
+        pattern: '(?i)AN ASSERTION PROVES THE RUN WAS'
+        describe: And distinguished a test from an assertion
+
+solution: >-
+  **Write the tests so they fail first.** A test that has never failed has not
+  been tested — it may be asserting something that is true no matter what the
+  code does.
+
+
+  The suite covers what the original missed: a file **at exactly the boundary**,
+  the **`DAYS` argument** in both directions, and the **empty directory** as
+  distinct from nothing expiring.
+
+
+  **Two cases fail against the unmodified script**, and one detail of the run is
+  as instructive as the failures: the `DAYS` tests **pass**. That parameter
+  worked all along — it was *untested*, not *broken*. An untested path is not the
+  same as a wrong one, and writing the test is how you find out which it was.
+
+
+  **The fix is two changes:**
+
+
+  ```bash
+  found=$(find "$DIR" -maxdepth 1 -type f ! -newermt "-$DAYS days" -print) || exit 1
+  [ -n "$found" ] || exit 2
+  printf '%s\n' "$found"
+  ```
+
+
+  `! -newermt` compares against a real moment with no truncation, so the boundary
+  means what the policy says — `-mtime +N` truncates to whole days *and* `+` is
+  strictly greater, which together cost a full day. And the exit status becomes
+  an interface: **0** something expired, **1** the directory is missing, **2**
+  nothing expired.
+
+
+  **The original suite still passes**, which matters: the fix did not break the
+  behaviour those tests described. They were true statements about the script,
+  just not enough of them.
+
+
+  **Where the suite stops**, stated deliberately:
+
+
+  - **It does not delete anything.** `retention.sh` only lists; the caller that
+    consumes the list is where data is actually lost, and nothing here tests it.
+  - **Nothing about timezones or DST** — `touch -d` and `find` share a clock here.
+  - **Nothing about scale** — the fixture has four files.
+  - **It cannot see tonight.** No test knows the disk filled or the mount went
+    read-only.
+
+
+  **A test proves the script is right; an assertion proves the run was.** Ship
+  both.
