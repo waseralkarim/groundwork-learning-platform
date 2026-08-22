@@ -1,0 +1,152 @@
+id: troubleshooting.the-fix-that-was-not-in-the-commit
+topic: topic.staging-and-committing
+title: The fix that was not in the commit
+level: L3
+objectives: [OBJ-B10.2.5, OBJ-B10.2.7]
+reveal_policy: progressive
+
+situation: >-
+  A pool-exhaustion incident is traced to a connection timeout of 30 seconds.
+  An engineer raises the value, tests locally, confirms the pool recovers, and
+  opens a pull request. It is reviewed, approved and merged.
+
+
+  Three days later the same incident happens again. The engineer insists the fix
+  went in, and can show you their terminal history and a local test run proving
+  it worked.
+
+
+  Production is still running with a 30-second timeout.
+
+
+  The change was two edits to one file — the timeout, and a debug line they
+  added while investigating and later removed. They used `git add -p` to keep
+  the debug line out of the commit, which is exactly what they were taught to do.
+
+
+  Work out what is in the commit, and why nobody caught it.
+
+symptoms:
+  - "The same incident recurs three days after a merged fix"
+  - "The engineer can demonstrate the fix working on their machine"
+  - "The pull request was reviewed and approved"
+  - "CI passed on the merge commit"
+  - "Production behaviour is unchanged from before the fix"
+
+artifacts:
+  - type: config
+    label: What the engineer says they changed
+    content: |
+      -pool.timeout = 30
+      +pool.timeout = 90
+
+      # and a debug line, added then removed:
+      -log.debug("pool state: %s", pool.stats())
+
+  - type: command_output
+    label: What the merged commit actually contains
+    content: |
+      $ git show --stat HEAD
+       config.py | 1 -
+       1 file changed, 1 deletion(-)
+
+      $ git show HEAD
+      -    log.debug("pool state: %s", pool.stats())
+
+  - type: command_output
+    label: The engineer's terminal, reconstructed
+    content: |
+      $ vim config.py                    # raised timeout to 90, added debug line
+      $ python -m pytest                 # passed, pool recovered
+      $ vim config.py                    # removed the debug line
+      $ git add -p config.py             # 2 hunks offered; answered y then n
+      $ git commit -m "raise pool timeout"
+      $ git push
+
+  - type: command_output
+    label: What status showed at the time, had anyone looked
+    content: |
+      $ git status --short
+      MM config.py
+
+hints:
+  - "The commit contains one deletion and no addition. What kind of change is a pure deletion?"
+  - "`git add -p` offers hunks in file order. Which of the two changes comes first in config.py?"
+  - "`MM` has two columns. The second one was reporting something the whole time."
+
+root_cause: >-
+  **The engineer answered `y` to the wrong hunk.**
+
+
+  `git add -p` presents hunks in file order, not in the order you made the
+  changes. The debug line sat earlier in `config.py` than the timeout, so hunk 1
+  was *removing the debug line* and hunk 2 was *raising the timeout*. Answering
+  `y` then `n` staged the debug-line removal and left the actual fix unstaged.
+
+
+  The commit therefore contains exactly one deletion and no addition, which is
+  visible in `git show --stat`: `1 file changed, 1 deletion(-)`. A fix that
+  raises a value cannot be a pure deletion, and that alone identifies the
+  problem without reading a line of the diff.
+
+
+  Every check that should have caught it was looking somewhere else:
+
+
+  **The engineer's test run was real, and irrelevant.** It ran against the
+  working tree, which did have the fix. The commit was built from the index,
+  which did not. Testing before staging tells you nothing about what you staged.
+
+
+  **CI passed, and was also testing the wrong thing** — though not in the way
+  people assume. CI tested the commit, correctly. The commit simply removes a
+  debug line, which breaks nothing. A green build is evidence the commit is
+  harmless, not evidence it does anything.
+
+
+  **The review saw the diff and approved it.** This is the failure worth sitting
+  with: a reviewer reading `- log.debug(...)` under the title "raise pool
+  timeout" had everything needed to notice, and did not. Reviewers check whether
+  a diff is correct far more reliably than whether it is *complete*.
+
+
+  **`git status` reported it the entire time.** `MM` means staged changes *and*
+  further unstaged changes to the same file. The second column was saying "there
+  is more here that you are not committing" at every step, including immediately
+  before `git push`.
+
+resolution: >-
+  **Immediately:** the fix is still on the engineer's disk, unstaged, unless
+  they have since run something destructive. `git diff` will show it. Stage it,
+  commit it, and ship it — then confirm in production rather than locally,
+  because the whole failure was trusting a local state that was not what
+  shipped.
+
+
+  **The one-command habit.** Before committing a partial stage, run `git diff`.
+  It compares the working tree against the index, so an empty result means the
+  commit matches your disk and your local testing applies to it. A non-empty
+  result means it does not. In this case `git diff` would have printed the
+  timeout change — the entire fix — under the heading "not going in".
+
+
+  **Make it unavoidable rather than remembered.** `git commit -v` puts the
+  staged diff in the message editor, so the engineer would have been writing
+  "raise pool timeout" directly above a diff containing no timeout change.
+
+
+  **Test what you staged, not what you have.** `git stash push --keep-index`
+  leaves only the staged state on disk. Running the suite then tests exactly
+  what will be committed, and would have failed here.
+
+
+  **In review, ask a different question.** "Is this diff correct?" and "does
+  this diff do what the title says?" are different questions, and only the second
+  catches an incomplete change. A one-line deletion under a title promising a
+  behaviour change should not survive review.
+
+
+  **What not to conclude.** The lesson is not "avoid `git add -p`". It produced
+  exactly the commit it was told to, and single-idea commits are worth having.
+  The lesson is that partial staging creates a state nothing has run, so it needs
+  one check — and the check costs a second.
