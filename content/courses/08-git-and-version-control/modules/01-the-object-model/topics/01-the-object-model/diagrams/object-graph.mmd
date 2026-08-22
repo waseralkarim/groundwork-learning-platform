@@ -1,0 +1,34 @@
+flowchart RL
+    C1["commit 87c806b<br/><i>Open the ledger</i>"]
+    C2["commit 8333d4b<br/><i>Record the first deposit</i>"]
+    C3["commit a3a4fb1<br/><i>Add accounts payable</i>"]
+
+    T1["tree"]
+    T2["tree"]
+    T3["tree"]
+    TA["tree accounts/"]
+
+    BL["blob LICENSE<br/>2044b72a"]
+    B1["blob balance.txt<br/>6c03eb3c"]
+    B2["blob balance.txt<br/>c2014dda"]
+    B3["blob balance.txt<br/>b2875d05"]
+    BP["blob payable.txt"]
+
+    C3 -->|parent| C2
+    C2 -->|parent| C1
+
+    C1 --> T1
+    C2 --> T2
+    C3 --> T3
+
+    T1 --> BL
+    T2 --> BL
+    T3 --> BL
+
+    T1 --> B1
+    T2 --> B2
+    T3 --> B3
+    T3 --> TA
+    TA --> BP
+
+    style BL fill:#2d6a4f,color:#fff
