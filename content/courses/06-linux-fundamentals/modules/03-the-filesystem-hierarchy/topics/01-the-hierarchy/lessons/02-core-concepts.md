@@ -30,7 +30,7 @@ $ du -sh /usr/* | sort -rh | head -4
 ```
 
 306 MB of a roughly 320 MB image. **The image essentially is `/usr`.** That is
-worth holding next to what B06.2 measured: 17 packages requested, 162 installed,
+worth holding next to what B06.2 measured: 17 packages requested, 163 installed,
 and this is where all of them landed.
 
 Because nothing under `/usr` changes while the system runs, it can be mounted

@@ -147,7 +147,7 @@ that the residue is small enough for a human to read.
 - **Ask the machine, not your memory.** `dpkg -S` on a path is faster than any
   reasoning about where files come from, and it is correct.
 - **The gap between requested and installed is the real size of a decision.**
-  Sixteen became 162 here. That ratio is normal.
+  Seventeen became 163 here. That ratio is normal.
 - **`Recommends` is not a dependency**, and every minimal image has quietly
   dropped some.
 - **Simulate removals.** `apt-get -s` costs nothing and works unprivileged.

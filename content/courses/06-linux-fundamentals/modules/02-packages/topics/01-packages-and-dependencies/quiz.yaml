@@ -232,7 +232,7 @@ questions:
     level: L2
     objectives: [OBJ-B06.2.4]
     stem: >-
-      A Dockerfile names 16 packages and the resulting image has 162 installed.
+      A Dockerfile names 17 packages and the resulting image has 163 installed.
       What is the best reading of that?
     options:
       - id: a

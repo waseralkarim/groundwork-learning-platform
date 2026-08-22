@@ -169,7 +169,7 @@ questions:
           Even with software installed there, no package would own it — packages
           are forbidden from shipping files under that path.
     explanation: >-
-      Across all 162 packages on the lab image, exactly zero ship a file under
+      Across all 163 packages on the lab image, exactly zero ship a file under
       `/usr/local` or `/opt`. The directories are created by a maintainer script
       — `base-files.postinst` has a function literally named `install_local_dir`
       — so they exist for you to use while nothing owns them. The payoff is

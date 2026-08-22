@@ -1,6 +1,6 @@
 id: lab.the-closure
 topic: topic.packages-and-dependencies
-title: Trace 16 requested packages into 162, and find what was skipped
+title: Trace 17 requested packages into 163, and find what was skipped
 type: guided
 tier: 2
 image: groundwork/lab-foundations:1
@@ -8,8 +8,8 @@ duration_minutes: 30
 objectives: [OBJ-B06.2.3, OBJ-B06.2.4]
 
 intro: >-
-  This image's Dockerfile names seventeen packages. The machine has considerably
-  more than seventeen packages on it, and the difference was computed at install
+  This image's Dockerfile names eighteen packages. The machine has considerably
+  more than eighteen packages on it, and the difference was computed at install
   time and written down.
 
 
@@ -37,7 +37,7 @@ steps:
         echo "what somebody actually asked for:"
         apt-mark showmanual | tr '\n' ' ' | fold -s -w 68 | sed 's/^/  /'
         echo
-        echo "that list is nearly the Dockerfile's apt-get install line, which names 17. util-linux is the missing one: it was asked for, was already installed as part of the base system, and is recorded as AUTOMATIC. the record describes what the package manager did, not a transcript of what i typed."
+        echo "that list is nearly the Dockerfile's apt-get install line, which names 18. util-linux is the missing one: it was asked for, was already installed as part of the base system, and is recorded as AUTOMATIC. the record describes what the package manager did, not a transcript of what i typed."
         echo
         echo "everything else - 146 packages - arrived as a consequence, and the system recorded which is which."
         echo
@@ -45,13 +45,13 @@ steps:
       } > /tmp/answer-gap
       cat /tmp/answer-gap
     verify:
-      - type: file_matches
-        path: /tmp/answer-gap
-        pattern: "asked for: 16"
+      - type: command_output
+        command: "sed -n 's/^asked for: //p' /tmp/answer-gap"
+        equals_command: "apt-mark showmanual | wc -l"
         describe: You found how many packages were requested
-      - type: file_matches
-        path: /tmp/answer-gap
-        pattern: "pulled in: 146"
+      - type: command_output
+        command: "sed -n 's/^pulled in: //p' /tmp/answer-gap"
+        equals_command: "apt-mark showauto | wc -l"
         describe: And how many arrived as a consequence
       - type: file_matches
         path: /tmp/answer-gap
@@ -249,13 +249,13 @@ solution: >-
 
   ```console
   $ apt-mark showmanual | wc -l
-  16
+  17
   $ apt-mark showauto | wc -l
   146
   ```
 
 
-  Sixteen asked for, 146 as a consequence. The system records which is which,
+  Eighteen asked for, 146 as a consequence. The system records which is which,
   and that is what makes `autoremove` possible — a package marked automatic with
   nothing depending on it can go, because nobody ever asked for it.
 

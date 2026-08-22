@@ -149,7 +149,7 @@ steps:
         dpkg-query -W -f='${Package} ${Essential}\n' | grep ' yes$' | cut -d' ' -f1 |
           tr '\n' ' ' | fold -s -w 66 | sed 's/^/  /'
         echo
-        echo "priorities across all 162:"
+        echo "priorities across all 163:"
         dpkg-query -W -f='${Priority}\n' | sort | uniq -c | sed 's/^/  /'
         echo
         echo "what the essential set has in common: it is everything the rest of the system assumes without declaring. no package declares a dependency on bash or coreutils or tar, because doing so would be noise - they are axioms."

@@ -46,7 +46,7 @@ will notice if it changes, and nothing on the machine records that it exists.
 of being able to answer questions about them afterwards. Every file outside it
 is a file you have quietly agreed to answer those questions about yourself.
 
-:::predict{question="On the machine you are about to work on, 17 packages were named in the Dockerfile. How many packages do you think are actually installed?"}
+:::predict{question="On the machine you are about to work on, 18 packages were named in the Dockerfile. How many packages do you think are actually installed?"}
 :::
 
 ## A package is a manifest first
@@ -70,22 +70,22 @@ tampered with — because somebody wrote it down at packaging time.
 
 ## The number nobody expects
 
-This container's Dockerfile names seventeen packages, sixteen of which the
+This container's Dockerfile names eighteen packages, seventeen of which the
 system records as deliberately installed. Count what is actually here:
 
 ```console
 $ dpkg-query -W -f='${Package}\n' | wc -l
-162
+163
 ```
 
-Sixteen are recorded as requested. **One hundred and forty-six arrived as a
+Seventeen are recorded as requested. **One hundred and forty-six arrived as a
 consequence.** The system records which is which, and that distinction is what
 makes it possible to remove something later without guessing.
 
 That ratio is not waste, and it is not an accident. It is what "install curl"
 actually means once you are honest about it — and if you have ever wondered why
-a container image is 180 MB when you installed four things, the gap between 16
-and 162 is the entire answer.
+a container image is 180 MB when you installed four things, the gap between 17
+and 163 is the entire answer.
 
 ## Where this goes wrong in production
 
@@ -114,7 +114,7 @@ somebody who knows which question to ask.
 Four labs on the real system underneath you:
 
 - Follow file ownership in both directions, and find out what `awk` is doing.
-- Trace 16 requested packages into 162 installed ones, and find the dependency
+- Trace 17 requested packages into 163 installed ones, and find the dependency
   that was skipped.
 - Simulate removals until you find one the system refuses, and work out why.
 - Run the integrity check, get **4,634 findings**, and identify the one that

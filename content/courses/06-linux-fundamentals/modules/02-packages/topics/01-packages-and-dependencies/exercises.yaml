@@ -89,17 +89,17 @@ exercises:
       somebody following good advice.
 
   - id: e3
-    title: Explain a 16-to-162 ratio to a sceptical reviewer
+    title: Explain a 17-to-163 ratio to a sceptical reviewer
     level: L2
     objectives: [OBJ-B06.2.4]
     kind: short_answer
     prompt: >-
-      A reviewer sees that your image installs 16 packages and contains 162, and
+      A reviewer sees that your image installs 17 packages and contains 163, and
       asks you to remove the 146 that were not requested. What do you say, and
       what would you actually do to make the image smaller?
     answer: >-
       *They cannot be removed, because they are requirements rather than extras.
-      The 146 are the dependency closure of the 16 — computed at install time,
+      The 146 are the dependency closure of the 17 — computed at install time,
       not added by accident. `apt-get -s remove` on any of them shows what would
       go with it, and in most cases the answer includes something we asked for.*
 
