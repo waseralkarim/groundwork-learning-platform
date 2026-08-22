@@ -1,0 +1,283 @@
+id: lab.rebase-makes-new-commits
+topic: topic.rebase-and-replay
+title: Rebase a branch and go looking for the commits it replaced
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.4.1, OBJ-B10.4.2]
+
+intro: >-
+  The word "rebase" suggests moving. You will record two commit ids, rebase the
+  branch, and find that both ids have changed — and that the originals are still
+  sitting in the object store with their contents intact, reachable by nothing.
+
+
+  Once that is visible, the rule about not rebasing shared history stops being
+  advice and becomes arithmetic about who is holding those abandoned objects.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Build a branch with two commits on it and `main` moved on separately.
+      Record both branch commit ids before doing anything else. Save to
+      /tmp/answer-before.
+    hint: >-
+      Keep the changes far apart in the file so nothing conflicts — this lab is
+      about ids, not about conflicts.
+    walkthrough: |
+      rm -rf /tmp/rb; mkdir -p /tmp/rb; cd /tmp/rb
+      git init -q
+      seq 1 20 | sed 's/^/line /' > f.txt
+      git add -A && git commit -q -m base
+      git checkout -q -b feature
+      sed -i '5s/.*/line 5 FEATURE-A/' f.txt && git commit -q -am "feat A"
+      sed -i '6s/.*/line 6 FEATURE-B/' f.txt && git commit -q -am "feat B"
+      git rev-parse HEAD~1 > /tmp/.old-a
+      git rev-parse HEAD   > /tmp/.old-b
+      git checkout -q main
+      sed -i '20s/.*/line 20 MAIN/' f.txt && git commit -q -am "main work"
+      git checkout -q feature
+      {
+        echo "the two commits on feature, before any rebase:"
+        echo "  feat A: $(cat /tmp/.old-a)"
+        echo "  feat B: $(cat /tmp/.old-b)"
+        echo
+        echo "and main has moved on separately:"
+        git log --oneline --all --graph | sed 's/^/  /'
+      } > /tmp/answer-before
+      cat /tmp/answer-before
+    verify:
+      - type: command_output
+        command: "cd /tmp/rb && git rev-list --count feature"
+        equals: "3"
+        describe: You built a branch with two commits of its own
+      - type: file_matches
+        path: /tmp/answer-before
+        pattern: "feat A: [0-9a-f]{40}"
+        describe: And recorded the ids before touching anything
+
+  - id: s2
+    instruction: >-
+      Rebase `feature` onto `main`, then compare the ids against what you
+      recorded. Save to /tmp/answer-after.
+    hint: >-
+      Nothing should conflict. Compare each new id against the matching old one.
+    walkthrough: |
+      cd /tmp/rb
+      git rebase -q main 2>/dev/null
+      {
+        echo "after rebasing onto main:"
+        echo "  feat A was: $(cat /tmp/.old-a)"
+        echo "  feat A now: $(git rev-parse HEAD~1)"
+        echo "  feat B was: $(cat /tmp/.old-b)"
+        echo "  feat B now: $(git rev-parse HEAD)"
+        echo
+        echo "both changed. nothing was moved - these are NEW commits."
+        echo
+        echo "why they had to change: a commit's id hashes its contents, and its"
+        echo "contents include the parent. put a commit on a different parent and"
+        echo "you have computed a different name, which means a different object."
+        echo
+        echo "the changes, messages and authors are the same. the objects are not."
+      } > /tmp/answer-after
+      cat /tmp/answer-after
+    verify:
+      - type: command_output
+        command: "cd /tmp/rb && [ \"$(git rev-parse HEAD)\" = \"$(cat /tmp/.old-b)\" ] && echo same || echo different"
+        equals: "different"
+        describe: The tip commit has a different id after the rebase
+      - type: file_matches
+        path: /tmp/answer-after
+        pattern: "(?i)include the parent|different object"
+        describe: And you explained why it had to change
+
+  - id: s3
+    instruction: >-
+      Go and find the two original commits. Are they gone? Save what you find to
+      /tmp/answer-originals.
+    hint: >-
+      You saved their ids. Try `git cat-file` on them, then ask whether anything
+      still points at them.
+    walkthrough: |
+      cd /tmp/rb
+      A=$(cat /tmp/.old-a); B=$(cat /tmp/.old-b)
+      {
+        echo "the originals, by id:"
+        echo "  type of feat A: $(git cat-file -t $A)"
+        echo "  type of feat B: $(git cat-file -t $B)"
+        echo
+        echo "still readable through them:"
+        echo "  line 5 in the old feat B: $(git cat-file -p $B:f.txt | sed -n 5p)"
+        echo "  line 6 in the old feat B: $(git cat-file -p $B:f.txt | sed -n 6p)"
+        echo
+        echo "does any branch or tag reach them?"
+        echo "  reachable from refs: $(git rev-list --all | grep -c $B)"
+        echo
+        echo "so: not modified, not deleted, and not reachable. abandoned."
+        echo
+        echo "which is the whole of the golden rule. if a colleague had pulled"
+        echo "these commits, they still have them, and their branch still points"
+        echo "at them. i now have two different commits containing the same"
+        echo "changes, and git has no way to know the two sets are related."
+      } > /tmp/answer-originals
+      cat /tmp/answer-originals
+    verify:
+      - type: command_output
+        command: "cd /tmp/rb && git cat-file -t $(cat /tmp/.old-b)"
+        equals: "commit"
+        describe: The original commit is still in the object store
+      - type: file_matches
+        path: /tmp/answer-originals
+        pattern: "reachable from refs: 0"
+        describe: And nothing points at it any more
+      - type: file_matches
+        path: /tmp/answer-originals
+        pattern: "line 6 FEATURE-B"
+        describe: And its contents are still readable
+      - type: file_matches
+        path: /tmp/answer-originals
+        pattern: "(?i)no way to know the two sets are related"
+        describe: And you stated what that means for a colleague
+
+  - id: s4
+    instruction: >-
+      Show that the author survives a rebase while the committer does not. Save
+      to /tmp/answer-dates.
+    hint: >-
+      You need a commit whose original dates are clearly in the past — set both
+      `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE` when you make it, or the
+      before-and-after readings will look identical.
+    walkthrough: |
+      rm -rf /tmp/dt; mkdir -p /tmp/dt; cd /tmp/dt
+      git init -q
+      echo a > f.txt && git add -A && git commit -q -m base
+      git checkout -q -b feat
+      echo b > f.txt
+      GIT_AUTHOR_DATE="2024-01-15T09:00:00" GIT_COMMITTER_DATE="2024-01-15T09:00:00" \
+        git commit -q -am "written in january"
+      git checkout -q main
+      echo c > g.txt && git add -A && git commit -q -m "later work"
+      git checkout -q feat
+      {
+        echo "before rebase:"
+        echo "  author:    $(git log -1 --format=%ad --date=short)"
+        echo "  committer: $(git log -1 --format=%cd --date=short)"
+        git rebase -q main 2>/dev/null
+        echo "after rebase:"
+        echo "  author:    $(git log -1 --format=%ad --date=short)"
+        echo "  committer: $(git log -1 --format=%cd --date=short)"
+        echo
+        echo "the author is who wrote the change and when. the committer is who"
+        echo "created THIS OBJECT and when - and a rebase creates new objects."
+        echo
+        echo "which is why git log after a rebase shows old dates on commits that"
+        echo "are seconds old, and why 'when did this land' and 'when was this"
+        echo "written' are different questions with different answers."
+        echo
+        echo "note: both dates had to be pinned to make this visible. pinning only"
+        echo "the author date shows the same value before and after, and proves"
+        echo "nothing."
+      } > /tmp/answer-dates
+      cat /tmp/answer-dates
+    verify:
+      - type: command_output
+        command: "cd /tmp/dt && git log -1 --format=%ad --date=short"
+        equals: "2024-01-15"
+        describe: The author date survived the rebase
+      - type: command_output
+        command: "cd /tmp/dt && [ \"$(git log -1 --format=%cd --date=short)\" = \"2024-01-15\" ] && echo unchanged || echo rewritten"
+        equals: "rewritten"
+        describe: And the committer date did not
+      - type: file_matches
+        path: /tmp/answer-dates
+        pattern: "(?i)created THIS OBJECT"
+        describe: And you explained the difference between the two fields
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-rule what you would tell a colleague who says
+      "rebasing is dangerous, it loses commits".
+    hint: >-
+      You have just shown what happens to the originals. Be precise about what
+      is actually at risk, because something is.
+    walkthrough: |
+      cat > /tmp/answer-rule <<'EOF'
+      rebasing does not lose commits, and i can show it: after rebasing, both
+      original commits were still in the object store, their file contents still
+      readable through them. they were unreachable, not gone, and ORIG_HEAD names
+      exactly where the branch was.
+
+      so on a branch nobody else has, rebase is completely safe. reorder, squash,
+      reword - the worst case is one reset --hard ORIG_HEAD.
+
+      what IS at risk is different and worth stating precisely:
+
+        - uncommitted work. it has no object behind it, so nothing can recover
+          it. commit or stash before starting. this is the same hazard as
+          reset --hard and has nothing to do with rebase specifically.
+
+        - other people's copies. if a colleague pulled the commits i just
+          abandoned, they still have them and their branch still points at them.
+          i now hold different commits containing the same changes, and git
+          cannot tell the two sets are related - so their next pull produces a
+          history with both, and conflicts between two copies of their own work.
+
+      that second one is the entire golden rule, and it is not about danger to me.
+      it is about work other people have to do because of something i did. i
+      cannot undo it from my machine, because the objects that need repairing are
+      on theirs.
+
+      so the rule is not "be careful with rebase". it is "do not rebase commits
+      anyone else has" - a question about who is holding them, which has a
+      definite answer.
+      EOF
+      cat /tmp/answer-rule
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)unreachable, not gone"
+        describe: You corrected the claim precisely
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)uncommitted work"
+        describe: And named the hazard that is real
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)who is holding them"
+        describe: And restated the rule as a question with an answer
+
+solution: >-
+  **Both ids change, because a parent is part of a commit's identity.** A commit
+  replayed onto a different base is a different object — same change, same
+  message, same author, new name. Nothing was moved.
+
+
+  **The originals are still there.** `git cat-file -t` reports `commit`, their
+  file contents are still readable through them, and `git rev-list --all` finds
+  **zero** references to them. Not modified, not deleted, not reachable —
+  abandoned.
+
+
+  **The author survives and the committer does not.** The author is who wrote
+  the change and when; the committer is who created *this object* and when. A
+  rebase creates new objects, so `git log` afterwards shows January dates on
+  commits that are seconds old.
+
+
+  Demonstrating that needs **both** dates pinned when the original commit is
+  made. With only `GIT_AUTHOR_DATE` set, the before and after readings are
+  identical and the experiment proves nothing — a check that runs, passes, and
+  establishes no fact.
+
+
+  **Which makes the golden rule arithmetic rather than advice.** Rebasing loses
+  nothing of yours: the objects survive and `ORIG_HEAD` undoes it. What it does
+  is abandon commits — and if somebody else is holding those commits, their
+  branch still points at them while yours points at different objects containing
+  the same changes. Git cannot tell the two sets are related, so their next pull
+  produces both. You cannot fix that from your machine, because the repositories
+  that need repairing are not yours.
