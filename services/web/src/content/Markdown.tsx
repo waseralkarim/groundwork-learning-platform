@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Children, isValidElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkDirective from "remark-directive";
 import remarkGfm from "remark-gfm";
@@ -144,7 +144,18 @@ function componentsFor(topicSlug?: string): Components {
     h3: ({ children }) => (
       <h3 className="mb-2 mt-8 scroll-mt-24 text-base font-semibold">{children}</h3>
     ),
-    p: ({ children }) => <p className="mb-4 leading-[1.75]">{children}</p>,
+    // A directive sitting on its own line inside another directive's body is
+    // wrapped in a paragraph by remark — and our directive components render
+    // block elements, so that produces <div> inside <p>. That is invalid HTML
+    // and React reports it as a hydration error. When a paragraph contains a
+    // component rather than plain inline content, drop the <p> and render the
+    // children directly; the component brings its own spacing.
+    p: ({ children }) => {
+      const hasBlockChild = Children.toArray(children).some(
+        (child) => isValidElement(child) && typeof child.type !== "string",
+      );
+      return hasBlockChild ? <>{children}</> : <p className="mb-4 leading-[1.75]">{children}</p>;
+    },
     ul: ({ children }) => <ul className="mb-4 list-disc space-y-1.5 pl-5">{children}</ul>,
     ol: ({ children }) => <ol className="mb-4 list-decimal space-y-1.5 pl-5">{children}</ol>,
     a: ({ href, children }) => (
