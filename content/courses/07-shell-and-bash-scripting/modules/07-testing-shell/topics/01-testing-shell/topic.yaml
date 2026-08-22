@@ -1,0 +1,134 @@
+id: topic.testing-shell
+slug: testing-shell
+title: "Testing a Script Without Running It for Real"
+summary: >-
+  Three passing tests on a script with two bugs, because none touched a boundary
+  and none passed the argument the bug lives in. `bats` reports the file, the
+  line and the failing expression — but not the values. And a script that calls
+  `kubectl` is testable with no cluster, once a fake binary earlier on `PATH`
+  reads as technique rather than trick.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.concurrency-and-locking
+    hardness: required
+  - topic: topic.functions-and-scope
+    hardness: required
+  - topic: topic.arguments-and-options
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B08.9.1
+    level: L2
+    verb: describe
+    statement: >-
+      Describe what makes a shell script testable, and what a passing test suite
+      does and does not establish.
+    assessed_by: [quiz.q1, quiz.q2, lab.the-suite-that-proves-nothing, exercise.e1]
+
+  - id: OBJ-B08.9.2
+    level: L2
+    verb: configure
+    statement: >-
+      Configure a `bats` suite — `@test`, `run`, `$status`, `$output`, `lines`,
+      `setup` and `teardown`.
+    assessed_by: [quiz.q3, quiz.q4, quiz.q5, lab.write-a-real-suite, exercise.e2]
+
+  - id: OBJ-B08.9.3
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret `bats` output — TAP, a failure's file and line, and what it does
+      not tell you.
+    assessed_by: [quiz.q6, quiz.q7, lab.write-a-real-suite]
+
+  - id: OBJ-B08.9.4
+    level: L3
+    verb: design
+    statement: >-
+      Design test cases from a script's boundaries and failure paths rather than
+      from its happy path.
+    assessed_by: [quiz.q8, quiz.q9, lab.the-suite-that-proves-nothing, exercise.e3, troubleshooting.the-green-suite-and-the-deleted-data]
+
+  - id: OBJ-B08.9.5
+    level: L3
+    verb: build
+    statement: >-
+      Build a test double for a command a script shells out to, using `PATH`.
+    assessed_by: [quiz.q10, quiz.q11, lab.test-without-a-cluster, exercise.e4]
+
+  - id: OBJ-B08.9.6
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish what belongs in a unit test, an integration test, and a
+      production assertion.
+    assessed_by: [quiz.q12, quiz.q13, lab.test-without-a-cluster]
+
+  - id: OBJ-B08.9.7
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a suite that passes while the thing it tests is wrong.
+    assessed_by: [quiz.q14, troubleshooting.the-green-suite-and-the-deleted-data, troubleshooting.the-test-that-only-passed-on-a-tuesday]
+
+  - id: OBJ-B08.9.8
+    level: L3
+    verb: justify
+    statement: >-
+      Justify a testing standard for a team's operational scripts, naming what
+      is worth testing and what is not.
+    assessed_by: [quiz.q15, lab.write-a-real-suite, exercise.e5, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: bats
+    definition: >-
+      Bash Automated Testing System. A test file is shell with `@test` blocks;
+      the runner reports TAP and exits non-zero if any test fails.
+  - term: "@test"
+    definition: >-
+      One test case. Its body is ordinary shell, and it fails the moment any
+      command in it returns non-zero — so a bare `[ ... ]` is an assertion.
+  - term: run
+    definition: >-
+      Execute a command without failing the test, capturing its exit status in
+      `$status`, its combined output in `$output`, and its lines in `${lines[@]}`.
+  - term: TAP
+    definition: >-
+      Test Anything Protocol. `1..N` then `ok N` / `not ok N` per test — the
+      format `bats` emits by default and most CI systems can parse.
+  - term: test double
+    definition: >-
+      A stand-in for something the test must not really use. In shell, usually a
+      script with the real command's name, placed earlier on `PATH`.
+  - term: "BATS_TEST_TMPDIR"
+    definition: >-
+      A directory created fresh for each test and removed afterwards. Where
+      fixtures and fake binaries belong.
+  - term: setup / teardown
+    definition: >-
+      Functions run before and after **each** test. `setup_file` and
+      `teardown_file` run once for the whole file.
+  - term: boundary case
+    definition: >-
+      An input at the edge of a behaviour change — exactly 7 days, exactly zero
+      files, exactly the limit. Where the bugs are, and where happy-path tests
+      never go.
+  - term: skip
+    definition: >-
+      Mark a test as deliberately not run, with a reason. Reported as a pass
+      with a note rather than hidden by commenting it out.
+  - term: arrange-act-assert
+    definition: >-
+      Build the fixture, run the thing once, then assert. Running the thing
+      inside each assertion is how a suite ends up testing the fixture instead.
+
+foreshadows:
+  - "B11's pytest gives the same ideas with real assertion output, which is one reason to stop writing shell."
+  - "E27's CI is where these suites have to run, on every change, to be worth writing."
+  - "F35's incident reviews keep producing test cases nobody would have invented."
+
+tags: [shell, bash, testing, bats, quality, fundamentals]

@@ -1,0 +1,9 @@
+id: module.testing-shell
+slug: testing-shell
+title: Testing Shell
+summary: >-
+  A shell script is the least-tested code in most organisations and the code
+  most likely to run as root on every host. This module is about closing that
+  gap — what to test, how to test a script that shells out to tools you must
+  not run, and why three passing tests can mean nothing at all.
+order: 7
