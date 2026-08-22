@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       less \
       bash \
+      bats \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -74,6 +75,7 @@ COPY --chmod=0755 seed-strict.sh /opt/lab/seed-strict.sh
 COPY --chmod=0755 seed-functions.sh /opt/lab/seed-functions.sh
 COPY --chmod=0755 seed-args.sh /opt/lab/seed-args.sh
 COPY --chmod=0755 seed-lock.sh /opt/lab/seed-lock.sh
+COPY --chmod=0755 seed-bats.sh /opt/lab/seed-bats.sh
 
 # Lab helpers are compiled here rather than shipped as scripts. Both need real
 # fork and real page-touching semantics, which a shell cannot provide — bash
