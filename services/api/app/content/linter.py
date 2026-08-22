@@ -18,6 +18,11 @@ from app.content.loader import ContentTree, LoadedTopic
 
 # :::name{key=value key2="value 2"}
 DIRECTIVE_RE = re.compile(r"^:::(?P<name>[a-z-]+)(?:\{(?P<attrs>[^}]*)\})?\s*$", re.MULTILINE)
+
+# A markdown link whose target starts with ./ or ../ — meaningful on disk,
+# meaningless once the lesson is served from a route that does not mirror the
+# directory layout.
+RELATIVE_LINK_RE = re.compile(r"\]\((?P<href>\.\.?/[^)]*)\)")
 FENCE_RE = re.compile(r"^```(?P<lang>[a-zA-Z0-9+-]*)", re.MULTILINE)
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\((?P<target>[^)]+)\)")
 # Site routes the content may link to: /topics/<slug> and /learn/<slug>/<step>.
@@ -288,6 +293,20 @@ class Linter:
                     where,
                     f"frontmatter topic '{lesson.frontmatter.topic}' does not match "
                     f"its directory ({topic.topic.id})",
+                )
+
+            # A lesson is rendered at /learn/<topic>/<step>, which has nothing to
+            # do with where the file sits on disk, so a filesystem-relative link
+            # can only ever 404. `[labs](../labs)` shipped and a learner found it
+            # by clicking it — nothing else would have caught it, because the
+            # link is well-formed markdown and the file it names does exist.
+            for match in RELATIVE_LINK_RE.finditer(lesson.body):
+                self._error(
+                    "link-relative",
+                    where,
+                    f"link to '{match.group('href')}' is filesystem-relative and "
+                    f"will 404 — use a site-absolute path such as "
+                    f"/learn/<topic>/<step>, or plain text",
                 )
 
             for match in DIRECTIVE_RE.finditer(lesson.body):

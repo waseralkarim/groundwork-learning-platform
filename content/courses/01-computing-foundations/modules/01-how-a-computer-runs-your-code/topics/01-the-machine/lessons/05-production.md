@@ -120,5 +120,5 @@ The topic is complete when you can:
 2. Explain what `OOMKilled` will mean before you have read anything about Kubernetes
 3. Diagnose CPU- vs memory- vs I/O-bound from `vmstat` output and cite the evidence
 
-The [labs](../labs) and the assessment are where you find out whether you can.
+The labs and the assessment are where you find out whether you can.
 :::
