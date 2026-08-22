@@ -253,6 +253,47 @@ places before the lab walk caught it.
 | B13 | **Databases for DevOps** | L2–L4 | Relational model & SQL · PostgreSQL operations · Indexes & query plans · Transactions & isolation · Connection pooling · Replication & failover · Backup & **tested restore** · Migrations & zero-downtime schema change · Redis/Valkey · NoSQL concepts · Performance troubleshooting |
 
 
+### What building B10.4 found
+
+The rebase topic, and the one where a claim I had already written turned out to
+be wrong when measured. Worth recording as a finding rather than a fix.
+
+**"A rebase makes you resolve the same conflict once per commit" is an
+overstatement**, and it is the version essentially every treatment gives. With
+main at 99 and a branch bumping 1 -> 2 -> 3, resolving the first conflict to 2
+produces no second conflict at all, because the tree then matches what the next
+commit expects. Resolving it to 99 produces a second conflict of ours=99
+theirs=3. The recurrence is a consequence of the resolution, not of the rebase —
+which changes what a learner should do when they hit the second one, and reveals
+that someone resolving toward main every time may be quietly discarding their
+branch's work.
+
+**The author/committer distinction needs both dates pinned to demonstrate.**
+Setting only GIT_AUTHOR_DATE shows identical readings before and after a rebase,
+so the experiment passes and proves nothing. Pinning both shows author preserved
+at 2024-01-15 and committer rewritten to today.
+
+That was the third check in three topics that ran, passed and established no
+fact — after B10.2's verify pattern split across two echo lines and its two
+duplicate YAML keys. Three is a pattern rather than three coincidences, and the
+lesson is that "the check passed" and "the check tested something" are separate
+claims that have to be established separately.
+
+**Ours during a rebase is the branch you are replaying onto.** Measured: stage 2
+held main's value and stage 3 held the commit being replayed. Explaining it
+mechanically — ours always means HEAD, and a rebase checks out the new base —
+turns a gotcha into something derivable.
+
+**A rescue branch is a better recovery than a reset.** `git branch rescue <sha>`
+makes the abandoned commits reachable without moving your branch, so both
+histories exist and can be diffed before deciding. That is usually what someone
+actually wants after a rebase they are unsure about, and it costs 41 bytes.
+
+**The one thing that cannot be recovered is the one thing that was never an
+object.** git hash-object computes an id without writing it, so an unstaged edit
+has nothing in the store and no reflog entry mentions it. Every other operation
+in the topic moves refs around an append-only store.
+
 ### What building B10.3 found
 
 The merging topic, and the one where the framing mattered more than the
