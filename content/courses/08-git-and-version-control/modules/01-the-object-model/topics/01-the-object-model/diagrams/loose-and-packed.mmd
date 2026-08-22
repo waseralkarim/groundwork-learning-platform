@@ -1,0 +1,17 @@
+flowchart TB
+    subgraph loose["Loose — one file per object"]
+        L1[".git/objects/20/44b72a…"]
+        L2[".git/objects/b2/875d05…"]
+        L3[".git/objects/e6/9de29b…"]
+    end
+
+    subgraph packed["Packed — many objects, one file"]
+        P1["objects/pack/pack-abc.pack<br/><i>zlib + deltas between objects</i>"]
+        P2["objects/pack/pack-abc.idx<br/><i>id → offset, binary search</i>"]
+        P2 -.->|locates| P1
+    end
+
+    loose -->|"gc / repack / fetch / push"| packed
+
+    NOTE["Same ids. Same reachability. Same meaning.<br/>Only the bytes on disk differ."]
+    packed --- NOTE

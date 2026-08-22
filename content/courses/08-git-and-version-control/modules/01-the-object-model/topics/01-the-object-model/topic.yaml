@@ -1,0 +1,126 @@
+id: topic.the-object-model
+slug: the-object-model
+title: "What a Repository Is: Four Objects and a Pointer"
+summary: >-
+  A commit id is not assigned, it is computed — and `sha1sum` produces the same
+  forty characters `git hash-object` does. That one fact explains why `--amend`
+  leaves the old commit sitting in the store, and why an unchanged file costs
+  nothing across a thousand commits. Git stores snapshots, not diffs, and a
+  branch is a file holding forty hex characters and a newline.
+order: 1
+levels: [L1, L2]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.hashing-and-passwords
+    hardness: required
+  - topic: topic.the-filesystem-hierarchy
+    hardness: recommended
+  - topic: topic.how-a-line-becomes-a-command
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B10.1.1
+    level: L1
+    verb: explain
+    statement: >-
+      Explain what a version control system has to guarantee, and why a shared
+      folder with dated copies does not.
+    assessed_by: [quiz.q1, quiz.q2, exercise.e1]
+
+  - id: OBJ-B10.1.2
+    level: L2
+    verb: describe
+    statement: >-
+      Describe the four object types — blob, tree, commit, tag — and what each
+      one contains.
+    assessed_by: [quiz.q3, quiz.q4, quiz.q5, lab.name-a-file-before-git-does]
+
+  - id: OBJ-B10.1.3
+    level: L2
+    verb: build
+    statement: >-
+      Build an object id by hand and confirm it matches the one Git computes.
+    assessed_by: [quiz.q6, lab.name-a-file-before-git-does, exercise.e2]
+
+  - id: OBJ-B10.1.4
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish storing snapshots from storing diffs, and say what each costs.
+    assessed_by: [quiz.q7, quiz.q8, lab.walk-a-commit-to-its-bytes, exercise.e3]
+
+  - id: OBJ-B10.1.5
+    level: L2
+    verb: explain
+    statement: >-
+      Explain refs, `HEAD` and branches as pointers, and read them off disk.
+    assessed_by: [quiz.q9, quiz.q10, lab.a-branch-is-forty-bytes]
+
+  - id: OBJ-B10.1.6
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why history is append-only, and what `--amend` does to the commit
+      it appears to replace.
+    assessed_by: [quiz.q11, quiz.q12, lab.a-branch-is-forty-bytes, exercise.e4]
+
+  - id: OBJ-B10.1.7
+    level: L2
+    verb: diagnose
+    statement: >-
+      Diagnose what changed between two commits by reading objects rather than
+      running `git diff`.
+    assessed_by: [quiz.q13, lab.walk-a-commit-to-its-bytes]
+
+terminology:
+  - term: object
+    definition: >-
+      An immutable record in the repository, named by the SHA-1 of its own
+      contents. Everything Git stores is one of four kinds.
+  - term: blob
+    definition: >-
+      The contents of a file, and nothing else. A blob has no name, no path and
+      no permissions — those live in the tree that points at it.
+  - term: tree
+    definition: >-
+      A directory. A list of entries, each with a mode, a type, an object id and
+      a name. Trees point at blobs and at other trees.
+  - term: commit
+    definition: >-
+      A tree, zero or more parents, an author, a committer and a message. The id
+      covers all of it, which is why changing any part produces a different
+      commit.
+  - term: annotated tag
+    definition: >-
+      An object naming another object, with a message and a tagger. Distinct
+      from a lightweight tag, which is only a ref.
+  - term: content addressing
+    definition: >-
+      Naming something by the hash of its contents, so the name changes whenever
+      the contents do. A04.1 taught the property; Git is the clearest thing
+      built on it.
+  - term: ref
+    definition: >-
+      A file under `.git/refs` containing an object id. A branch is a ref; so is
+      a lightweight tag.
+  - term: HEAD
+    definition: >-
+      A file naming the ref you are currently on, usually as
+      `ref: refs/heads/main`. Detached `HEAD` means it contains an id directly.
+  - term: loose object
+    definition: >-
+      One object in one zlib-compressed file under `.git/objects`, named by the
+      first two hex characters of its id and then the remaining thirty-eight.
+  - term: snapshot
+    definition: >-
+      What a commit records — the complete state of the tree, not a change to
+      it. Unchanged files are reused by id rather than stored again.
+
+foreshadows:
+  - "B10.7's reflog recovery works only because nothing is deleted when a pointer moves."
+  - "B10.13's bisect is a walk over the same DAG this topic builds."
+  - "C14's image layers are content-addressed for the same reasons, and A04.1's digest is the same idea again."
+
+tags: [git, version-control, object-model, content-addressing, fundamentals]

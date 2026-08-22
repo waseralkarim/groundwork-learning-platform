@@ -1,0 +1,278 @@
+id: lab.a-branch-is-forty-bytes
+topic: topic.the-object-model
+title: Read a branch off the disk, then watch --amend not delete anything
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B10.1.5, OBJ-B10.1.6]
+
+intro: >-
+  People are careful with branches because they feel expensive, and frightened
+  of `--amend` because it feels destructive. Both feelings are wrong, and both
+  are checkable in about four commands.
+
+
+  You will read a branch out of the filesystem with `cat`, create one and prove
+  it cost nothing, then amend a commit and go looking for the one you were told
+  had been replaced.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Find out what `HEAD` and the branches actually are, by reading them as
+      files. Save to /tmp/answer-refs.
+    hint: >-
+      They are under `.git`. `cat .git/HEAD`, then look in `.git/refs/heads/`.
+      Check the file size too — it is smaller than you expect.
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        echo "HEAD contains:"
+        echo "  $(cat .git/HEAD)"
+        echo "-> not a commit id. it names the ref you are ON. that indirection is"
+        echo "   the difference between being on a branch and being detached."
+        echo
+        echo "the refs themselves:"
+        for f in .git/refs/heads/*; do
+          echo "  $f"
+          echo "     content: $(cat "$f")"
+          echo "     size:    $(wc -c < "$f") bytes"
+        done
+        echo
+        echo "40 hex characters plus a newline. a branch IS that file - there is no"
+        echo "branch object, no branch record, nothing else anywhere."
+        echo
+        echo "which is why deleting a branch cannot destroy any commit: it removes a"
+        echo "41-byte file that pointed at one."
+      } > /tmp/answer-refs
+      cat /tmp/answer-refs
+    verify:
+      - type: command_output
+        command: "sed -n 's/^ *content: //p' /tmp/answer-refs | grep -c ."
+        equals_command: "cd /tmp/git/ledger && ls .git/refs/heads | wc -l"
+        describe: You read every branch ref off the disk
+      - type: file_matches
+        path: /tmp/answer-refs
+        pattern: "ref: refs/heads/main"
+        describe: And found HEAD names a ref rather than a commit
+      - type: file_matches
+        path: /tmp/answer-refs
+        pattern: "41 bytes|41-byte|size:    41"
+        describe: And measured how small a branch really is
+
+  - id: s2
+    instruction: >-
+      Count the objects in the store, create a branch, and count again. Save the
+      before and after to /tmp/answer-cost.
+    hint: >-
+      `git cat-file --batch-all-objects --batch-check` will list every object.
+      Predict the answer before you run the second count.
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        before=$(git cat-file --batch-all-objects --batch-check='%(objectname)' | wc -l)
+        echo "objects before: $before"
+        git branch experiment
+        after=$(git cat-file --batch-all-objects --batch-check='%(objectname)' | wc -l)
+        echo "objects after creating a branch: $after"
+        echo
+        echo "identical. creating a branch wrote one 41-byte file and no objects at all."
+        echo
+        echo "this is why 'make a branch first' is free advice in git and was expensive"
+        echo "advice in older systems that copied the tree. a branch is a pointer into"
+        echo "history that already exists."
+      } > /tmp/answer-cost
+      cat /tmp/answer-cost
+    verify:
+      - type: command_output
+        command: "sed -n 's/^objects before: //p' /tmp/answer-cost"
+        equals_command: "sed -n 's/^objects after creating a branch: //p' /tmp/answer-cost"
+        describe: Creating a branch created no objects
+      - type: file_matches
+        path: /tmp/answer-cost
+        pattern: "(?i)identical|no objects|pointer"
+        describe: And you said what that means
+
+  - id: s3
+    instruction: >-
+      Record the current commit id, amend the commit to change its message, and
+      compare. Save to /tmp/answer-amend.
+    hint: >-
+      Save `git rev-parse HEAD` before amending. Compare the commit ids **and**
+      the tree ids afterwards — only one of them changes.
+    walkthrough: |
+      cd /tmp/git/ledger
+      OLD=$(git rev-parse HEAD)
+      OLDTREE=$(git rev-parse HEAD^{tree})
+      git commit -q --amend -m "Add accounts payable (reworded)"
+      NEW=$(git rev-parse HEAD)
+      NEWTREE=$(git rev-parse HEAD^{tree})
+      {
+        echo "commit before amend: $OLD"
+        echo "commit after amend:  $NEW"
+        echo "-> a different id. the commit was not edited, because it cannot be:"
+        echo "   the id is a hash of the contents, so different contents means a"
+        echo "   different object."
+        echo
+        echo "tree before: $OLDTREE"
+        echo "tree after:  $NEWTREE"
+        echo "-> the SAME tree. only the message changed, so the snapshot is reused"
+        echo "   exactly as an unchanged file would be."
+        echo
+        echo "$OLD" > /tmp/.old-commit
+      } > /tmp/answer-amend
+      cat /tmp/answer-amend
+    verify:
+      - type: command_output
+        command: "sed -n 's/^tree before: //p' /tmp/answer-amend"
+        equals_command: "sed -n 's/^tree after:  //p' /tmp/answer-amend"
+        describe: The tree was reused unchanged across the amend
+      - type: file_matches
+        path: /tmp/answer-amend
+        pattern: "(?i)different id|not edited|cannot be"
+        describe: And you explained why the commit id had to change
+
+  - id: s4
+    instruction: >-
+      Go and find the commit you just replaced. Is it gone? Save what you find
+      to /tmp/answer-orphan.
+    hint: >-
+      You saved the old id in the previous step. Ask whether anything still
+      points at it — and remember what you created in step 2. Then delete that
+      branch and ask again.
+    walkthrough: |
+      cd /tmp/git/ledger
+      OLD=$(cat /tmp/.old-commit)
+      {
+        echo "the 'replaced' commit was $OLD"
+        echo
+        echo "does any branch lead to it?"
+        echo "  reachable from refs: $(git rev-list --all | grep -c "$OLD")"
+        echo "-> ONE. the experiment branch from step 2 was created before the amend,"
+        echo "   so it still points at the old commit. the amend moved main and left"
+        echo "   experiment exactly where it was."
+        echo "   that is the whole mechanism: a commit stays reachable while some ref"
+        echo "   leads to it, and branches are the refs that usually do."
+        echo
+        git branch -D experiment >/dev/null
+        echo "after deleting that branch:"
+        echo "  reachable from refs: $(git rev-list --all | grep -c "$OLD")"
+        echo "-> now zero. nothing leads to it."
+        echo
+        echo "but is it gone?"
+        echo "  type: $(git cat-file -t "$OLD")"
+        echo "  and its file contents are still readable through it:"
+        git cat-file -p "$OLD:balance.txt" | sed 's/^/    /'
+        echo
+        echo "how would anyone find it again?"
+        git reflog --format='  %h  %gd  %gs' | head -3
+        echo
+        echo "nothing was deleted, twice over. amend ADDED a commit and moved a"
+        echo "pointer; deleting a branch removed a 41-byte file. the commit became"
+        echo "unreachable, which is not the same as gone, and the reflog wrote down"
+        echo "where it was."
+      } > /tmp/answer-orphan
+      cat /tmp/answer-orphan
+    verify:
+      - type: command_output
+        command: "cd /tmp/git/ledger && git cat-file -t $(cat /tmp/.old-commit)"
+        equals: "commit"
+        describe: The pre-amend commit is still in the object store
+      - type: file_matches
+        path: /tmp/answer-orphan
+        pattern: "reachable from refs: 1"
+        describe: You found the branch that was still holding it
+      - type: file_matches
+        path: /tmp/answer-orphan
+        pattern: "(?i)now zero"
+        describe: And made it unreachable by deleting that branch
+      - type: file_matches
+        path: /tmp/answer-orphan
+        pattern: "payable: 45"
+        describe: And its contents are still readable even so
+      - type: file_matches
+        path: /tmp/answer-orphan
+        pattern: "(?i)unreachable, which is not the same as gone|nothing was deleted"
+        describe: And you drew the distinction that matters
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-safety what you would tell a colleague who says
+      "never amend, you lose work".
+    hint: >-
+      You have just measured what amend does. Be fair — say what the real risk
+      is, because there is one, and it is not the one they named.
+    walkthrough: |
+      cat > /tmp/answer-safety <<'EOF'
+      amend does not lose the commit. i checked: after amending, the old commit is
+      still in the object store, its tree and file contents are still readable
+      through it, and the reflog records exactly where the branch used to point.
+      what changed is that no branch leads to it any more.
+
+      so the accurate sentence is "amend makes a commit unreachable", and
+      unreachable is recoverable - that is what B10.7's reflog work is for.
+
+      the real risks are different ones, and worth naming properly:
+
+        - amending a commit you have already pushed rewrites history other people
+          have. their branch and yours now disagree about what happened, and the
+          fix is a force-push that can discard THEIR work. this is the actual
+          danger, and it is about sharing, not about amend.
+        - unreachable objects are eventually deleted by gc. the window is weeks by
+          default, not minutes, but "recoverable" is not "permanent".
+        - amend takes whatever is staged. amending with unintended changes staged
+          silently folds them into a commit that already looked reviewed.
+
+      the honest rule is not "never amend". it is "amend freely before you push,
+      and treat amending after you have pushed as rewriting shared history -
+      because that is what it is".
+      EOF
+      cat /tmp/answer-safety
+    verify:
+      - type: file_matches
+        path: /tmp/answer-safety
+        pattern: "(?i)unreachable"
+        describe: You corrected the claim with the right word
+      - type: file_matches
+        path: /tmp/answer-safety
+        pattern: "(?i)push|shared"
+        describe: And named the risk that is actually real
+      - type: file_matches
+        path: /tmp/answer-safety
+        pattern: "(?i)\\bgc\\b|garbage"
+        describe: And were honest that recoverable is not permanent
+
+solution: >-
+  **A branch is a file.** `.git/refs/heads/main` contains forty hex characters
+  and a newline — 41 bytes. There is no branch object and no branch record
+  anywhere else. `HEAD` is a second file containing `ref: refs/heads/main`, which
+  is why it can name a branch *or*, when detached, a commit id directly.
+
+
+  **Creating one costs nothing.** The object count is identical before and after
+  `git branch experiment`, because a branch is a pointer into history that
+  already exists. Branching was expensive in systems that copied the tree, and
+  the habit of avoiding it survived the reason for it.
+
+
+  **`--amend` does not amend.** The commit id changes, because the id is a hash
+  of the contents and the message is part of the contents — an object cannot be
+  edited in place without becoming a different object. But the *tree* id is
+  unchanged, so the snapshot is reused exactly as an unchanged file would be.
+
+
+  **And the old commit is still there.** Nothing points at it — `git rev-list
+  --all` finds zero references — but `git cat-file -t` still reports `commit`,
+  its file contents are still readable through it, and the reflog recorded where
+  the branch used to point. **Unreachable is not gone.** That single distinction
+  is what makes almost every Git disaster recoverable, and it is why this course
+  teaches the object model before it teaches a single recovery command.
+
+
+  The real risk of amending is not losing your own work. It is amending
+  something already pushed, where the fix is a force-push that can discard
+  someone else's.

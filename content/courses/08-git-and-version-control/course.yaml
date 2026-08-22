@@ -1,0 +1,16 @@
+id: course.git-and-version-control
+slug: git-and-version-control
+code: B10
+title: Git & Version Control
+summary: >-
+  Most people learn Git as a list of commands to type when something goes wrong,
+  which is why the same three situations keep being frightening. This course
+  goes the other way round: the object model first, measured with `sha1sum`
+  until a commit id stops being magic. Everything after that — branching,
+  rebasing, resetting, recovering work you think you have destroyed — is a
+  consequence of four object types and a pointer, and behaves predictably once
+  you can see them.
+track: Core Craft
+levels: [L1, L2, L3, L4]
+estimated_hours: 18
+order: 8

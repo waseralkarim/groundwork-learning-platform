@@ -20,3 +20,5 @@ courses:
     order: 6
   - course: course.shell-and-bash-scripting
     order: 7
+  - course: course.git-and-version-control
+    order: 8

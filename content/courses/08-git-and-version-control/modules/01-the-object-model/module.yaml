@@ -1,0 +1,10 @@
+id: module.the-object-model
+slug: the-object-model
+title: The Object Model
+summary: >-
+  What a repository actually is: four kinds of object, addressed by the hash of
+  their own contents, and a handful of pointers into them. This module is the
+  foundation the rest of the course stands on — branches, merges and every
+  recovery command are moves over this structure, and none of them are
+  memorable until the structure is.
+order: 1

@@ -1,0 +1,235 @@
+id: lab.name-a-file-before-git-does
+topic: topic.the-object-model
+title: Compute a file's Git name yourself, before Git does
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.1.2, OBJ-B10.1.3]
+
+intro: >-
+  A commit id looks like something Git hands out. It is not — it is computed
+  from the contents, by a rule you can follow with `sha1sum` and no Git at all.
+
+
+  You will derive that rule by experiment rather than being told it, then use it
+  to explain two things that surprise people: why an empty file has an id at
+  all, and why two files with identical contents are the same object no matter
+  what they are called.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Ask Git for the id of a file containing exactly `hello`, then try to
+      reproduce it with `sha1sum` alone. Save both to /tmp/answer-first-try.
+    hint: >-
+      `git hash-object` takes a file or `--stdin`. Your first attempt with
+      `sha1sum` will not match — record it anyway, the gap is the point.
+    walkthrough: |
+      cd /tmp/git
+      printf 'hello\n' > h.txt
+      {
+        echo "git says:      $(git hash-object h.txt)"
+        echo "sha1sum says:  $(sha1sum < h.txt | cut -d' ' -f1)"
+        echo
+        echo "they do not match. so the id is not sha1 of the file contents."
+        echo "git is hashing something slightly larger than what is in the file."
+      } > /tmp/answer-first-try
+      cat /tmp/answer-first-try
+    verify:
+      - type: command_output
+        command: "sed -n 's/^git says: *//p' /tmp/answer-first-try"
+        equals_command: "printf 'hello\\n' | git hash-object --stdin"
+        describe: You got the id Git computes
+      - type: file_matches
+        path: /tmp/answer-first-try
+        pattern: "(?i)do not match|does not match|not sha1 of"
+        describe: And noticed plain sha1sum does not reproduce it
+
+  - id: s2
+    instruction: >-
+      Find what Git prepends. Save the rule and a matching reproduction to
+      /tmp/answer-rule.
+    hint: >-
+      Git stores a header before the content — a type name, a space, the length
+      in bytes, and a NUL. `printf` can produce a NUL with `\0`.
+    walkthrough: |
+      {
+        echo "the stored object is:  <type> <length-in-bytes>\\0<contents>"
+        echo
+        echo "'hello' plus a newline is 6 bytes, so the header is 'blob 6' then a NUL:"
+        echo
+        echo "  by hand:  $(printf 'blob 6\0hello\n' | sha1sum | cut -d' ' -f1)"
+        echo "  git:      $(printf 'hello\n' | git hash-object --stdin)"
+        echo
+        echo "identical. the id is sha1 of the header plus the content, and nothing else."
+        echo "no filename, no path, no timestamp, no author - none of that is in a blob."
+      } > /tmp/answer-rule
+      cat /tmp/answer-rule
+    verify:
+      - type: command_output
+        command: "grep -c 'ce013625030ba8dba906f756967f9e9ca394464a' /tmp/answer-rule"
+        equals: "2"
+        describe: Your hand-computed id matches Git's, twice over
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "blob 6"
+        describe: And you identified the header Git prepends
+
+  - id: s3
+    instruction: >-
+      Test the consequence. Two files with different names but identical
+      contents — how many objects? Then an empty file. Save to
+      /tmp/answer-consequence.
+    hint: >-
+      Create two identically-contented files with different names and hash both.
+      For the empty file, work out what the header must be before you run it.
+    walkthrough: |
+      cd /tmp/git
+      printf 'same contents\n' > a.txt
+      printf 'same contents\n' > b.txt
+      : > empty.txt
+      {
+        echo "a.txt: $(git hash-object a.txt)"
+        echo "b.txt: $(git hash-object b.txt)"
+        echo "-> same id. a blob has no name, so identical contents ARE the same object."
+        echo "   git stores it once no matter how many paths point at it."
+        echo
+        echo "empty file: $(git hash-object empty.txt)"
+        echo "by hand:    $(printf 'blob 0\0' | sha1sum | cut -d' ' -f1)"
+        echo "-> an empty file still has an id, because the header is still hashed."
+        echo "   e69de29 is the same in every git repository on earth."
+      } > /tmp/answer-consequence
+      cat /tmp/answer-consequence
+    verify:
+      - type: command_output
+        command: "cd /tmp/git && git hash-object a.txt b.txt | sort -u | wc -l"
+        equals: "1"
+        describe: Identical contents produced exactly one object id
+      - type: file_matches
+        path: /tmp/answer-consequence
+        pattern: "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        describe: And you derived the empty blob's id
+      - type: file_matches
+        path: /tmp/answer-consequence
+        pattern: "(?i)no name|has no name|same object"
+        describe: And explained why the name does not matter
+
+  - id: s4
+    instruction: >-
+      A blob holds no filename — so where does the name live? Find the object
+      that holds it, in the seeded ledger repository. Save to /tmp/answer-tree.
+    hint: >-
+      `git cat-file -p HEAD^{tree}` prints a tree. Compare what it lists against
+      what `git hash-object` gave you for the same file.
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        echo "the tree of the latest commit:"
+        git cat-file -p HEAD^{tree} | sed 's/^/  /'
+        echo
+        echo "each line is: mode  type  object-id  name"
+        echo
+        echo "so the NAME lives in the tree, not in the blob. the tree is the directory."
+        echo
+        echo "accounts is a tree of its own - directories nest:"
+        git cat-file -p HEAD:accounts | sed 's/^/  /'
+        echo
+        echo "and the blob it points at holds only contents:"
+        git cat-file -p HEAD:accounts/payable.txt | sed 's/^/  /'
+        echo
+        echo "mode 100644 is a regular file, 100755 is executable, 040000 is a tree."
+        echo "that is the whole of what git records about permissions - not owner, not group."
+      } > /tmp/answer-tree
+      cat /tmp/answer-tree
+    verify:
+      - type: file_matches
+        path: /tmp/answer-tree
+        pattern: "100644"
+        describe: You read the mode out of the tree
+      - type: file_matches
+        path: /tmp/answer-tree
+        pattern: "balance.txt"
+        describe: And found the filename living in the tree
+      - type: file_matches
+        path: /tmp/answer-tree
+        pattern: "(?i)name lives in the tree|tree, not in the blob|tree is the directory"
+        describe: And stated where a name actually lives
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-argument what you would say to someone who claims
+      "Git ids are random, so you can never predict one".
+    hint: >-
+      You have now produced one with `sha1sum`. What would have to be true of
+      the inputs for the output to be predictable?
+    walkthrough: |
+      cat > /tmp/answer-argument <<'EOF'
+      the id is a pure function of the bytes stored, so it is entirely predictable -
+      i computed one by hand: sha1("blob 6\0hello\n") is exactly what git reports.
+
+      what makes it FEEL random is that commit ids are unpredictable in practice,
+      and that is true but for a different reason. a commit hashes its tree, its
+      parent, its author, its committer AND the timestamps. commit the same tree
+      one second later and the id changes. so blobs and trees are reproducible
+      across machines and commits effectively are not.
+
+      that difference is worth keeping straight:
+
+        - the same file contents give the same blob id in every repository on
+          earth, forever. e69de29 is the empty blob everywhere.
+        - the same change committed twice gives two different commit ids.
+
+      it also explains something people find alarming: you cannot edit history
+      quietly. change one byte anywhere and every id from that point forward is
+      different, because each object's id covers everything it points at.
+      EOF
+      cat /tmp/answer-argument
+    verify:
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)pure function|predictable|function of the bytes"
+        describe: You argued the id is computed, not assigned
+      - type: file_matches
+        path: /tmp/answer-argument
+        pattern: "(?i)timestamp|committer|one second later"
+        describe: And explained why commit ids nonetheless look unpredictable
+
+solution: >-
+  **The rule.**
+
+
+  ```console
+  $ printf 'hello\n' | git hash-object --stdin
+  ce013625030ba8dba906f756967f9e9ca394464a
+  $ printf 'blob 6\0hello\n' | sha1sum
+  ce013625030ba8dba906f756967f9e9ca394464a  -
+  ```
+
+
+  An object id is `sha1(type + " " + length + "\0" + contents)`. Nothing else is
+  in it — not the filename, not the path, not a timestamp, not who wrote it.
+
+
+  **Two consequences fall straight out.** Identical contents under different
+  names are one object, stored once, because the name was never part of the
+  input. And an empty file still has an id, `e69de29…`, because the header is
+  hashed even when the content is zero bytes — the same forty characters in
+  every Git repository that has ever existed.
+
+
+  **Where the name lives.** In the tree. A tree entry is `mode type id name`,
+  which makes a tree exactly a directory listing, and trees point at other trees
+  for subdirectories. The only permission Git records is whether the executable
+  bit is set — `100644` or `100755`. Not owner, not group, not the rest of the
+  mode. That is why a repository cannot be used as a backup of a filesystem.
+
+
+  **What this buys.** Because every id is a hash of contents, and a tree's
+  contents include its children's ids, an id at the top covers everything
+  beneath it. Change one byte in one file and the blob id changes, so the tree
+  id changes, so the commit id changes. Tampering is not prevented — it is made
+  arithmetically impossible to hide.

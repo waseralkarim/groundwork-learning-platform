@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph promises["What a VCS must promise"]
+        P1["Nothing is lost"]
+        P2["Every change has provenance"]
+        P3["Rewriting is detectable"]
+        P4["Parallel work reconciles"]
+    end
+
+    subgraph model["What the object model provides"]
+        M1["Objects are never<br/>updated in place"]
+        M2["The commit records<br/>author, time, message"]
+        M3["The id is a hash<br/>of the contents"]
+        M4["A commit can have<br/>more than one parent"]
+    end
+
+    P1 --> M1
+    P2 --> M2
+    P3 --> M3
+    P4 --> M4
+
+    M3 -.->|"and therefore"| M1

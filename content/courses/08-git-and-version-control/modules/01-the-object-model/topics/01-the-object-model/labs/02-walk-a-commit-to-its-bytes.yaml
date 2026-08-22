@@ -1,0 +1,250 @@
+id: lab.walk-a-commit-to-its-bytes
+topic: topic.the-object-model
+title: Walk one commit down to the bytes, and count what a repository stores
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B10.1.4, OBJ-B10.1.7]
+
+intro: >-
+  "Git stores snapshots, not diffs" is repeated everywhere and believed by
+  almost nobody, because it sounds wasteful. If every commit is a full snapshot,
+  surely a thousand commits of a large file is a thousand copies?
+
+
+  The seeded repository has three commits, one file that never changes and one
+  that changes every time. You will walk a commit down to its bytes, then count
+  every object in the store and settle the question by arithmetic.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Print the latest commit in the ledger repository as Git stores it, and
+      identify every field. Save to /tmp/answer-commit.
+    hint: >-
+      `git cat-file -p HEAD` prints the object itself, not the formatted log
+      entry `git show` gives you.
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        echo "the commit object, exactly as stored:"
+        git cat-file -p HEAD | sed 's/^/  /'
+        echo
+        echo "fields:"
+        echo "  tree      - the snapshot. the WHOLE state of the project, not a change."
+        echo "  parent    - the commit before this one. this is what makes history a graph."
+        echo "  author    - who wrote the change, and when."
+        echo "  committer - who applied it, and when. usually the same, and not always."
+        echo "  message   - after the blank line. everything after it is the message."
+        echo
+        echo "what is NOT here is worth more than what is:"
+        echo "  no diff. no list of changed files. no 'what changed' at all."
+        echo "  git works out what changed by comparing two trees, when asked."
+      } > /tmp/answer-commit
+      cat /tmp/answer-commit
+    verify:
+      - type: command_output
+        command: "sed -n 's/^ *tree //p' /tmp/answer-commit | head -1"
+        equals_command: "cd /tmp/git/ledger && git rev-parse HEAD^{tree}"
+        describe: You read the tree id out of the commit object
+      - type: file_matches
+        path: /tmp/answer-commit
+        pattern: "(?i)parent"
+        describe: And identified the parent link
+      - type: file_matches
+        path: /tmp/answer-commit
+        pattern: "(?i)no diff|no list of changed|not a change"
+        describe: And noticed the commit contains no diff
+
+  - id: s2
+    instruction: >-
+      Follow the tree down to the actual bytes of one file, without using
+      `git show`. Save the walk to /tmp/answer-walk.
+    hint: >-
+      Commit → tree → entry → blob. `git cat-file -p <id>` works on any of them.
+    walkthrough: |
+      cd /tmp/git/ledger
+      C=$(git rev-parse HEAD)
+      T=$(git cat-file -p "$C" | awk '/^tree /{print $2}')
+      B=$(git cat-file -p "$T" | awk '$4=="balance.txt"{print $3}')
+      {
+        echo "commit $C"
+        echo "  -> tree $T"
+        echo "     -> blob $B  (balance.txt)"
+        echo
+        echo "and the blob is the file contents, nothing more:"
+        git cat-file -p "$B" | sed 's/^/       /'
+        echo
+        echo "four steps from a commit id to the bytes, and every step is a lookup"
+        echo "by hash. that is the whole storage model."
+      } > /tmp/answer-walk
+      cat /tmp/answer-walk
+    verify:
+      - type: command_output
+        command: "sed -n 's/.*-> blob \\([0-9a-f]*\\).*/\\1/p' /tmp/answer-walk | head -1"
+        equals_command: "cd /tmp/git/ledger && git rev-parse HEAD:balance.txt"
+        describe: You reached the blob by walking, not by asking Git directly
+      - type: file_matches
+        path: /tmp/answer-walk
+        pattern: "payable: 45"
+        describe: And printed the file's actual contents from it
+
+  - id: s3
+    instruction: >-
+      Count every object in the repository by type, and account for each one.
+      Save to /tmp/answer-census.
+    hint: >-
+      `git cat-file --batch-all-objects --batch-check='%(objecttype)'` lists the
+      type of every object in the store. Three commits — so how many trees
+      should there be, and how many blobs?
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        echo "every object in the store, by type:"
+        git cat-file --batch-all-objects --batch-check='%(objecttype)' | sort | uniq -c | sed 's/^/  /'
+        echo
+        echo "accounting for them:"
+        echo "  3 commits - one per commit, obviously."
+        echo "  4 trees   - three root trees, one per commit, plus accounts/ which"
+        echo "              appears only in the third commit."
+        echo "  5 blobs   - balance.txt changed in all three commits, so 3 blobs."
+        echo "              LICENSE is 1 blob. accounts/payable.txt is 1 blob."
+        echo
+        echo "LICENSE is in all three commits. how many copies are stored?"
+        git rev-list HEAD | while read c; do git rev-parse "$c:LICENSE"; done | sort -u | sed 's/^/  /'
+        echo "  ONE. all three trees point at the same blob id."
+      } > /tmp/answer-census
+      cat /tmp/answer-census
+    verify:
+      - type: command_output
+        command: "cd /tmp/git/ledger && git rev-list HEAD | while read c; do git rev-parse $c:LICENSE; done | sort -u | wc -l"
+        equals: "1"
+        describe: LICENSE really is stored once for all three commits
+      - type: file_matches
+        path: /tmp/answer-census
+        pattern: "(?i)\\bONE\\b|one\\.|same blob"
+        describe: And you said so explicitly
+      - type: file_matches
+        path: /tmp/answer-census
+        pattern: "(?i)3 commits|three root trees"
+        describe: And accounted for the trees
+
+  - id: s4
+    instruction: >-
+      Work out what changed between the last two commits by comparing their
+      trees, without running `git diff` or `git log`. Save to
+      /tmp/answer-changed.
+    hint: >-
+      Print both trees and compare the object id for each name. A name whose id
+      is identical did not change — that is the entire algorithm.
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        echo "previous tree:"; git cat-file -p HEAD~1^{tree} | sed 's/^/  /'
+        echo "current tree:";  git cat-file -p HEAD^{tree}   | sed 's/^/  /'
+        echo
+        echo "comparing entry by entry:"
+        git cat-file -p HEAD~1^{tree} | awk '{print $4, $3}' | sort > /tmp/.old
+        git cat-file -p HEAD^{tree}   | awk '{print $4, $3}' | sort > /tmp/.new
+        join /tmp/.old /tmp/.new | while read name old new; do
+          if [ "$old" = "$new" ]; then echo "  unchanged: $name"; else echo "  CHANGED:   $name"; fi
+        done
+        comm -13 <(cut -d' ' -f1 /tmp/.old) <(cut -d' ' -f1 /tmp/.new) | sed 's/^/  ADDED:     /'
+        echo
+        echo "this is exactly what git diff does. a diff is COMPUTED on demand by"
+        echo "comparing two snapshots - it is not stored anywhere, and it is cheap"
+        echo "because equal subtrees are equal ids and can be skipped whole."
+      } > /tmp/answer-changed
+      cat /tmp/answer-changed
+    verify:
+      - type: file_matches
+        path: /tmp/answer-changed
+        pattern: "unchanged: LICENSE"
+        describe: You identified the file that did not change
+      - type: file_matches
+        path: /tmp/answer-changed
+        pattern: "CHANGED:   balance.txt"
+        describe: And the one that did
+      - type: file_matches
+        path: /tmp/answer-changed
+        pattern: "ADDED:     accounts"
+        describe: And the directory that appeared
+      - type: file_matches
+        path: /tmp/answer-changed
+        pattern: "(?i)computed on demand|not stored"
+        describe: And stated that a diff is computed, not stored
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-cost the answer to "if every commit is a full
+      snapshot, does a thousand commits of a big file cost a thousand copies?"
+    hint: >-
+      You have the evidence in step 3. Say what determines the real cost, and be
+      honest about the case where it genuinely is expensive.
+    walkthrough: |
+      cat > /tmp/answer-cost <<'EOF'
+      no, and step 3 is the proof: LICENSE appears in three commits and is stored
+      once. a snapshot is a tree of POINTERS, not a copy of the data. an unchanged
+      file is the same blob id, and the same id is the same object.
+
+      so the cost of a commit is proportional to what CHANGED, not to the size of
+      the project - which is the same cost a diff-based system pays, while keeping
+      the property that any commit can be reconstructed without replaying history.
+
+      the honest exception is a file that changes every time. a 10 MB binary
+      committed a thousand times is a thousand blobs, because every version has
+      different contents and therefore a different id. git cannot deduplicate what
+      is genuinely different, and this is the real reason binaries and build
+      artefacts do not belong in a repository - not "git is bad at binaries" as a
+      slogan, but that content addressing has nothing to work with.
+
+      there is a second layer i have not looked at here: git later repacks loose
+      objects into packfiles and DOES delta-compress similar objects inside them.
+      that is a storage optimisation underneath the model. the model is still
+      snapshots - packing changes how bytes are written, not what a commit means.
+      EOF
+      cat /tmp/answer-cost
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cost
+        pattern: "(?i)pointer|stored once|same blob"
+        describe: You explained why a snapshot is not a copy
+      - type: file_matches
+        path: /tmp/answer-cost
+        pattern: "(?i)binar|changes every time|artefact"
+        describe: And named the case where the cost is real
+
+solution: >-
+  **A commit contains no diff.** It has a tree, a parent, an author, a committer
+  and a message — and that is all. There is no record of what changed, because
+  "what changed" is not something Git stores. It is computed when you ask, by
+  comparing two trees.
+
+
+  **The census settles the snapshot argument.** Three commits produce twelve
+  objects: 3 commits, 4 trees, 5 blobs. The four trees are one root tree per
+  commit plus `accounts/`, which exists only in the third. The five blobs are
+  three versions of `balance.txt`, one `LICENSE` and one `payable.txt`.
+
+
+  `LICENSE` is present in all three commits and stored **once**. All three trees
+  point at the same blob id, because the contents never changed and the id is a
+  function of the contents. A snapshot is a tree of pointers, not a copy.
+
+
+  **Comparing trees is the diff algorithm.** For each name, is the object id the
+  same? If yes, nothing changed — and if the entry is a *tree*, an equal id means
+  an entire subtree is unchanged and can be skipped without descending into it.
+  That is why `git diff` on a huge repository is fast.
+
+
+  **Where it genuinely costs.** A file that changes every time has a different id
+  every time, so every version is stored. Git cannot deduplicate genuinely
+  different bytes. That, rather than any slogan about binaries, is why build
+  artefacts do not belong in a repository — content addressing has nothing to
+  work with. Packfiles later delta-compress similar objects, but that is a
+  storage optimisation beneath the model, not a change to what a commit is.

@@ -1,0 +1,402 @@
+id: quiz.the-object-model
+topic: topic.the-object-model
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B10.1.1]
+    stem: >-
+      A team keeps `deploy.sh`, `deploy.sh.bak` and `deploy.sh.2024-11-03` in a
+      shared folder. Which promise of version control does this scheme fail
+      *first* — that is, on a project with one person on it?
+    options:
+      - id: a
+        text: Every change has provenance — who made it, when, and why
+        correct: true
+      - id: b
+        text: Parallel work can be reconciled
+        note: >-
+          A real failure, but it needs two people. The question asks what breaks
+          with one.
+      - id: c
+        text: Nothing is lost
+        note: >-
+          Close, and it does fail — but a disciplined person copying every time
+          can keep the states. Nobody can reconstruct the *reasons*.
+      - id: d
+        text: Nothing, until the folder is shared
+        note: >-
+          The reason a change was made is lost the moment it is not written
+          down, whether or not anyone else is looking.
+    explanation: >-
+      Three of the four promises are worth having alone. Provenance is the one
+      the filename scheme cannot fake at all: a date in a filename is not who,
+      and it is never why. "Why" is the field that pays for itself years later,
+      when someone has to decide whether a line is still needed.
+
+  - id: q2
+    type: single_choice
+    level: L1
+    objectives: [OBJ-B10.1.1]
+    stem: >-
+      Which statement about "history cannot be rewritten" is accurate for Git?
+    options:
+      - id: a
+        text: It can be rewritten, but not without the rewrite being detectable
+        correct: true
+      - id: b
+        text: It cannot be rewritten at all — objects are immutable
+        note: >-
+          Objects are immutable, but you can create new ones and move refs.
+          `--amend` and `rebase` do exactly that.
+      - id: c
+        text: It can be rewritten silently by anyone with write access
+        note: >-
+          Every id downstream changes, so anyone holding the old history can see
+          the divergence.
+      - id: d
+        text: It cannot be rewritten once pushed
+        note: >-
+          A force-push rewrites pushed history. What protects you is detection,
+          not prevention.
+    explanation: >-
+      The useful promise is the weaker one. Because an id covers everything the
+      object points at, changing anything changes every id from that point
+      forward — so a rewrite is always visible to anyone holding the old ids.
+      Prevention is a permissions question; detection is a property of the model.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.2]
+    stem: >-
+      Where is a file's *name* stored?
+    options:
+      - id: a
+        text: In the tree that points at the blob
+        correct: true
+      - id: b
+        text: In the blob, as a header before the contents
+        note: >-
+          The blob header is `blob <length>\0` — a type and a size. No name.
+      - id: c
+        text: In the commit, as part of the changed-file list
+        note: >-
+          A commit has no file list at all. It has one tree, one or more
+          parents, two identities and a message.
+      - id: d
+        text: In the index, and only there
+        note: >-
+          The index caches it for staging, but the committed name lives in the
+          tree — which is why the name survives in history.
+    explanation: >-
+      A blob is contents and nothing else, which is why two identically-contented
+      files with different names are one object. A tree entry is
+      `mode type id name`, making a tree exactly a directory listing.
+
+  - id: q4
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.2]
+    stem: >-
+      What does Git record about a file's permissions?
+    options:
+      - id: a
+        text: Only whether the executable bit is set — `100644` or `100755`
+        correct: true
+      - id: b
+        text: The full mode, owner and group
+        note: >-
+          None of owner, group or the rest of the mode is stored. This is why a
+          repository is not a filesystem backup.
+      - id: c
+        text: The full numeric mode, but not owner or group
+        note: >-
+          Not the full mode. Setting a file to 0640 and committing it does not
+          preserve 0640.
+      - id: d
+        text: Nothing — permissions are a working-tree concern
+        note: >-
+          The executable bit *is* recorded, which is why a script stays
+          executable after a clone.
+    explanation: >-
+      Tree entries use a tiny fixed vocabulary: `100644` regular file, `100755`
+      executable, `040000` tree, `120000` symlink, `160000` submodule. Anyone
+      relying on Git to restore ownership or a umask is relying on something it
+      never promised.
+
+  - id: q5
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B10.1.2]
+    stem: >-
+      Which of these are contained in a commit object? Select all that apply.
+    options:
+      - id: a
+        text: A tree id
+        correct: true
+      - id: b
+        text: Zero or more parent ids
+        correct: true
+      - id: c
+        text: An author and a committer, each with a timestamp
+        correct: true
+      - id: d
+        text: A list of the files that changed
+        note: >-
+          There is none. "What changed" is computed by comparing two trees when
+          you ask for it.
+    explanation: >-
+      A commit is a tree, its parents, two identities with timestamps, and a
+      message. The absence of a diff is the most informative thing about it —
+      and the reason the first commit is not a special case, it simply has zero
+      parents.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.3]
+    stem: >-
+      `printf 'hello\n' | sha1sum` does not produce the id `git hash-object`
+      gives for the same content. Why?
+    options:
+      - id: a
+        text: Git hashes a header — the type, a space, the byte length and a NUL — before the content
+        correct: true
+      - id: b
+        text: Git salts the hash per repository
+        note: >-
+          If it did, the same file would have different ids in different
+          repositories, and deduplication across clones would be impossible.
+      - id: c
+        text: Git uses SHA-256, not SHA-1
+        note: >-
+          SHA-256 repositories exist, but the default is still SHA-1 and the
+          mismatch here is not the algorithm.
+      - id: d
+        text: "`printf` adds a trailing newline that Git strips"
+        note: >-
+          The newline is part of the content and is hashed. Strip it and you
+          simply get a different, still-mismatched id.
+    explanation: >-
+      The stored object is `<type> <length>\0<contents>`, so
+      `printf 'blob 6\0hello\n' | sha1sum` reproduces Git's id exactly. The
+      header is also why an *empty* file has an id: `blob 0\0` still hashes to
+      something — `e69de29…`, identical in every repository ever created.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.4]
+    stem: >-
+      A repository has three commits. `LICENSE` is byte-identical in all three.
+      How many blobs hold it?
+    options:
+      - id: a
+        text: One
+        correct: true
+      - id: b
+        text: Three — one snapshot per commit
+        note: >-
+          This is the intuition that makes "snapshots" sound wasteful. A
+          snapshot is a tree of pointers, not a copy of the data.
+      - id: c
+        text: Three, until `git gc` deduplicates them
+        note: >-
+          There is nothing to deduplicate later. Identical content produces an
+          identical id at write time, so it is one object from the start.
+      - id: d
+        text: One, plus two delta objects against it
+        note: >-
+          Deltas exist inside packfiles, but there is no delta here — the
+          content is unchanged, so all three trees name the same blob.
+    explanation: >-
+      The id is a function of the contents, so unchanged contents are the same
+      object by construction. All three trees point at the same blob. This is
+      the measurement that makes "snapshots, not diffs" believable rather than
+      merely repeated.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.4]
+    stem: >-
+      When *is* Git's storage genuinely expensive?
+    options:
+      - id: a
+        text: A large file whose contents change on every commit
+        correct: true
+      - id: b
+        text: A repository with a very long history
+        note: >-
+          Length alone costs little — unchanged files are shared across every
+          commit that contains them.
+      - id: c
+        text: A repository with many branches
+        note: >-
+          A branch is a 41-byte file and creates no objects at all.
+      - id: d
+        text: A deeply nested directory structure
+        note: >-
+          Unchanged subtrees are shared by id exactly as unchanged files are.
+    explanation: >-
+      Content addressing can only share what is identical. A 10 MB binary
+      committed a thousand times is a thousand distinct blobs, because every
+      version has different bytes and therefore a different id. That — not a
+      slogan about binaries — is why build artefacts do not belong in a
+      repository.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.5]
+    stem: >-
+      What does `.git/HEAD` normally contain?
+    options:
+      - id: a
+        text: "The text `ref: refs/heads/main` — a pointer to a ref, not to a commit"
+        correct: true
+      - id: b
+        text: The commit id you currently have checked out
+        note: >-
+          That is the *detached* case, and the difference is exactly what
+          "detached HEAD" means.
+      - id: c
+        text: The name of the branch, with no path
+        note: >-
+          It holds the full ref path, which is how tags and remote refs can also
+          be named.
+      - id: d
+        text: A binary record maintained by Git's index
+        note: >-
+          It is a small text file. `cat .git/HEAD` reads it.
+    explanation: >-
+      The indirection is the whole design. Because `HEAD` names a *ref*,
+      committing can move the branch you are on; when `HEAD` holds an id
+      directly, there is no branch to move, which is precisely why work on a
+      detached `HEAD` is easy to lose track of.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.5]
+    stem: >-
+      How many objects does `git branch experiment` create?
+    options:
+      - id: a
+        text: None — it writes one 41-byte file containing an existing commit id
+        correct: true
+      - id: b
+        text: One commit object marking the branch point
+        note: >-
+          Nothing is committed. The branch point is just an existing commit that
+          two refs now name.
+      - id: c
+        text: One tree object, so the branch has its own snapshot
+        note: >-
+          Both branches share the same trees and blobs entirely.
+      - id: d
+        text: It depends on the size of the working tree
+        note: >-
+          It is constant, and tiny, regardless of repository size.
+    explanation: >-
+      A branch is a pointer into history that already exists. Branching was
+      expensive in systems that copied the tree, and the caution around it
+      outlived the reason for it by about fifteen years.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.6]
+    stem: >-
+      You run `git commit --amend` to reword the last commit. What happens to
+      the original commit object?
+    options:
+      - id: a
+        text: It stays in the object store, but no branch points at it any more
+        correct: true
+      - id: b
+        text: It is modified in place with the new message
+        note: >-
+          Impossible. The id is a hash of the contents, so a changed message
+          means a different object.
+      - id: c
+        text: It is deleted immediately
+        note: >-
+          Nothing is deleted. `git cat-file -t` still reports `commit`, and its
+          file contents are still readable through it.
+      - id: d
+        text: It is kept only if you had pushed it
+        note: >-
+          Whether it was pushed changes who else is affected, not whether the
+          local object survives.
+    explanation: >-
+      `--amend` adds a new commit and moves the branch pointer. The old commit
+      becomes **unreachable**, which is not the same as gone — the reflog still
+      records where the branch was, which is what makes the recovery in B10.7
+      possible at all.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.6]
+    stem: >-
+      After amending, the new commit has a different id but the *same* tree id
+      as the original. What does that tell you?
+    options:
+      - id: a
+        text: Only the message changed — the snapshot was reused unchanged
+        correct: true
+      - id: b
+        text: The amend failed to pick up the working tree
+        note: >-
+          An identical tree is the expected result of rewording without staging
+          anything.
+      - id: c
+        text: Trees are not part of a commit's hash
+        note: >-
+          They very much are — which is why an identical tree is evidence about
+          what did *not* change.
+      - id: d
+        text: Git reused the id to save space
+        note: >-
+          Ids are never assigned to save space. Identical content simply
+          produces an identical id.
+    explanation: >-
+      The same reuse that shares an unchanged file across commits shares an
+      unchanged *tree* across an amend. Comparing tree ids is therefore a fast,
+      exact answer to "did this change anything?" — no content comparison needed.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.1.7]
+    stem: >-
+      You are comparing two commits' trees by hand. An entry for the directory
+      `accounts` has an identical object id in both. What can you conclude?
+    options:
+      - id: a
+        text: Nothing under `accounts` changed, at any depth, and it can be skipped entirely
+        correct: true
+      - id: b
+        text: The directory still exists, but its files may differ
+        note: >-
+          The tree's id covers its entries, and each entry's id covers its
+          contents. Identical id means identical subtree.
+      - id: c
+        text: Only the directory's immediate children are unchanged
+        note: >-
+          It holds recursively, because a child tree's id is part of the parent
+          tree's contents.
+      - id: d
+        text: You must descend to be sure
+        note: >-
+          Descending is exactly what the equal id lets you avoid, and why diff
+          is fast on large repositories.
+    explanation: >-
+      Equal ids mean equal subtrees, all the way down. This is the property that
+      makes `git diff`, `git status` and `git log --` on a path fast on a
+      repository with hundreds of thousands of files — most of the tree is
+      dismissed without being read.

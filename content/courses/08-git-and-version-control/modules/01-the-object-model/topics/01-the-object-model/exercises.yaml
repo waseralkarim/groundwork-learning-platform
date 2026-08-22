@@ -1,0 +1,206 @@
+topic: topic.the-object-model
+
+exercises:
+  - id: e1
+    title: What the shared folder cannot promise
+    level: L1
+    objectives: [OBJ-B10.1.1]
+    kind: interpretation
+    prompt: >-
+      A two-person team keeps its deploy script in a shared network folder, with
+      copies named by date. They argue that this is "basically version control,
+      just simpler", and point out that they have never actually lost a file.
+
+
+      Take that claim seriously. Say which of version control's promises the
+      scheme does keep, which it cannot keep even in principle, and identify the
+      failure that will not announce itself when it happens.
+    answer: >-
+      **What it genuinely keeps.** Old states are recoverable, as long as
+      somebody remembered to copy before editing. That is the "nothing is lost"
+      promise, kept by discipline rather than by construction — which is the
+      real distinction, not whether it has worked so far.
+
+
+      **What it cannot keep.** Provenance. A date in a filename is not an
+      author, and nothing anywhere records *why* a change was made. This is the
+      promise that pays for itself two years later, when someone must decide
+      whether a strange-looking line is load-bearing. It also cannot make
+      rewriting detectable: anyone can edit `deploy.sh.2024-11-03` in place and
+      nothing about the folder will look different afterwards.
+
+
+      **The silent failure.** Two people start from the same copy on the same
+      afternoon and each fix a different bug. Whoever saves second overwrites
+      the other's work. Nothing errors, nothing warns, and both engineers
+      believe their fix shipped. It surfaces weeks later as "that bug came
+      back", by which time nobody connects it to the afternoon in question.
+
+
+      "We have never lost a file" is consistent with having lost several
+      changes. The scheme cannot tell them, which is the point.
+    explanation: >-
+      The transferable point is that "we have never lost a file" and "we have
+      never lost a change" are different claims, and only the first one is
+      being checked. Any scheme whose safety depends on everyone remembering a
+      manual step has already failed — it just has not billed you yet.
+
+  - id: e2
+    title: Predict three object ids before running anything
+    level: L2
+    objectives: [OBJ-B10.1.3]
+    kind: calculation
+    prompt: >-
+      Using the rule `sha1(<type> <byte-length>\0<contents>)`, write down the
+      exact byte sequence that gets hashed for each of the following, and say
+      which two produce the same id.
+
+
+      1. A file `notes.txt` containing `hi` followed by a newline
+      2. A file `memo.txt` containing `hi` followed by a newline
+      3. A file `notes.txt` containing `hi` with no trailing newline
+      4. An empty file `placeholder`
+
+
+      You are not expected to compute SHA-1 by hand — give the input to it.
+    answer: >-
+      **1 and 2 hash `blob 3\0hi\n`** — `hi` plus a newline is three bytes. The
+      filename is not part of the input, so these two are **the same object**,
+      stored once. Different names for identical contents is the case the model
+      handles by doing nothing at all.
+
+
+      **3 hashes `blob 2\0hi`** — two bytes, no newline. A different id from 1
+      and 2, and this is not a technicality: it is why a text file that loses
+      its trailing newline shows as changed, and why editors that silently add
+      or strip one produce diffs nobody made.
+
+
+      **4 hashes `blob 0\0`** — the header is hashed even though there is no
+      content, which is why an empty file has an id at all. That id is
+      `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`, and it is the same in every
+      Git repository that has ever existed.
+
+
+      The generalisation worth keeping: the id depends on the type, the exact
+      byte length, and the exact bytes. Nothing else — not the name, not the
+      path, not the time, not who wrote it.
+    explanation: >-
+      This is the whole of content addressing, done by hand. Two files with the
+      same bytes are one object because the name was never an input; a missing
+      trailing newline is a different object because the bytes really are
+      different. Once the input to the hash is clear, every "why does Git think
+      this changed?" question becomes answerable by inspection.
+
+  - id: e3
+    title: Rank four repositories by what they will cost
+    level: L2
+    objectives: [OBJ-B10.1.4]
+    kind: ordering
+    prompt: >-
+      Four repositories, each with 1,000 commits. Order them from cheapest to
+      most expensive in object storage, and justify the order in terms of the
+      object model rather than intuition.
+
+
+      - **A** — 50,000 source files; each commit changes about 3 of them
+      - **B** — 12 source files; each commit changes about 3 of them
+      - **C** — 50,000 source files and one 10 MB binary rebuilt and committed every time
+      - **D** — 12 source files, 1,000 branches and 1,000 tags, each commit changing about 3 files
+    answer: >-
+      **Cheapest to most expensive: B ≈ D < A < C.**
+
+
+      **B and D are effectively tied**, which is the surprising part. D has
+      2,000 extra refs, and a ref is a 41-byte file containing an id that
+      already exists — it creates *no objects*. A thousand branches and a
+      thousand tags add roughly 80 KB of files and nothing to the object store.
+      Lightweight tags are refs; annotated tags do create one small object each,
+      so D is larger than B by about a thousand tiny objects at most.
+
+
+      **A is next.** Both A and B write about 3 new blobs per commit, so the
+      blob cost is nearly identical despite A having 4,000× more files. A pays
+      more only in *trees*: changing a file requires a new tree for every
+      directory on the path from the root to it, so a deep tree costs a few
+      extra small objects per commit. Unchanged sibling subtrees are shared by
+      id and cost nothing.
+
+
+      **C is far and away the most expensive, and it is not close.** The binary
+      differs every time, so every commit produces a new 10 MB blob — about
+      10 GB, against a few megabytes for everything else in every other
+      repository here. Content addressing shares only what is identical, and a
+      rebuilt artefact is never identical.
+
+
+      The lesson: cost tracks *what changed*, not how much exists, with one
+      exception — content that changes wholesale every time, which is exactly
+      what build artefacts are.
+    explanation: >-
+      The instinct being corrected is that cost tracks size or history length.
+      It tracks *change*, because identical content is one object by
+      construction. Refs are free, unchanged subtrees are free, and the single
+      thing that is genuinely expensive is content that differs every time —
+      which is exactly what a rebuilt artefact is.
+
+  - id: e4
+    title: Rewrite the team's rule about amend
+    level: L2
+    objectives: [OBJ-B10.1.6]
+    kind: short_answer
+    prompt: >-
+      A team's contributing guide says:
+
+
+      > **Never use `git commit --amend`.** It deletes the previous commit and
+      > the work in it cannot be recovered.
+
+
+      One sentence of that is a factual error and one concern behind it is
+      legitimate. Rewrite the rule so it is both accurate and still useful as
+      guidance.
+    answer: >-
+      **The factual error.** Amend does not delete anything. It creates a new
+      commit and moves the branch pointer; the original stays in the object
+      store, its tree and file contents remain readable through its id, and the
+      reflog records where the branch pointed. The right word is
+      **unreachable**, and unreachable is recoverable.
+
+
+      **The legitimate concern, which the rule states in the wrong place.**
+      Amending something already pushed rewrites history other people hold.
+      Their branch and yours now disagree, and the fix is a force-push that can
+      discard *their* commits. That is a real hazard, and it has nothing to do
+      with losing your own work.
+
+
+      Two smaller ones worth keeping: amend takes whatever is currently staged,
+      so an unintended change can be folded into a commit that already looked
+      reviewed; and unreachable objects are eventually collected by `gc`, so
+      "recoverable" has an expiry measured in weeks.
+
+
+      **A rewrite:**
+
+
+      > **Amend freely before you push.** `--amend` does not delete the old
+      > commit — it becomes unreachable and stays recoverable through the reflog
+      > for a few weeks — so rewording or fixing a local commit is safe and
+      > encouraged.
+      >
+      > **Treat amending an already-pushed commit as rewriting shared history.**
+      > It requires a force-push, which can discard other people's work. Do it
+      > only on a branch you know nobody else has, and say so in the pull request.
+      >
+      > Check `git status` before amending: whatever is staged goes in.
+
+
+      This is longer than the original, and the length is the point — the
+      one-line ban was short because it was wrong, and people who discovered it
+      was wrong then had no guidance at all.
+    explanation: >-
+      Rules that are technically false get discovered and then discarded
+      wholesale, taking the legitimate warning with them. The repair is to say
+      the true thing — unreachable, not deleted — and move the real hazard,
+      rewriting shared history, to where it belongs.

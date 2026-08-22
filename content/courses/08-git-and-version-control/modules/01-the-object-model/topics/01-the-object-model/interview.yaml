@@ -1,0 +1,159 @@
+topic: topic.the-object-model
+
+questions:
+  - id: i1
+    level: L2
+    question: >-
+      What are the four object types in Git, and what does each one contain?
+    model_answer: >-
+      **Blob** — file contents, and nothing else. No name, no path, no
+      permissions, no timestamp.
+
+
+      **Tree** — a directory listing. Each entry is mode, type, object id and
+      name, so a tree points at blobs and at other trees.
+
+
+      **Commit** — one tree, zero or more parents, an author and a committer
+      (each with a timestamp), and a message.
+
+
+      **Tag** — an annotated tag object, naming another object with a message
+      and a tagger. A lightweight tag is not this; it is just a ref.
+    signal: >-
+      Strong answers volunteer that a blob has no filename and say where the
+      name lives instead. Weak answers describe a commit as containing "the
+      changes", which is the misconception the whole topic exists to correct.
+
+  - id: i2
+    level: L2
+    question: >-
+      Where does a commit id come from? Could you predict one?
+    model_answer: >-
+      It is computed, not assigned: `sha1(<type> <length>\0<contents>)` over the
+      object's own bytes. For a commit those bytes include the tree, the
+      parents, the author and committer with their timestamps, and the message.
+
+
+      A **blob** id is fully predictable — `printf 'blob 6\0hello\n' | sha1sum`
+      reproduces exactly what `git hash-object` reports, and the same content
+      gives the same id in every repository on earth. A **commit** id is
+      effectively unpredictable in practice, because committing the same tree a
+      second later produces a different object.
+    signal: >-
+      The distinction between reproducible blob ids and effectively-unique
+      commit ids is the thing to listen for. Candidates who have only ever used
+      porcelain often think ids are allocated by Git or by the server.
+
+  - id: i3
+    level: L2
+    question: >-
+      People say Git stores snapshots rather than diffs. Isn't that wasteful?
+    model_answer: >-
+      No, because a snapshot is a tree of pointers rather than a copy. An
+      unchanged file has unchanged contents, so it has the same id, so it is the
+      same object — a file identical across a thousand commits is stored once.
+      The cost of a commit tracks what changed, not the size of the project.
+
+
+      It is genuinely expensive in one case: content that differs every time. A
+      10 MB artefact committed a thousand times is a thousand distinct blobs,
+      because content addressing can only share what is identical.
+
+
+      Packfiles do delta-compress similar objects, but that is a storage
+      encoding underneath the model — ids and meaning are unchanged.
+    signal: >-
+      Look for the pointer insight rather than the recited slogan. The best
+      answers name the binary case unprompted, because it is the one that turns
+      the model into an actual engineering rule about what belongs in a repo.
+
+  - id: i4
+    level: L2
+    question: >-
+      What is a branch?
+    model_answer: >-
+      A file under `.git/refs/heads/` containing one object id — forty hex
+      characters and a newline, 41 bytes. There is no branch object and no
+      branch record anywhere else.
+
+
+      Creating one writes that file and no objects at all, which is why
+      branching is free. Deleting one removes the file, which is why deleting a
+      branch cannot destroy a commit — though it can make one unreachable.
+
+
+      `HEAD` is a separate file naming which ref you are on, usually
+      `ref: refs/heads/main`. When it holds an id directly instead, that is a
+      detached `HEAD`.
+    signal: >-
+      "A pointer to a commit" is the correct answer. Candidates who add that
+      creating one costs nothing, or who can say what `HEAD` contains, have
+      looked inside `.git` rather than only read about it.
+
+  - id: i5
+    level: L2
+    question: >-
+      A colleague amends a commit and panics that they have lost the original.
+      What do you tell them?
+    model_answer: >-
+      Nothing was lost. `--amend` cannot modify a commit — the id is a hash of
+      the contents, so a new message means a new object. Git wrote a new commit
+      and moved the branch pointer.
+
+
+      The original is still in the object store: `git cat-file -t <id>` reports
+      `commit`, and its files are still readable through it. It is
+      **unreachable**, not gone, and `git reflog` records where the branch
+      pointed, which is how you get back to it.
+
+
+      The real risk of amending is different: amending something already pushed
+      rewrites history other people hold, and the fix is a force-push that can
+      discard their work.
+    signal: >-
+      The word to listen for is *unreachable*. Candidates who reach for the
+      reflog immediately have recovered from this before; candidates who say the
+      commit is deleted have not understood that objects are immutable.
+
+  - id: i6
+    level: L2
+    question: >-
+      Someone commits an API key, notices, deletes the file and commits again.
+      Is the key safe?
+    model_answer: >-
+      No. The blob is still in the object store and readable by id in every
+      clone, fork, mirror and CI cache that fetched it. The commit that
+      introduced it is still in the history. Deleting a file in a later commit
+      changes the current tree and nothing else.
+
+
+      Rotate the credential first — that is the only step that revokes access.
+      Rewriting history to remove the blob is worth doing where the coordination
+      cost is acceptable, and adding a scanner to CI stops the next one, but
+      neither is the fix.
+    signal: >-
+      The order matters more than the mechanism. A candidate who reaches
+      straight for a history-rewriting tool and never says "rotate" has missed
+      that the secret was disclosed the moment it was pushed.
+
+  - id: i7
+    level: L2
+    question: >-
+      A pipeline built the same source twice and recorded two different commit
+      ids. Is the commit id unreliable?
+    model_answer: >-
+      No — it is reliable at identifying a commit, which is not the same as
+      identifying content. A commit's id covers its tree, its parents, both
+      identities and both timestamps. Something re-created the commit — an
+      amend, a rebase or a cherry-pick — producing a new object with the same
+      snapshot.
+
+
+      If the question is "was this the same code?", record the **tree** id:
+      `git rev-parse HEAD^{tree}`. It is a pure function of the content and is
+      identical across all three of those operations. Recording both is best —
+      the commit id for provenance, the tree id for content.
+    signal: >-
+      Reaching for the tree id is the discriminator. It shows the candidate can
+      apply the object model to a real problem rather than only describe it.
