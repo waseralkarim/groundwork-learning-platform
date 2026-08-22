@@ -252,6 +252,54 @@ places before the lab walk caught it.
 | B12 | **Networking in Depth** | L2–L5 | TCP deep dive (handshake, windows, retransmit) · DNS internals & resolution path · TLS handshake & certificate validation · HTTP/1.1 vs 2 vs 3 · Load balancing (L4 vs L7, algorithms) · Reverse proxies · Firewalls & iptables/nftables · VPNs · Packet capture with tcpdump/Wireshark · **Network troubleshooting scenarios** |
 | B13 | **Databases for DevOps** | L2–L4 | Relational model & SQL · PostgreSQL operations · Indexes & query plans · Transactions & isolation · Connection pooling · Replication & failover · Backup & **tested restore** · Migrations & zero-downtime schema change · Redis/Valkey · NoSQL concepts · Performance troubleshooting |
 
+
+### What building B10.1 found
+
+The first topic of B10, and the first that needed a tool the lab image did not
+have. The instinct was a dedicated `lab-git` image, on the grounds that a tool
+which can clone, fetch and push is a larger thing to hand all 140 labs than a
+test runner is. That argument did not survive checking: the broker puts every
+lab on an `Internal` Docker network, `allow_egress` defaults to false, and the
+content schema has no field to request otherwise, so git has nothing to reach.
+Verified by running curl from a container on an internal network. One image
+stays, and the Dockerfile header now records the reasoning rather than the
+conclusion.
+
+**The image is measured by two topics, and adding to it breaks them.** B06.2 and
+B06.3 quote this image's package counts throughout their prose — 16/162 became
+17/163 with bats, then 18/175 with git. The *checks* were made count-independent
+first (comparing against live `apt-mark` output rather than pinning a constant),
+so only prose needed resyncing. That is the pattern worth keeping: assert the
+relationship, not the number, and a lab stops being a tripwire for unrelated
+work.
+
+**One failing step meant fourteen wrong files.** The regression walk caught a
+single assertion, but the stale counts were quoted across lessons, quiz,
+exercises, interview questions and a mermaid diagram — none of which any test
+reads. Prose is unverified by construction, so the blast radius of a measured
+fact is always wider than the failure it produces.
+
+**`--amend` leaves the old commit reachable if a branch still points at it.** I
+had written a lab step asserting the pre-amend commit would be orphaned, and
+measured 1 rather than 0 — the branch created two steps earlier still named it.
+The accident is a better lab than the plan: the step now shows reachable=1, has
+the learner delete that branch, shows 0, and only then shows the commit is still
+in the store. Reachability becomes demonstrated rather than defined.
+
+**A relative markdown link in a lesson always 404s**, and only a human clicking
+it will ever find out. `[labs](../labs)` had shipped in A01.1: well-formed
+markdown, a target directory that genuinely exists, lints and ingests clean, and
+the lab walk never reads lesson prose. Now a `link-relative` lint rule, as an
+error — the sweep found exactly one occurrence in the whole curriculum.
+
+**Content addressing gives the topic its spine, and every claim is one command.**
+`sha1("blob 6\0hello\n")` reproduces `git hash-object` byte for byte; an
+unchanged file keeps its blob id across commits so LICENSE is stored once for
+three commits; a ref is 41 bytes and `git branch` creates no objects; and after
+`git rm` plus a commit, `git cat-file -p` still prints the secret. That last one
+is the whole production lesson — a leaked credential is disclosed the moment it
+is pushed, so rotation is the fix and history rewriting is hygiene.
+
 ### What building B08.1 found
 
 The first B08 module, and the first course whose subject is a *language* rather
