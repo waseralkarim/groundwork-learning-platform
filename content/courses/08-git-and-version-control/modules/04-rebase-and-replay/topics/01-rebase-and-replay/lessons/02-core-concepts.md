@@ -92,8 +92,22 @@ rebase    D onto main ─► D'       resolve
           E onto D'   ─► E'       resolve again — different starting tree
 ```
 
-Resolving `D'` does not help `E'`. If both touched the same region, you will see
-that region twice — and on a ten-commit branch, potentially ten times.
+Whether resolving `D'` helps `E'` depends on **how** you resolved it, and this
+is worth measuring rather than assuming:
+
+| Resolution of `D'` | What happens to `E'` |
+|---|---|
+| take your change | `E'` applies cleanly — the tree now matches what it expects |
+| take the new base's value | `E'` conflicts **again**, on the same region |
+
+Measured: with `main` at 99 and a branch bumping 1 → 2 → 3, resolving the first
+conflict to `99` produces a second conflict of `ours=99, theirs=3`. Resolving it
+to `2` produces no second conflict at all.
+
+So the repetition is not automatic — it is what happens when each resolution
+leaves the region still disagreeing with the next commit's expectation. On a
+long branch that is easy to fall into, and it is why a ten-commit rebase can
+present the same region ten times.
 
 Two things help, and they are not the same thing:
 
