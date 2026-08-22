@@ -1,0 +1,191 @@
+topic: topic.staging-and-committing
+
+exercises:
+  - id: e1
+    title: Predict all three copies
+    level: L2
+    objectives: [OBJ-B10.2.1]
+    kind: interpretation
+    prompt: >-
+      A file `notes.md` is committed containing `alpha`. Then, in order:
+
+
+      1. `echo beta > notes.md`
+      2. `git add notes.md`
+      3. `echo gamma > notes.md`
+      4. `git add notes.md`
+      5. `echo delta > notes.md`
+
+
+      State the contents of all three copies — committed, staged, working — and
+      say how many blobs now exist for this path.
+    answer: >-
+      **Committed:** `alpha`. Nothing in this sequence commits, so `HEAD` is
+      untouched throughout.
+
+
+      **Staged:** `gamma`. Step 4 replaced the index entry written in step 2.
+      The index holds exactly one version of a path.
+
+
+      **Working:** `delta`.
+
+
+      **Blobs: three.** `alpha` from the original commit, `beta` from step 2 and
+      `gamma` from step 4. `delta` is *not* among them, because it was never
+      staged — it exists only as an ordinary file with no object behind it.
+      Measured: the two `git add` calls write exactly two new objects.
+
+
+      The `beta` blob is the interesting one. It is unreferenced by anything the
+      moment step 4 overwrites the index entry, but it is still in the object
+      store and will be until `gc` collects it. This is why staged work is
+      recoverable even after you stage over it.
+    explanation: >-
+      The trap is assuming the index accumulates. It does not — each `git add`
+      replaces the entry for that path. What accumulates is *blobs*, because
+      writing an object is how staging works, and nothing rewrites or deletes
+      an object that already exists.
+
+  - id: e2
+    title: Choose the diff for the question
+    level: L2
+    objectives: [OBJ-B10.2.3]
+    kind: short_answer
+    prompt: >-
+      For each question, name the command that answers it exactly — no more, no
+      less:
+
+
+      1. "What will this commit contain?"
+      2. "What have I changed since I last staged?"
+      3. "What have I changed since the last commit, staged or not?"
+      4. "Am I about to commit something different from what is on my disk?"
+    answer: >-
+      **1. `git diff --cached`** (or `--staged`). Index vs `HEAD` — precisely
+      the contents of the next commit.
+
+
+      **2. `git diff`.** Working vs index. This is the narrowest of the three
+      and the one people misread as "show me my changes".
+
+
+      **3. `git diff HEAD`.** Working vs `HEAD`, which spans both staged and
+      unstaged changes.
+
+
+      **4. `git diff`** again — but read for emptiness rather than for content.
+      If it prints nothing, the working tree and index agree and the commit
+      matches your disk. If it prints anything, they disagree, and the commit
+      contains something you have not run.
+
+
+      Question 4 is the same command as question 2 asked for a different reason,
+      and that is worth noticing: the check that protects you is one you already
+      know.
+    explanation: >-
+      Three commands, three pairs, and the mapping is mechanical once the three
+      copies are visible. The habit worth building is asking *which pair do I
+      mean* before typing, rather than running `git diff` and interpreting
+      whatever appears.
+
+  - id: e3
+    title: Pick the reset
+    level: L2
+    objectives: [OBJ-B10.2.6]
+    kind: ordering
+    prompt: >-
+      Order these four situations by how much you need to move — fewest copies
+      first — and name the command for each.
+
+
+      - **A** Your last three commits should be one commit with a better message
+      - **B** You staged a whole directory and meant to stage one file
+      - **C** You want the working tree to match `origin/main` exactly, discarding everything local
+      - **D** The commit message has a typo; nothing else is wrong
+    answer: >-
+      **Fewest to most: D ≈ A (1 of 3) → B (2 of 3) → C (3 of 3).**
+
+
+      **D — zero or one.** `git commit --amend` is the direct answer and moves
+      nothing but `HEAD`. Worth listing first because the reflex to reach for
+      `reset` here is exactly the over-application the topic is trying to
+      prevent.
+
+
+      **A — one of three.** `git reset --soft HEAD~3`. `HEAD` moves back three
+      commits; the index and working tree are untouched, so all the work sits
+      staged and ready to commit once. This is what squashing *is*.
+
+
+      **B — two of three.** `git reset` (i.e. `--mixed`) or, better,
+      `git restore --staged <path>` for a single path. `HEAD` and index move,
+      the working tree is untouched — nothing you wrote is at risk.
+
+
+      **C — three of three.** `git reset --hard origin/main`. The only one that
+      overwrites files, and the only one that can lose work with no object
+      behind it.
+
+
+      The ordering is the point: the modes are not three unrelated commands but
+      one dial, and reaching for `--hard` when `--soft` would do is how people
+      lose work while doing something they thought was routine.
+    explanation: >-
+      Two habits fall out. Ask "how far do I need to move?" and take the
+      smallest answer. And notice that the destructive option is the one
+      furthest along the dial, so it is never reached by accident — only by
+      typing it.
+
+  - id: e4
+    title: Write the team's rule for partial staging
+    level: L3
+    objectives: [OBJ-B10.2.7]
+    kind: short_answer
+    prompt: >-
+      After an incident where a merged "fix" contained only a debug-line
+      removal, a team proposes banning `git add -p`.
+
+
+      Write the rule you would propose instead. It must be short enough that
+      people follow it, and it must actually prevent the failure.
+    answer: >-
+      **Why the ban is the wrong fix.** `add -p` did what it was told. It also
+      buys something real: commits that are one idea, which make review, revert
+      and especially `bisect` dramatically better. Banning it trades a frequent
+      benefit for a rare failure, and the failure has a one-second check.
+
+
+      **The rule:**
+
+
+      > **Run `git diff` before committing a partial stage.** Empty means the
+      > commit matches your disk and your testing applies to it. Not empty means
+      > you are committing something you have not run — so either stage the
+      > rest, or be able to say why the hunks are independent.
+      >
+      > Set `git config --global commit.verbose true` so the staged diff appears
+      > in your message editor and the check is unavoidable.
+      >
+      > If it matters, test what you staged: `git stash push --keep-index`,
+      > run the tests, `git stash pop`.
+
+
+      **Why this prevents the incident and a ban would not.** The engineer's
+      `git diff` would have printed the entire timeout change under the heading
+      "not going in". `commit.verbose` would have shown them a diff with no
+      timeout change while they typed "raise pool timeout". Both are noticeable
+      in a way that `MM` in `git status` demonstrably is not.
+
+
+      **One addition for review**, since review also missed it: ask whether the
+      diff does what the title says, not only whether it is correct. Reviewers
+      catch incorrect changes far more reliably than incomplete ones, and a
+      one-line deletion under a title promising a behaviour change is the
+      cheapest possible signal.
+    explanation: >-
+      The transferable judgement is that a process failure with a cheap
+      detection step does not justify removing a capability. Ban-the-tool rules
+      are popular because they are easy to write and easy to comply with, and
+      they cost more than they look — here, every future commit that mixes three
+      unrelated changes.

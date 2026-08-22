@@ -69,10 +69,46 @@ artifacts:
       $ git status --short
       MM config.py
 
+diagnostic_questions:
+  - "The commit is one deletion and no addition. Can a change that raises a value look like that?"
+  - "In what order does `git add -p` offer hunks, and where does each change sit in the file?"
+  - "The engineer's test run was real. Which of the three copies did it test?"
+  - "CI passed. What exactly did that establish?"
+  - "`git status` showed `MM`. What was the second column saying?"
+
 hints:
-  - "The commit contains one deletion and no addition. What kind of change is a pure deletion?"
-  - "`git add -p` offers hunks in file order. Which of the two changes comes first in config.py?"
+  - "Compare what `git show --stat` reports against what the title promises. Can a change that raises a value be a pure deletion?"
+  - "`git add -p` walks the file top to bottom, offering hunks in file order. Which of the two changes comes first in config.py?"
+  - "Local tests run against the working tree. Commits are built from the index."
   - "`MM` has two columns. The second one was reporting something the whole time."
+
+method: >-
+  **1. Read the stat line before the diff.** `1 file changed, 1 deletion(-)`
+  under the title "raise pool timeout" is already the finding. A change that
+  raises a value must add a line, so the commit cannot do what it says. This
+  costs one command and no reading.
+
+
+  **2. Ask which copy each piece of evidence is about.** The engineer tested the
+  working tree. CI tested the commit. Those are two different files, and every
+  confident statement in the incident is true about one of them.
+
+
+  **3. Reconstruct the staging, not the editing.** The question is not "what did
+  they change" but "what did they stage". `git add -p` offers hunks in file
+  order, so establish where each change sits in the file — the debug line was
+  above the timeout, making it hunk 1.
+
+
+  **4. Check whether the work is still on disk.** An unstaged change survives
+  committing, pushing and merging untouched. `git diff` in their working copy
+  will still show the timeout change unless something destructive has run since.
+
+
+  **5. Only then ask why the checks missed it.** Each one was looking at
+  something real: the test at the working tree, CI at the commit, the reviewer
+  at correctness rather than completeness, and `git status` was saying `MM` the
+  entire time to nobody.
 
 root_cause: >-
   **The engineer answered `y` to the wrong hunk.**

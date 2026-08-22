@@ -1,0 +1,184 @@
+id: assessment.staging-and-committing
+topic: topic.staging-and-committing
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a commit that CI passed and production ignored
+    kind: explain
+    objectives: [OBJ-B10.2.4, OBJ-B10.2.5]
+    prompt: >-
+      A feature flag was supposed to be switched from `false` to `true`. The
+      engineer edited the file, ran the service locally and confirmed the
+      feature appeared, then committed and pushed. CI passed. The flag is still
+      `false` in production.
+
+
+      `git show --stat` on their commit reports `1 file changed, 2 insertions(+),
+      2 deletions(-)` — but none of the changed lines is the flag. The engineer
+      had also reformatted some nearby comments while they were in the file.
+
+
+      In about 250 words: explain how the flag change failed to reach the
+      commit, say why the local test and CI both passed, and give the check that
+      would have caught it.
+    rubric:
+      - "Identifies that the commit is built from the index, not the working tree"
+      - "Names a plausible mechanism: partial staging, or staging then editing"
+      - "Explains the local test ran against the working tree, which did have the change"
+      - "Explains CI tested the commit correctly and the commit is simply harmless"
+      - "Distinguishes 'CI passed' as evidence about the commit, not about the intent"
+      - "Names git diff as the check, and says an empty result is the safe signal"
+      - "Ideally mentions commit -v or commit.verbose to make the check unavoidable"
+      - "Ideally notes the stat summary itself was a signal: the flag line is absent"
+    model_answer: >-
+      **The mechanism.** A commit is built from the index, never from your
+      files. Either the engineer staged the comment reformatting and not the
+      flag — `git add -p` offers hunks in file order, so whichever change sits
+      earlier is offered first — or they staged early and edited the flag
+      afterwards. Both produce a commit containing the formatting and not the
+      flag.
+
+
+      **Why the local test passed.** It ran against the working tree, which did
+      contain the change. Testing before or without staging says nothing about
+      what you staged; the two are different copies of the file.
+
+
+      **Why CI passed.** CI tested the commit, correctly. The commit reformats
+      comments, which breaks nothing. A green build is evidence the commit is
+      *harmless*, not evidence it does what its title claims. No test asserted
+      the flag was `true`, so nothing contradicted it.
+
+
+      **The check.** `git diff` compares the working tree against the index. Run
+      before committing, it prints exactly what is *not* going in — here, the
+      flag change. Empty means the commit matches your disk and your local
+      testing applies to it; non-empty means it does not.
+
+
+      Strong answers note the stat line was itself a signal: two insertions and
+      two deletions with no flag line among them is a commit that cannot do what
+      its message says.
+
+  - id: B
+    title: Diagnose lost work after a reset
+    kind: diagnose
+    objectives: [OBJ-B10.2.6]
+    prompt: >-
+      A colleague reports losing "a day's work". Their account:
+
+
+      They had been building a change across several files. Some of it they had
+      run `git add` on that morning; the rest they had only edited. They also had
+      two commits made locally and not pushed. To get back to a clean state
+      before pulling, they ran `git reset --hard origin/main`.
+
+
+      They want to know what is recoverable.
+
+
+      In about 300 words: say what is recoverable and what is not, what you would
+      run, and what you would tell them to do differently.
+    rubric:
+      - "Separates the three categories: committed, staged, edited-only"
+      - "States the two local commits are recoverable and names the reflog"
+      - "States the staged content is recoverable because add wrote blobs"
+      - "Names git fsck --dangling or --lost-found for the orphaned blobs"
+      - "States the edited-but-never-staged work is unrecoverable, and says why: no object exists"
+      - "Does not overpromise -- avoids implying everything can be recovered"
+      - "Notes urgency: gc eventually collects unreachable objects"
+      - "Recommends git add or git stash before any --hard as the durable habit"
+      - "Ideally notes --hard was heavier than needed for the stated goal"
+    model_answer: >-
+      **Three categories, three different answers.**
+
+
+      **The two local commits are safe.** `--hard` moves pointers and overwrites
+      files; it does not touch the object store. `git reflog` shows where the
+      branch pointed before the reset, and `git branch rescue <id>` brings them
+      back.
+
+
+      **The staged work is recoverable.** `git add` writes a blob immediately, so
+      every file they staged that morning exists as an object. Nothing references
+      those blobs now, so find them with `git fsck --dangling` (or
+      `--lost-found`, which writes them out to files) and inspect with
+      `git cat-file -p`. The cost is that blobs carry no filename — the name
+      lived in a tree that was never written — so they will have to identify
+      each one by its contents.
+
+
+      **The edited-but-never-staged work is gone.** No `git add` means no blob
+      was ever written, so there is no object anywhere to recover from. This is
+      the honest answer and it should not be softened; the only remaining hopes
+      are editor backups, swap files, or an IDE's local history, none of which
+      are Git.
+
+
+      **Urgency.** Unreachable objects survive until `gc` collects them —
+      typically a two-week grace period, but do the recovery now rather than
+      relying on it.
+
+
+      **What to do differently.** `git add -A` or `git stash` before any
+      `--hard`. Staging is enough: once content is an object it survives even if
+      the index is discarded. Also worth saying that `--hard` was heavier than
+      the stated goal needed — they wanted to get to a clean state before
+      pulling, and stashing would have achieved that while keeping everything.
+
+  - id: C
+    title: Justify keeping the staging area
+    kind: reason
+    objectives: [OBJ-B10.2.1, OBJ-B10.2.7]
+    prompt: >-
+      A team is writing internal Git guidance. One engineer proposes: "Always use
+      `git commit -a`. The staging area is a design mistake — no other tool has
+      one, it causes half our Git confusion, and committing what is on disk is
+      what everyone means anyway."
+
+
+      In about 300 words: argue a position. Give the strongest version of their
+      case first, and be concrete about what is gained and lost.
+    rubric:
+      - "States the opposing case fairly and at its strongest before answering"
+      - "Concedes the index genuinely causes confusion, with a specific example"
+      - "Names the concrete benefit: commits that are one idea"
+      - "Connects single-idea commits to review, revert and especially bisect"
+      - "Notes commit -a does not stage new files, so the rule is incomplete as written"
+      - "Recognises the index is unavoidable anyway -- merges, conflicts, and add are all index operations"
+      - "Takes a clear position rather than hedging"
+      - "Ideally proposes a middle path: commit -a as the default, add -p when splitting is warranted"
+    model_answer: >-
+      **Their case, at its strongest.** The index is genuinely unusual, it is the
+      source of the most common Git confusions — "status says modified but diff
+      shows nothing", "my fix is not in the commit" — and for the majority of
+      changes, which touch one file for one reason, it adds a step with no
+      benefit. Tools are allowed to have design mistakes, and "no other tool
+      does this" is real evidence.
+
+
+      **What it gets wrong.** The benefit is not convenience, it is that a commit
+      can be *one idea*. An afternoon's work is often a fix, a rename and a stray
+      debug line; committing them separately produces a history that reads as
+      decisions. That pays off in review, in `git revert` on a single change,
+      and most of all in `bisect` — which degrades badly when the commit it lands
+      on does three things, because you then have to work out which.
+
+
+      **The rule is also incomplete as written.** `commit -a` stages modified
+      tracked files only. New files still need `git add`, so the team would keep
+      the concept and lose the consistency.
+
+
+      **And the index cannot actually be removed.** Merges resolve into it,
+      conflicts live in its non-zero stages, and every `add` is an index
+      operation. Banning it from the guidance hides it rather than removing it,
+      which leaves people meeting it for the first time during a conflict.
+
+
+      **Position.** Teach the three copies once — it takes ten minutes and
+      dissolves the confusions they are complaining about — then make `commit -a`
+      the ordinary default and reach for `add -p` when a change genuinely
+      contains more than one idea. That keeps the benefit where it matters and
+      the step where it does not cost anything.

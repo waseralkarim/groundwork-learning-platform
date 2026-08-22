@@ -1,0 +1,386 @@
+id: quiz.staging-and-committing
+topic: topic.staging-and-committing
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.1]
+    stem: >-
+      A repository is completely clean — `git status` reports nothing. What is
+      in the index?
+    options:
+      - id: a
+        text: Every tracked file, with ids matching HEAD's tree
+        correct: true
+      - id: b
+        text: Nothing — the index is empty until you stage something
+        note: >-
+          This is the "staging is a queue" picture. The index always holds the
+          full list of tracked paths; clean means the three copies agree.
+      - id: c
+        text: Only files changed since the last commit
+        note: >-
+          That would make a clean repository's index empty, and `git ls-files
+          --stage` shows otherwise.
+      - id: d
+        text: A diff against HEAD
+        note: >-
+          The index holds object ids and stat data, not differences.
+    explanation: >-
+      The index is a full listing of the next commit, not a queue of pending
+      changes. `git ls-files --stage` on an untouched repository prints every
+      tracked path. "Clean" means committed, staged and working all agree.
+
+  - id: q2
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.1]
+    stem: >-
+      You run `git add report.txt`, then delete the file with `rm report.txt`
+      before committing. Is the staged content recoverable?
+    options:
+      - id: a
+        text: Yes — `git add` already wrote it into the object store as a blob
+        correct: true
+      - id: b
+        text: "No — nothing is stored until you commit"
+        note: >-
+          `git add` writes the blob immediately. That is why `git cat-file -p
+          :report.txt` works before any commit exists.
+      - id: c
+        text: Only if you had committed at least once before
+        note: >-
+          Irrelevant. The blob was written when you staged it.
+      - id: d
+        text: Only from the reflog
+        note: >-
+          The reflog records ref movements. The content here is an object, and
+          `git checkout -- report.txt` restores it from the index.
+    explanation: >-
+      Staging is not a promise to save later — it hashes the content, writes the
+      blob, and records the id. `git checkout -- report.txt` brings the file
+      back from the index, and `git cat-file -p :report.txt` reads it directly.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.2]
+    stem: >-
+      `git status --short` prints `MM config.py`. What does that mean?
+    options:
+      - id: a
+        text: Staged changes, plus further unstaged changes to the same file
+        correct: true
+      - id: b
+        text: The file was modified twice before staging
+        note: >-
+          The columns are two different comparisons, not a count of edits.
+      - id: c
+        text: The file is modified and the change is a merge conflict
+        note: >-
+          Conflicts show as `UU` and involve non-zero index stages.
+      - id: d
+        text: The file is modified in two branches
+        note: >-
+          Status reports on your three copies, not on other branches.
+    explanation: >-
+      Column one is index vs `HEAD` — staged. Column two is working vs index —
+      not staged. `MM` therefore means what you are about to commit is *not*
+      what is on your disk, which is the single most useful thing status can
+      tell you and the easiest to skim past.
+
+  - id: q4
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.2]
+    stem: >-
+      Which status code means the file is not in the index at all?
+    options:
+      - id: a
+        text: "`??`"
+        correct: true
+      - id: b
+        text: "`A `"
+        note: >-
+          `A ` means newly added — it *is* in the index now.
+      - id: c
+        text: "` M`"
+        note: >-
+          A tracked file with unstaged modifications.
+      - id: d
+        text: "`D `"
+        note: >-
+          A deletion that has been staged. Still a tracked path.
+    explanation: >-
+      Untracked is a different state from modified. Git has never been told
+      about the file, so it appears in neither column's comparison — hence two
+      question marks rather than a letter.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.3]
+    stem: >-
+      `git status` says a file is modified, but `git diff` prints nothing. Why?
+    options:
+      - id: a
+        text: The change is staged, so the working tree and index are identical
+        correct: true
+      - id: b
+        text: The file is binary
+        note: >-
+          Git would say "Binary files differ" rather than print nothing.
+      - id: c
+        text: Only the file's mode changed
+        note: >-
+          A mode change does appear in `git diff`.
+      - id: d
+        text: The change is whitespace-only
+        note: >-
+          Whitespace shows by default; suppressing it takes an explicit flag.
+    explanation: >-
+      Plain `git diff` compares working against **index**. Stage a change and
+      that pair becomes identical, so there is nothing to print — while status
+      still reports the index-vs-`HEAD` difference. Use `--cached` for what is
+      staged, or `git diff HEAD` for everything uncommitted.
+
+  - id: q6
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B10.2.3]
+    stem: >-
+      Which commands show you exactly what the next commit will contain? Select
+      all that apply.
+    options:
+      - id: a
+        text: "`git diff --cached`"
+        correct: true
+      - id: b
+        text: "`git diff --staged`"
+        correct: true
+      - id: c
+        text: "`git commit -v`"
+        correct: true
+      - id: d
+        text: "`git diff HEAD`"
+        note: >-
+          Compares the working tree against HEAD, so it includes unstaged
+          changes that will *not* be committed.
+    explanation: >-
+      `--staged` is a synonym for `--cached`; the duplication comes from the
+      index also being called the cache. `commit -v` puts that same diff in the
+      message editor, which is the version you cannot forget to run.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.4]
+    stem: >-
+      What does `git add` do at the moment you run it?
+    options:
+      - id: a
+        text: Hashes the contents, writes a blob to the object store, and records the id in the index
+        correct: true
+      - id: b
+        text: Marks the path to be read at commit time
+        note: >-
+          If it only marked the path, editing before committing would change
+          what gets committed. It does not.
+      - id: c
+        text: Copies the file into `.git` as a file
+        note: >-
+          It is stored as a zlib-compressed object named by its hash, not as a
+          copy of the file.
+      - id: d
+        text: Records a diff against HEAD in the index
+        note: >-
+          The index holds object ids, not diffs.
+    explanation: >-
+      Staging writes the content immediately. Everything else in this topic
+      follows from that: staged work survives losing the file, `git cat-file -p
+      :path` works before any commit, and editing after staging does not change
+      what will be committed.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.4]
+    stem: >-
+      You stage a fix, then edit the file again, then commit without staging
+      again. What is in the commit?
+    options:
+      - id: a
+        text: The version you staged
+        correct: true
+      - id: b
+        text: The version on disk at commit time
+        note: >-
+          This is the expectation that produces the bug. The commit is built
+          from the index.
+      - id: c
+        text: Both changes merged together
+        note: >-
+          Nothing merges them. The index holds exactly one version of the path.
+      - id: d
+        text: Git refuses and asks you to stage first
+        note: >-
+          There is nothing to refuse — the index is complete and consistent.
+    explanation: >-
+      `git commit` builds a tree from the index, always. That is the purpose of
+      the index rather than a quirk of it — but it means a commit can contain a
+      version you are no longer running, and nothing warns you.
+
+  - id: q9
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.2.5]
+    stem: >-
+      A merged commit titled "raise pool timeout" shows `1 file changed, 1
+      deletion(-)`. Before reading the diff, what does that alone tell you?
+    options:
+      - id: a
+        text: The commit cannot contain the fix — raising a value requires an addition
+        correct: true
+      - id: b
+        text: The fix was applied by deleting an override elsewhere
+        note: >-
+          Possible in principle, but then the title would describe removing an
+          override. Treat the mismatch as a signal, not a coincidence.
+      - id: c
+        text: Nothing — the stat summary says nothing about correctness
+        note: >-
+          It says something about *completeness*, which is the failure here.
+      - id: d
+        text: The diff was squashed
+        note: >-
+          Squashing combines commits; it does not turn additions into
+          deletions.
+    explanation: >-
+      A change that raises a value has to add a line. A pure deletion under that
+      title is a mismatch between what the commit says and what it does — the
+      cheapest possible catch, available without reading a single line of the
+      diff. Reviewers check whether a diff is correct far more reliably than
+      whether it is complete.
+
+  - id: q10
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.6]
+    stem: >-
+      Which reset moves `HEAD` and the index but leaves the working tree alone?
+    options:
+      - id: a
+        text: "`--mixed`, which is the default"
+        correct: true
+      - id: b
+        text: "`--soft`"
+        note: >-
+          `--soft` moves HEAD only, leaving the change staged.
+      - id: c
+        text: "`--hard`"
+        note: >-
+          `--hard` moves all three and overwrites the working tree.
+      - id: d
+        text: "`--keep`"
+        note: >-
+          A real mode, but it refuses when local changes would be lost rather
+          than being the plain two-of-three move.
+    explanation: >-
+      One question decides all three: how many of the three copies do you want
+      to move? `--soft` one, `--mixed` two, `--hard` three. Since `--mixed` is
+      the default, a bare `git reset HEAD~1` keeps your edits and unstages them.
+
+  - id: q11
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.6]
+    stem: >-
+      After `git reset --hard HEAD~1`, is the discarded commit recoverable?
+    options:
+      - id: a
+        text: Yes — it is still an object, and the reflog records where the branch was
+        correct: true
+      - id: b
+        text: "No — `--hard` deletes the commit"
+        note: >-
+          `--hard` moves pointers and overwrites files. It writes over nothing
+          in the object store.
+      - id: c
+        text: Only if it had been pushed
+        note: >-
+          Pushing affects who else has it, not whether the local object
+          survives.
+      - id: d
+        text: Only if you noted the id first
+        note: >-
+          Helpful, but the reflog recorded it for you.
+    explanation: >-
+      Commits are objects, and `--hard` does not touch objects. What it *can*
+      destroy is uncommitted, unstaged work — for which no blob was ever
+      written, so there is nothing to recover from. The danger is narrower and
+      more actionable than the command's reputation suggests.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.2.6]
+    stem: >-
+      What habit makes `git reset --hard` safe on work you care about?
+    options:
+      - id: a
+        text: "`git add` or `git stash` first, so the content becomes an object"
+        correct: true
+      - id: b
+        text: Commit first, then reset
+        note: >-
+          Also effective, and heavier than needed — staging is enough to make
+          the content recoverable.
+      - id: c
+        text: Note the current commit id first
+        note: >-
+          Protects the commit, which was never at risk. It does nothing for
+          unstaged edits.
+      - id: d
+        text: Use `--hard` only on a clean tree
+        note: >-
+          Sound advice, but it avoids the situation rather than making the
+          work safe.
+    explanation: >-
+      Once content is a blob it survives, even if you throw the index away
+      afterwards — an orphaned blob is still recoverable via `git fsck`. The
+      risk is never the command; it is running it over work Git has never seen.
+
+  - id: q13
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.2.7]
+    stem: >-
+      You have used `git add -p` to stage some hunks and not others. What is the
+      one check worth running before you commit?
+    options:
+      - id: a
+        text: "`git diff` — a non-empty result means you are committing something you have not run"
+        correct: true
+      - id: b
+        text: "`git diff --cached`, to confirm the staged hunks are correct"
+        note: >-
+          Worth doing, but it shows what is going in. It cannot tell you what
+          is being left behind.
+      - id: c
+        text: "`git status`, to confirm the file is staged"
+        note: >-
+          It will say `MM`, which is the same information — but only if you
+          read the second column.
+      - id: d
+        text: Re-run your tests
+        note: >-
+          They run against the working tree, which is exactly the state that is
+          *not* being committed.
+    explanation: >-
+      Plain `git diff` compares working against index, so an empty result means
+      the commit matches your disk and your local testing applies to it. Not
+      empty means it does not. If you need certainty, `git stash push
+      --keep-index` leaves only the staged state on disk so the tests run
+      against what will actually be committed.

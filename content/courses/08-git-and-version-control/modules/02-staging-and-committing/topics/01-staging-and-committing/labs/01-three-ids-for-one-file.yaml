@@ -41,8 +41,8 @@ steps:
         echo "  HEAD:  $(git rev-parse HEAD:balance.txt)"
         echo
         echo "so a 'clean' repository is not one where the index is empty."
-        echo "the index always holds every tracked file. clean means all three"
-        echo "copies agree."
+        echo "the index always holds every tracked file."
+        echo "clean means all three copies agree."
         echo
         echo "the stage number is 0 for everything here. it is only ever non-zero"
         echo "during a conflicted merge, when one path has several versions at once."

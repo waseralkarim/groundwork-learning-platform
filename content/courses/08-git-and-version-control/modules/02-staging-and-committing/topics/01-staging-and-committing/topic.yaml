@@ -8,7 +8,7 @@ summary: >-
   `reset --soft` versus `--mixed` versus `--hard` stop being trivia and become
   one question: which of the three am I moving?
 order: 1
-levels: [L1, L2, L3]
+levels: [L2, L3]
 estimated_minutes: 120
 status: published
 
