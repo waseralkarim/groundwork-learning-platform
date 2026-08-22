@@ -300,6 +300,49 @@ class Linter:
                         f"(allowed: {', '.join(sorted(ALLOWED_DIRECTIVES))})",
                     )
 
+            # WARNING, not an error, only until the existing content is fixed:
+            # 46 lesson files currently fail this, with both unclosed openers
+            # and orphaned closers, so promoting it now would block ingest. It
+            # should become an error the moment that backlog is cleared —
+            # otherwise it is a rule nobody has to obey.
+            #
+            # Every `:::name` opens a container that runs until a bare `:::`
+            # closes it. An unclosed one silently swallows everything after it —
+            # the rest of the lesson becomes the objective's or the diagram's
+            # children, which renders as one enormous callout and puts block
+            # elements inside a paragraph, which the browser reports as a
+            # hydration error rather than as bad content.
+            #
+            # Fences are skipped: a bash example may legitimately contain a line
+            # that looks like a directive.
+            depth = 0
+            in_fence = False
+            for number, raw in enumerate(lesson.body.splitlines(), 1):
+                line = raw.strip()
+                if line.startswith("```"):
+                    in_fence = not in_fence
+                    continue
+                if in_fence:
+                    continue
+                if DIRECTIVE_RE.match(raw):
+                    depth += 1
+                elif line == ":::":
+                    depth -= 1
+                    if depth < 0:
+                        self._warn(
+                            "directive-balanced",
+                            where,
+                            f"line {number}: ':::' closes a directive that was never opened",
+                        )
+                        depth = 0
+            if depth:
+                self._warn(
+                    "directive-balanced",
+                    where,
+                    f"{depth} directive(s) opened and never closed with ':::' — "
+                    "everything after them is nested inside",
+                )
+
             # An unlabelled code block cannot be syntax-highlighted and cannot be
             # tested. Both matter for a platform whose content is mostly commands.
             #
