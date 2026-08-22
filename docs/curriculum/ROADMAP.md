@@ -253,6 +253,49 @@ places before the lab walk caught it.
 | B13 | **Databases for DevOps** | L2–L4 | Relational model & SQL · PostgreSQL operations · Indexes & query plans · Transactions & isolation · Connection pooling · Replication & failover · Backup & **tested restore** · Migrations & zero-downtime schema change · Redis/Valkey · NoSQL concepts · Performance troubleshooting |
 
 
+### What building B10.3 found
+
+The merging topic, and the one where the framing mattered more than the
+material. "A merge compares two branches" is the natural sentence and it is
+wrong in a way that makes everything downstream unexplainable: given only
+"yours says 90, theirs says 30", nothing can decide which side changed it. The
+topic is built on the correction — a merge compares each side against their
+merge base — and conflicts, fast-forward and the whole-file hazard all fall out
+of it.
+
+**Nothing records where a branch came from.** Measured: merge-base returns the
+same commit as rev-list --max-parents=0, and the answer is derived from parent
+links every time it is asked. Candidates who assume it is recorded usually also
+believe deleting a branch can lose commits, and both misconceptions come apart
+together.
+
+**Identical changes on both sides do not conflict.** Measured. That sharpens the
+rule from "both touched it" to "both produced different content", which is
+content addressing showing up again — the comparison is between blob ids.
+
+**The absence of a conflict carries almost no information.** It means no region
+was changed by both sides. It says nothing about whether the result is correct,
+which is the whole of the semantic-conflict problem and the reason CI has to run
+on the merge result rather than the branch. This became the topic's recurring
+sentence rather than a footnote.
+
+**A whole-file resolution against a stale base silently reverts work.**
+`checkout --ours` replaces the entire file, including regions that side never
+changed. Against a recent base that is nearly harmless; against a four-week-old
+base it discards a month of the other side's work and reports nothing, because
+nothing conflicted there. That became the troubleshooting scenario, and it is
+the most useful thing in the topic.
+
+**Empty directories vanish across a branch switch.** The troubleshooting
+directory was created with mkdir and lost when I moved between branches, because
+git does not track empty directories. The file then failed to write and lint
+reported a missing scenario rather than a missing directory.
+
+**Backticks in a commit message are command substitution.** `-X ours` and
+`checkout --ours` were executed and silently removed from the message, leaving a
+sentence about "the pair whose names hide a difference" with neither name in it.
+Repaired by amending from a file.
+
 ### What building B10.2 found
 
 The topic about the index, and the one where the sandbox turned out to be more
