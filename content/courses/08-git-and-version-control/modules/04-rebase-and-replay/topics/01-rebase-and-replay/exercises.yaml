@@ -1,0 +1,203 @@
+topic: topic.rebase-and-replay
+
+exercises:
+  - id: e1
+    title: Explain the ids to a colleague who thinks nothing moved
+    level: L2
+    objectives: [OBJ-B10.4.1]
+    kind: interpretation
+    prompt: >-
+      A colleague rebases their branch and is alarmed that `git log` shows
+      different commit ids for work they did not touch. They ask whether the
+      rebase corrupted something, and point out that the commit messages, authors
+      and dates are all unchanged.
+
+
+      Explain what happened, and say what would have had to be true for the ids
+      to stay the same.
+    answer: >-
+      **Nothing is corrupted; the ids had to change.** A commit's id is a hash of
+      its contents, and its contents include the parent. Replaying a commit onto a
+      different base gives it a different parent, which computes a different name
+      — so it is a different object rather than an edited one.
+
+
+      **Which is why the other fields are unchanged.** Message and author are
+      copied across deliberately, and that is what makes it *look* like the same
+      commit. The author date in particular is preserved, so `git log` can show
+      dates from weeks ago on objects created seconds ago. The committer date is
+      the field that was rewritten, and it is the one nobody looks at.
+
+
+      **For the ids to stay the same**, the parent would have to stay the same —
+      which means not rebasing at all. There is no flag for it and there could not
+      be: the id is a function of the content, so identical ids would require
+      identical parents.
+
+
+      The reassuring part is that the originals are still there. `git cat-file -t`
+      on any of the old ids still reports `commit`, and `ORIG_HEAD` names the
+      pre-rebase tip. Nothing was lost — the branch simply points somewhere else.
+    explanation: >-
+      The instinct being corrected is that a commit is a *record of a change*
+      which could be filed under a different parent. It is a snapshot plus its
+      parentage, hashed together, so parentage is part of identity rather than
+      metadata about it.
+
+  - id: e2
+    title: Predict the second conflict
+    level: L2
+    objectives: [OBJ-B10.4.3]
+    kind: calculation
+    prompt: >-
+      `main` sets a config line to `TIMEOUT=99`. A feature branch has two commits
+      changing that same line: the first sets `TIMEOUT=2`, the second sets
+      `TIMEOUT=3`. The merge base has `TIMEOUT=1`.
+
+
+      You rebase the feature onto `main` and hit a conflict on the first commit.
+      For each way of resolving it, say whether the second commit conflicts, and
+      what the final file contains.
+
+
+      1. Resolve to `TIMEOUT=2`
+      2. Resolve to `TIMEOUT=99`
+    answer: >-
+      **1. Resolve to `2` — no second conflict. Final file: `TIMEOUT=3`.**
+
+
+      The second commit was written to turn `2` into `3`. After resolving, the
+      tree holds `2`, which is exactly the state that commit expects to find, so
+      it applies with nothing to ask. The rebase runs to completion and the branch
+      ends up with its own final value.
+
+
+      **2. Resolve to `99` — the second commit conflicts. Stage 2 holds `99`,
+      stage 3 holds `3`.**
+
+
+      The tree now holds `99`, and the second commit was written against `2`, so
+      that region disagrees all over again. You are asked about the same line a
+      second time.
+
+
+      **The rule this establishes:** a rebase conflict recurs when your resolution
+      leaves the region still disagreeing with what the next commit was written
+      against. It is not automatic, and it is not random — it follows from the
+      resolution you chose.
+
+
+      Which also explains why long branches are disproportionately painful:
+      resolving toward the new base once can commit you to answering the same
+      question for every remaining commit.
+    explanation: >-
+      "A rebase makes you resolve the same conflict N times" is the common
+      statement and it is an overstatement. Knowing the condition turns an
+      unpredictable ordeal into something you can steer, which changes what a
+      person does when they hit the second one.
+
+  - id: e3
+    title: Decide whether each rebase is safe
+    level: L3
+    objectives: [OBJ-B10.4.6]
+    kind: ordering
+    prompt: >-
+      Order these from safest to most damaging, and justify each in terms of who
+      holds the commits rather than in terms of preference.
+
+
+      - **A** Rebasing `main` itself and force-pushing
+      - **B** Rebasing a local branch you have never pushed
+      - **C** Rebasing your pushed feature branch, which the team treats as yours
+      - **D** Rebasing a shared feature branch two colleagues are committing to
+    answer: >-
+      **Safest to most damaging: B → C → D → A.**
+
+
+      **B — nobody else has them.** There is no one to disagree with, and the
+      worst case is one `reset --hard ORIG_HEAD`. Reorder, squash and reword
+      freely; this is what rebase is for.
+
+
+      **C — one holder, by convention.** Rebasing and force-with-leasing is normal
+      practice. The safety comes entirely from the convention being real: if
+      someone else has actually pulled it, this becomes case D regardless of what
+      the team believes.
+
+
+      **D — two holders who did not agree to it.** Both colleagues keep the
+      abandoned commits, their branches still point at them, and their next pull
+      produces a history containing both sets. Each of them has to repair their
+      own repository, and you cannot do it for them.
+
+
+      **A — everyone.** Every clone of the repository holds the commits you
+      abandoned, every open pull request is anchored to ids the remote no longer
+      reaches, and every person must fix their own copy. Nothing about it is
+      technically different from D; the damage scales with the number of holders,
+      and for `main` that is everyone.
+
+
+      The ordering is entirely a count of who holds the originals. That is the
+      only variable, which is why the golden rule can be stated as a question with
+      a definite answer rather than as caution.
+    explanation: >-
+      Framing the rule as "who holds these commits" makes every case decidable,
+      including ones nobody wrote a policy for. Framing it as "rebase is
+      dangerous" makes B and C feel risky when they are not, which is how people
+      end up avoiding the tool entirely.
+
+  - id: e4
+    title: Rewrite the team's rebase rule
+    level: L3
+    objectives: [OBJ-B10.4.6]
+    kind: short_answer
+    prompt: >-
+      A team's guide says:
+
+
+      > **Never rebase.** Rebasing rewrites history and loses commits. Always
+      > merge.
+
+
+      One sentence is factually wrong and one concern behind it is real. Rewrite
+      the rule so it is accurate and still useful.
+    answer: >-
+      **The factual error.** Rebasing does not lose commits. The originals stay in
+      the object store, readable by id, and `ORIG_HEAD` and the reflog both name
+      where the branch was. They are unreachable, not gone.
+
+
+      **The real concern, misplaced.** Rewriting commits *other people hold*
+      forces every one of them to repair their own repository, and you cannot do
+      it for them because the objects needing repair are on their machines. That
+      is a genuine hazard and it has nothing to do with rebasing being lossy.
+
+
+      **A rewrite:**
+
+
+      > **Rebase freely on commits nobody else has.** Local branches, and pushed
+      > branches the team treats as one person's, are yours to tidy — reorder,
+      > squash, reword. Nothing is lost: `git reset --hard ORIG_HEAD` undoes any
+      > rebase, and the reflog holds the trail for weeks.
+      >
+      > **Never rebase commits other people have.** `main`, release branches, and
+      > any branch someone else is committing to. The cost is not to you — it is
+      > every colleague having to repair their own clone.
+      >
+      > **Push rebased branches with `--force-with-lease`, never `--force`.** The
+      > lease refuses if the remote moved since you last fetched, which is exactly
+      > the case that would destroy someone else's push.
+      >
+      > **Commit or stash before rebasing.** Uncommitted work has no object behind
+      > it and is the one thing here that genuinely cannot be recovered.
+
+
+      The original was short because it was wrong. People discover it is wrong,
+      conclude the rule is folklore, and then have no guidance at all — which is a
+      worse outcome than the longer version.
+    explanation: >-
+      A ban is easy to write and easy to comply with, and it costs a real
+      capability. Here it also mis-states the mechanism, which means the first
+      person to test the claim stops trusting the document.

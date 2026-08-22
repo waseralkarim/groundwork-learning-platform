@@ -1,0 +1,177 @@
+id: assessment.rebase-and-replay
+topic: topic.rebase-and-replay
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain commits that appear twice after a colleague rebased
+    kind: explain
+    objectives: [OBJ-B10.4.1, OBJ-B10.4.6]
+    prompt: >-
+      An engineer pulls a shared branch and finds their own three commits appear
+      twice in `git log` — once with the ids they remember and once with
+      different ids, same messages, same authors. The merge Git performed to
+      reconcile the pull produced conflicts between the two sets.
+
+
+      A colleague rebased and force-pushed that branch an hour earlier.
+
+
+      In about 250 words: explain what the two sets of commits are, why Git could
+      not tell they were the same work, and what should have happened instead.
+    rubric:
+      - "Identifies that the rebase created new commits rather than moving existing ones"
+      - "Explains why the ids differ: the parent is part of what gets hashed"
+      - "Recognises the engineer's local branch still points at the originals"
+      - "Explains that the pull merged two histories containing equivalent changes as different commits"
+      - "States that Git compares ids, so it has no way to know the two sets are related"
+      - "Notes the conflicts are between two copies of the engineer's own work"
+      - "Identifies rebasing a shared branch as the actual mistake"
+      - "Recommends --force-with-lease and not rebasing branches with more than one holder"
+    model_answer: >-
+      **Two sets of objects containing the same changes.** The rebase did not move
+      the engineer's commits — it replayed them onto a new base, producing new
+      commits. A commit's id hashes its contents, and the parent is part of those
+      contents, so a different parent means a different object. Messages and
+      authors are copied across, which is why the pairs look identical.
+
+
+      **The local branch still pointed at the originals.** Nothing about the
+      remote's change reached the engineer's repository until they pulled. At that
+      moment they had one history ending in the original commits and the remote
+      had another ending in the copies.
+
+
+      **Git could not tell they were the same work**, because relatedness is
+      established by ids and parent links. Two commits with equal content but
+      different ids are simply two commits. So the pull merged both histories,
+      producing every change twice — and the conflicts are between two copies of
+      the engineer's own work, which is why they are so confusing to resolve.
+
+
+      **What should have happened.** The branch had more than one holder, which is
+      exactly the case the golden rule covers: rewriting it forces everyone else
+      to repair their own repository, and the person who rewrote it cannot do that
+      for them. If the push had used `--force-with-lease` it would have been
+      refused outright, since the remote had moved since the pusher last fetched.
+      Strong answers note that the lease would have prevented this instance while
+      the practice — not rebasing shared branches — prevents the class.
+
+  - id: B
+    title: Diagnose a branch where every commit conflicts
+    kind: diagnose
+    objectives: [OBJ-B10.4.3, OBJ-B10.4.5]
+    prompt: >-
+      An engineer is eight commits into rebasing a twenty-commit branch and has
+      resolved what looks like the same conflict eight times. They are asking
+      whether to keep going, and mention that each time they have been taking the
+      version from `main` because "that is the newer code".
+
+
+      In about 300 words: explain why the conflict keeps recurring, say whether
+      their resolution choice is contributing, and give them a plan.
+    rubric:
+      - "Explains that a rebase replays commits one at a time, so each can conflict"
+      - "Identifies the resolution choice as the cause of the recurrence, not just branch length"
+      - "Explains that taking main's value leaves the tree disagreeing with the next commit"
+      - "Notes that resolving toward the branch's own change usually stops the recurrence"
+      - "Warns that taking main every time may be discarding the branch's work entirely"
+      - "Offers git rebase --abort as a zero-cost reset, since nothing is lost"
+      - "Proposes concrete alternatives: rerere, squashing first, or merging instead"
+      - "Gives a clear recommendation rather than a list"
+      - "Ideally questions whether the resulting commits mean anything after eight such resolutions"
+    model_answer: >-
+      **The recurrence is caused by the resolution, not only by the length.** A
+      rebase replays commits one at a time, and each replay lands on the tree left
+      by the previous one. Taking `main`'s value each time leaves the region
+      holding something the *next* commit was never written against — so it
+      disagrees again, and will keep disagreeing for every remaining commit that
+      touches it.
+
+
+      Resolving toward the branch's own change usually ends it, because the tree
+      then holds what the next commit expects to find.
+
+
+      **There is a worse problem hiding in "that is the newer code".** If they have
+      taken `main`'s version eight times on the same region, they have been
+      systematically discarding their branch's changes there. The rebase will
+      complete and produce commits whose messages describe work that is no longer
+      in them. That is worth checking before anything else — `git diff` between
+      the original branch tip and the rebase-in-progress will show what has
+      actually survived.
+
+
+      **The plan.** Abort. `git rebase --abort` costs nothing and loses nothing —
+      the original commits are untouched objects the whole time. Then decide with
+      information rather than fatigue:
+
+
+      Enable `rerere` so any repeated conflict is answered once. Squash the branch
+      first if the intermediate commits are not worth preserving, since one commit
+      replayed is one chance to conflict rather than twenty. Or merge instead,
+      which resolves once against two finished states — a twenty-commit branch is
+      exactly where the linear-history benefit is smallest and the cost highest.
+
+
+      I would abort, squash, then rebase — or merge and stop paying for the log
+      shape.
+
+  - id: C
+    title: Justify a rebase policy that people will follow
+    kind: reason
+    objectives: [OBJ-B10.4.2, OBJ-B10.4.6]
+    prompt: >-
+      Two proposals are on the table after an incident where a force-push lost
+      work: "ban rebase entirely, always merge", and "keep rebasing but require
+      `--force-with-lease`".
+
+
+      In about 300 words: argue a position. Give the strongest case for each, and
+      be concrete about which failures each one actually prevents.
+    rubric:
+      - "States both cases fairly before answering"
+      - "Credits the ban with removing the whole class of history-rewriting incidents"
+      - "Names what the ban costs: tidying private branches, readable history, fixup workflows"
+      - "Explains precisely what --force-with-lease prevents: a push over commits you have not fetched"
+      - "Explains precisely what it does not prevent: a colleague working from a local copy"
+      - "Observes the incident was really about a shared branch having more than one holder"
+      - "Proposes scoping by who holds the commits rather than banning the command"
+      - "Takes a clear position"
+      - "Ideally proposes branch protection, since a convention is not a control"
+    model_answer: >-
+      **The ban, at its strongest:** it removes an entire class of incident with a
+      rule anyone can follow and a reviewer can check. Nobody has to reason about
+      who holds which commits under time pressure, which is exactly when this
+      reasoning fails.
+
+
+      **The lease, at its strongest:** it would have prevented *this* incident
+      outright. The push happened over commits the pusher had never fetched, and
+      that is precisely what the lease compares. It costs nothing and preserves a
+      genuinely useful capability.
+
+
+      **What each actually prevents.** The lease stops a push over commits you have
+      not fetched. It does **not** protect a colleague who pulled an hour ago and
+      is working locally — nothing on the remote records that. So the lease is
+      necessary and not sufficient.
+
+
+      The ban prevents everything, including the safe cases: tidying a local branch
+      nobody has seen, squashing eleven "wip" commits before review, fixing a
+      commit message. None of those can harm anyone, because nobody else holds the
+      commits.
+
+
+      **My position: neither, as stated. Scope by who holds the commits.** Rebase
+      freely on branches nobody else has. Never rebase a branch with more than one
+      holder — which is what actually happened here, and which neither proposal
+      names. Require `--force-with-lease` everywhere, because there is no case
+      where plain `--force` is better.
+
+
+      And put branch protection on shared branches, since the failure was two
+      people treating one branch as theirs. A convention that holds only while
+      everyone remembers is not a control, and the incident is evidence of exactly
+      that.

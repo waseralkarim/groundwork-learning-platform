@@ -1,0 +1,380 @@
+id: quiz.rebase-and-replay
+topic: topic.rebase-and-replay
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.4.1]
+    stem: >-
+      After rebasing a branch, what has happened to the original commits?
+    options:
+      - id: a
+        text: They still exist as objects, reachable by nothing
+        correct: true
+      - id: b
+        text: They were modified to point at the new base
+        note: >-
+          Impossible. A commit's id hashes its parent, so changing the parent
+          produces a different object rather than an edited one.
+      - id: c
+        text: They were deleted to make room for the new ones
+        note: >-
+          Nothing is deleted. `git cat-file -t` still reports `commit`.
+      - id: d
+        text: They were moved, keeping their ids
+        note: >-
+          The ids demonstrably change — which is the whole reason the golden
+          rule exists.
+    explanation: >-
+      A rebase creates new commits and abandons the originals. They are
+      unreachable, not gone, which is why `ORIG_HEAD` and the reflog can bring
+      them straight back.
+
+  - id: q2
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.4.1]
+    stem: >-
+      Why does a replayed commit necessarily get a new id?
+    options:
+      - id: a
+        text: Its parent is part of the contents that get hashed
+        correct: true
+      - id: b
+        text: Git adds a marker recording that it was rebased
+        note: >-
+          No such marker exists. Nothing in the object records that a rebase
+          happened.
+      - id: c
+        text: The commit message is rewritten
+        note: >-
+          The message is preserved unless you change it.
+      - id: d
+        text: Only because the committer timestamp changes
+        note: >-
+          True and not the whole story. Even with identical timestamps the
+          parent differs, which is enough on its own.
+    explanation: >-
+      Three things change at once — parent, tree, committer timestamp — and any
+      one would be sufficient. The parent is the fundamental reason: a commit on
+      a different parent is a different object by construction.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.4.2]
+    stem: >-
+      What does a merge record that a rebase discards?
+    options:
+      - id: a
+        text: That the work happened in parallel
+        correct: true
+      - id: b
+        text: The author of each change
+        note: >-
+          Rebase preserves the author. It rewrites the committer.
+      - id: c
+        text: The content of the changes
+        note: >-
+          Both produce the same changes; they differ in what history says about
+          them.
+      - id: d
+        text: The conflict resolutions
+        note: >-
+          Both record resolutions in their resulting trees.
+    explanation: >-
+      A merge commit's two parents *are* the record that two lines of work
+      existed. A rebase produces a linear history that reads as though the work
+      was done in sequence — which is the readability people want and the
+      information they give up for it.
+
+  - id: q4
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.4.2]
+    stem: >-
+      A rebase preserves the author date but rewrites the committer date. What
+      does that mean when reading `git log`?
+    options:
+      - id: a
+        text: Dates shown may be far older than the commits themselves
+        correct: true
+      - id: b
+        text: The log is showing incorrect information
+        note: >-
+          Both fields are accurate. They answer different questions.
+      - id: c
+        text: The commits were cherry-picked rather than rebased
+        note: >-
+          Cherry-pick behaves the same way; neither is distinguishable from the
+          dates alone.
+      - id: d
+        text: Someone edited the history manually
+        note: >-
+          This is the ordinary result of any replay.
+    explanation: >-
+      The author is who wrote the change and when; the committer is who created
+      *this object* and when. After a rebase, `git log` can show January dates on
+      objects made seconds ago — and "when was this written" and "when did this
+      land" become genuinely different questions.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.4.2]
+    stem: >-
+      Which is safe to do on a branch other people have pulled?
+    options:
+      - id: a
+        text: Merge — it adds to history without replacing anything
+        correct: true
+      - id: b
+        text: Rebase, as long as you force-push promptly
+        note: >-
+          Promptness does not help. Their branch already points at the commits
+          you abandoned.
+      - id: c
+        text: Rebase, as long as you tell them afterwards
+        note: >-
+          Better than not telling them, and it still leaves each of them
+          repairing their own repository.
+      - id: d
+        text: Both, since nothing is ever deleted
+        note: >-
+          Nothing is deleted locally. The harm is that other people hold the
+          abandoned commits and their work is built on them.
+    explanation: >-
+      A merge adds a commit. A rebase replaces part of the history, and
+      replacement is only safe while you are the only one holding the originals.
+      That is the entire content of the golden rule.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.4.3]
+    stem: >-
+      During a rebase you resolve a conflict by taking the new base's value. What
+      is the likely effect on the next replayed commit?
+    options:
+      - id: a
+        text: It conflicts on the same region again
+        correct: true
+      - id: b
+        text: It applies cleanly, since the conflict is resolved
+        note: >-
+          Measured otherwise. The resolution is per-commit, and the next commit
+          was written against a different value.
+      - id: c
+        text: It is skipped automatically
+        note: >-
+          Nothing is skipped without `--skip`.
+      - id: d
+        text: The rebase aborts
+        note: >-
+          It stops for you to resolve, which is not the same as aborting.
+    explanation: >-
+      Taking the base's value leaves the tree holding a value the next commit was
+      not written against, so that region disagrees again. Resolving toward your
+      own change usually avoids it — the recurrence is a consequence of the
+      resolution, not automatic.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.4.3]
+    stem: >-
+      What does `git rerere` actually do for a painful rebase?
+    options:
+      - id: a
+        text: Records each resolution and replays it when the same conflict reappears
+        correct: true
+      - id: b
+        text: Prevents the same conflict from occurring again
+        note: >-
+          The conflict still occurs; rerere answers it for you.
+      - id: c
+        text: Merges the branches instead of rebasing
+        note: >-
+          It has no effect on which operation you chose.
+      - id: d
+        text: Squashes the commits so fewer are replayed
+        note: >-
+          That is a separate remedy, and a more permanent one.
+    explanation: >-
+      It makes repetition cheap rather than making it stop. Worth enabling, and
+      worth remembering that a replayed resolution may no longer be correct —
+      `git rerere forget` exists for exactly that.
+
+  - id: q8
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.4.4]
+    stem: >-
+      During a rebase conflict, what is in stage 2 ("ours")?
+    options:
+      - id: a
+        text: The branch you are replaying onto
+        correct: true
+      - id: b
+        text: The commit being replayed — your work
+        note: >-
+          That is stage 3. This is exactly the confusion the question exists to
+          expose.
+      - id: c
+        text: The merge base
+        note: >-
+          That is stage 1.
+      - id: d
+        text: Whichever branch is newer
+        note: >-
+          Recency plays no part in stage assignment.
+    explanation: >-
+      "Ours" always means `HEAD`, and during a rebase Git has checked out the new
+      base and is applying your commits to it — so `HEAD` is the other branch.
+      Not an inconsistency, but it does mean `checkout --ours` here discards the
+      change you are replaying.
+
+  - id: q9
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.4.4]
+    stem: >-
+      What is the reliable way to know whether "ours" means your work right now?
+    options:
+      - id: a
+        text: Read `git status` — it names the operation in progress
+        correct: true
+      - id: b
+        text: Check which branch you were on before starting
+        note: >-
+          That is what makes it confusing; during a rebase `HEAD` is no longer
+          that branch.
+      - id: c
+        text: Ours always means your work
+        note: >-
+          True during a merge, false during a rebase.
+      - id: d
+        text: Compare the timestamps of the two versions
+        note: >-
+          Timestamps do not determine stages.
+    explanation: >-
+      The words mean the same thing throughout — *ours* is `HEAD` — but which
+      branch `HEAD` names depends on the operation. `git status` prints
+      `rebase in progress`, and that one line settles it.
+
+  - id: q10
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.4.5]
+    stem: >-
+      Immediately after a rebase you regret, what is the fastest recovery?
+    options:
+      - id: a
+        text: "`git reset --hard ORIG_HEAD`"
+        correct: true
+      - id: b
+        text: "`git rebase --abort`"
+        note: >-
+          Only works while a rebase is still in progress. Once it has finished
+          there is nothing to abort.
+      - id: c
+        text: Re-clone from the remote
+        note: >-
+          Heavy, and it discards anything not pushed.
+      - id: d
+        text: "`git revert` the rebased commits"
+        note: >-
+          Adds commits undoing the changes, which is a different outcome from
+          restoring the original history.
+    explanation: >-
+      `ORIG_HEAD` is written before any operation that moves `HEAD`
+      substantially, so straight after a rebase it names exactly where the branch
+      was. `git branch rescue <sha>` is the gentler alternative: it names the
+      abandoned commits so both histories exist and can be compared.
+
+  - id: q11
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.4.5]
+    stem: >-
+      Which of these genuinely cannot be recovered after a rebase?
+    options:
+      - id: a
+        text: An edit that was never staged or committed
+        correct: true
+      - id: b
+        text: The original commits
+        note: >-
+          Still objects, and named by the reflog.
+      - id: c
+        text: A commit dropped with `--skip`
+        note: >-
+          Unreachable, and the reflog still records where the branch was.
+      - id: d
+        text: A commit deleted from an interactive rebase list
+        note: >-
+          Same as `--skip`: unreachable rather than gone.
+    explanation: >-
+      Everything else is an object, and every ref movement is in the reflog. An
+      unstaged edit was never written into the store at all — `git hash-object`
+      computes an id without writing one. That is why "commit or stash first" is
+      the entire safety procedure.
+
+  - id: q12
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.4.6]
+    stem: >-
+      Why prefer `--force-with-lease` over `--force`?
+    options:
+      - id: a
+        text: It refuses if the remote moved since you last fetched
+        correct: true
+      - id: b
+        text: It merges rather than overwriting
+        note: >-
+          It overwrites; it just checks first.
+      - id: c
+        text: It keeps the old commits reachable on the remote
+        note: >-
+          Neither does that.
+      - id: d
+        text: It asks for confirmation before pushing
+        note: >-
+          No prompt is involved. The check is against the remote's state.
+    explanation: >-
+      The lease catches precisely the case where somebody else pushed while you
+      were rebasing — the work `--force` would silently destroy. It does *not*
+      protect a colleague who pulled an hour ago and is working locally, because
+      nothing on the remote records that.
+
+  - id: q13
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.4.6]
+    stem: >-
+      When is rebasing a pushed branch unambiguously fine?
+    options:
+      - id: a
+        text: When the team treats that branch as one person's, by convention
+        correct: true
+      - id: b
+        text: Whenever CI is green
+        note: >-
+          CI says nothing about who else holds the commits.
+      - id: c
+        text: Whenever the branch is short
+        note: >-
+          Length affects how painful the rebase is, not who is affected by it.
+      - id: d
+        text: Never — a pushed branch must not be rebased
+        note: >-
+          Too strong. Rebasing your own feature branch and force-with-leasing is
+          normal practice.
+    explanation: >-
+      The question is always who holds the commits you are about to abandon. A
+      branch that is one person's by convention has one holder — and the
+      convention has to be real, because the safety depends on it rather than on
+      anything Git enforces.
