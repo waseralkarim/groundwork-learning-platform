@@ -6,7 +6,7 @@ summary: >-
   forty characters `git hash-object` does. That one fact explains why `--amend`
   leaves the old commit sitting in the store, and why an unchanged file costs
   nothing across a thousand commits. Git stores snapshots, not diffs, and a
-  branch is a file containing forty bytes.
+  branch is a file holding forty hex characters and a newline.
 order: 1
 levels: [L1, L2]
 estimated_minutes: 120
