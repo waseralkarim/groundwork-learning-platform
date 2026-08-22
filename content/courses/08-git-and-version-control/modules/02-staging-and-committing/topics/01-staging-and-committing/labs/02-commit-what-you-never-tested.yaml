@@ -1,0 +1,281 @@
+id: lab.commit-what-you-never-tested
+topic: topic.staging-and-committing
+title: Commit a version of a file that was never on your disk
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B10.2.4, OBJ-B10.2.5, OBJ-B10.2.7]
+
+intro: >-
+  The index is usually taught as a convenience, and it is one. This lab is about
+  the bill.
+
+
+  Because a commit is built from the index rather than from your files, it is
+  possible — easy, in fact, and invisible without looking — to commit code that
+  has never been on your disk, never been run and never been tested. You will do
+  it twice, deliberately, then work out what to check before pressing enter.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      In the ledger repository, create a file, stage a fix, then edit it again.
+      Show what would be committed versus what is on disk. Save to
+      /tmp/answer-drift.
+    hint: >-
+      `git cat-file -p :<path>` reads the staged version. Compare it with `cat`.
+    walkthrough: |
+      cd /tmp/git/ledger
+      printf 'timeout = 30\n' > config.txt
+      git add config.txt && git commit -q -m "add config"
+
+      printf 'timeout = 60\n' > config.txt      # the fix
+      git add config.txt                        # staged
+      printf 'timeout = 90\n' > config.txt      # thought again
+      {
+        echo "what will be committed: $(git cat-file -p :config.txt)"
+        echo "what is on disk:        $(cat config.txt)"
+        echo "what is committed now:  $(git cat-file -p HEAD:config.txt)"
+        echo
+        echo "the commit will contain 60. the disk - the thing you have been"
+        echo "running and testing - says 90. nothing warns about this."
+        echo
+        echo "status does report it, if you read both columns: $(git status --short -- config.txt)"
+      } > /tmp/answer-drift
+      cat /tmp/answer-drift
+    verify:
+      - type: command_output
+        command: "cd /tmp/git/ledger && git cat-file -p :config.txt"
+        equals: "timeout = 60"
+        describe: The index holds the version you staged
+      - type: command_output
+        command: "cd /tmp/git/ledger && cat config.txt"
+        equals: "timeout = 90"
+        describe: And the disk holds a different one
+      - type: file_matches
+        path: /tmp/answer-drift
+        pattern: "(?i)nothing warns"
+        describe: And you noticed nothing warns you
+
+  - id: s2
+    instruction: >-
+      Commit, and prove which version landed. Save to /tmp/answer-committed.
+    hint: >-
+      After committing, compare `git cat-file -p HEAD:config.txt` with what is
+      still on disk.
+    walkthrough: |
+      cd /tmp/git/ledger
+      git commit -q -m "raise the timeout"
+      {
+        echo "committed: $(git cat-file -p HEAD:config.txt)"
+        echo "on disk:   $(cat config.txt)"
+        echo
+        echo "60 was committed. 90 is still sitting in the working tree, unstaged."
+        echo
+        echo "git did exactly what it promises - it commits the index - and the"
+        echo "result is a commit nobody has ever run. if CI passes on it, that is"
+        echo "CI testing 60 while the developer was testing 90."
+        echo
+        echo "still not committed: $(git status --short -- config.txt)"
+      } > /tmp/answer-committed
+      cat /tmp/answer-committed
+    verify:
+      - type: command_output
+        command: "cd /tmp/git/ledger && git cat-file -p HEAD:config.txt"
+        equals: "timeout = 60"
+        describe: The stale staged version is what got committed
+      - type: command_output
+        command: "cd /tmp/git/ledger && git status --short -- config.txt | cut -c1-2"
+        equals: " M"
+        describe: And the newer version is still sitting unstaged
+      - type: file_matches
+        path: /tmp/answer-committed
+        pattern: "(?i)never run|nobody has ever run"
+        describe: And you stated what that means for testing
+
+  - id: s3
+    instruction: >-
+      Now do the sharper version. Make two unrelated changes to one file, stage
+      only the first with `git add -p`, and show the index holds a state that
+      has never existed on disk. Save to /tmp/answer-partial.
+    hint: >-
+      `git add -p` reads its answers from stdin, so `printf 'y\nn\n' | git add -p
+      <file>` accepts the first hunk and rejects the second. Keep the two
+      changes far apart or they become one hunk.
+    walkthrough: |
+      cd /tmp/git/ledger
+      seq 1 20 | sed 's/^/line /' > app.txt
+      git add app.txt && git commit -q -m "add app"
+
+      sed -i '1s/.*/line 1 REAL-FIX/; 20s/.*/line 20 DEBUG-PRINT/' app.txt
+      {
+        echo "hunks git sees: $(git diff -U3 -- app.txt | grep -c '^@@')"
+        printf 'y\nn\n' | git add -p app.txt >/dev/null 2>&1
+        echo
+        echo "staged (index):"
+        echo "  line 1:  $(git cat-file -p :app.txt | sed -n 1p)"
+        echo "  line 20: $(git cat-file -p :app.txt | sed -n 20p)"
+        echo "on disk:"
+        echo "  line 1:  $(sed -n 1p app.txt)"
+        echo "  line 20: $(sed -n 20p app.txt)"
+        echo
+        echo "the index has the fix and NOT the debug line. that combination has"
+        echo "never existed as a file - it was assembled hunk by hunk."
+        echo
+        echo "which is the point of add -p, and the risk of it. the thing you are"
+        echo "about to commit has never been compiled, run or tested in that form."
+      } > /tmp/answer-partial
+      cat /tmp/answer-partial
+    verify:
+      - type: command_output
+        command: "cd /tmp/git/ledger && git cat-file -p :app.txt | sed -n 20p"
+        equals: "line 20"
+        describe: The debug line was kept out of the index
+      - type: command_output
+        command: "cd /tmp/git/ledger && git cat-file -p :app.txt | sed -n 1p"
+        equals: "line 1 REAL-FIX"
+        describe: While the real fix was staged
+      - type: file_matches
+        path: /tmp/answer-partial
+        pattern: "(?i)never existed as a file|never existed on disk"
+        describe: And you named what makes this state unusual
+
+  - id: s4
+    instruction: >-
+      Work out what you can run to catch this before committing. Save the
+      checks, and what each one would have shown, to /tmp/answer-checks.
+    hint: >-
+      Three of the commands you already know answer this. Think about which
+      pair each one compares.
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        echo "1. git diff --cached   - exactly what is about to be committed"
+        git diff --cached -- app.txt | grep '^[+-][^+-]' | sed 's/^/     /'
+        echo
+        echo "2. git diff            - what you have that is NOT going in"
+        git diff -- app.txt | grep '^[+-][^+-]' | sed 's/^/     /'
+        echo "   a non-empty result here is the warning. it means the commit and"
+        echo "   your disk disagree."
+        echo
+        echo "3. git status --short  - the second column says the same thing"
+        git status --short -- app.txt | sed 's/^/     /'
+        echo
+        echo "the habit: before committing a partial stage, run git diff. if it is"
+        echo "empty, the commit matches your disk and whatever you tested applies."
+        echo "if it is not empty, you are committing something you have not run,"
+        echo "and you need a reason."
+        echo
+        echo "git commit -v puts the staged diff in the message editor, which makes"
+        echo "the check unavoidable rather than remembered."
+      } > /tmp/answer-checks
+      cat /tmp/answer-checks
+    verify:
+      - type: file_matches
+        path: /tmp/answer-checks
+        pattern: "git diff --cached"
+        describe: You named the check for what is going in
+      - type: file_matches
+        path: /tmp/answer-checks
+        pattern: "(?i)non-empty result here is the warning|commit and\\s+your disk disagree"
+        describe: And what a non-empty plain diff means
+      - type: file_matches
+        path: /tmp/answer-checks
+        pattern: "commit -v"
+        describe: And a way to make the check automatic
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-worth whether partial staging is worth its risk, and
+      what has to be true before you commit a state you have never run.
+    hint: >-
+      Argue both sides. There is a real benefit and a real cost, and the answer
+      depends on what kind of change it is.
+    walkthrough: |
+      cat > /tmp/answer-worth <<'EOF'
+      yes, usually - but the honest case has conditions attached.
+
+      what it buys: a commit that is one idea. an afternoon's work is often a
+      fix, a rename and a stray debug line, and a history where those are three
+      commits is dramatically easier to review, revert and bisect than one where
+      they are one. bisect in particular gets much worse when commits are
+      mixtures, because the commit it lands on does several things.
+
+      what it costs: the committed state has never been run. if the hunks are
+      genuinely independent that is a formality. if they are not - if the fix
+      calls a helper that only exists in the hunk you left out - you have
+      committed something that cannot even parse, and you will not find out until
+      CI or, worse, a colleague does.
+
+      so the conditions i would actually apply:
+
+        - run `git diff` before committing. it is empty when the commit matches
+          your disk. non-empty means you are committing something untested.
+        - when it is non-empty, ask whether the hunks are independent. splitting
+          a fix from a debug line is safe; splitting a function from its caller
+          is not.
+        - if it matters, test the staged state rather than guessing: `git stash
+          push --keep-index` leaves only what is staged on disk, so you can run
+          the tests against exactly what will be committed, then `git stash pop`.
+        - never partial-stage as a way of hiding work in progress. that is what
+          a branch is for, and the commit you produce is a lie about what you did.
+
+      the one-line version: partial staging is a tool for making history
+      readable, not for making a commit look tidier than the work was.
+      EOF
+      cat /tmp/answer-worth
+    verify:
+      - type: file_matches
+        path: /tmp/answer-worth
+        pattern: "(?i)one idea|bisect|review"
+        describe: You named the benefit concretely
+      - type: file_matches
+        path: /tmp/answer-worth
+        pattern: "(?i)independent"
+        describe: And the condition that decides whether it is safe
+      - type: file_matches
+        path: /tmp/answer-worth
+        pattern: "keep-index"
+        describe: And a way to actually test the staged state
+
+solution: >-
+  **The commit comes from the index, always.** Stage a fix, think again, edit —
+  and the commit contains the version you staged, not the version you have been
+  running. Measured here: `timeout = 60` committed while `timeout = 90` sat on
+  disk. Nothing warns you, because nothing is wrong; Git did exactly what it
+  promises.
+
+
+  The consequence worth stating plainly: **CI then tests a state the developer
+  never ran.** A green build on that commit is evidence about 60, and the
+  developer's confidence is about 90.
+
+
+  **`git add -p` sharpens it.** Accept one hunk and reject another and the index
+  holds `REAL-FIX` without `DEBUG-PRINT` — a combination that has never existed
+  as a file anywhere. That is precisely what the tool is for, and precisely why
+  it needs a check.
+
+
+  **The check is one command.** `git diff` compares working against index, so:
+
+
+  - **empty** — the commit matches your disk, and whatever you tested applies
+  - **non-empty** — you are committing something you have not run
+
+
+  `git commit -v` puts the staged diff in the message editor, which turns
+  remembering into not being able to avoid it. And when it genuinely matters,
+  `git stash push --keep-index` leaves only the staged state on disk so the
+  tests run against exactly what will be committed.
+
+
+  **Is it worth it?** Usually. A history of single-idea commits is far easier to
+  review, revert and bisect, and bisect suffers most from commits that do
+  several things at once. The condition is whether the hunks are *independent*:
+  splitting a fix from a debug line is safe, splitting a function from its caller
+  produces a commit that cannot even parse.
