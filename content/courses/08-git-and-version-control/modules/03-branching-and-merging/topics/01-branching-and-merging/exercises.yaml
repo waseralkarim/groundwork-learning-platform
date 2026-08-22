@@ -1,0 +1,158 @@
+topic: topic.branching-and-merging
+
+exercises:
+  - id: e1
+    title: Predict what a switch will do
+    level: L2
+    objectives: [OBJ-B10.3.1]
+    kind: interpretation
+    prompt: >-
+      You are on `main` with two uncommitted edits: one to `README.md`, which is
+      byte-identical on `main` and `feature`, and one to `api.py`, which differs
+      between them.
+
+
+      You run `git switch feature`. Say what happens, why, and what a colleague
+      who does this daily has probably concluded from experience.
+    answer: >-
+      **It is refused**, naming `api.py`. Git will not overwrite a working-tree
+      change that has no object behind it — nothing was staged or committed, so
+      there is no blob and nothing to recover from. `README.md` would have been
+      carried across happily, because the file does not differ between the two
+      trees and there was nothing to overwrite.
+
+
+      **What the colleague has probably concluded** is that switching with
+      uncommitted work "usually just works", because most edits happen to be in
+      files that do not differ between branches. That is a true observation and
+      an unreliable rule: whether it works is a property of *the branches*, not
+      of their change, and they cannot tell in advance.
+
+
+      The habit that removes the guesswork is to stash or commit first. Both turn
+      the work into an object, after which nothing about the switch can lose it.
+    explanation: >-
+      The transferable point is that Git's protection here is narrow and precise:
+      it guards exactly the state that has no object behind it. Every other thing
+      you might worry about losing during a switch is already recoverable.
+
+  - id: e2
+    title: Find the base after a back-merge
+    level: L2
+    objectives: [OBJ-B10.3.2]
+    kind: interpretation
+    prompt: >-
+      A feature branch was created from `main` at commit `C`. Since then, `main`
+      gained `D` and `E`, the feature gained `F` and `G`, and then the developer
+      merged `main` into their feature branch, producing merge commit `M`.
+
+
+      What is the merge base of `main` and the feature branch now, and what
+      practical consequence does that have for the eventual merge back?
+    answer: >-
+      **The base is `E`, not `C`.** The base is the most recent commit reachable
+      from both, and `M` has `E` as one of its parents — so `E` is now reachable
+      from the feature branch. `C` is still reachable from both, but it is no
+      longer the most recent such commit.
+
+
+      **The consequence is that the final merge only has to consider work done
+      after `E`.** Everything on `main` up to `E` has already been reconciled, so
+      it cannot conflict again. The developer has traded one large merge for two
+      smaller ones.
+
+
+      That is the whole argument for merging `main` in periodically: each
+      back-merge advances the base, and the amount of divergence the final merge
+      must reason about is bounded by how long ago you last did it. A branch that
+      never back-merges accumulates the entire divergence for one sitting.
+    explanation: >-
+      "Most recent commit reachable from both" is not decoration in the
+      definition — it is the part that makes back-merging useful. Reading the
+      base as "where the branch started" gets this case exactly wrong.
+
+  - id: e3
+    title: Apply the merge rule by hand
+    level: L2
+    objectives: [OBJ-B10.3.4]
+    kind: calculation
+    prompt: >-
+      For a config file, the base contains four settings. Say what the merge
+      produces for each, or whether it conflicts.
+
+
+      | Setting | Base | Ours | Theirs |
+      |---|---|---|---|
+      | `retries` | 3 | 3 | 5 |
+      | `timeout` | 30 | 90 | 30 |
+      | `region` | eu | us | us |
+      | `debug` | false | true | (line deleted) |
+    answer: >-
+      **`retries` → 5.** Unchanged on our side, changed on theirs. Exactly one
+      side made a change, so it is taken with no question.
+
+
+      **`timeout` → 90.** The mirror image: changed by us, untouched by them.
+
+
+      **`region` → us.** Both sides changed it, and to the *same* value.
+      Identical content is the same blob, so there is one candidate and nothing
+      to decide. This is the row people expect to conflict and it does not.
+
+
+      **`debug` → conflict.** One side changed the value, the other removed the
+      line. A deletion is a change like any other, so this is the "both sides
+      changed the same region differently" row. Git will not guess between "keep
+      it, set to true" and "it should not exist", because those are genuinely
+      different intentions.
+    explanation: >-
+      Three of the four rows are decided by the same question — how many sides
+      changed this, relative to the base — and the fourth is decided by whether
+      their results agree. No row consults which branch is more important, which
+      is newer, or who wrote it.
+
+  - id: e4
+    title: Answer the team that wants to ban merge commits
+    level: L3
+    objectives: [OBJ-B10.3.6, OBJ-B10.3.7]
+    kind: short_answer
+    prompt: >-
+      After a clean merge broke production, a team proposes two rules: always
+      rebase so history stays linear, and require CI green on the feature branch
+      before merge.
+
+
+      Say whether either rule addresses what went wrong, and write what you would
+      propose instead.
+    answer: >-
+      **Neither rule addresses it, and the second one is the actual bug.**
+
+
+      The failure was a semantic conflict: two changes that were textually
+      independent and incompatible in meaning. Git never asked, because no region
+      was changed by both sides. History being linear or not has no bearing on
+      that — a rebase would have produced the same broken tree with a tidier log.
+
+
+      The second rule is worse than useless, because it is close to what they
+      already do. **CI green on the feature branch tests a tree nobody will
+      ship.** If `main` has moved, the feature branch and the merge result are
+      different trees, and only one of them is going to production. Both branches
+      being individually green is exactly the situation that produced this
+      incident.
+
+
+      **What I would propose:** run CI on the *merge result* — the tree that will
+      actually land. That is what a merge queue does, and it is the only check
+      that can see a defect which exists solely in the combination.
+
+
+      Worth being honest about the residual risk: a merge queue tests the
+      combination against `main` *at that moment*. Two changes landing close
+      together can still interact. Shorter-lived branches reduce the window,
+      which is a stronger argument for small branches than any argument about
+      history shape.
+    explanation: >-
+      The instinct after an incident is to reach for a rule about form — linear
+      history, more approvals — because form is easy to enforce. The defect here
+      was about *what was tested*, and no amount of history hygiene reaches it.

@@ -1,0 +1,166 @@
+id: assessment.branching-and-merging
+topic: topic.branching-and-merging
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a merge that took the wrong side without asking
+    kind: explain
+    objectives: [OBJ-B10.3.4, OBJ-B10.3.6]
+    prompt: >-
+      A config value reads `100` on `main` and `100` on a feature branch. After
+      merging the branch into `main` it reads `50`. Git reported no conflict, and
+      the feature branch's own diff never mentions that value.
+
+
+      The merge base holds `50`.
+
+
+      In about 250 words: explain how the merge produced `50`, say whether Git
+      behaved correctly, and give the practice that prevents it.
+    rubric:
+      - "Recognises that attribution is relative to the base, not to the two branch values"
+      - "Works out that main changed 50 to 100 relative to the base"
+      - "Notes the feature branch never changed that region"
+      - "Concludes a three-way merge would have kept 100, so the rule was not applied"
+      - "Identifies a whole-file resolution (-X ours, checkout --ours, a merge tool) as the cause"
+      - "Explains why no conflict was reported: only one side changed the region"
+      - "States that absence of a conflict is not evidence of correctness"
+      - "Recommends region-level resolution and regular back-merges to keep the base recent"
+    model_answer: >-
+      **Attribution is relative to the base.** The base holds `50`, so `main`
+      changed it to `100`. The feature branch never touched that region, so
+      exactly one side changed it and a three-way merge would have taken `100`
+      without asking. The result being `50` proves the rule was not applied
+      there.
+
+
+      **Git behaved correctly; this was not a plain merge.** A clean three-way
+      merge cannot produce this. What can is a resolution at whole-file
+      granularity — `-X ours`, `git checkout --ours <path>`, or a merge tool's
+      "use my version". Each replaces the file with one side's copy in full,
+      carrying every region that side never changed and silently reverting the
+      other side's work there.
+
+
+      **No conflict was reported because there was nothing to conflict about.**
+      Only one side changed the line, which is the definition of a clean region.
+      Strong answers say plainly that a clean merge is evidence no two edits
+      touched the same region — not evidence the result is right.
+
+
+      **Prevention has two parts.** Resolve regions rather than files: whole-file
+      strategies are safe only when the side being discarded holds nothing you
+      need, which is exactly what nobody verifies in the moment. And back-merge
+      regularly, because each back-merge advances the base and bounds how much of
+      the other side's work a mistake can span.
+
+  - id: B
+    title: Diagnose a branch that conflicts with everything
+    kind: diagnose
+    objectives: [OBJ-B10.3.2, OBJ-B10.3.5]
+    prompt: >-
+      A branch open for two months now conflicts with `main` in almost every
+      file. The developer has resolved the same conflicts three times across
+      three separate merge attempts and they keep coming back. They want to know
+      whether to restart the branch from scratch.
+
+
+      In about 300 words: explain why the same conflicts recur, what you would
+      run to size the problem, and what you would advise.
+    rubric:
+      - "Explains that an abandoned merge leaves the base unchanged, so the resolution is not recorded"
+      - "Identifies that resolution work persists only if the merge is committed"
+      - "Notes that two months of divergence is the underlying condition"
+      - "Proposes measuring rather than guessing: merge-base, commits each side, files touched by both"
+      - "Names git merge-base and diff --name-only against it on both sides"
+      - "Recommends back-merging main and committing so the base advances"
+      - "Mentions rerere as a mitigation, with the caveat that it replays a possibly-stale resolution"
+      - "Gives a clear recommendation rather than listing options"
+      - "Ideally challenges the framing: the branch being two months old is the defect to fix"
+    model_answer: >-
+      **The conflicts recur because nothing recorded the resolutions.** A merge
+      that is resolved and then abandoned leaves the merge base exactly where it
+      was, so the next attempt compares the same two divergent histories against
+      the same old base and reaches the same conflicts. Resolution work persists
+      only if the merge is committed.
+
+
+      **Size it before deciding.** `git merge-base main feature` gives the base.
+      `git rev-list --count <base>..main` and `<base>..feature` give how far each
+      side has moved. Comparing `git diff --name-only <base>..main` against
+      `<base>..feature` gives the files both sides touched, which is the only
+      place conflicts can occur. That turns "conflicts everywhere" into a number.
+
+
+      **Advise back-merging `main` into the branch and committing it.** That one
+      act advances the base to `main`'s current tip, so everything reconciled
+      stays reconciled and the final merge considers only work done after it.
+      Doing it weekly from the start would have prevented the situation.
+
+
+      `git rerere` is worth enabling — it records resolutions and replays them —
+      but it mitigates repeated work rather than fixing a stale base, and it
+      replays a resolution that may no longer be correct.
+
+
+      **Restarting the branch is usually the wrong instinct**, since it discards
+      real work to avoid a merge that back-merging makes tractable. The framing
+      worth challenging is the two months: a branch that long-lived is the actual
+      defect, and shorter branches are the durable fix.
+
+  - id: C
+    title: Justify a branching and merging policy
+    kind: reason
+    objectives: [OBJ-B10.3.3, OBJ-B10.3.7]
+    prompt: >-
+      You are writing a team's branching policy. Two positions are argued:
+      "always squash-merge so `main` is one commit per feature and perfectly
+      linear", and "always `--no-ff` so every branch is preserved in history".
+
+
+      In about 300 words: argue a position. Give the strongest case for each
+      before answering, and be concrete about what each makes easy and hard.
+    rubric:
+      - "States both cases fairly and at their strongest before answering"
+      - "Names what squashing buys: readable main, one revert per feature, bisect lands on whole features"
+      - "Names what squashing costs: intermediate commits and their reasoning are destroyed"
+      - "Names what --no-ff buys: grouping preserved, revert -m 1 works, branch shape visible"
+      - "Names what --no-ff costs: noisier log, bisect can land on a merge commit"
+      - "Observes both answer the same question: what unit of work should history record"
+      - "Takes a clear position rather than hedging"
+      - "Ideally notes git log --first-parent gives the squashed view without the loss"
+    model_answer: >-
+      **Squashing, at its strongest:** `main` becomes one commit per feature,
+      which makes the log readable to people who did not write it, makes
+      reverting a feature a single operation, and makes `bisect` land on a whole
+      feature rather than a half-finished intermediate that may not even build.
+
+
+      **`--no-ff`, at its strongest:** the intermediate commits survive with
+      their messages and reasoning. When someone asks why a line is the way it is
+      three years later, a well-written intermediate commit answers it and a
+      squashed one says "add feature X". `git revert -m 1` still undoes the whole
+      feature in one step, so it keeps squashing's main benefit without
+      discarding the detail.
+
+
+      **They answer the same question:** what unit of work should history record?
+      Squashing says the feature; `--no-ff` says the commit, with the feature
+      recoverable from the merge.
+
+
+      **My position: `--no-ff` for features, fast-forward for single commits, no
+      squashing by default.** What squashing destroys cannot be recovered, while
+      the readability it buys is available on demand from `git log
+      --first-parent`, which shows exactly the one-commit-per-feature view.
+      Preferring a lossy default to a display option is a poor trade.
+
+
+      The honest caveat: this holds only if intermediate commits are worth
+      keeping. A branch of eleven commits called "wip" and "fix" loses nothing by
+      being squashed — but the fix there is commit discipline, not policy.
+
+
+      Both positions also converge as branches get smaller, which is the more
+      useful thing to standardise on.

@@ -1,0 +1,178 @@
+id: troubleshooting.the-merge-that-lost-a-fix
+topic: topic.branching-and-merging
+title: The merge that lost a fix nobody deleted
+level: L3
+objectives: [OBJ-B10.3.5, OBJ-B10.3.6]
+reveal_policy: progressive
+
+situation: >-
+  A rate-limit bug was fixed on `main` three weeks ago: a retry loop's ceiling
+  was raised from 3 to 10. The fix was reviewed, merged and verified in
+  production.
+
+
+  Last night a long-running feature branch was merged. This morning the bug is
+  back, and the retry ceiling in `main` is 3 again.
+
+
+  Nobody reverted anything. Git reported no conflict. The merge commit is there
+  and `git log` shows the original fix still in the history, unchanged.
+
+
+  The feature branch was created four weeks ago — before the fix — and has never
+  had `main` merged into it.
+
+
+  Work out how a merge removed a change that nothing deleted.
+
+symptoms:
+  - "A fix present on main for three weeks is gone after a merge"
+  - "No conflict was reported"
+  - "The original fix commit is still in the history and unmodified"
+  - "Nothing was reverted and no force-push occurred"
+  - "The feature branch predates the fix and never back-merged main"
+
+artifacts:
+  - type: command_output
+    label: The fix, still in history
+    content: |
+      $ git log --oneline -S 'max_retries' -- limiter.py
+      9c1f0a2 raise retry ceiling to 10
+      4b7e881 add retry loop
+
+  - type: command_output
+    label: The value now, and on each side of the merge
+    content: |
+      $ git show HEAD:limiter.py | grep max_retries
+      max_retries = 3
+
+      $ git show HEAD^1:limiter.py | grep max_retries
+      max_retries = 10
+
+      $ git show HEAD^2:limiter.py | grep max_retries
+      max_retries = 3
+
+  - type: command_output
+    label: The merge base, and what the branch actually changed
+    content: |
+      $ git merge-base HEAD^1 HEAD^2
+      2a55d13
+
+      $ git show 2a55d13:limiter.py | grep max_retries
+      max_retries = 3
+
+      $ git diff 2a55d13 HEAD^2 -- limiter.py
+      @@ -14,7 +14,7 @@
+      -    backoff = 1
+      +    backoff = 2
+
+hints:
+  - "The base holds 3. Ask what each side changed relative to it, not what each side contains."
+  - "The feature branch never touched max_retries. Did it need to, to produce this result?"
+  - "How old is the merge base, and what does that say about which changes it already contains?"
+
+diagnostic_questions:
+  - "What is max_retries at the merge base, and why does that matter more than either branch's value?"
+  - "Relative to the base, which side changed that line?"
+  - "The branch's diff touches backoff, not max_retries. So how did 3 win?"
+  - "Would a conflict have been the correct outcome here?"
+  - "What would have made the merge base newer than the fix?"
+
+method: >-
+  **1. Ask what the base held, before looking at either branch.** Every merge
+  outcome is defined relative to the base, so a value on one side means nothing
+  on its own. Here the base is `2a55d13`, which predates the fix and holds
+  `max_retries = 3`.
+
+
+  **2. Attribute each side's change against the base, not against each other.**
+  Relative to `2a55d13`, `main` changed the line from 3 to 10. The feature branch
+  did not touch it — its only change to this file is `backoff`.
+
+
+  **3. Apply the rule.** Exactly one side changed that region, so its value is
+  taken with no question asked. That side is `main`, and its value is 10.
+
+
+  **4. Notice that the result contradicts step 3.** The merge produced 3, so the
+  three-way rule was not applied to that region. Something other than a plain
+  merge produced this tree — which is the point to stop reasoning from the
+  artifacts and go and find out how the merge was actually performed.
+
+
+  **5. Look for a resolution that discarded a side wholesale.** A clean
+  three-way merge cannot produce this. `git merge -X ours`, a `git checkout
+  --ours` on the path, or a merge tool driven to "use my version" all can — each
+  replaces the file with one side's copy, including regions that side never
+  changed.
+
+root_cause: >-
+  **The merge did not follow the three-way rule, because the file was taken
+  wholesale from one side.**
+
+
+  Relative to the merge base — which predates the fix — only `main` changed
+  `max_retries`. A three-way merge therefore had exactly one candidate and would
+  have kept 10 without asking anyone. That the result is 3 proves the rule was
+  not applied to that region.
+
+
+  What produces this is a resolution operating on *whole files* rather than on
+  regions: a strategy option like `-X ours`, a `git checkout --ours <path>`, or a
+  graphical tool's "use my version". Each replaces the file with one side's copy
+  in full — carrying every region that side never touched, and silently
+  reverting the other side's work in those regions.
+
+
+  **The stale base is what made it damaging rather than harmless.** Because the
+  branch never merged `main` in, the base was four weeks old, so three weeks of
+  `main`'s work sat inside the window a wholesale take could discard. A branch
+  that back-merged weekly would have had a base newer than the fix, and taking
+  its own copy of the file would have taken the fix along with it.
+
+
+  **Why no conflict was reported.** There was nothing to conflict about. Only one
+  side changed the line, which is the definition of a clean region. The absence
+  of a conflict is not evidence that a merge was correct — it is evidence that no
+  region was changed by both sides, and it says nothing about what a whole-file
+  resolution did afterwards.
+
+resolution: >-
+  **Immediately:** restore the value, and establish the damage from the pre-merge
+  tree rather than from memory. `HEAD^1` is `main` as it was before the merge, so
+  diffing it against `HEAD` shows everything the merge removed — this fix is
+  unlikely to be the only casualty, because a whole-file take discards every
+  region that side changed since the base.
+
+
+  ```console
+  $ git diff HEAD HEAD^1
+  ```
+
+
+  Run that across every file the merge touched, not only the one that was
+  reported.
+
+
+  **Then fix the practice, in three parts.**
+
+
+  **Resolve regions, not files.** `-X ours` and "use my version" are safe only
+  when the base is recent enough that the side being discarded holds nothing you
+  need — which is exactly the thing nobody checks in the moment.
+
+
+  **Back-merge `main` regularly.** Each back-merge advances the base, so the
+  window a mistake can span is bounded by how long ago you last did it. It also
+  makes ordinary conflicts smaller.
+
+
+  **Keep branches short.** Four weeks of divergence is the underlying condition;
+  every other symptom follows from it.
+
+
+  **What not to conclude.** Not "merges are dangerous" — a correct three-way
+  merge would have kept the fix. And not "we need more approvals" — the diff a
+  reviewer saw was the branch's own changes, and the loss was in a file the
+  branch legitimately touched. The defect is whole-file resolution against a
+  stale base, and a rule that does not name that will not prevent it.

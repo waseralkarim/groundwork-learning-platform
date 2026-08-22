@@ -1,0 +1,386 @@
+id: quiz.branching-and-merging
+topic: topic.branching-and-merging
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.3.1]
+    stem: >-
+      What does `git switch other` change?
+    options:
+      - id: a
+        text: HEAD, the index and the working tree — all three
+        correct: true
+      - id: b
+        text: Only HEAD; the files are re-read lazily
+        note: >-
+          The index and working tree are rewritten immediately, which is why
+          `git status` is clean straight afterwards.
+      - id: c
+        text: HEAD and the working tree, but not the index
+        note: >-
+          An index left behind would make every file look modified.
+      - id: d
+        text: Only which branch future commits attach to
+        note: >-
+          That describes a label change. A switch is a checkout of a tree.
+    explanation: >-
+      A switch is a checkout. `HEAD` is rewritten to name the other ref, and the
+      target commit's tree is written into both the index and the working tree.
+      All three move together, which is exactly why an uncommitted edit can
+      block it.
+
+  - id: q2
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.3.1]
+    stem: >-
+      Why is switching branches fast even in a repository with 200,000 commits?
+    options:
+      - id: a
+        text: The target commit names a complete tree, so no history is walked
+        correct: true
+      - id: b
+        text: Git caches recently used branches
+        note: >-
+          No cache is involved; a first-ever switch to a branch is just as fast.
+      - id: c
+        text: Only changed files are downloaded from the remote
+        note: >-
+          Nothing is downloaded — everything is already local.
+      - id: d
+        text: Commits are replayed in parallel
+        note: >-
+          Nothing is replayed. That is what a diff-based system would have to do.
+    explanation: >-
+      This is snapshots paying off. Every commit names a full tree, so reaching
+      any state is one lookup rather than a replay. The only part that scales is
+      writing the paths that actually differ — unchanged files have identical
+      blob ids and are never touched.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.3.2]
+    stem: >-
+      Where does Git record which branch a feature branch was created from?
+    options:
+      - id: a
+        text: Nowhere — it is derived from parent links when needed
+        correct: true
+      - id: b
+        text: In the branch ref, alongside the commit id
+        note: >-
+          The ref file contains forty hex characters and a newline. There is no
+          room and no field.
+      - id: c
+        text: In the reflog
+        note: >-
+          The reflog records where a ref has pointed, not a parent relationship
+          between branches.
+      - id: d
+        text: In `.git/config`, under the branch's section
+        note: >-
+          Config can record an *upstream* for pushing and pulling, which is a
+          different thing and is not what merge-base uses.
+    explanation: >-
+      There is no such record, which is why branches can be created, renamed and
+      deleted freely. The merge base is computed from the commit graph every
+      time it is asked.
+
+  - id: q4
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.3.2]
+    stem: >-
+      What is the merge base of two branches?
+    options:
+      - id: a
+        text: The most recent commit reachable from both
+        correct: true
+      - id: b
+        text: The commit where the branch was created
+        note: >-
+          Usually the same commit, but not always — after merges flow between
+          the branches, the most recent shared commit moves forward.
+      - id: c
+        text: The oldest commit in the repository
+        note: >-
+          Reachable from both, but not the most recent such commit.
+      - id: d
+        text: The last commit both branches have in their reflogs
+        note: >-
+          Reflogs are local and per-ref; the base is a property of the graph.
+    explanation: >-
+      "Most recent" is doing the work. After you merge `main` into your feature
+      branch, the base of the two moves forward to that merge — which is exactly
+      why merging `main` in periodically makes the next merge smaller.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.3.3]
+    stem: >-
+      A fast-forward merge happens when...
+    options:
+      - id: a
+        text: the merge base equals the tip of the branch you are merging into
+        correct: true
+      - id: b
+        text: the two branches have no conflicting changes
+        note: >-
+          Non-conflicting changes still produce a real merge commit if both
+          branches moved.
+      - id: c
+        text: only one file changed
+        note: >-
+          The number of files is irrelevant; the shape of the graph is not.
+      - id: d
+        text: the branches were created from the same commit
+        note: >-
+          True of most branches, and says nothing about whether either has moved
+          since.
+    explanation: >-
+      If the base is your own tip, you have contributed nothing since the fork,
+      so the combined result already exists as the other branch. Git moves the
+      pointer. Nothing is merged, and no merge commit is created — the new
+      `HEAD` has one parent.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.3.3]
+    stem: >-
+      How many parents does a merge commit have?
+    options:
+      - id: a
+        text: Two or more
+        correct: true
+      - id: b
+        text: Exactly two, always
+        note: >-
+          An octopus merge has more. Rare, but the model has no special case for
+          two.
+      - id: c
+        text: One, plus a reference to the merged branch
+        note: >-
+          There is no separate reference. Both sides are recorded as parents.
+      - id: d
+        text: None — it points at a tree only
+        note: >-
+          Only the very first commit in a repository has no parents.
+    explanation: >-
+      A merge commit is an ordinary commit that happens to have more than one
+      parent. There is no third object type, which is why every command that
+      walks history handles merges without knowing they are special.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.3.3]
+    stem: >-
+      When is `--no-ff` worth forcing?
+    options:
+      - id: a
+        text: When several commits form one piece of work you may want to revert together
+        correct: true
+      - id: b
+        text: Always — merge commits make history more accurate
+        note: >-
+          For a single-commit change the merge commit records nothing and adds
+          noise to the log.
+      - id: c
+        text: Never — linear history is strictly better
+        note: >-
+          That throws away the grouping exactly when a change is big enough for
+          the grouping to matter.
+      - id: d
+        text: When the branches have conflicting changes
+        note: >-
+          A conflicting merge already produces a merge commit; `--no-ff` is
+          about the case where one would not be created.
+    explanation: >-
+      The merge commit is what makes `git revert -m 1 <merge>` able to undo five
+      commits in one operation. For a typo fix it is noise; for a feature it is
+      cheap insurance. Applying either rule everywhere gets the worst of both.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.3.4]
+    stem: >-
+      Why does a merge need three versions rather than two?
+    options:
+      - id: a
+        text: Without the base, you cannot tell which side changed a region
+        correct: true
+      - id: b
+        text: To detect which side is newer
+        note: >-
+          Timestamps play no part. Attribution is by comparison against the
+          base, not by time.
+      - id: c
+        text: To keep a backup in case the merge goes wrong
+        note: >-
+          The base is an input to the algorithm, not a safety copy.
+      - id: d
+        text: To support merging three branches at once
+        note: >-
+          "Three-way" refers to base, ours and theirs — not to three branches.
+    explanation: >-
+      Given only `90` and `30`, there is no way to know whether one side raised
+      it, the other lowered it, or both edited. The base supplies the missing
+      information, and every row of the merge rule is stated relative to it.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.3.4]
+    stem: >-
+      Two branches change the same line to exactly the same new value. What
+      happens?
+    options:
+      - id: a
+        text: It merges cleanly — identical content leaves one candidate
+        correct: true
+      - id: b
+        text: A conflict, because both sides touched the same line
+        note: >-
+          The rule is "both produced *different* content", not "both touched
+          it".
+      - id: c
+        text: A conflict, resolved automatically in favour of ours
+        note: >-
+          Nothing is resolved in anyone's favour; there is nothing to resolve.
+      - id: d
+        text: The change is applied twice
+        note: >-
+          A merge produces a state, not a sequence of applied patches.
+    explanation: >-
+      Identical content is the same blob id, so "did these two changes agree?"
+      is an id comparison. Two people fixing the same typo the same way produce
+      one candidate and no question — content addressing showing up again.
+
+  - id: q10
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.3.5]
+    stem: >-
+      During a conflict, `git ls-files --stage` shows three entries for one
+      path. What is stage 2?
+    options:
+      - id: a
+        text: The version from the branch you are currently on
+        correct: true
+      - id: b
+        text: Your uncommitted working-tree edit
+        note: >-
+          Stages come from commits. An uncommitted edit is not in the index at
+          all during a conflict.
+      - id: c
+        text: The merge base
+        note: >-
+          That is stage 1.
+      - id: d
+        text: The resolved result, once you have edited the markers
+        note: >-
+          The resolved result is stage 0, and only after `git add`.
+    explanation: >-
+      Stage 1 is the base, 2 is ours, 3 is theirs — and "ours" means *the branch
+      you are on*. During a rebase your commits are replayed onto the other
+      branch, so ours and theirs swap relative to intuition, which catches
+      people mid-conflict.
+
+  - id: q11
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.3.5]
+    stem: >-
+      Why does Git refuse to commit while a path has non-zero stages?
+    options:
+      - id: a
+        text: A tree has one entry per name, so with three entries there is no tree to write
+        correct: true
+      - id: b
+        text: It is a safety check that can be bypassed with --force
+        note: >-
+          There is no flag, because the obstacle is structural rather than a
+          policy.
+      - id: c
+        text: The working tree still contains conflict markers
+        note: >-
+          Git does not inspect file contents for markers. You can commit a file
+          containing markers once it is staged.
+      - id: d
+        text: The merge base has not been recorded yet
+        note: >-
+          The base is known throughout; it is sitting in stage 1.
+    explanation: >-
+      This is a structural impossibility, not a guard rail. A commit points at
+      exactly one tree; a tree has exactly one entry per name. Three competing
+      entries mean the object cannot be built — which is also why `git add` is
+      the resolution: it collapses them to one.
+
+  - id: q12
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.3.6]
+    stem: >-
+      A merge completes with no conflicts and the application no longer starts.
+      What is the most likely explanation?
+    options:
+      - id: a
+        text: A semantic conflict — both changes were textually independent and incompatible in meaning
+        correct: true
+      - id: b
+        text: Git resolved a conflict incorrectly
+        note: >-
+          Git never resolves a genuine conflict silently. If it did not ask, no
+          region was changed by both sides.
+      - id: c
+        text: The merge base was computed wrongly
+        note: >-
+          Then you would expect spurious conflicts, not a clean-but-broken
+          result.
+      - id: d
+        text: The working tree was not updated after the merge
+        note: >-
+          A merge writes its result to the working tree.
+    explanation: >-
+      A clean merge means no two edits touched the same region. It says nothing
+      about whether the combined result makes sense — a rename on one branch and
+      a new caller of the old name on the other are in different files and merge
+      perfectly. Git compares text; this is a fact about meaning, and only tests
+      can catch it.
+
+  - id: q13
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.3.7]
+    stem: >-
+      What does running CI on the *merge result* rather than on the feature
+      branch protect against?
+    options:
+      - id: a
+        text: Semantic conflicts, which exist only in the combination
+        correct: true
+      - id: b
+        text: Textual conflicts, which would otherwise reach main
+        note: >-
+          A textual conflict stops the merge outright; CI never sees it.
+      - id: c
+        text: Force-pushes to the feature branch
+        note: >-
+          A different hazard, addressed by branch protection rather than by
+          what CI builds.
+      - id: d
+        text: Nothing — the feature branch and the merge result are the same tree
+        note: >-
+          They are only the same when `main` has not moved, which is precisely
+          the case where the question does not arise.
+    explanation: >-
+      Both branches can be individually green and broken together. Testing the
+      feature branch tests a tree nobody will ever ship. This is the practical
+      reason merge queues exist: they test the exact tree that will land.

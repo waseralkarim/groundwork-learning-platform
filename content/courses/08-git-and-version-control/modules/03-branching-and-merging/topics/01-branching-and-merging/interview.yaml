@@ -1,0 +1,125 @@
+topic: topic.branching-and-merging
+
+questions:
+  - id: i1
+    level: L2
+    question: >-
+      What actually happens when you switch branches?
+    model_answer: >-
+      Three things together: `HEAD` is rewritten to name the other ref, the index
+      is rebuilt from the target commit's tree, and the working tree is updated
+      to match.
+
+
+      It does not walk history — the target commit names a complete tree, so the
+      cost scales with the size of the difference between the two trees rather
+      than with how much history exists. Unchanged files have identical blob ids
+      and are never touched.
+    signal: >-
+      "It changes which branch you are on" is the label answer. Listen for the
+      index being mentioned — people who have debugged a confusing `git status`
+      after a switch tend to include it.
+
+  - id: i2
+    level: L2
+    question: >-
+      Where does Git record which branch a feature branch came from?
+    model_answer: >-
+      Nowhere. A branch is a ref holding one commit id, with no room and no field
+      for a parent branch. The merge base is computed from the commit graph every
+      time it is needed.
+
+
+      That is why branches can be created, renamed and deleted freely without
+      damaging anything — there is no relationship to corrupt.
+    signal: >-
+      A good discriminator. Candidates who assume it is recorded usually also
+      believe deleting a branch can lose commits, and the two misconceptions come
+      apart together once the answer lands.
+
+  - id: i3
+    level: L2
+    question: >-
+      Why does a merge need three versions of a file rather than two?
+    model_answer: >-
+      Because two versions cannot tell you which side changed. If yours says 90
+      and theirs says 30, that is consistent with you raising it, them lowering
+      it, or both editing — and the right answer differs in each case.
+
+
+      The merge base supplies the missing information. Every rule is then stated
+      relative to it: changed on exactly one side means take that side, changed
+      on both to different values means conflict, changed on both to the same
+      value means no conflict at all.
+    signal: >-
+      The best answers reach for a worked example unprompted. Candidates who
+      describe merging as "comparing the two branches" have not thought about
+      attribution and usually cannot explain why identical changes do not
+      conflict.
+
+  - id: i4
+    level: L2
+    question: >-
+      What is a fast-forward, and when would you suppress it?
+    model_answer: >-
+      It is what happens when the merge base equals the tip of the branch you are
+      merging into — that branch has contributed nothing since the fork, so the
+      combined result already exists and Git just moves the pointer. No merge
+      commit is created, and the new `HEAD` has one parent.
+
+
+      I would suppress it with `--no-ff` when several commits form one piece of
+      work, because the merge commit is what makes `git revert -m 1` able to undo
+      the whole feature in one operation. For a single commit it records nothing
+      and adds noise.
+    signal: >-
+      "It is a merge without a merge commit" is close but backwards. The better
+      framing is that nothing was merged, which is why there is no commit.
+
+  - id: i5
+    level: L3
+    question: >-
+      What is a merge conflict, really — and what does `git add` do to resolve it?
+    model_answer: >-
+      A conflict is a precise condition: both sides changed the same region
+      relative to the base. Git then writes all three versions into the index —
+      stage 1 base, stage 2 ours, stage 3 theirs — and refuses to commit.
+
+
+      The refusal is structural rather than a safety check: a commit points at one
+      tree, and a tree has one entry per name, so with three entries there is no
+      tree to write.
+
+
+      `git add` collapses those three entries into a single stage-0 entry. It is
+      not marking the conflict as handled; it is producing the single version
+      that makes a tree possible again. The markers in the file are a rendering
+      of the index so you have something to edit.
+    signal: >-
+      Reaching for the index rather than the markers is the discriminator. It
+      predicts whether someone can use `git checkout --ours` correctly and
+      whether they will be surprised by ours/theirs swapping during a rebase.
+
+  - id: i6
+    level: L3
+    question: >-
+      A merge completed with no conflicts and production broke. How is that
+      possible?
+    model_answer: >-
+      A clean merge means no two edits touched the same region. It says nothing
+      about whether the combination makes sense.
+
+
+      The classic case is a rename on one branch and a new caller of the old name
+      on the other — different files, no overlap, merges perfectly, does not run.
+      That is a semantic conflict, and no version control system can catch it:
+      the tool compares text and this is a fact about meaning.
+
+
+      The practical consequence is that CI has to run on the merge *result*, not
+      on the feature branch. Both branches can be individually green and broken
+      together, and testing the branch tests a tree nobody will ship.
+    signal: >-
+      Strong candidates separate "it merged cleanly" from "it works" without
+      being pushed, and land on testing the merge result. That is the reasoning
+      behind merge queues, and it is worth following up on.
