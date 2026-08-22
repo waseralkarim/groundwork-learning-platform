@@ -1,0 +1,114 @@
+id: topic.rebase-and-replay
+slug: rebase-and-replay
+title: "Rebase: New Commits That Look Like Old Ones"
+summary: >-
+  A rebase does not move commits. It replays their changes onto a different
+  base, producing new commits with new ids, and abandons the originals — which
+  is why the rule about not rebasing shared history is not etiquette but a
+  consequence of who else is holding the commits you just orphaned.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.the-object-model
+    hardness: required
+  - topic: topic.branching-and-merging
+    hardness: required
+  - topic: topic.staging-and-committing
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B10.4.1
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what `git rebase` does to commit ids, and why the originals still
+      exist afterwards.
+    assessed_by: [quiz.q1, quiz.q2, lab.rebase-makes-new-commits, exercise.e1]
+
+  - id: OBJ-B10.4.2
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish rebase from merge by what each records and what each discards.
+    assessed_by: [quiz.q3, quiz.q4, quiz.q5, lab.rebase-makes-new-commits]
+
+  - id: OBJ-B10.4.3
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why a conflict can recur during a rebase but happens once during a
+      merge.
+    assessed_by: [quiz.q6, quiz.q7, lab.the-conflict-that-came-back, exercise.e2]
+
+  - id: OBJ-B10.4.4
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose which side is "ours" during a rebase, and why it is the opposite
+      of a merge.
+    assessed_by: [quiz.q8, quiz.q9, lab.the-conflict-that-came-back]
+
+  - id: OBJ-B10.4.5
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose work that appears lost after a rebase, and recover it.
+    assessed_by: [quiz.q10, quiz.q11, lab.recover-an-abandoned-branch, troubleshooting.the-rebase-that-ate-a-colleagues-work]
+
+  - id: OBJ-B10.4.6
+    level: L3
+    verb: justify
+    statement: >-
+      Justify when rebasing is safe, in terms of who else holds the commits
+      rather than in terms of preference.
+    assessed_by: [quiz.q12, quiz.q13, exercise.e3, exercise.e4, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: rebase
+    definition: >-
+      Replay a range of commits onto a new base, producing new commits. The
+      originals are not modified and not deleted — they become unreachable.
+  - term: replay
+    definition: >-
+      Apply a commit's change onto a different starting point. The result has a
+      different parent, so a different id, so it is a different commit.
+  - term: "--onto"
+    definition: >-
+      Choose the new base explicitly, independently of what is being replayed.
+      The form that makes rebase a general graph operation rather than a
+      shortcut.
+  - term: interactive rebase
+    definition: >-
+      `rebase -i`, where the replay list is presented for editing — reorder,
+      squash, drop, reword. Every surviving commit still gets a new id.
+  - term: "ORIG_HEAD"
+    definition: >-
+      Where HEAD was before the last big move. A one-word answer to "undo that
+      rebase", valid until the next operation overwrites it.
+  - term: force-with-lease
+    definition: >-
+      A force-push that refuses if the remote moved since you last fetched. The
+      difference between overwriting your own history and overwriting somebody
+      else's.
+  - term: golden rule
+    definition: >-
+      Do not rebase commits anyone else has. Stated as a rule about who holds
+      them, because the harm is entirely in what other people are forced to do.
+  - term: divergent history
+    definition: >-
+      Two histories containing the same changes as different commits. What a
+      colleague gets when they pull after you rebase and force-push.
+  - term: rerere
+    definition: >-
+      Recorded resolutions, replayed automatically. More useful during rebases
+      than merges, because a rebase can meet the same conflict once per commit.
+
+foreshadows:
+  - "B10.7's reflog is what makes every mistake in this topic recoverable."
+  - "B10.10's workflows are mostly arguments about when rebasing is allowed."
+  - "E27's CI has to test the rebased result, which is a different tree from what was reviewed."
+
+tags: [git, version-control, rebase, history, recovery, fundamentals]
