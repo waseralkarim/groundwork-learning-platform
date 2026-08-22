@@ -168,6 +168,38 @@ export type Roadmap = {
   ingested_at: string | null;
 };
 
+export type CourseTopic = {
+  slug: string;
+  title: string;
+  summary: string;
+  order: number;
+  levels: string[];
+  estimated_minutes: number;
+  status: string;
+  tags: string[];
+};
+
+export type CourseModule = {
+  slug: string;
+  title: string;
+  summary: string;
+  order: number;
+  topics: CourseTopic[];
+};
+
+export type CourseDetail = {
+  slug: string;
+  code: string;
+  title: string;
+  summary: string;
+  track: string;
+  levels: string[];
+  estimated_hours: number;
+  order: number;
+  topic_count: number;
+  modules: CourseModule[];
+};
+
 export type Lesson = {
   section: string;
   title: string;
@@ -355,6 +387,10 @@ export function getRoadmap(): Promise<Roadmap> {
 
 export function getTopic(slug: string): Promise<TopicDetail> {
   return apiGet<TopicDetail>(`/topics/${encodeURIComponent(slug)}`, 10);
+}
+
+export function getCourse(slug: string): Promise<CourseDetail> {
+  return apiGet<CourseDetail>(`/courses/${encodeURIComponent(slug)}`, 10);
 }
 
 /** Authenticated reads. Return null when the caller is not signed in. */

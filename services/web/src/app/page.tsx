@@ -95,7 +95,7 @@ export default async function HomePage() {
                   </span>
                 </div>
 
-                <ul className="grid items-start gap-5 md:grid-cols-2">
+                <ul className="grid gap-5 md:grid-cols-2">
                   {courses.map((course, i) => (
                     <li key={course.slug}>
                       <CourseCard course={course} highlight={trackIndex === 0 && i === 0} />
@@ -121,7 +121,10 @@ function CourseCard({ course, highlight }: { course: RoadmapCourse; highlight: b
   const topicCount = course.modules.reduce((n, m) => n + m.topics.length, 0);
 
   return (
-    <article className="group relative flex flex-col gap-4 overflow-hidden rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:shadow-lg hover:shadow-black/5">
+    <Link
+      href={`/courses/${course.slug}`}
+      className="group relative flex h-full flex-col gap-4 overflow-hidden rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:shadow-lg hover:shadow-black/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
+    >
       <span
         aria-hidden="true"
         className="absolute inset-y-0 left-0 w-[3px] bg-[var(--color-accent)] opacity-0 transition-opacity duration-200 group-hover:opacity-100"
@@ -139,7 +142,7 @@ function CourseCard({ course, highlight }: { course: RoadmapCourse; highlight: b
               </span>
             ) : null}
           </div>
-          <h3 className="font-[family-name:var(--font-display)] text-[1.3rem] font-semibold leading-snug tracking-tight text-balance">
+          <h3 className="font-[family-name:var(--font-display)] text-[1.3rem] font-semibold leading-snug tracking-tight text-balance transition-colors group-hover:text-[var(--color-accent)]">
             {course.title}
           </h3>
         </div>
@@ -150,54 +153,20 @@ function CourseCard({ course, highlight }: { course: RoadmapCourse; highlight: b
 
       <p className="text-[0.9rem] leading-relaxed text-[var(--color-ink-soft)]">{course.summary}</p>
 
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1 font-[family-name:var(--font-mono)] text-[0.62rem] uppercase tracking-[0.12em] text-[var(--color-muted)]">
-        <span className="rounded border border-[var(--color-rule-soft)] px-1.5 py-0.5 text-[var(--color-signal)]">
-          {course.levels.join(" ")}
+      <div className="mt-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-[var(--color-rule-soft)] pt-3 font-[family-name:var(--font-mono)] text-[0.62rem] uppercase tracking-[0.12em] text-[var(--color-muted)]">
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <span className="rounded border border-[var(--color-rule-soft)] px-1.5 py-0.5 text-[var(--color-signal)]">
+            {course.levels.join(" ")}
+          </span>
+          <span className="tabular-nums">{plural(course.modules.length, "module")}</span>
+          <span aria-hidden="true">·</span>
+          <span className="tabular-nums">{plural(topicCount, "topic")}</span>
         </span>
-        <span className="tabular-nums">{plural(course.modules.length, "module")}</span>
-        <span aria-hidden="true">·</span>
-        <span className="tabular-nums">{plural(topicCount, "topic")}</span>
+        <span className="flex items-center gap-1 text-[var(--color-accent)] opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+          View course <span aria-hidden="true">→</span>
+        </span>
       </div>
-
-      {topicCount > 0 ? (
-        <details className="group/d border-t border-[var(--color-rule-soft)] pt-3">
-          <summary className="flex cursor-pointer list-none items-center gap-2 font-[family-name:var(--font-mono)] text-[0.64rem] uppercase tracking-[0.12em] text-[var(--color-muted)] transition-colors hover:text-[var(--color-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]">
-            <span
-              aria-hidden="true"
-              className="inline-block transition-transform duration-200 group-open/d:rotate-90"
-            >
-              ›
-            </span>
-            <span className="select-none">Contents</span>
-          </summary>
-
-          <div className="mt-3 flex flex-col gap-4">
-            {course.modules.map((module) => (
-              <div key={module.slug}>
-                <h4 className="font-[family-name:var(--font-mono)] text-[0.6rem] uppercase tracking-[0.13em] text-[var(--color-muted)]">
-                  {module.title}
-                </h4>
-                <ul className="mt-1.5">
-                  {module.topics.map((topic) => (
-                    <li key={topic.slug}>
-                      <Link
-                        href={`/topics/${topic.slug}`}
-                        className="flex items-baseline justify-between gap-3 border-b border-[var(--color-rule-soft)] py-2 text-sm transition-colors hover:text-[var(--color-accent)]"
-                      >
-                        <span>{topic.title}</span>
-                        <span className="shrink-0 font-[family-name:var(--font-mono)] text-[0.62rem] tabular-nums text-[var(--color-muted)]">
-                          {topic.estimated_minutes} min
-                        </span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </details>
-      ) : null}
-    </article>
+    </Link>
   );
 }
 
