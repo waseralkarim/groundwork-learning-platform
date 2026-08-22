@@ -1,0 +1,271 @@
+id: lab.three-ids-for-one-file
+topic: topic.staging-and-committing
+title: Hold one file in three states at once, and read all three
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.2.1, OBJ-B10.2.2, OBJ-B10.2.3]
+
+intro: >-
+  `git status` is the most-run command in Git and one of the least read. It
+  reports on three copies of your project at once, in two columns, and almost
+  nobody is told that is what the columns are.
+
+
+  You will put one file into three different states deliberately, read all three
+  by object id, and then work out which pair each form of `git diff` compares —
+  by experiment, not by looking it up.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      In the ledger repository, look at the index directly. Save what it
+      contains, and what each column means, to /tmp/answer-index.
+    hint: >-
+      `git ls-files --stage` prints the index in a readable form. Compare an id
+      there against `git rev-parse HEAD:<path>`.
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        echo "the index, readably:"
+        git ls-files --stage | sed 's/^/  /'
+        echo
+        echo "columns are: mode, object id, stage number, path."
+        echo
+        echo "with nothing staged, every id matches the committed one:"
+        echo "  index: $(git rev-parse :balance.txt)"
+        echo "  HEAD:  $(git rev-parse HEAD:balance.txt)"
+        echo
+        echo "so a 'clean' repository is not one where the index is empty."
+        echo "the index always holds every tracked file."
+        echo "clean means all three copies agree."
+        echo
+        echo "the stage number is 0 for everything here. it is only ever non-zero"
+        echo "during a conflicted merge, when one path has several versions at once."
+      } > /tmp/answer-index
+      cat /tmp/answer-index
+    verify:
+      - type: command_output
+        command: "cd /tmp/git/ledger && git ls-files --stage | wc -l"
+        equals_command: "cd /tmp/git/ledger && git ls-files | wc -l"
+        describe: You listed every tracked path in the index
+      - type: file_matches
+        path: /tmp/answer-index
+        pattern: "(?i)mode.*object id.*stage|stage number"
+        describe: And identified what the columns are
+      - type: file_matches
+        path: /tmp/answer-index
+        pattern: "(?i)all three copies agree|three copies agree"
+        describe: And said what "clean" actually means
+
+  - id: s2
+    instruction: >-
+      Put balance.txt into three different states at once and print all three
+      object ids. Save to /tmp/answer-three.
+    hint: >-
+      Edit, `git add`, then edit again. `git rev-parse HEAD:path`,
+      `git rev-parse :path` and `git hash-object path` read the three copies.
+    walkthrough: |
+      cd /tmp/git/ledger
+      echo "v-staged"  > balance.txt
+      git add balance.txt
+      echo "v-working" > balance.txt
+      {
+        echo "one path, three ids, right now:"
+        echo "  HEAD    (committed): $(git rev-parse HEAD:balance.txt)"
+        echo "  index   (staged):    $(git rev-parse :balance.txt)"
+        echo "  working (on disk):   $(git hash-object balance.txt)"
+        echo
+        echo "and the contents of each:"
+        echo "  committed: $(git cat-file -p HEAD:balance.txt | tr '\n' ' ')"
+        echo "  staged:    $(git cat-file -p :balance.txt)"
+        echo "  working:   $(cat balance.txt)"
+        echo
+        echo "all three are real and all three are addressable. the staged one is"
+        echo "already a blob in the object store - git add wrote it there."
+      } > /tmp/answer-three
+      cat /tmp/answer-three
+    verify:
+      - type: command_output
+        command: "cd /tmp/git/ledger && { git rev-parse HEAD:balance.txt; git rev-parse :balance.txt; git hash-object balance.txt; } | sort -u | wc -l"
+        equals: "3"
+        describe: You produced three genuinely different ids for one path
+      - type: file_matches
+        path: /tmp/answer-three
+        pattern: "v-staged"
+        describe: And read the staged contents out of the object store
+      - type: file_matches
+        path: /tmp/answer-three
+        pattern: "(?i)already a blob|wrote it there"
+        describe: And noticed add had already written it
+
+  - id: s3
+    instruction: >-
+      With the file in that state, run the three forms of diff and work out
+      which pair each one compares. Save your conclusions to /tmp/answer-diffs.
+    hint: >-
+      Run `git diff`, `git diff --cached` and `git diff HEAD`. Look at which
+      version appears on each side of the output, not just whether it is
+      non-empty.
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        echo "git diff            -> working vs index"
+        git diff -- balance.txt | grep '^[+-][^+-]' | sed 's/^/    /'
+        echo
+        echo "git diff --cached   -> index vs HEAD"
+        git diff --cached -- balance.txt | grep '^[+-][^+-]' | sed 's/^/    /'
+        echo
+        echo "git diff HEAD       -> working vs HEAD"
+        git diff HEAD -- balance.txt | grep '^[+-][^+-]' | sed 's/^/    /'
+        echo
+        echo "reading them: plain diff never mentions the committed version, and"
+        echo "--cached never mentions what is on disk. each compares exactly two"
+        echo "of the three copies."
+        echo
+        echo "--staged is a synonym for --cached. the older name leaked from the"
+        echo "index also being called the cache, which is why the same idea has"
+        echo "three names in this tool."
+      } > /tmp/answer-diffs
+      cat /tmp/answer-diffs
+    verify:
+      - type: file_matches
+        path: /tmp/answer-diffs
+        pattern: "working vs index"
+        describe: You identified what plain diff compares
+      - type: file_matches
+        path: /tmp/answer-diffs
+        pattern: "index vs HEAD"
+        describe: And what --cached compares
+      - type: file_matches
+        path: /tmp/answer-diffs
+        pattern: "(?i)--staged is a synonym|synonym for --cached"
+        describe: And connected --staged to --cached
+
+  - id: s4
+    instruction: >-
+      Read `git status` in both forms and account for every character of the
+      short output. Save to /tmp/answer-status.
+    hint: >-
+      `git status --short` prints two columns before each path. One is about the
+      index, the other about the working tree — work out which is which from the
+      state you created.
+    walkthrough: |
+      cd /tmp/git/ledger
+      {
+        echo "short form:"
+        git status --short | sed 's/^/  /'
+        echo
+        echo "two columns, and they are not the same question:"
+        echo "  column 1 = index vs HEAD      (staged)"
+        echo "  column 2 = working vs index   (not staged)"
+        echo
+        echo "so 'MM' means: modified and staged, THEN modified again since."
+        echo "that is exactly the state we built - and it is the state where"
+        echo "committing does not do what people expect."
+        echo
+        echo "other pairs worth recognising:"
+        echo "  ' M'  modified, nothing staged"
+        echo "  'M '  staged, and disk matches what was staged"
+        echo "  '??'  untracked - not in the index at all, which is a different"
+        echo "        thing from modified"
+        echo "  'A '  newly added to the index"
+      } > /tmp/answer-status
+      cat /tmp/answer-status
+    verify:
+      - type: command_output
+        command: "cd /tmp/git/ledger && git status --short -- balance.txt | cut -c1-2"
+        equals: "MM"
+        describe: The file really is modified in both columns
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "(?i)column 1 = index vs HEAD"
+        describe: You identified what the first column reports
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: "(?i)column 2 = working vs index"
+        describe: And the second
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-explain what you would say to a colleague who reports
+      that `git status` says a file is modified but `git diff` shows nothing.
+    hint: >-
+      Which pair does plain `git diff` compare, and which state would make that
+      pair identical while status still has something to report?
+    walkthrough: |
+      cat > /tmp/answer-explain <<'EOF'
+      the file is staged. plain `git diff` compares the working tree against the
+      INDEX, and if you staged the change and have not edited since, those two
+      are identical - so there is nothing for it to print.
+
+      status is still reporting the change because it compares the index against
+      HEAD as well, and that pair does differ. the short form shows it as 'M ' -
+      something in column one, nothing in column two.
+
+      what to run instead:
+
+        git diff --cached    the staged change, index vs HEAD
+        git diff HEAD        everything not yet committed, working vs HEAD
+
+      the general fix is to stop reading `git diff` as "show me my changes". it
+      answers exactly one question - what have i changed since i staged - and the
+      three-copy model tells you which of the other two questions you meant.
+
+      this is also the first half of a more expensive mistake. if the answer is
+      "nothing to diff because it is all staged", fine. if plain diff shows
+      something while --cached shows something DIFFERENT, then what you are about
+      to commit is not what is on your disk, and not what you have been testing.
+      EOF
+      cat /tmp/answer-explain
+    verify:
+      - type: file_matches
+        path: /tmp/answer-explain
+        pattern: "(?i)staged"
+        describe: You identified the cause
+      - type: file_matches
+        path: /tmp/answer-explain
+        pattern: "--cached|--staged"
+        describe: And named what to run instead
+      - type: file_matches
+        path: /tmp/answer-explain
+        pattern: "(?i)not what is on your disk|not what you have been testing"
+        describe: And flagged where this becomes expensive
+
+solution: >-
+  **A clean repository is not one with an empty index.** The index always holds
+  every tracked file. "Clean" means all three copies agree — which is why
+  `git ls-files --stage` on an untouched repository lists everything, with ids
+  matching `HEAD`.
+
+
+  **Three ids at once.** Edit, `git add`, edit again, and one path has a
+  committed id, a staged id and a working id, all different and all real. The
+  staged one is already a blob in the object store: `git add` wrote it there
+  immediately, which is why `git cat-file -p :balance.txt` can print it.
+
+
+  **Each diff compares a pair**, and the pairs are the whole explanation:
+
+
+  | Command | Compares |
+  |---|---|
+  | `git diff` | working vs index |
+  | `git diff --cached` (or `--staged`) | index vs `HEAD` |
+  | `git diff HEAD` | working vs `HEAD` |
+
+
+  **The two columns of `status -s` are those same pairs.** Column one is index
+  vs `HEAD` — staged. Column two is working vs index — not staged. `MM` means
+  both: you staged a change and then changed it again, which is precisely the
+  state where committing surprises people.
+
+
+  So *"status says modified, diff shows nothing"* is not a bug and not a
+  mystery. It means the change is staged, so the pair plain `diff` compares is
+  identical. The habit worth building is to stop reading `git diff` as "show me
+  my changes" — it answers one specific question out of three.

@@ -1,0 +1,280 @@
+id: lab.move-one-two-or-three
+topic: topic.staging-and-committing
+title: Reset three times and watch how far each one moves
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.2.6]
+
+intro: >-
+  `git reset` has a reputation for being dangerous, and one of its three modes
+  deserves it. The other two cannot lose anything at all.
+
+
+  Rather than memorising a table, you will run the same reset three times with
+  different flags against identical starting states, print all three copies each
+  time, and let the table build itself.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Build a small repository with two commits and an edit in progress, and
+      record all three copies. Save to /tmp/answer-before.
+    hint: >-
+      Work in a fresh directory. `git init`, two commits, then edit the file
+      without staging it.
+    walkthrough: |
+      build() {   # a fresh identical starting state, used by every step
+        rm -rf "$1"; mkdir -p "$1"; cd "$1"
+        git init -q
+        echo one > f.txt; git add f.txt; git commit -q -m first
+        echo two > f.txt; git add f.txt; git commit -q -m second
+        echo three > f.txt          # an unstaged edit in progress
+      }
+      build /tmp/reset-1
+      {
+        echo "starting state, every time:"
+        echo "  HEAD    (second commit): $(git cat-file -p HEAD:f.txt)"
+        echo "  index:                   $(git cat-file -p :f.txt)"
+        echo "  working:                 $(cat f.txt)"
+        echo
+        echo "so HEAD and index agree on 'two', and the disk has an unstaged 'three'."
+        echo "every reset below starts from exactly this, and targets HEAD~1 - the"
+        echo "commit holding 'one'."
+      } > /tmp/answer-before
+      cat /tmp/answer-before
+    verify:
+      - type: command_output
+        command: "cd /tmp/reset-1 && git cat-file -p HEAD:f.txt"
+        equals: "two"
+        describe: You built the two-commit history
+      - type: command_output
+        command: "cd /tmp/reset-1 && cat f.txt"
+        equals: "three"
+        describe: With an unstaged edit in progress
+      - type: file_matches
+        path: /tmp/answer-before
+        pattern: "(?i)HEAD~1"
+        describe: And identified what each reset will target
+
+  - id: s2
+    instruction: >-
+      Run `git reset --soft HEAD~1` against that state and report which of the
+      three copies moved. Save to /tmp/answer-soft.
+    hint: >-
+      Compare each copy against what it was before. Only one of the three should
+      have changed.
+    walkthrough: |
+      cd /tmp/reset-1
+      git reset -q --soft HEAD~1
+      {
+        echo "after reset --soft HEAD~1:"
+        echo "  HEAD:    $(git cat-file -p HEAD:f.txt)     <- moved, now 'one'"
+        echo "  index:   $(git cat-file -p :f.txt)     <- unchanged, still 'two'"
+        echo "  working: $(cat f.txt)   <- unchanged, still 'three'"
+        echo
+        echo "one of three moved. the second commit's content is still in the index,"
+        echo "so it shows as staged and ready to be committed again:"
+        git status --short | sed 's/^/    /'
+        echo
+        echo "this is what 'undo the commit but keep the work' means, and it is the"
+        echo "mode behind squashing several commits into one."
+      } > /tmp/answer-soft
+      cat /tmp/answer-soft
+    verify:
+      - type: command_output
+        command: "cd /tmp/reset-1 && git cat-file -p HEAD:f.txt"
+        equals: "one"
+        describe: HEAD moved back a commit
+      - type: command_output
+        command: "cd /tmp/reset-1 && git cat-file -p :f.txt"
+        equals: "two"
+        describe: The index was left alone
+      - type: command_output
+        command: "cd /tmp/reset-1 && cat f.txt"
+        equals: "three"
+        describe: And so was the working tree
+
+  - id: s3
+    instruction: >-
+      Rebuild the same starting state and run `git reset --mixed HEAD~1`. Report
+      what moved. Save to /tmp/answer-mixed.
+    hint: >-
+      `--mixed` is the default, so plain `git reset` does this. Two of the three
+      should move.
+    walkthrough: |
+      rm -rf /tmp/reset-2; mkdir -p /tmp/reset-2; cd /tmp/reset-2
+      git init -q
+      echo one > f.txt; git add f.txt; git commit -q -m first
+      echo two > f.txt; git add f.txt; git commit -q -m second
+      echo three > f.txt
+      git reset -q --mixed HEAD~1
+      {
+        echo "after reset --mixed HEAD~1:"
+        echo "  HEAD:    $(git cat-file -p HEAD:f.txt)     <- moved"
+        echo "  index:   $(git cat-file -p :f.txt)     <- ALSO moved, back to 'one'"
+        echo "  working: $(cat f.txt)   <- unchanged"
+        echo
+        echo "two of three moved. the difference from --soft is that the work is no"
+        echo "longer staged:"
+        git status --short | sed 's/^/    /'
+        echo
+        echo "--mixed is the default, so a bare 'git reset HEAD~1' does this. it is"
+        echo "also what 'git reset <path>' does to a single file - unstage it."
+        echo
+        echo "note what did NOT happen: your edit on disk is untouched. nothing you"
+        echo "had written was lost."
+      } > /tmp/answer-mixed
+      cat /tmp/answer-mixed
+    verify:
+      - type: command_output
+        command: "cd /tmp/reset-2 && git cat-file -p :f.txt"
+        equals: "one"
+        describe: The index moved back with HEAD
+      - type: command_output
+        command: "cd /tmp/reset-2 && cat f.txt"
+        equals: "three"
+        describe: While the working tree was left alone
+      - type: file_matches
+        path: /tmp/answer-mixed
+        pattern: "(?i)default"
+        describe: And you noted this is the default
+
+  - id: s4
+    instruction: >-
+      Rebuild once more and run `git reset --hard HEAD~1`. Report what moved,
+      and what is now unrecoverable. Save to /tmp/answer-hard.
+    hint: >-
+      All three move. Before running it, decide which of the three states you
+      created could still be recovered afterwards, and which could not.
+    walkthrough: |
+      rm -rf /tmp/reset-3; mkdir -p /tmp/reset-3; cd /tmp/reset-3
+      git init -q
+      echo one > f.txt; git add f.txt; git commit -q -m first
+      echo two > f.txt; git add f.txt; git commit -q -m second
+      echo three > f.txt
+      SECOND=$(git rev-parse HEAD)
+      git reset -q --hard HEAD~1
+      {
+        echo "after reset --hard HEAD~1:"
+        echo "  HEAD:    $(git cat-file -p HEAD:f.txt)   <- moved"
+        echo "  index:   $(git cat-file -p :f.txt)   <- moved"
+        echo "  working: $(cat f.txt)   <- OVERWRITTEN"
+        echo
+        echo "three of three. status is clean, which is exactly the problem - there"
+        echo "is no trace left that 'three' ever existed:"
+        git status --short | sed 's/^/    /'
+        echo "    (nothing)"
+        echo
+        echo "what IS recoverable: the discarded commit. it is still an object and"
+        echo "the reflog knows where the branch was."
+        echo "  commit $SECOND still present: $(git cat-file -t $SECOND)"
+        echo "  its content: $(git cat-file -p $SECOND:f.txt)"
+        echo
+        echo "what is NOT recoverable: 'three'. it was never committed and never"
+        echo "staged, so no object was ever written for it. there is nothing to"
+        echo "recover it from."
+        echo
+        echo "that is the real danger of --hard, and it is narrower than its"
+        echo "reputation: it does not endanger commits, it endangers work that was"
+        echo "never turned into an object."
+      } > /tmp/answer-hard
+      cat /tmp/answer-hard
+    verify:
+      - type: command_output
+        command: "cd /tmp/reset-3 && cat f.txt"
+        equals: "one"
+        describe: The working tree really was overwritten
+      - type: file_matches
+        path: /tmp/answer-hard
+        pattern: "(?i)still present: commit"
+        describe: You showed the discarded commit survives
+      - type: file_matches
+        path: /tmp/answer-hard
+        pattern: "(?i)never committed and never\\s+staged|no object was ever written"
+        describe: And identified what genuinely cannot be recovered
+
+  - id: s5
+    instruction: >-
+      Write the rule to /tmp/answer-rule — how to decide which reset you want,
+      and the one habit that makes `--hard` safe.
+    hint: >-
+      Frame it as a single question about how far to move, not as three
+      unrelated commands.
+    walkthrough: |
+      cat > /tmp/answer-rule <<'EOF'
+      there is one question: how many of the three copies do i want to move?
+
+        --soft    1 of 3   HEAD only.       work stays staged.
+        --mixed   2 of 3   HEAD + index.    work stays, unstaged. the default.
+        --hard    3 of 3   all three.       the working tree is overwritten.
+
+      choosing:
+
+        - "undo the commit, i want to redo the message or squash"     --soft
+        - "unstage this, i staged too much"                           --mixed
+                                                                      (or git restore --staged <path>)
+        - "throw away everything and match that commit exactly"       --hard
+
+      the safety property nobody states clearly: --soft and --mixed cannot lose
+      anything. they move pointers and leave your files alone. only --hard writes
+      over the working tree, and even then it cannot destroy a commit - the
+      discarded commit is still an object and the reflog records where the branch
+      was.
+
+      what --hard CAN destroy is work that was never turned into an object:
+      uncommitted, unstaged edits. there is no blob for them, so there is nothing
+      to recover from.
+
+      which gives the habit that makes it safe: `git add` (or `git stash`) before
+      `git reset --hard`. staging writes a blob, and once a blob exists the work
+      is recoverable even if you then throw the index away. the danger is not the
+      command, it is running it over work git has never seen.
+      EOF
+      cat /tmp/answer-rule
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)1 of 3|HEAD only"
+        describe: You expressed the three modes as one question
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)cannot lose anything|cannot destroy a commit"
+        describe: And stated the safety property precisely
+      - type: file_matches
+        path: /tmp/answer-rule
+        pattern: "(?i)stash|git add.*before"
+        describe: And gave the habit that makes --hard safe
+
+solution: >-
+  **One question, three answers.** How many of the three copies should move?
+
+
+  | | Moves | Leaves |
+  |---|---|---|
+  | `--soft` | `HEAD` | index and working tree — work stays **staged** |
+  | `--mixed` | `HEAD` + index | working tree — work stays, **unstaged** (the default) |
+  | `--hard` | all three | nothing — the working tree is **overwritten** |
+
+
+  **`--soft` and `--mixed` cannot lose anything.** They move pointers and leave
+  your files alone. That is worth saying because `reset` as a whole has a
+  reputation that belongs to exactly one of its modes.
+
+
+  **Even `--hard` cannot destroy a commit.** The discarded commit is still an
+  object, still readable by id, and the reflog records where the branch pointed.
+  What it *can* destroy is work that was never turned into an object —
+  uncommitted, unstaged edits, for which no blob was ever written and therefore
+  nothing exists to recover from.
+
+
+  That reframes the danger usefully. `--hard` is not risky because it moves
+  history; it is risky because it overwrites files Git has never seen. Which
+  gives the habit: **`git add` or `git stash` before `git reset --hard`.**
+  Staging writes a blob, and once a blob exists the work survives even if you
+  throw the index away afterwards.

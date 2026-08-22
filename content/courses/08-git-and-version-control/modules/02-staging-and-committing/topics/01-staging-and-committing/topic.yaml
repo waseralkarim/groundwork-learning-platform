@@ -1,0 +1,124 @@
+id: topic.staging-and-committing
+slug: staging-and-committing
+title: "Three Copies of Every File, and the One You Commit"
+summary: >-
+  The same file can have three different object ids at once — one in `HEAD`, one
+  in the index, one on disk — and `git status` exists to compare them. Once that
+  is visible, `git diff` versus `--cached`, the two columns of `status -s`, and
+  `reset --soft` versus `--mixed` versus `--hard` stop being trivia and become
+  one question: which of the three am I moving?
+order: 1
+levels: [L2, L3]
+estimated_minutes: 120
+status: published
+
+prerequisites:
+  - topic: topic.the-object-model
+    hardness: required
+  - topic: topic.how-a-line-becomes-a-command
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B10.2.1
+    level: L2
+    verb: describe
+    statement: >-
+      Describe the three copies of a tracked file — committed, staged and
+      working — and where each one lives.
+    assessed_by: [quiz.q1, quiz.q2, lab.three-ids-for-one-file, exercise.e1]
+
+  - id: OBJ-B10.2.2
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret `git status` output, including both columns of the short form.
+    assessed_by: [quiz.q3, quiz.q4, lab.three-ids-for-one-file]
+
+  - id: OBJ-B10.2.3
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish which pair of copies each form of `git diff` compares.
+    assessed_by: [quiz.q5, quiz.q6, lab.three-ids-for-one-file, exercise.e2]
+
+  - id: OBJ-B10.2.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what `git add` writes and when, and why staged work survives
+      losing the file.
+    assessed_by: [quiz.q7, quiz.q8, lab.commit-what-you-never-tested]
+
+  - id: OBJ-B10.2.5
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a commit whose contents differ from what was on disk or tested.
+    assessed_by: [quiz.q9, lab.commit-what-you-never-tested, troubleshooting.the-fix-that-was-not-in-the-commit]
+
+  - id: OBJ-B10.2.6
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish `reset --soft`, `--mixed` and `--hard` by which of the three
+      copies each one moves.
+    assessed_by: [quiz.q10, quiz.q11, quiz.q12, lab.move-one-two-or-three, exercise.e3]
+
+  - id: OBJ-B10.2.7
+    level: L3
+    verb: justify
+    statement: >-
+      Justify when partial staging is worth its risk, and what must be true
+      before committing a state that was never on disk.
+    assessed_by: [quiz.q13, lab.commit-what-you-never-tested, exercise.e4, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: index
+    definition: >-
+      A binary file, `.git/index`, listing the paths that will form the next
+      commit — each with a blob id, a stage number and cached stat data. Also
+      called the staging area or the cache, which is why the same idea appears
+      as `--cached`, `--staged` and `ls-files`.
+  - term: working tree
+    definition: >-
+      The files on disk that you edit. The only one of the three copies that is
+      not stored as objects.
+  - term: staged
+    definition: >-
+      Recorded in the index, and therefore already written into the object
+      store. Staged content exists as a blob before any commit is made.
+  - term: tracked
+    definition: >-
+      Present in the index. An untracked file is one Git has never been told
+      about, which is a different state from a modified one.
+  - term: stat cache
+    definition: >-
+      Size and mtime recorded per index entry so Git can skip re-hashing files
+      that plainly have not changed. An optimisation, not a source of truth.
+  - term: "reset --soft"
+    definition: >-
+      Move `HEAD` only. Index and working tree untouched, so the commit's
+      changes are left staged.
+  - term: "reset --mixed"
+    definition: >-
+      Move `HEAD` and the index. The working tree is untouched, so changes
+      remain but become unstaged. The default.
+  - term: "reset --hard"
+    definition: >-
+      Move all three. The working tree is overwritten, which is the only one of
+      the three that can destroy work no object holds.
+  - term: partial staging
+    definition: >-
+      Staging some hunks of a file and not others, with `git add -p`. Produces
+      an index state that has never existed on disk.
+  - term: stage number
+    definition: >-
+      The `0` in `git ls-files --stage`. Non-zero stages appear only during a
+      conflicted merge, where one path has several competing versions at once.
+
+foreshadows:
+  - "B10.6's reset, revert and cherry-pick are the same three-copy question asked about history."
+  - "B10.9's conflict resolution is where the index's non-zero stages finally matter."
+  - "E27's CI tests the commit, not your disk — which is exactly the gap partial staging opens."
+
+tags: [git, version-control, index, staging, workflow, fundamentals]

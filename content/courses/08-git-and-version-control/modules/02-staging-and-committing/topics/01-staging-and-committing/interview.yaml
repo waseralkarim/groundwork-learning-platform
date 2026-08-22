@@ -1,0 +1,133 @@
+topic: topic.staging-and-committing
+
+questions:
+  - id: i1
+    level: L2
+    question: >-
+      What is the staging area, and why does Git have one?
+    model_answer: >-
+      It is a third copy of the project, between what you have committed and
+      what you have edited, stored in `.git/index` as a list of paths with
+      object ids and cached stat data.
+
+
+      It exists so a commit can be built deliberately rather than being whatever
+      happened to be on disk. That lets a commit be one idea, which is what
+      makes review, `revert` and `bisect` work well — bisect especially, since a
+      commit that does three things tells you much less when it turns out to be
+      the bad one.
+    signal: >-
+      Listen for the purpose rather than the mechanism. "It's where you put
+      files before committing" is the queue picture; the better answer is that
+      it is a full listing of the next commit.
+
+  - id: i2
+    level: L2
+    question: >-
+      What does `git add` actually do?
+    model_answer: >-
+      It hashes the file's contents, writes a blob into the object store
+      immediately, and records that id in the index against the path.
+
+
+      Two things follow. Staged work is already an object, so it survives
+      deleting or overwriting the file — `git cat-file -p :path` reads it back
+      before any commit exists. And because the commit is built from the index,
+      editing after staging does not change what will be committed.
+    signal: >-
+      "Marks the file to be committed later" is the common answer and is wrong
+      in a way that matters — it predicts that editing after staging changes the
+      commit, which is exactly the bug people then hit.
+
+  - id: i3
+    level: L2
+    question: >-
+      `git status` says a file is modified, but `git diff` shows nothing.
+      What is going on?
+    model_answer: >-
+      The change is staged. Plain `git diff` compares the working tree against
+      the index, and staging makes those two identical, so there is nothing to
+      print. Status is reporting the index-versus-`HEAD` difference, which is
+      real.
+
+
+      `git diff --cached` shows what is staged; `git diff HEAD` shows everything
+      uncommitted.
+    signal: >-
+      Candidates who answer instantly have usually been bitten. The deeper
+      signal is whether they can say which *pair* each diff compares rather than
+      just reciting the flags.
+
+  - id: i4
+    level: L2
+    question: >-
+      What is the difference between `reset --soft`, `--mixed` and `--hard`?
+    model_answer: >-
+      How many of the three copies move. `--soft` moves `HEAD` only, leaving the
+      work staged. `--mixed` moves `HEAD` and the index, leaving the work in
+      place but unstaged — it is the default. `--hard` moves all three and
+      overwrites the working tree.
+
+
+      Only `--hard` can lose anything, and even then it cannot destroy a commit:
+      the discarded commit is still an object and the reflog knows where the
+      branch was. What it destroys is uncommitted, unstaged work, for which no
+      object was ever written.
+    signal: >-
+      The framing as one dial rather than three commands is what to listen for.
+      A candidate who adds that `--soft` and `--mixed` are non-destructive has
+      understood why the reputation is misplaced.
+
+  - id: i5
+    level: L3
+    question: >-
+      Someone merged a fix, CI passed, and production did not change. The commit
+      turns out not to contain the fix. How did that happen and how do you stop
+      it?
+    model_answer: >-
+      The commit was built from the index and the fix was not in it — either
+      staged early then edited, or `git add -p` accepted the wrong hunk.
+      `add -p` offers hunks in file order, not in the order you made the
+      changes, which is how people stage a debug-line removal instead of the fix
+      sitting further down.
+
+
+      Local testing passed because it ran against the working tree, which did
+      have the fix. CI passed because it tested the commit correctly and the
+      commit was harmless — green means "this commit breaks nothing", not "this
+      commit does something".
+
+
+      The check is `git diff` before committing: empty means the commit matches
+      your disk, non-empty means you are committing something you have not run.
+      `commit.verbose` makes it unavoidable, and `git stash push --keep-index`
+      lets you actually test the staged state.
+    signal: >-
+      Strong candidates separate "CI passed" from "the change works" without
+      prompting. Weak ones blame CI, which was the one part behaving correctly.
+
+  - id: i6
+    level: L2
+    question: >-
+      A colleague ran `git reset --hard` and lost work. What can you recover?
+    model_answer: >-
+      It depends entirely on whether the work ever became an object.
+
+
+      Commits are recoverable — `--hard` does not touch the object store, and
+      the reflog records where the branch pointed. Staged content is
+      recoverable, because `git add` wrote a blob; find the orphans with
+      `git fsck --dangling` and read them with `git cat-file -p`, though they
+      carry no filename since the name lived in a tree that was never written.
+
+
+      Work that was only edited and never staged is genuinely gone. No blob was
+      written, so nothing exists to recover from. It is worth saying that plainly
+      rather than implying Git can always save you.
+
+
+      The habit that prevents it: `git add` or `git stash` before any `--hard`.
+    signal: >-
+      The discriminator is whether they distinguish the three categories instead
+      of answering "check the reflog". Being willing to say some of it is
+      unrecoverable is a good sign — overpromising recovery is a common failure.
