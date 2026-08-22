@@ -1,0 +1,125 @@
+id: topic.branching-and-merging
+slug: branching-and-merging
+title: "Merging: Three Trees, One Ancestor"
+summary: >-
+  A merge does not compare two branches. It compares each of them against the
+  commit they last had in common, which is why Git can combine two sets of
+  changes it has never seen together and why a conflict happens exactly when
+  both sides changed the same region. Fast-forward is not a kind of merge — it
+  is what happens when there is nothing to merge.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.the-object-model
+    hardness: required
+  - topic: topic.staging-and-committing
+    hardness: required
+
+objectives:
+  - id: OBJ-B10.3.1
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what creating and switching a branch does to `HEAD`, the index and
+      the working tree.
+    assessed_by: [quiz.q1, quiz.q2, lab.what-switching-actually-moves, exercise.e1]
+
+  - id: OBJ-B10.3.2
+    level: L2
+    verb: trace
+    statement: >-
+      Trace a history's shape from its commits' parent links, and locate the
+      merge base of two branches.
+    assessed_by: [quiz.q3, quiz.q4, lab.find-the-ancestor, exercise.e2]
+
+  - id: OBJ-B10.3.3
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish a fast-forward from a true merge, and say what each does to
+      the graph.
+    assessed_by: [quiz.q5, quiz.q6, quiz.q7, lab.find-the-ancestor]
+
+  - id: OBJ-B10.3.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain the three-way merge — which three trees are compared, and how a
+      change is attributed to one side.
+    assessed_by: [quiz.q8, quiz.q9, lab.merge-by-hand, exercise.e3]
+
+  - id: OBJ-B10.3.5
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a conflict by reading the index's non-zero stages rather than the
+      markers in the file.
+    assessed_by: [quiz.q10, quiz.q11, lab.merge-by-hand, troubleshooting.the-merge-that-lost-a-fix]
+
+  - id: OBJ-B10.3.6
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a merge that produced no conflict and the wrong result.
+    assessed_by: [quiz.q12, troubleshooting.the-merge-that-lost-a-fix, exercise.e4]
+
+  - id: OBJ-B10.3.7
+    level: L3
+    verb: justify
+    statement: >-
+      Justify a branching policy for a team, including when to merge and what a
+      merge commit is worth keeping.
+    assessed_by: [quiz.q13, exercise.e4, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: branch
+    definition: >-
+      A ref under `.git/refs/heads/` holding one commit id. Creating one writes
+      41 bytes and no objects; committing on it moves that file.
+  - term: merge base
+    definition: >-
+      The most recent commit reachable from both branches — the point they last
+      agreed. Everything a merge does is defined relative to it.
+  - term: fast-forward
+    definition: >-
+      Moving a branch pointer forward when the target already contains it. No
+      merge commit is created because there is nothing to combine.
+  - term: three-way merge
+    definition: >-
+      Comparing base→ours and base→theirs, then combining. It is what lets Git
+      tell "you added this" apart from "they deleted that".
+  - term: merge commit
+    definition: >-
+      A commit with two or more parents. Its tree is the combined result; its
+      parents record what was combined.
+  - term: conflict
+    definition: >-
+      Both sides changed the same region relative to the base. The index holds
+      stages 1, 2 and 3 for the path and Git refuses to write a tree until one
+      remains.
+  - term: "ours / theirs"
+    definition: >-
+      Stage 2 is the branch you are on, stage 3 the branch being merged. The
+      names swap meaning during a rebase, which is a common source of error.
+  - term: semantic conflict
+    definition: >-
+      Two changes that merge cleanly and are wrong together — a renamed function
+      on one side, a new caller of the old name on the other. Git cannot see it.
+  - term: "--no-ff"
+    definition: >-
+      Force a merge commit even when a fast-forward is possible, to keep the
+      branch's shape in history.
+  - term: octopus merge
+    definition: >-
+      A merge with more than two parents. Rare, refuses conflicts outright, and
+      mostly evidence the model has no special case for two.
+
+foreshadows:
+  - "B10.5's rebase replays commits instead of merging them, and swaps what ours and theirs mean."
+  - "B10.9 is conflict resolution in depth, on the index stages this topic exposes."
+  - "E27's CI is where semantic conflicts are actually caught, since Git cannot see them."
+
+tags: [git, version-control, branching, merging, conflicts, fundamentals]

@@ -1,0 +1,10 @@
+id: module.branching-and-merging
+slug: branching-and-merging
+title: Branching and Merging
+summary: >-
+  Branching is where Git's model stops being an interesting fact and starts
+  paying for itself: a branch costs nothing because it is a pointer, and a merge
+  is an operation on the graph those pointers sit in. This module is about what
+  the three-way merge actually compares, why fast-forward is not a kind of
+  merge, and what a conflict is once you can see the index behind it.
+order: 3
