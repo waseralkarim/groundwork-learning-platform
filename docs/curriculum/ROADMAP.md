@@ -253,6 +253,46 @@ places before the lab walk caught it.
 | B13 | **Databases for DevOps** | L2–L4 | Relational model & SQL · PostgreSQL operations · Indexes & query plans · Transactions & isolation · Connection pooling · Replication & failover · Backup & **tested restore** · Migrations & zero-downtime schema change · Redis/Valkey · NoSQL concepts · Performance troubleshooting |
 
 
+### What building B10.2 found
+
+The topic about the index, and the one where the sandbox turned out to be more
+capable than expected. `git add -p` is interactive, which looked like it ruled
+out teaching partial staging in a lab — until it turned out to read its answers
+from stdin. `printf 'y\nn\n' | git add -p <file>` stages the first hunk and
+rejects the second, so the whole thing is scriptable and walkable.
+
+**The first attempt staged both hunks.** With the two changes six lines apart
+they merge into one hunk under three lines of context, so the "y" took
+everything and the "n" answered nothing. The lab's central claim was silently
+false until the file was widened to twenty lines with changes at 1 and 20. Worth
+remembering that a demonstration can pass while proving nothing.
+
+**One path really does have three object ids at once**, and printing all three
+is what makes the rest of the topic fall out:
+
+    HEAD:    b2875d05    what is committed
+    index:   1098d634    what is staged
+    disk:    1fba146e    what you are editing
+
+Status's two columns, the three forms of diff and reset --soft/--mixed/--hard
+are then one question — which of the three am I moving — rather than three
+vocabularies.
+
+**A conflict is not a file with markers in it.** `git ls-files --stage` during
+one shows three entries for the same path at stages 1, 2 and 3 — base, ours,
+theirs. The markers are only how Git renders that into the working tree. It also
+explains why `git add` is how you declare a conflict resolved: it collapses the
+three entries into one.
+
+**A verify passed lint and could never match.** The walkthrough split the phrase
+"all three copies agree" across two echo lines, so the pattern found nothing.
+Only the lab walk caught it — lint cannot see inside a walkthrough's output.
+
+**Two YAML `hints:` keys in one file, and lint stayed green.** Inserting a block
+ahead of an existing one silently discarded three hints, because YAML keeps the
+last duplicate key. Nothing errors. Worth a rule eventually; for now, worth
+knowing that a passing lint is not evidence a file says what you think.
+
 ### What building B10.1 found
 
 The first topic of B10, and the first that needed a tool the lab image did not
