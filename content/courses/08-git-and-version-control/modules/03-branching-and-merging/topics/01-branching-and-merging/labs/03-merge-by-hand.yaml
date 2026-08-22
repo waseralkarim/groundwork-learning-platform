@@ -1,0 +1,267 @@
+id: lab.merge-by-hand
+topic: topic.branching-and-merging
+title: Resolve a conflict from the index, not from the markers
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B10.3.4, OBJ-B10.3.5]
+
+intro: >-
+  Everybody resolves conflicts by editing the markers out of the file. It works,
+  and it hides what is actually happening.
+
+
+  When Git cannot decide, it puts **all three versions** into the index — base,
+  ours, theirs — and refuses to write a tree until one is left. The markers are
+  a rendering of that state, produced so you have something to edit. You will
+  read all three versions directly, resolve without touching the markers at all,
+  and find out what `git add` really does at the end of a conflict.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Create a conflict deliberately: one file, one line, changed differently on
+      two branches. Save what Git reports to /tmp/answer-conflict.
+    hint: >-
+      Commit a base value, change it on a branch, change it differently on
+      `main`, then merge.
+    walkthrough: |
+      rm -rf /tmp/cf; mkdir -p /tmp/cf; cd /tmp/cf
+      git init -q
+      echo "timeout = 30" > cfg.txt
+      git add -A && git commit -q -m "base: 30"
+      git checkout -q -b other
+      echo "timeout = 60" > cfg.txt && git commit -q -am "other: 60"
+      git checkout -q main
+      echo "timeout = 90" > cfg.txt && git commit -q -am "main: 90"
+      {
+        echo "merging:"
+        git merge other 2>&1 | sed 's/^/  /'
+        echo
+        echo "the base said 30. one branch said 60, the other said 90. both sides"
+        echo "changed the same region relative to the base, which is exactly the"
+        echo "condition for a conflict - it is not git being confused."
+        echo
+        echo "status:"
+        git status --short | sed 's/^/  /'
+        echo "  UU means: unmerged, changed on both sides."
+      } > /tmp/answer-conflict
+      cat /tmp/answer-conflict
+    verify:
+      - type: command_output
+        command: "cd /tmp/cf && git status --short -- cfg.txt | cut -c1-2"
+        equals: "UU"
+        describe: You produced a real conflict
+      - type: file_matches
+        path: /tmp/answer-conflict
+        pattern: "(?i)same region relative to the base"
+        describe: And stated the condition that caused it
+
+  - id: s2
+    instruction: >-
+      Read all three competing versions out of the index, without opening the
+      file. Save to /tmp/answer-stages.
+    hint: >-
+      `git ls-files --stage` shows the entries. `git cat-file -p :N:<path>` reads
+      stage N directly.
+    walkthrough: |
+      cd /tmp/cf
+      {
+        echo "the index during a conflict:"
+        git ls-files --stage cfg.txt | sed 's/^/  /'
+        echo
+        echo "three entries, one path. the number before the name is the stage:"
+        echo "  stage 1 (base):   $(git cat-file -p :1:cfg.txt)"
+        echo "  stage 2 (ours):   $(git cat-file -p :2:cfg.txt)"
+        echo "  stage 3 (theirs): $(git cat-file -p :3:cfg.txt)"
+        echo
+        echo "this is the authoritative state. the <<<<<<< markers in the file are"
+        echo "a rendering of it, written into the working tree so there is"
+        echo "something to edit - the file is a view, the index is the truth."
+        echo
+        echo "note what ours means: stage 2 is the branch you are ON, not 'your"
+        echo "work'. during a rebase your commits are being replayed onto the other"
+        echo "branch, so ours and theirs are swapped from what you would expect."
+      } > /tmp/answer-stages
+      cat /tmp/answer-stages
+    verify:
+      - type: command_output
+        command: "cd /tmp/cf && git cat-file -p :1:cfg.txt"
+        equals: "timeout = 30"
+        describe: You read the merge base out of stage 1
+      - type: command_output
+        command: "cd /tmp/cf && git cat-file -p :2:cfg.txt"
+        equals: "timeout = 90"
+        describe: And ours out of stage 2
+      - type: command_output
+        command: "cd /tmp/cf && git cat-file -p :3:cfg.txt"
+        equals: "timeout = 60"
+        describe: And theirs out of stage 3
+      - type: file_matches
+        path: /tmp/answer-stages
+        pattern: "(?i)branch you are ON|swapped"
+        describe: And recorded what "ours" actually means
+
+  - id: s3
+    instruction: >-
+      Confirm that Git will not let you commit while the conflict is unresolved,
+      and find out why in terms of the object model. Save to /tmp/answer-refuse.
+    hint: >-
+      Try to commit. Then think about what a commit needs and whether the index
+      can currently provide it.
+    walkthrough: |
+      cd /tmp/cf
+      {
+        echo "trying to commit while unresolved:"
+        git commit -m "x" 2>&1 | head -2 | sed 's/^/  /'
+        echo
+        echo "why, in object-model terms: a commit points at exactly one tree, and"
+        echo "a tree has exactly one entry per name. the index currently holds"
+        echo "three entries for cfg.txt, so there is no tree to write."
+        echo
+        echo "the refusal is structural rather than a safety check. git is not"
+        echo "protecting you from a bad merge - it cannot build the object."
+      } > /tmp/answer-refuse
+      cat /tmp/answer-refuse
+    verify:
+      - type: file_matches
+        path: /tmp/answer-refuse
+        pattern: "(?i)unmerged files|not possible"
+        describe: You captured the refusal
+      - type: file_matches
+        path: /tmp/answer-refuse
+        pattern: "(?i)one entry per name|no tree to write"
+        describe: And explained it in terms of the object model
+
+  - id: s4
+    instruction: >-
+      Resolve the conflict without editing the file by hand — take one side
+      wholesale from the index — then show what that did to the stages. Save to
+      /tmp/answer-resolve.
+    hint: >-
+      `git checkout --ours <path>` and `--theirs <path>` pull a stage into the
+      working tree. Then stage the result and look at `ls-files --stage` again.
+    walkthrough: |
+      cd /tmp/cf
+      {
+        echo "taking theirs, straight from stage 3:"
+        git checkout --theirs cfg.txt
+        echo "  file now: $(cat cfg.txt)"
+        echo "  (no markers were edited - this came out of the index)"
+        echo
+        echo "index before staging:"
+        git ls-files --stage cfg.txt | sed 's/^/    /'
+        git add cfg.txt
+        echo "index after git add:"
+        git ls-files --stage cfg.txt | sed 's/^/    /'
+        echo
+        echo "three entries became one, at stage 0. THAT is what resolving means:"
+        echo "git add is not marking the conflict as handled, it is collapsing the"
+        echo "competing entries into a single version so a tree exists again."
+        echo
+        git commit -q -m "merge other, taking 60"
+        echo "committed. parents: $(git cat-file -p HEAD | grep -c '^parent')"
+      } > /tmp/answer-resolve
+      cat /tmp/answer-resolve
+    verify:
+      - type: command_output
+        command: "cd /tmp/cf && git ls-files --stage cfg.txt | awk '{print $3}'"
+        equals: "0"
+        describe: The three stages collapsed to a single stage-0 entry
+      - type: command_output
+        command: "cd /tmp/cf && git cat-file -p HEAD:cfg.txt"
+        equals: "timeout = 60"
+        describe: And the resolution you chose is what got committed
+      - type: file_matches
+        path: /tmp/answer-resolve
+        pattern: "(?i)collapsing|three entries became one"
+        describe: And you said what git add actually did
+
+  - id: s5
+    instruction: >-
+      Show that two branches making the *same* change do not conflict, and write
+      to /tmp/answer-identical why not.
+    hint: >-
+      Fix the same typo the same way on both branches, then merge.
+    walkthrough: |
+      rm -rf /tmp/id; mkdir -p /tmp/id; cd /tmp/id
+      git init -q
+      echo "helo world" > t.txt && git add -A && git commit -q -m typo
+      git checkout -q -b fix-a
+      echo "hello world" > t.txt && git commit -q -am "fix a"
+      git checkout -q main
+      echo "hello world" > t.txt && git commit -q -am "fix b"
+      {
+        if git merge -q fix-a -m merged 2>/dev/null; then
+          echo "merged cleanly: $(cat t.txt)"
+        else
+          echo "CONFLICT (unexpected)"
+        fi
+        echo
+        echo "both branches changed the same line, and there was no conflict."
+        echo
+        echo "the rule is not 'both sides touched it'. it is 'both sides produced"
+        echo "DIFFERENT content'. two people fixing the same typo the same way"
+        echo "produce identical bytes, so there is nothing to decide - the blob"
+        echo "ids are equal and one candidate remains."
+        echo
+        echo "which follows from content addressing: identical content is the same"
+        echo "object, so 'did these two changes agree' is an id comparison."
+      } > /tmp/answer-identical
+      cat /tmp/answer-identical
+    verify:
+      - type: command_output
+        command: "cd /tmp/id && cat t.txt"
+        equals: "hello world"
+        describe: The identical change merged without a conflict
+      - type: file_matches
+        path: /tmp/answer-identical
+        pattern: "(?i)DIFFERENT content|identical bytes"
+        describe: And you gave the precise rule
+
+solution: >-
+  **A conflict is a condition, not a failure.** Base `30`, one side `60`, the
+  other `90` — both changed the same region relative to the base, so no side has
+  the only claim.
+
+
+  **The index holds all three versions**, and you can read them without opening
+  the file:
+
+
+  ```console
+  $ git cat-file -p :1:cfg.txt      timeout = 30      base
+  $ git cat-file -p :2:cfg.txt      timeout = 90      ours
+  $ git cat-file -p :3:cfg.txt      timeout = 60      theirs
+  ```
+
+
+  The `<<<<<<<` markers are a *rendering* of that state, written into the
+  working tree so there is something to edit. The file is a view; the index is
+  the truth.
+
+
+  **`ours` means the branch you are on**, not "your work". During a rebase your
+  commits are replayed onto the other branch, so the two swap — which catches
+  experienced people, while they are already mid-conflict.
+
+
+  **The refusal to commit is structural.** A commit points at one tree, and a
+  tree has one entry per name. With three entries for `cfg.txt` there is no tree
+  to write. Git is not protecting you from a bad merge; it cannot build the
+  object.
+
+
+  **So `git add` is the resolution, literally.** It replaces the three competing
+  entries with one at stage 0. Nothing is "marked as handled" — a single version
+  exists again, so a tree exists again.
+
+
+  **And identical changes do not conflict.** The rule is not "both sides touched
+  it" but "both sides produced *different* content". Two people fixing a typo
+  the same way produce the same bytes, the same blob id, and one candidate — a
+  consequence of content addressing, met once more.

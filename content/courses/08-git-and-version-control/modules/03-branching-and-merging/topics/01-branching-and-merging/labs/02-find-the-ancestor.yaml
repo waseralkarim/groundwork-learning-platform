@@ -1,0 +1,254 @@
+id: lab.find-the-ancestor
+topic: topic.branching-and-merging
+title: Find the commit two branches last agreed on
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.3.2, OBJ-B10.3.3]
+
+intro: >-
+  Nothing in a repository records where a branch came from. There is no "parent
+  branch" field, no creation date, no link back — a branch is 41 bytes holding
+  one commit id.
+
+
+  And yet Git can always tell you where two branches diverged. You will build a
+  history, find that point by hand from the parent links, check your answer, and
+  then watch what happens when the answer turns out to be one of the branches
+  itself.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Build a repository where two branches diverge, then draw its shape from
+      the parent links alone. Save to /tmp/answer-shape.
+    hint: >-
+      `git log --all --format='%h %p %s'` prints each commit with its parents.
+      That is the entire graph.
+    walkthrough: |
+      rm -rf /tmp/br; mkdir -p /tmp/br; cd /tmp/br
+      git init -q
+      seq 1 10 | sed 's/^/line /' > f.txt
+      git add -A && git commit -q -m base
+      git checkout -q -b feature
+      sed -i '1s/.*/line 1 FEATURE/' f.txt && git commit -q -am feat
+      git checkout -q main
+      sed -i '10s/.*/line 10 MAIN/' f.txt && git commit -q -am main
+      {
+        echo "every commit, with its parents:"
+        git log --all --format='  %h  parent=%p  %s' | sed 's/$//'
+        echo
+        echo "the commit with no parent is the root. two commits name it as their"
+        echo "parent, which is where the history forks."
+        echo
+        echo "shape:"
+        echo "          feat   (feature)"
+        echo "         /"
+        echo "  base"
+        echo "         \\"
+        echo "          main   (main)"
+        echo
+        echo "nothing recorded that feature started at base. the parent links are"
+        echo "the only record and they are enough."
+      } > /tmp/answer-shape
+      cat /tmp/answer-shape
+    verify:
+      - type: command_output
+        command: "cd /tmp/br && git rev-list --count --all"
+        equals: "3"
+        describe: You built a three-commit history that forks
+      - type: file_matches
+        path: /tmp/answer-shape
+        pattern: "(?i)no parent is the root|parent links are"
+        describe: And read its shape from the parent links
+
+  - id: s2
+    instruction: >-
+      Work out which commit the two branches last had in common, then check your
+      answer with Git. Save to /tmp/answer-base.
+    hint: >-
+      The merge base is the most recent commit reachable from both. Compare your
+      reading of the graph against `git merge-base`.
+    walkthrough: |
+      cd /tmp/br
+      {
+        echo "reachable from main:    $(git rev-list main | tr '\n' ' ')"
+        echo "reachable from feature: $(git rev-list feature | tr '\n' ' ')"
+        echo
+        echo "the one in both lists is the root commit, and it is the most recent"
+        echo "such commit because there is only one."
+        echo
+        echo "  git merge-base main feature -> $(git merge-base main feature)"
+        echo "  the root commit is         -> $(git rev-list --max-parents=0 HEAD)"
+        echo
+        echo "identical. and note what git did NOT consult: no record of where the"
+        echo "branch was created, because none exists. the answer is computed from"
+        echo "the parent links every time it is asked."
+      } > /tmp/answer-base
+      cat /tmp/answer-base
+    verify:
+      - type: command_output
+        command: "cd /tmp/br && git merge-base main feature"
+        equals_command: "cd /tmp/br && git rev-list --max-parents=0 HEAD"
+        describe: The merge base really is the commit they forked from
+      - type: file_matches
+        path: /tmp/answer-base
+        pattern: "(?i)computed from|no record of where"
+        describe: And you noticed nothing recorded it
+
+  - id: s3
+    instruction: >-
+      Merge the branches and inspect the commit that results. Save to
+      /tmp/answer-merge.
+    hint: >-
+      The two changes are ten lines apart. Predict whether Git will ask you
+      anything before you run it.
+    walkthrough: |
+      cd /tmp/br
+      git merge -q feature -m "merge feature" 2>/dev/null
+      {
+        echo "merged with no questions asked. both changes are present:"
+        echo "  line 1:  $(sed -n 1p f.txt)"
+        echo "  line 10: $(sed -n 10p f.txt)"
+        echo
+        echo "why no conflict: relative to the base, feature changed line 1 and"
+        echo "main changed line 10. no region was changed by both, so every"
+        echo "region had exactly one candidate."
+        echo
+        echo "the commit it wrote:"
+        git cat-file -p HEAD | sed 's/^/  /'
+        echo
+        echo "parents: $(git cat-file -p HEAD | grep -c '^parent') - which is what makes it a merge commit."
+        echo "there is no third object type. it is an ordinary commit with two parents."
+      } > /tmp/answer-merge
+      cat /tmp/answer-merge
+    verify:
+      - type: command_output
+        command: "cd /tmp/br && git cat-file -p HEAD | grep -c '^parent'"
+        equals: "2"
+        describe: The merge commit has two parents
+      - type: command_output
+        command: "cd /tmp/br && sed -n 1p f.txt"
+        equals: "line 1 FEATURE"
+        describe: And kept the feature branch's change
+      - type: file_matches
+        path: /tmp/answer-merge
+        pattern: "(?i)no region was changed by both|exactly one candidate"
+        describe: And you explained why nothing conflicted
+
+  - id: s4
+    instruction: >-
+      Build a second repository where one branch has not moved, and merge it.
+      Show that no merge commit is created. Save to /tmp/answer-ff.
+    hint: >-
+      Count commits before and after, and count the parents of the new `HEAD`.
+    walkthrough: |
+      rm -rf /tmp/ff; mkdir -p /tmp/ff; cd /tmp/ff
+      git init -q
+      echo one > f.txt && git add -A && git commit -q -m first
+      git checkout -q -b quick
+      echo two > f.txt && git commit -q -am second
+      git checkout -q main
+      {
+        echo "before merging:"
+        echo "  commits on main:  $(git rev-list --count HEAD)"
+        echo "  merge-base:       $(git merge-base main quick | cut -c1-7)"
+        echo "  main's tip:       $(git rev-parse main | cut -c1-7)"
+        echo "-> the base IS main's tip, so main has contributed nothing since the fork."
+        git merge -q quick
+        echo
+        echo "after merging:"
+        echo "  commits on main:  $(git rev-list --count HEAD)"
+        echo "  HEAD parents:     $(git cat-file -p HEAD | grep -c '^parent')"
+        echo "-> one parent. no merge commit was made, because there was nothing to"
+        echo "   combine - the result already existed. the pointer moved."
+        echo
+        echo "that is a fast-forward, and it is not a kind of merge."
+      } > /tmp/answer-ff
+      cat /tmp/answer-ff
+    verify:
+      - type: command_output
+        command: "cd /tmp/ff && git cat-file -p HEAD | grep -c '^parent'"
+        equals: "1"
+        describe: No merge commit was created
+      - type: file_matches
+        path: /tmp/answer-ff
+        pattern: "(?i)nothing to\\s+combine|already existed"
+        describe: And you said why there was nothing to merge
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-policy when you would force a merge commit with
+      `--no-ff`, and when you would not.
+    hint: >-
+      Both are legitimate. Say what each one keeps and what each one costs.
+    walkthrough: |
+      cat > /tmp/answer-policy <<'EOF'
+      the question is whether "these commits were one piece of work" is
+      information worth keeping.
+
+      fast-forward keeps history linear. it is easier to read, easier to bisect,
+      and free of merge commits that record nothing. for a single commit - a typo
+      fix, a version bump - a merge commit is pure noise.
+
+      --no-ff keeps the branch visible forever. that is worth real money when a
+      feature is five commits and has to be reverted: `git revert -m 1 <merge>`
+      undoes the whole thing in one operation, where a linear history means
+      finding and reverting five commits and hoping you got the range right.
+
+      so: fast-forward for a single commit, --no-ff for a feature.
+
+      what i would not do is pick one and apply it everywhere. "always --no-ff"
+      fills history with merge commits for one-line changes and makes the log
+      hard to read; "never --no-ff" throws away the grouping exactly when a
+      change is big enough for the grouping to matter.
+
+      one caveat worth naming: bisect is slightly worse with merge commits,
+      because it can land on one and tell you a merge introduced the bug rather
+      than which commit inside it did. that is an argument for keeping branches
+      short, not for banning merge commits.
+      EOF
+      cat /tmp/answer-policy
+    verify:
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)revert"
+        describe: You named what a merge commit buys
+      - type: file_matches
+        path: /tmp/answer-policy
+        pattern: "(?i)bisect"
+        describe: And what it costs
+
+solution: >-
+  **Nothing records where a branch began.** A branch is 41 bytes holding one
+  commit id. The merge base is *derived* from parent links every time it is
+  asked — which is why branches can be created, renamed and deleted freely
+  without damaging history.
+
+
+  **`git merge-base main feature` returns the root commit here**, and it matches
+  `git rev-list --max-parents=0 HEAD` exactly. That is the point they last
+  agreed.
+
+
+  **Non-overlapping changes merge silently.** Relative to the base, `feature`
+  changed line 1 and `main` changed line 10. No region was changed by both, so
+  every region had exactly one candidate and there was nothing to ask about. The
+  result is an ordinary commit with **two parents** — there is no third object
+  type.
+
+
+  **Fast-forward is the case where the base equals one branch's tip.** Then that
+  branch has contributed nothing since the fork, the combined result already
+  exists, and Git moves the pointer. The new `HEAD` has **one** parent, because
+  no merge commit was made — nothing was merged.
+
+
+  **Choosing between them is choosing what to record.** Fast-forward for a
+  single commit keeps the log readable; `--no-ff` for a feature keeps the
+  grouping, which is what makes `git revert -m 1` able to undo five commits at
+  once. Applying either rule everywhere gets the worst of both.

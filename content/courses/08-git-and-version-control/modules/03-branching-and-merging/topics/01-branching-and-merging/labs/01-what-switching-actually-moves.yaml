@@ -1,0 +1,221 @@
+id: lab.what-switching-actually-moves
+topic: topic.branching-and-merging
+title: Watch a branch switch move three things at once
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 25
+objectives: [OBJ-B10.3.1]
+
+intro: >-
+  "Switching branch" sounds like one operation on one thing. It is three, and
+  knowing which three explains every surprising thing `git switch` ever does —
+  why it is instant on a huge repository, why it sometimes refuses, and why it
+  sometimes carries your uncommitted work across without being asked.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Build two branches with different content, then record `HEAD`, the index
+      and the working tree before and after switching. Save to
+      /tmp/answer-three.
+    hint: >-
+      `cat .git/HEAD` for the first, `git rev-parse :<path>` for the second,
+      `git hash-object <path>` for the third.
+    walkthrough: |
+      rm -rf /tmp/sw; mkdir -p /tmp/sw; cd /tmp/sw
+      git init -q
+      echo main-content > f.txt && git add -A && git commit -q -m main
+      git checkout -q -b other
+      echo other-content > f.txt && git commit -q -am other
+      git checkout -q main
+      snap() {
+        echo "  HEAD:    $(cat .git/HEAD)"
+        echo "  index:   $(git cat-file -p :f.txt)"
+        echo "  working: $(cat f.txt)"
+      }
+      {
+        echo "on main:"; snap
+        git switch -q other
+        echo
+        echo "after git switch other:"; snap
+        echo
+        echo "all three moved together. that is what a switch IS - it is not a"
+        echo "change of label, it is a checkout of the target commit's tree into"
+        echo "both the index and the working tree, plus a rewrite of HEAD."
+      } > /tmp/answer-three
+      cat /tmp/answer-three
+    verify:
+      - type: command_output
+        command: "cd /tmp/sw && cat f.txt"
+        equals: "other-content"
+        describe: The working tree followed the switch
+      - type: command_output
+        command: "cd /tmp/sw && git cat-file -p :f.txt"
+        equals: "other-content"
+        describe: And so did the index
+      - type: file_matches
+        path: /tmp/answer-three
+        pattern: "ref: refs/heads/other"
+        describe: And HEAD now names the other ref
+
+  - id: s2
+    instruction: >-
+      Show that switching costs the same whether the branches differ by one file
+      or by their whole history. Save your reasoning to /tmp/answer-cost.
+    hint: >-
+      Think about what has to be read. Does Git replay any commits to switch?
+    walkthrough: |
+      cd /tmp/sw
+      {
+        echo "commits on each branch: main=$(git rev-list --count main), other=$(git rev-list --count other)"
+        echo
+        echo "switching does not walk history at all. the target commit names one"
+        echo "tree, and that tree is the complete state - so the work is:"
+        echo
+        echo "  1. read the target commit's tree"
+        echo "  2. write the differing paths into the index and working tree"
+        echo "  3. rewrite .git/HEAD"
+        echo
+        echo "step 2 is the only part that scales, and it scales with the SIZE OF"
+        echo "THE DIFFERENCE, not with the length of the history. unchanged files"
+        echo "have identical blob ids on both sides and are not touched."
+        echo
+        echo "this is snapshots paying off. a system storing diffs would have to"
+        echo "replay them to reconstruct the target state."
+      } > /tmp/answer-cost
+      cat /tmp/answer-cost
+    verify:
+      - type: file_matches
+        path: /tmp/answer-cost
+        pattern: "(?i)size of\\s+the difference|not with the length"
+        describe: You identified what the cost actually scales with
+      - type: file_matches
+        path: /tmp/answer-cost
+        pattern: "(?i)identical blob ids|not touched"
+        describe: And why unchanged files cost nothing
+
+  - id: s3
+    instruction: >-
+      Find out what happens to uncommitted work when you switch. Try it with a
+      change that does not collide, and with one that does. Save to
+      /tmp/answer-dirty.
+    hint: >-
+      Make a change to a file that differs between the branches, and to one that
+      does not. Predict each outcome before running it.
+    walkthrough: |
+      cd /tmp/sw
+      git switch -q main
+      echo shared > shared.txt && git add -A && git commit -q -m shared
+      git switch -q other && git merge -q main -m sync 2>/dev/null
+      git switch -q main
+      {
+        echo "case 1: edit a file that is IDENTICAL on both branches"
+        echo "edited" > shared.txt
+        if git switch -q other 2>/dev/null; then
+          echo "  switch allowed. the edit came with you: $(cat shared.txt)"
+          echo "  git could carry it because the file did not differ between the"
+          echo "  two trees, so there was nothing to overwrite."
+        else
+          echo "  refused"
+        fi
+        git checkout -q -- shared.txt; git switch -q main
+        echo
+        echo "case 2: edit a file that DIFFERS between the branches"
+        echo "edited" > f.txt
+        if git switch other 2>&1 | grep -qi "overwritten\|would be"; then
+          echo "  refused, and it says why:"
+          git switch other 2>&1 | head -3 | sed 's/^/    /'
+          echo "  the edit has no object behind it - it was never staged or"
+          echo "  committed - so overwriting it would destroy it with nothing to"
+          echo "  recover from. that is the only thing a switch refuses to do."
+        else
+          echo "  allowed (unexpected)"
+        fi
+      } > /tmp/answer-dirty
+      cat /tmp/answer-dirty
+    verify:
+      - type: file_matches
+        path: /tmp/answer-dirty
+        pattern: "(?i)switch allowed"
+        describe: A non-colliding edit was carried across
+      - type: file_matches
+        path: /tmp/answer-dirty
+        pattern: "(?i)refused"
+        describe: And a colliding one was refused
+      - type: file_matches
+        path: /tmp/answer-dirty
+        pattern: "(?i)no object behind it|nothing to\\s+recover"
+        describe: And you explained what makes it dangerous
+
+  - id: s4
+    instruction: >-
+      Write to /tmp/answer-habit what you would do before switching with
+      uncommitted work, and why the carry-across behaviour is not something to
+      rely on.
+    hint: >-
+      It worked in case 1. What made it work, and would you know in advance?
+    walkthrough: |
+      cat > /tmp/answer-habit <<'EOF'
+      git carried my edit across in case 1 and refused in case 2, and the
+      difference was whether that file happened to differ between the two trees.
+      that is a property of the branches, not of my change - so whether a switch
+      will work is not something i can reliably predict before running it.
+
+      relying on it also means my uncommitted work is following me between
+      branches, which is how an edit intended for one branch ends up committed on
+      another. the mechanism is not wrong; treating it as a workflow is.
+
+      what i do instead, before switching with work in progress:
+
+        git stash push -m "why this exists"    set it aside deliberately
+        git switch other
+        ...
+        git switch back && git stash pop
+
+      or just commit. a commit on a feature branch costs nothing and can be
+      amended, reworded or squashed later - B10.1 measured that the old commit
+      survives all three.
+
+      the underlying rule is the one from B10.2: work that has never been staged
+      or committed has no object behind it, so nothing can recover it. staging or
+      stashing turns it into an object first, and everything after that is safe.
+      EOF
+      cat /tmp/answer-habit
+    verify:
+      - type: file_matches
+        path: /tmp/answer-habit
+        pattern: "(?i)stash|commit"
+        describe: You named the habit
+      - type: file_matches
+        path: /tmp/answer-habit
+        pattern: "(?i)no object behind it"
+        describe: And connected it to why the risk exists
+
+solution: >-
+  **A switch moves three things together:** `HEAD` is rewritten to name the
+  other ref, the index is rebuilt from the target commit's tree, and the working
+  tree is updated to match. Not a change of label — a checkout.
+
+
+  **It does not walk history.** The target commit names one tree, and that tree
+  is the complete state. So the cost scales with the *size of the difference*
+  between the two trees, not with the length of the history: unchanged files
+  have identical blob ids on both sides and are never touched. A system storing
+  diffs would have to replay them to reconstruct the same state.
+
+
+  **Uncommitted work is carried across when it does not collide.** If the file
+  you edited is identical on both sides, there is nothing to overwrite and Git
+  brings your change with you. If it differs, Git refuses — because that edit
+  has no object behind it and overwriting it would destroy it with nothing to
+  recover from.
+
+
+  That is convenient and it is not a workflow. Whether a switch succeeds depends
+  on whether those particular files happen to differ, which is a property of the
+  branches rather than of your change — so **stash or commit first**. Both turn
+  the work into an object, and everything after that is recoverable.
