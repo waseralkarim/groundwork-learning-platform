@@ -1,0 +1,365 @@
+id: lab.test-without-a-cluster
+topic: topic.testing-shell
+title: Test a deploy script with no cluster anywhere
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B08.9.5, OBJ-B08.9.6]
+
+intro: >-
+  `/tmp/bats/deploy.sh` calls `kubectl` twice. There is no cluster here, and
+  there had better not be one in CI either.
+
+
+  Most people stop testing shell at exactly this point. You will not.
+
+setup:
+  - /opt/lab/seed-bats.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Establish the problem: read the script and find out what happens when you
+      try to run it. Save to /tmp/answer-problem.
+    walkthrough: |
+      {
+        echo "the script:"
+        sed -n '/^TARGET=/,$p' /tmp/bats/deploy.sh | sed 's/^/    /'
+        echo
+        echo "running it here:"
+        bash /tmp/bats/deploy.sh staging 2>&1 | sed 's/^/    /'
+        echo "    rc=$(bash /tmp/bats/deploy.sh staging >/dev/null 2>&1; echo $?)"
+        echo
+        echo "kubectl is not installed, so the script cannot run at all. and if it"
+        echo "WERE installed it would try to talk to a real cluster, which is worse:"
+        echo "a test suite that deploys is not a test suite."
+        echo
+        echo "THE SCRIPT FINDS kubectl BY SEARCHING PATH. so the test controls what"
+        echo "it finds - which is the whole technique."
+      } > /tmp/answer-problem
+      cat /tmp/answer-problem
+    verify:
+      - type: file_matches
+        path: /tmp/answer-problem
+        pattern: '(?i)command not found'
+        describe: The script cannot run without kubectl
+      - type: file_matches
+        path: /tmp/answer-problem
+        pattern: '(?i)a test suite that deploys is not a test suite'
+        describe: And you said why installing it is worse
+      - type: file_matches
+        path: /tmp/answer-problem
+        pattern: '(?i)SEARCHING PATH'
+        describe: And found the way in
+
+  - id: s2
+    instruction: >-
+      Write /tmp/bats/deploy.bats with a `kubectl` double that records its calls
+      and returns a status you choose. Prove the happy path.
+    hint: >-
+      A script named `kubectl`, in `$BATS_TEST_TMPDIR/bin`, with that directory
+      prepended to `PATH`.
+    walkthrough: |
+      cat > /tmp/bats/deploy.bats <<'B'
+      setup() {
+        BIN="$BATS_TEST_TMPDIR/bin"; mkdir -p "$BIN"
+        cat > "$BIN/kubectl" <<'K'
+      #!/bin/bash
+      echo "kubectl $*" >> "$FAKE_LOG"
+      exit "${FAKE_RC:-0}"
+      K
+        chmod 0755 "$BIN/kubectl"
+        export FAKE_LOG="$BATS_TEST_TMPDIR/calls"; : > "$FAKE_LOG"
+        export PATH="$BIN:$PATH"
+        export MANIFESTS=/tmp/bats/manifests
+      }
+
+      @test "it applies the manifest for the target" {
+        run /tmp/bats/deploy.sh staging
+        [ "$status" -eq 0 ]
+        grep -q 'kubectl apply -f /tmp/bats/manifests/staging.yaml' "$FAKE_LOG"
+      }
+
+      @test "it waits for the rollout" {
+        run /tmp/bats/deploy.sh staging
+        grep -q 'kubectl rollout status deployment/staging --timeout=60s' "$FAKE_LOG"
+      }
+
+      @test "it calls kubectl exactly twice" {
+        run /tmp/bats/deploy.sh staging
+        [ "$(wc -l < "$FAKE_LOG")" -eq 2 ]
+      }
+
+      @test "it says what it deployed" {
+        run /tmp/bats/deploy.sh staging
+        [[ "$output" == *"deployed staging"* ]]
+      }
+      B
+      cd /tmp/bats && bats deploy.bats
+      echo "suite rc=$?"
+    verify:
+      - type: file_exists
+        path: /tmp/bats/deploy.bats
+        describe: You wrote the suite
+      - type: command_exit
+        command: "cd /tmp/bats && bats deploy.bats >/dev/null 2>&1"
+        exit_code: 0
+        describe: And it passes with no cluster anywhere
+      - type: file_matches
+        path: /tmp/bats/deploy.bats
+        pattern: 'PATH="\$BIN:\$PATH"'
+        describe: Using a double earlier on PATH
+
+  - id: s3
+    instruction: >-
+      Now add the tests that matter — the failure paths. Save the run to
+      /tmp/answer-failures.
+    hint: >-
+      `FAKE_RC=1 run ...`. And what should happen when the manifest is missing?
+    walkthrough: |
+      cat >> /tmp/bats/deploy.bats <<'B'
+
+      @test "it fails when kubectl fails" {
+        FAKE_RC=1 run /tmp/bats/deploy.sh staging
+        [ "$status" -ne 0 ]
+      }
+
+      @test "it does not claim success when kubectl fails" {
+        FAKE_RC=1 run /tmp/bats/deploy.sh staging
+        [[ "$output" != *"deployed staging"* ]]
+      }
+
+      @test "it stops at apply and never waits for a rollout that will not happen" {
+        FAKE_RC=1 run /tmp/bats/deploy.sh staging
+        [ "$(wc -l < "$FAKE_LOG")" -eq 1 ]
+      }
+
+      @test "it refuses a target with no manifest" {
+        run /tmp/bats/deploy.sh nosuchenv
+        [ "$status" -eq 66 ]
+        [[ "$output" == *"no manifest"* ]]
+      }
+
+      @test "it does not call kubectl at all when the manifest is missing" {
+        run /tmp/bats/deploy.sh nosuchenv
+        [ ! -s "$FAKE_LOG" ]
+      }
+      B
+      cd /tmp/bats
+      {
+        bats deploy.bats 2>&1 | sed 's/^/    /'
+        echo "    suite rc=$(bats deploy.bats >/dev/null 2>&1; echo $?)"
+        echo
+        echo "THE FAILURE TESTS ARE THE ONES THAT MATTER, and the ones nobody writes."
+        echo "a script's failure path is what runs during an incident, and it is"
+        echo "usually the part that has never executed."
+        echo
+        echo "three of them assert something the happy path cannot:"
+        echo
+        echo "  'does not claim success when kubectl fails'"
+        echo "     B08.5's lesson as a test. a script whose last line is an echo"
+        echo "     reports success whatever happened above it."
+        echo
+        echo "  'stops at apply and never waits for a rollout that will not happen'"
+        echo "     one line in the log, not two. this asserts that set -e actually"
+        echo "     stops the script, which is a claim about the script's OPTIONS"
+        echo "     rather than its logic."
+        echo
+        echo "  'does not call kubectl at all when the manifest is missing'"
+        echo "     the guard runs BEFORE anything external. an empty log proves the"
+        echo "     script validated before acting - which is what stops a bad"
+        echo "     argument becoming a half-finished deploy."
+        echo
+        echo "note FAKE_RC=1 run ... - setting the variable for that one run is what"
+        echo "makes the double controllable without a second fake."
+      } > /tmp/answer-failures
+      cat /tmp/answer-failures
+    verify:
+      - type: command_exit
+        command: "cd /tmp/bats && bats deploy.bats >/dev/null 2>&1"
+        exit_code: 0
+        describe: All nine tests pass
+      - type: file_matches
+        path: /tmp/answer-failures
+        pattern: 'ok 9'
+        describe: Including the five failure-path cases
+      - type: file_matches
+        path: /tmp/answer-failures
+        pattern: '(?i)runs during an incident'
+        describe: You said why failure paths matter
+      - type: file_matches
+        path: /tmp/answer-failures
+        pattern: '(?i)validated before acting'
+        describe: And what the empty-log assertion proves
+
+  - id: s4
+    instruction: >-
+      Show what the double cannot tell you, by making it lie. Save to
+      /tmp/answer-limits2.
+    hint: >-
+      Change the double to accept an argument the real kubectl would reject, and
+      watch the suite stay green.
+    walkthrough: |
+      {
+        echo "the double accepts anything. proving it:"
+        cat > /tmp/lying.bats <<'B'
+      setup() {
+        BIN="$BATS_TEST_TMPDIR/bin"; mkdir -p "$BIN"
+        printf '#!/bin/bash\nexit 0\n' > "$BIN/kubectl"
+        chmod 0755 "$BIN/kubectl"
+        export PATH="$BIN:$PATH"
+        export MANIFESTS=/tmp/bats/manifests
+      }
+
+      @test "a nonsense invocation still passes" {
+        run kubectl --this-flag-does-not-exist apply -f /nowhere
+        [ "$status" -eq 0 ]
+      }
+      B
+        bats /tmp/lying.bats 2>&1 | sed 's/^/    /'
+        echo
+        echo "the real kubectl would reject that flag. the double says yes to"
+        echo "everything, and the suite is perfectly happy."
+        echo
+        echo "SO A DOUBLE CAN ONLY PROVE YOU CALLED WHAT YOU MEANT TO CALL. it cannot"
+        echo "prove that is the right call, because it is not the thing you are"
+        echo "actually going to run."
+        echo
+        echo "three ways to keep a double honest:"
+        echo
+        echo "  1. ASSERT THE ARGUMENTS, not just that it was called. our suite greps"
+        echo "     for the exact command line, so reordering the flags fails a test."
+        echo "  2. KEEP IT TRIVIALLY SMALL. the moment a double has branching logic"
+        echo "     it is a second implementation with its own bugs."
+        echo "  3. HAVE ONE REAL TEST, somewhere - nightly, not per-commit - against"
+        echo "     a real cluster. the doubles prove the script is internally"
+        echo "     correct; only the real thing proves the interface is."
+        echo
+        echo "which is the line between a UNIT test and an INTEGRATION test, and it"
+        echo "is worth saying out loud rather than discovering during an upgrade."
+      } > /tmp/answer-limits2
+      cat /tmp/answer-limits2
+    verify:
+      - type: file_matches
+        path: /tmp/answer-limits2
+        pattern: 'ok 1 a nonsense invocation still passes'
+        describe: The double accepts what the real tool would reject
+      - type: file_matches
+        path: /tmp/answer-limits2
+        pattern: '(?i)CALLED WHAT YOU MEANT TO CALL'
+        describe: You stated what a double can prove
+      - type: file_matches
+        path: /tmp/answer-limits2
+        pattern: '(?i)ASSERT THE ARGUMENTS'
+        describe: And how to keep it honest
+      - type: file_matches
+        path: /tmp/answer-limits2
+        pattern: '(?i)UNIT test and an INTEGRATION test'
+        describe: And named the boundary
+
+  - id: s5
+    instruction: >-
+      Say which layer catches which failure, for this deploy script. Save to
+      /tmp/answer-layers.
+    walkthrough: |
+      {
+        printf '  %-34s %s\n' 'FAILURE' 'CAUGHT BY'
+        printf '  %-34s %s\n' 'wrong manifest path built' 'unit test with a double'
+        printf '  %-34s %s\n' 'no guard before calling kubectl' 'unit test with a double'
+        printf '  %-34s %s\n' 'success reported after a failure' 'unit test with a double'
+        printf '  %-34s %s\n' 'kubectl flag removed in v1.34' 'integration test'
+        printf '  %-34s %s\n' 'RBAC denies the apply' 'integration test'
+        printf '  %-34s %s\n' 'manifest is valid YAML, wrong image' 'integration test'
+        printf '  %-34s %s\n' 'cluster full tonight' 'PRODUCTION ASSERTION'
+        printf '  %-34s %s\n' 'rollout succeeded, app crashlooping' 'PRODUCTION ASSERTION'
+        echo
+        echo "THREE LAYERS, THREE DIFFERENT QUESTIONS:"
+        echo
+        echo "  a unit test asks   IS THE LOGIC WHAT I MEANT?"
+        echo "  an integration     IS THE INTERFACE WHAT I ASSUMED?"
+        echo "  an assertion       IS REALITY WHAT I EXPECTED, THIS TIME?"
+        echo
+        echo "no test can tell you the cluster is full tonight. that is not a gap in"
+        echo "the suite - it is a different tool. the deploy script should end with"
+        echo "something like:"
+        echo
+        echo "    kubectl rollout status ... || { alert; exit 1; }"
+        echo "    [ \"\$(running_image)\" = \"\$WANT\" ] || { alert \"deploy did not take\"; exit 1; }"
+        echo
+        echo "and that assertion is worth more than any of the nine tests, because it"
+        echo "is the only one that runs on the night it matters."
+        echo
+        echo "A TEST PROVES THE SCRIPT IS RIGHT. AN ASSERTION PROVES THE RUN WAS."
+      } > /tmp/answer-layers
+      cat /tmp/answer-layers
+    verify:
+      - type: file_matches
+        path: /tmp/answer-layers
+        pattern: 'kubectl flag removed in v1.34 +integration test'
+        describe: You placed an interface change correctly
+      - type: file_matches
+        path: /tmp/answer-layers
+        pattern: 'cluster full tonight +PRODUCTION ASSERTION'
+        describe: And a runtime condition
+      - type: file_matches
+        path: /tmp/answer-layers
+        pattern: '(?i)THREE DIFFERENT QUESTIONS'
+        describe: And named what each layer asks
+      - type: file_matches
+        path: /tmp/answer-layers
+        pattern: '(?i)AN ASSERTION PROVES THE RUN WAS'
+        describe: And the distinction the course keeps returning to
+
+solution: >-
+  **The script cannot run here** — `kubectl` is not installed — and installing it
+  would be worse, because then the suite would deploy. But the script finds
+  `kubectl` by searching `PATH`, so **the test controls what it finds.**
+
+
+  ```bash
+  setup() {
+    BIN="$BATS_TEST_TMPDIR/bin"; mkdir -p "$BIN"
+    cat > "$BIN/kubectl" <<'K'
+  #!/bin/bash
+  echo "kubectl $*" >> "$FAKE_LOG"
+  exit "${FAKE_RC:-0}"
+  K
+    chmod 0755 "$BIN/kubectl"
+    export FAKE_LOG="$BATS_TEST_TMPDIR/calls"; : > "$FAKE_LOG"
+    export PATH="$BIN:$PATH"
+  }
+  ```
+
+
+  Three behaviours, and they are the three a double needs: it **records how it
+  was called**, it **returns a status the test chooses**, and it lives in
+  `$BATS_TEST_TMPDIR` so it cannot leak between tests.
+
+
+  **The failure tests are the ones that matter**, and the ones nobody writes.
+  Three assert something the happy path cannot: that the script **does not claim
+  success** when `kubectl` fails (B08.5's trailing-`echo` lesson as a test); that
+  it **stops at apply** rather than waiting for a rollout that will not happen —
+  one line in the log, not two, which is a claim about `set -e` rather than about
+  logic; and that it **does not call `kubectl` at all** when the manifest is
+  missing, which proves it validated before acting.
+
+
+  **What a double cannot tell you.** Make it accept `--this-flag-does-not-exist`
+  and the suite stays green. **A double can only prove you called what you meant
+  to call** — not that it is the right call. Keep it honest by asserting the
+  *arguments*, keeping it trivially small, and having one real test somewhere
+  nightly.
+
+
+  | Failure | Caught by |
+  |---|---|
+  | wrong manifest path, no guard, false success | unit test with a double |
+  | a `kubectl` flag removed in v1.34, RBAC denial | integration test |
+  | cluster full tonight, app crashlooping after a green rollout | **production assertion** |
+
+
+  A unit test asks *is the logic what I meant?* An integration test asks *is the
+  interface what I assumed?* An assertion asks *is reality what I expected, this
+  time?* **A test proves the script is right; an assertion proves the run was.**

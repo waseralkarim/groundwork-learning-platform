@@ -1,0 +1,418 @@
+id: lab.what-is-worth-testing
+topic: topic.testing-shell
+title: Decide what to test, and defend leaving something untested
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.9.8]
+
+intro: >-
+  A standard that demands testing everything gets ignored. One that names a
+  short list gets followed.
+
+
+  You will make a script testable, write only the tests that earn their place,
+  and defend the ones you chose not to write.
+
+setup:
+  - /opt/lab/seed-bats.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Make retention.sh sourceable, so a suite can test its parts rather than
+      only run it end to end. Save to /tmp/answer-sourceable.
+    hint: >-
+      The shell equivalent of `if __name__ == "__main__"`.
+    walkthrough: |
+      cat > /tmp/bats/retention2.sh <<'R'
+      #!/bin/bash
+      set -uo pipefail
+
+      # Which files in DIR are older than DAYS? Prints one path per line.
+      expired_in() {
+        local dir=$1 days=${2:-7}
+        find "$dir" -maxdepth 1 -type f ! -newermt "-$days days" -print
+      }
+
+      main() {
+        local dir=${1:?usage: retention2.sh DIR [DAYS]} days=${2:-7}
+        [ -d "$dir" ] || { echo "retention: not a directory: $dir" >&2; exit 1; }
+        local found; found=$(expired_in "$dir" "$days")
+        [ -n "$found" ] || exit 2
+        printf '%s\n' "$found"
+      }
+
+      # Run only when executed. When sourced, this file just defines functions,
+      # which is what lets a suite test expired_in without running the script.
+      #
+      # An `if`, not `[ ... ] && main "$@"` — that form returns 1 when the
+      # condition is false, so `source`ing it fails under errexit and every
+      # test in the suite dies in setup.
+      if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+        main "$@"
+      fi
+      R
+      chmod 0755 /tmp/bats/retention2.sh
+
+      {
+        echo "executed - it runs:"
+        W=/tmp/w2; rm -rf "$W"; mkdir -p "$W"
+        for d in 6 8; do touch -d "$d days ago" "$W/age-${d}d.log"; done
+        bash /tmp/bats/retention2.sh "$W" | sed "s|$W/|    |"
+        echo
+        echo "sourced - it defines and runs nothing:"
+        ( source /tmp/bats/retention2.sh; echo "    functions now available: $(declare -F | grep -c 'expired_in\|main')" )
+        echo
+        echo "sourced, then calling ONE function directly:"
+        ( source /tmp/bats/retention2.sh; expired_in "$W" 7 | sed "s|$W/|    |" )
+        echo
+        echo "THE GUARD, AND WHY IT IS AN if RATHER THAN &&:"
+        echo "    if [ \"\${BASH_SOURCE[0]}\" = \"\$0\" ]; then main \"\$@\"; fi"
+        echo
+        echo "the tidier-looking [ ... ] && main \"\$@\" RETURNS 1 WHEN SOURCED,"
+        echo "because the condition is false and that is the compound's status. a"
+        echo "sourced file whose last statement returns non-zero fails under"
+        echo "errexit - so every test dies in setup with 'source ... failed'."
+        echo "that is B08.5's exemption rule arriving in the one place it is most"
+        echo "confusing, and it costs an afternoon the first time."
+        echo
+        echo "without it every test is an integration test - you can only run the"
+        echo "whole script and inspect what came out. with it, a suite can call"
+        echo "expired_in with arguments and assert on the answer directly."
+      } > /tmp/answer-sourceable
+      cat /tmp/answer-sourceable
+    verify:
+      - type: file_exists
+        path: /tmp/bats/retention2.sh
+        describe: You wrote the sourceable version
+      - type: file_matches
+        path: /tmp/bats/retention2.sh
+        pattern: 'if \[ "\$\{BASH_SOURCE\[0\]\}" = "\$0" \]; then'
+        describe: With the guard written as an if, not &&
+      - type: file_matches
+        path: /tmp/answer-sourceable
+        pattern: 'age-8d.log'
+        describe: It still runs when executed
+      - type: file_matches
+        path: /tmp/answer-sourceable
+        pattern: 'functions now available: 2'
+        describe: And defines its functions when sourced
+      - type: file_matches
+        path: /tmp/answer-sourceable
+        pattern: '(?i)every test is an integration test'
+        describe: And you said what the guard buys
+
+  - id: s2
+    instruction: >-
+      Write /tmp/bats/worth.bats containing only tests that earn their place,
+      and run it.
+    hint: >-
+      Test what decides and what destroys. Skip the rest deliberately.
+    walkthrough: |
+      cat > /tmp/bats/worth.bats <<'B'
+      setup() {
+        source /tmp/bats/retention2.sh
+        WORK="$BATS_TEST_TMPDIR/w"; mkdir -p "$WORK"
+        for d in 6 7 8; do touch -d "$d days ago" "$WORK/age-${d}d.log"; done
+      }
+
+      # --- it DECIDES: the boundary is the whole point of this script ------
+
+      @test "a file at exactly the window is expired" {
+        run expired_in "$WORK" 7
+        [[ "$output" == *"age-7d.log"* ]]
+      }
+
+      @test "a file inside the window is kept" {
+        run expired_in "$WORK" 7
+        [[ "$output" != *"age-6d.log"* ]]
+      }
+
+      @test "the window is adjustable" {
+        run expired_in "$WORK" 100
+        [ -z "$output" ]
+      }
+
+      # --- it is CONSUMED BY SOMETHING DESTRUCTIVE: the status is an API ---
+
+      @test "nothing expired is distinguishable from a missing directory" {
+        empty="$BATS_TEST_TMPDIR/e"; mkdir -p "$empty"
+        run /tmp/bats/retention2.sh "$empty"
+        [ "$status" -eq 2 ]
+        run /tmp/bats/retention2.sh "$BATS_TEST_TMPDIR/nope"
+        [ "$status" -eq 1 ]
+      }
+      B
+      cd /tmp/bats && bats worth.bats
+      echo "suite rc=$?"
+    verify:
+      - type: file_exists
+        path: /tmp/bats/worth.bats
+        describe: You wrote the suite
+      - type: command_exit
+        command: "cd /tmp/bats && bats worth.bats >/dev/null 2>&1"
+        exit_code: 0
+        describe: And every test passes
+      - type: command_output
+        command: "cd /tmp/bats && bats worth.bats 2>&1 | grep -c '^ok'"
+        pattern: "4"
+        describe: Four tests, not forty
+
+  - id: s3
+    instruction: >-
+      Write down what you deliberately did NOT test, and why each one is a
+      reasonable omission. Save to /tmp/answer-omitted.
+    walkthrough: |
+      {
+        echo "WHAT I DID NOT TEST, AND WHY:"
+        echo
+        echo "  that find works"
+        echo "     testing 'find -type f lists files' tests findutils. it is"
+        echo "     already tested, by people who maintain it, and my version of"
+        echo "     that test would only ever break when THEY changed something -"
+        echo "     which is not information I can act on."
+        echo
+        echo "  the usage message wording"
+        echo "     nothing parses it. asserting on the exact string means every"
+        echo "     rewording is a red build, which trains people to update tests"
+        echo "     without reading them. that is worse than no test, because it"
+        echo "     teaches the team that a failure is noise."
+        echo
+        echo "  that mkdir -p is idempotent"
+        echo "     coreutils again."
+        echo
+        echo "  timezone and DST behaviour"
+        echo "     I CANNOT TEST THIS HONESTLY HERE. touch -d and find share one"
+        echo "     clock in this container, so any test I write passes for the"
+        echo "     wrong reason. it needs a fixture with a pinned TZ, and until"
+        echo "     then a comment saying so beats a test that proves nothing."
+        echo
+        echo "  a directory with a million files"
+        echo "     a real risk, and the wrong tool. that is a performance"
+        echo "     question, and a unit test that takes four minutes will be"
+        echo "     deleted by the first person whose build it slows down."
+        echo
+        echo "THE RULE: TEST WHAT DECIDES AND WHAT DESTROYS. skip the rest"
+        echo "DELIBERATELY, and write down that you skipped it - an omission"
+        echo "nobody recorded is indistinguishable from an oversight."
+      } > /tmp/answer-omitted
+      cat /tmp/answer-omitted
+    verify:
+      - type: file_matches
+        path: /tmp/answer-omitted
+        pattern: '(?i)tests findutils'
+        describe: You excluded testing the shell itself
+      - type: file_matches
+        path: /tmp/answer-omitted
+        pattern: '(?i)a failure is noise'
+        describe: And explained why asserting on wording is harmful
+      - type: file_matches
+        path: /tmp/answer-omitted
+        pattern: '(?i)CANNOT TEST THIS HONESTLY'
+        describe: And refused to write a test that would pass for the wrong reason
+      - type: file_matches
+        path: /tmp/answer-omitted
+        pattern: '(?i)TEST WHAT DECIDES AND WHAT DESTROYS'
+        describe: And gave the rule
+      - type: file_matches
+        path: /tmp/answer-omitted
+        pattern: '(?i)indistinguishable from an oversight'
+        describe: And why omissions must be recorded
+
+  - id: s4
+    instruction: >-
+      Add the test that a real incident would have produced, and say why that
+      class of case is the most valuable. Save to /tmp/answer-incident.
+    hint: >-
+      The retention script's output is consumed by something that deletes.
+    walkthrough: |
+      cat >> /tmp/bats/worth.bats <<'B'
+
+      # --- from an incident: a filename with a space was passed to rm -----
+
+      @test "a path with a space survives the caller's loop" {
+        touch -d '30 days ago' "$WORK/an old file.log"
+        run expired_in "$WORK" 7
+        [[ "$output" == *"an old file.log"* ]]
+
+        # the caller's shape, and the bug: unquoted $(...) word-splits
+        count=0
+        while IFS= read -r path; do count=$((count + 1)); done < <(expired_in "$WORK" 7)
+        [ "$count" -eq 3 ]
+      }
+      B
+      cd /tmp/bats
+      {
+        bats worth.bats 2>&1 | sed 's/^/    /'
+        echo "    suite rc=$(bats worth.bats >/dev/null 2>&1; echo $?)"
+        echo
+        echo "the case: a file named 'an old file.log' is expired, and the caller"
+        echo "loops over the output to delete each path. read -r with a while loop"
+        echo "sees THREE paths, one of which contains spaces. a for loop over an"
+        echo "unquoted \$(expired_in ...) would see FIVE words, and rm would be"
+        echo "handed 'an', 'old' and 'file.log' as three separate arguments."
+        echo
+        echo "WHY INCIDENT-DERIVED CASES ARE THE BEST ONES:"
+        echo
+        echo "  they are KNOWN TO BE REAL. every other test is a guess about what"
+        echo "  might go wrong; this one is a record of what did."
+        echo
+        echo "  NOBODY WOULD HAVE INVENTED IT. a filename with a space is obvious"
+        echo "  once you have been burned and invisible before. that is exactly"
+        echo "  the category the original suite missed - not carelessness, but"
+        echo "  the limit of what the author could imagine."
+        echo
+        echo "  THEY DOCUMENT THE FAILURE. the test name is the postmortem, in a"
+        echo "  place the next person will actually read."
+        echo
+        echo "so the highest-value rule in any testing standard is the cheapest:"
+        echo "EVERY BUG YOU FIX GETS A TEST, IN THE SAME COMMIT AS THE FIX."
+      } > /tmp/answer-incident
+      cat /tmp/answer-incident
+    verify:
+      - type: command_exit
+        command: "cd /tmp/bats && bats worth.bats >/dev/null 2>&1"
+        exit_code: 0
+        describe: The incident case passes
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: 'ok 5'
+        describe: And joins the suite
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: '(?i)KNOWN TO BE REAL'
+        describe: You said why incident cases beat invented ones
+      - type: file_matches
+        path: /tmp/answer-incident
+        pattern: '(?i)IN THE SAME COMMIT AS THE FIX'
+        describe: And gave the rule
+
+  - id: s5
+    instruction: >-
+      Write the testing standard you would put in the team's repository. Save to
+      /tmp/answer-standard.
+    walkthrough: |
+      {
+        echo "TESTING STANDARD FOR OPERATIONAL SHELL"
+        echo
+        echo "ALWAYS TEST:"
+        echo "  1. anything DESTRUCTIVE - a delete, a --dry-run that must be dry,"
+        echo "     a retention boundary. if getting it wrong loses data, it has a"
+        echo "     test."
+        echo "  2. anything that DECIDES - a branch, a threshold, a parse."
+        echo "  3. every FAILURE PATH you rely on. if the script is supposed to"
+        echo "     exit non-zero when a host is unreachable, something must have"
+        echo "     watched it do that."
+        echo "  4. every BUG YOU FIX, in the same commit. cheapest and highest"
+        echo "     value: the case is known real and nobody would have invented it."
+        echo
+        echo "DO NOT TEST:"
+        echo "  - the shell or coreutils"
+        echo "  - a wrapper that is one command call with a fixed flag"
+        echo "  - output wording, unless something parses it"
+        echo "  - anything where the double is more code than the thing under test"
+        echo
+        echo "HOW:"
+        echo "  - main \"\$@\" behind a BASH_SOURCE guard, so functions are reachable"
+        echo "  - anything a test must vary is an argument or an environment"
+        echo "    variable; a value hard-coded mid-script is one no test can reach"
+        echo "  - fixtures and doubles in \$BATS_TEST_TMPDIR, never a fixed path"
+        echo "  - an assertion is the LAST command in its pipeline, or errexit's"
+        echo "    exemptions mean it can never fail"
+        echo "  - a double returns a status the test chooses; one that always"
+        echo "    returns 0 tests almost nothing"
+        echo
+        echo "IN CI:"
+        echo "    shellcheck -S warning scripts/*.sh"
+        echo "    bats -r --print-output-on-failure tests/"
+        echo "  shellcheck first, because it costs nothing and answers a different"
+        echo "  question. a suite that is not in CI is documentation, and it rots."
+        echo
+        echo "AND THE REVIEW QUESTION, which is the point of the whole standard:"
+        echo "  never ask 'are there tests'. ask WHICH CASE WOULD HAVE CAUGHT THIS,"
+        echo "  AND IS IT IN THERE?"
+        echo
+        echo "WHEN TO STOP: once you are writing doubles for four tools, parsing"
+        echo "JSON, or maintaining a test helper library, the tests are telling you"
+        echo "the script outgrew shell. B11's pytest gives all of this with real"
+        echo "assertion output and mocking that does not depend on PATH ordering."
+      } > /tmp/answer-standard
+      cat /tmp/answer-standard
+    verify:
+      - type: file_matches
+        path: /tmp/answer-standard
+        pattern: '(?i)DESTRUCTIVE'
+        describe: The standard leads with what destroys
+      - type: file_matches
+        path: /tmp/answer-standard
+        pattern: '(?i)same commit'
+        describe: And includes the bug-fix rule
+      - type: file_matches
+        path: /tmp/answer-standard
+        pattern: '(?i)LAST command in its pipeline'
+        describe: And the assertion trap
+      - type: file_matches
+        path: /tmp/answer-standard
+        pattern: '(?i)WHICH CASE WOULD HAVE CAUGHT THIS'
+        describe: And the review question
+      - type: file_matches
+        path: /tmp/answer-standard
+        pattern: '(?i)outgrew shell'
+        describe: And when to stop
+
+solution: >-
+  **Make it sourceable first.** One line changes what a suite can reach:
+
+
+  ```bash
+  [ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"
+  ```
+
+
+  Executed, the script runs. Sourced, it only defines functions — so a test can
+  call `expired_in "$dir" 7` and assert on the answer, instead of running the
+  whole script and inspecting what came out. Without it, **every test is an
+  integration test.**
+
+
+  **Four tests, not forty.** The boundary (three cases, because that is what this
+  script decides) and the exit status (one case, because something destructive
+  consumes it).
+
+
+  **What was deliberately left out**, and this is the part worth writing down:
+  testing `find` tests findutils; asserting on the usage wording makes every
+  rewording a red build, which teaches the team that failures are noise; and
+  timezone behaviour **cannot be tested honestly here**, because `touch -d` and
+  `find` share one clock, so any test would pass for the wrong reason. A comment
+  saying so beats a test that proves nothing.
+
+
+  **An omission nobody recorded is indistinguishable from an oversight.**
+
+
+  **The incident case is the most valuable one.** A filename with a space, added
+  after it broke a caller's `rm` loop. Those cases are **known to be real** —
+  every other test is a guess about what might go wrong — and **nobody would have
+  invented them**, which is exactly the category the original suite missed. Not
+  carelessness: the limit of what the author could imagine.
+
+
+  So the highest-value rule is also the cheapest: **every bug you fix gets a
+  test, in the same commit as the fix.**
+
+
+  **The standard:** always test what is destructive, what decides, every failure
+  path you rely on, and every bug you fix. Do not test the shell, trivial
+  wrappers, or output wording. Put `main "$@"` behind a `BASH_SOURCE` guard, make
+  anything a test must vary an argument or environment variable, keep fixtures in
+  `$BATS_TEST_TMPDIR`, and make every assertion the last command in its pipeline.
+  Run `shellcheck` first because it costs nothing, then `bats -r
+  --print-output-on-failure` — in CI, because a suite that is not in CI is
+  documentation, and it rots.
+
+
+  And the review question the whole standard exists to enable: **not "are there
+  tests" but "which case would have caught this, and is it in there?"**
