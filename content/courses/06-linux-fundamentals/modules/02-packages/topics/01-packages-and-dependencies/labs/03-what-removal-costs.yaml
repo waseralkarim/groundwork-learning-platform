@@ -160,9 +160,9 @@ steps:
       } > /tmp/answer-essential
       cat /tmp/answer-essential
     verify:
-      - type: file_matches
-        path: /tmp/answer-essential
-        pattern: "essential packages: 22"
+      - type: command_output
+        command: "sed -n 's/^essential packages: //p' /tmp/answer-essential"
+        equals_command: "dpkg-query -W -f='${Package} ${Essential}\n' | grep -c ' yes$'"
         describe: You counted the Essential set
       - type: file_matches
         path: /tmp/answer-essential
