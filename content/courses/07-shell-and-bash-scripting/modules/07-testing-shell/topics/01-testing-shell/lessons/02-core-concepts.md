@@ -145,9 +145,22 @@ That is **TAP** — `1..N` then one line per test. Most CI systems parse it, and
 `bats --formatter tap` makes it explicit. The suite exits **non-zero if any test
 fails**, which is what makes it usable as a CI gate.
 
-The failure gives you the file, the line, and the expression. **It does not give
-you the values**, so `[ "$output" = "x" ]` failing tells you the assertion failed
-and not what `$output` was. Two ways round it:
+The failure gives you the file, the line, and the expression — but not, by
+default, the values. `--print-output-on-failure` adds the actual output:
+
+```console
+$ bats --print-output-on-failure t.bats
+not ok 1 a failing comparison
+# (in test file t.bats, line 3)
+#   `[ "$output" = "what I expected" ]' failed
+# Last output:
+# the actual value
+```
+
+That covers `$output`, which is most assertions. It does **not** show what you
+expected, and it does not help for a comparison of anything else — a file's
+contents, a count, a variable you computed. For those, put the values in the
+message yourself:
 
 ```bash
 # print the actual value when it matters
