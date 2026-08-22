@@ -1,0 +1,172 @@
+id: assessment.the-object-model
+topic: topic.the-object-model
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a commit id that changed when nothing did
+    kind: explain
+    objectives: [OBJ-B10.1.3, OBJ-B10.1.6]
+    prompt: >-
+      A release pipeline records the commit id it built. An engineer reports a
+      bug: two pipeline runs, an hour apart, on what they insist is the same
+      code, recorded two different commit ids. They have checked carefully —
+      `git diff` between the two commits is empty, and `git show --stat` lists
+      no changed files.
+
+
+      They conclude the commit id is unreliable and should not be used to
+      identify a build.
+
+
+      In about 250 words: explain what produced two ids for an empty diff, say
+      whether their conclusion follows, and state what the pipeline should
+      record if it wants to answer "was this the same code?"
+    rubric:
+      - "Separates the commit id from the tree id rather than treating them as one thing"
+      - "Names the commit fields that vary independently of content: identities and timestamps"
+      - "Recognises an empty diff means equal trees, and says nothing about the other fields"
+      - "Identifies amend, rebase or cherry-pick as what re-created the commit"
+      - "Rejects the conclusion: the id is reliable, it just identifies a commit and not content"
+      - "Recommends recording the tree id via git rev-parse HEAD^{tree} for content identity"
+      - "Ideally recommends recording both, and says what each one answers"
+    model_answer: >-
+      A strong answer separates the *commit* id from the *tree* id, and does not
+      simply say "timestamps differ" without saying why that changes the id.
+
+
+      Expected: a commit's id hashes its tree, its parents, the author and
+      committer identities **and their timestamps**, and the message. An empty
+      `git diff` means the two commits have the same tree; it says nothing about
+      the other fields. Something re-created the commit — most likely `--amend`,
+      a rebase, or a cherry-pick — producing a new object with the same
+      snapshot. That is exactly the amend result from the lab: same tree id,
+      different commit id.
+
+
+      The conclusion does not follow. The commit id is perfectly reliable at
+      what it identifies: a specific commit object, including who made it and
+      when. It is simply not an identifier of *content*.
+
+
+      For "was this the same code?", the pipeline should record the **tree id**
+      (`git rev-parse HEAD^{tree}`), which is a pure function of the source and
+      is identical across amend, rebase and cherry-pick. Best answers record
+      both — the commit id for provenance, the tree id for content — and note
+      that this is precisely why two build artefacts can be byte-identical while
+      their commit ids differ.
+
+  - id: B
+    title: Diagnose a repository that grew to 40 GB
+    kind: diagnose
+    objectives: [OBJ-B10.1.4, OBJ-B10.1.7]
+    prompt: >-
+      A repository takes over an hour to clone and occupies about 40 GB. The
+      team is adamant that the source is small — roughly 30 MB checked out — and
+      believes the history itself is the problem, because there are 60,000
+      commits. A proposal is circulating to delete all history older than a year
+      and start fresh.
+
+
+      You have a clone and can run anything.
+
+
+      In about 300 words: say what you would run to locate the cost, what you
+      expect to find, and whether truncating history addresses it.
+    rubric:
+      - "Measures rather than guesses: lists objects by size before proposing anything"
+      - "Names a concrete command such as git cat-file --batch-all-objects --batch-check"
+      - "Maps large blobs back to paths with git rev-list --objects --all"
+      - "Explains why 60,000 commits of small source cannot account for 40 GB"
+      - "Predicts a few paths holding nearly all the bytes, committed repeatedly"
+      - "Rejects truncation: it drops references, not objects, and growth resumes"
+      - "Notes truncation destroys provenance in exchange for not fixing the cause"
+      - "Proposes removing the paths from all history, gitignore, LFS or artefact storage, then repack"
+      - "Flags the coordination cost: every clone must be re-taken after a rewrite"
+    model_answer: >-
+      Expected approach: stop guessing and measure which *objects* are large.
+      `git cat-file --batch-all-objects --batch-check='%(objectsize) %(objecttype) %(objectname)'`
+      sorted descending, then map the big blobs back to paths with
+      `git rev-list --objects --all`. `git count-objects -vH` gives the totals.
+
+
+      What they should expect: a small number of paths accounting for nearly all
+      of it — build outputs, vendored dependencies, test fixtures, media, or a
+      database dump — each committed repeatedly, so every version is a distinct
+      blob. 60,000 commits of 30 MB of source is not 40 GB; unchanged files are
+      shared by id, so history length is close to free.
+
+
+      Whether truncation helps: **generally not, and this is the key judgement.**
+      Deleting old commits removes the *references* to those blobs, but the
+      blobs remain until they are unreachable and collected — and if the large
+      files are still committed today, the growth simply resumes. Truncating
+      also destroys provenance, which was one of the four promises, in exchange
+      for a problem it does not fix.
+
+
+      Strong answers name the actual remedy: remove the offending paths from all
+      of history with a history-rewriting tool, add them to `.gitignore`, move
+      genuinely large assets to artefact storage or LFS, and only then repack.
+      They should also flag that rewriting history means every clone must be
+      re-taken, which is a coordination cost — and that the honest root cause is
+      a policy one: nothing was stopping build artefacts being committed.
+
+  - id: C
+    title: Justify teaching the object model before any command
+    kind: reason
+    objectives: [OBJ-B10.1.1, OBJ-B10.1.5, OBJ-B10.1.6]
+    prompt: >-
+      You are reviewing an onboarding plan for new engineers. It teaches Git as
+      a sequence of recipes — `add`, `commit`, `push`, then "if you need to undo
+      something, ask a senior engineer" — and explicitly defers the object model
+      as "internals most people never need".
+
+
+      A colleague argues this is correct: people need to be productive in a day,
+      and the internals can wait until they hit a problem.
+
+
+      In about 300 words: argue a position. Give the strongest version of your
+      colleague's case before answering it, and be concrete about what a learner
+      can and cannot do at each point.
+    rubric:
+      - "States the opposing case fairly and at its strongest before answering it"
+      - "Distinguishes Git's inconsistent interface from its small, regular model"
+      - "Argues concretely that recipes do not compose, with an example such as reset --hard"
+      - "Identifies 'ask a senior engineer' as the plan admitting it does not scale"
+      - "Notes the failure arrives exactly when the learner is frightened and the stakes are real"
+      - "Names what the model buys in that moment: objects are immutable, work is probably still there"
+      - "Scopes the claim rather than demanding packfile knowledge"
+      - "Takes a clear position and defends it, including a defensible 'commands first, model within the week'"
+    model_answer: >-
+      Credit answers that take the opposing case seriously. It is genuinely
+      strong: recipes do make someone productive in a day, most days need only
+      four commands, and nobody learns a filesystem's inode structure before
+      saving a file.
+
+
+      The rebuttal should be concrete rather than principled. Git's *interface*
+      is inconsistent — `checkout` did several unrelated jobs, `reset` means
+      something different per flag — while its *model* is small and regular:
+      four object types, refs as pointers, an append-only store. Recipes
+      therefore do not compose. A learner who knows `commit` and `push` has no
+      way to reason about what `reset --hard` will do, and the recipe list
+      offers no clue which recipes are dangerous.
+
+
+      The sharpest point is the failure mode the plan itself names: "ask a
+      senior engineer." That is an admission that the approach does not scale,
+      and it arrives precisely when the learner is frightened and the stakes are
+      real. Meanwhile a learner who knows that objects are immutable, that a
+      branch is a 41-byte pointer, and that moving a pointer deletes nothing,
+      can reason that their work is probably still there — which is both true
+      and the single most useful thing to know in that moment.
+
+
+      Best answers avoid the maximalist claim that everyone must know packfiles.
+      They scope it: the model needed is about an hour's worth — objects, refs,
+      reachability — and it is the difference between fearing the tool and being
+      able to predict it. Some may reasonably propose teaching the four commands
+      first and the model within the first week; that is a defensible position
+      if argued on when the deferral stops being cheap.
