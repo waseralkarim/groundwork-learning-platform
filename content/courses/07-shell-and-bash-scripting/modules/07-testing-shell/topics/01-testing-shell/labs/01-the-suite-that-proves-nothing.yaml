@@ -1,0 +1,327 @@
+id: lab.the-suite-that-proves-nothing
+topic: topic.testing-shell
+title: Make the passing suite fail, without touching the script
+type: challenge
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B08.9.1, OBJ-B08.9.4]
+
+intro: >-
+  `/tmp/bats/first.bats` reports three passing tests. `/tmp/bats/retention.sh`
+  has two bugs.
+
+
+  You will find both without changing a line of the script — by adding the cases
+  the suite never thought to write.
+
+setup:
+  - /opt/lab/seed-bats.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Run the manual check and the suite, and record what each claims. Save to
+      /tmp/answer-green.
+    walkthrough: |
+      cd /tmp/bats
+      {
+        echo "how it is tested today:"
+        bash manual-check.sh 2>&1 | sed 's/^/    /'
+        echo
+        echo "and the suite somebody wrote:"
+        bats first.bats 2>&1 | sed 's/^/    /'
+        echo "    suite rc=$(bats first.bats >/dev/null 2>&1; echo $?)"
+        echo
+        echo "THREE TESTS, THREE PASSES, and a manual check that says 'looks right'."
+        echo "the script has two bugs."
+      } > /tmp/answer-green
+      cat /tmp/answer-green
+    verify:
+      - type: file_matches
+        path: /tmp/answer-green
+        pattern: 'looks right'
+        describe: The manual check is satisfied
+      - type: file_matches
+        path: /tmp/answer-green
+        pattern: 'ok 1 it lists an old file'
+        describe: And the suite passes
+      - type: file_matches
+        path: /tmp/answer-green
+        pattern: 'suite rc=0'
+        describe: With a zero exit status
+      - type: file_matches
+        path: /tmp/answer-green
+        pattern: '(?i)THREE TESTS, THREE PASSES'
+        describe: And you stated what that is worth
+
+  - id: s2
+    instruction: >-
+      The policy is seven days. Build a fixture that straddles the boundary and
+      find out what the script actually keeps. Save to /tmp/answer-boundary.
+    hint: >-
+      The suite's fixture used 30 days and 2 days. Put files at 6, 7, 8 and 30.
+    walkthrough: |
+      W=/tmp/boundary; rm -rf "$W"; mkdir -p "$W"
+      for d in 6 7 8 30; do touch -d "$d days ago" "$W/age-${d}d.log"; done
+      {
+        echo "the fixture the suite used:  30 days and 2 days"
+        echo "the fixture that finds bugs: 6, 7, 8 and 30 days"
+        echo
+        echo "files:"
+        ls -1 "$W" | sed 's/^/    /'
+        echo
+        echo "retention.sh says these are expired, under a SEVEN day policy:"
+        /tmp/bats/retention.sh "$W" | sed "s|$W/|    |"
+        echo
+        echo "BUG 1: the SEVEN-DAY-OLD FILE IS NOT LISTED."
+        echo
+        echo "-mtime +7 means MORE THAN seven whole 24-hour periods, so a file that"
+        echo "has completed exactly seven is excluded until it completes its eighth."
+        echo "the retention window is EIGHT days, not seven - which B08.4 measured,"
+        echo "and which a green test suite has now been sitting on top of."
+        echo
+        echo "the suite could not see it because 30 days and 2 days are both a long"
+        echo "way from the edge. NOTHING INTERESTING HAPPENS IN THE MIDDLE OF A RANGE."
+      } > /tmp/answer-boundary
+      cat /tmp/answer-boundary
+    verify:
+      - type: file_matches
+        path: /tmp/answer-boundary
+        pattern: 'age-8d.log'
+        describe: The eight-day file is expired
+      - type: file_matches
+        path: /tmp/answer-boundary
+        pattern: 'age-30d.log'
+        describe: And the thirty-day one
+      - type: command_exit
+        command: "/tmp/bats/retention.sh /tmp/boundary | grep -q 'age-7d'"
+        exit_code: 1
+        describe: But the seven-day file is not, under a seven-day policy
+      - type: file_matches
+        path: /tmp/answer-boundary
+        pattern: '(?i)SEVEN-DAY-OLD FILE IS NOT LISTED'
+        describe: You found the first bug
+      - type: file_matches
+        path: /tmp/answer-boundary
+        pattern: '(?i)MIDDLE OF A RANGE'
+        describe: And why the suite missed it
+
+  - id: s3
+    instruction: >-
+      Find the second bug: what does the exit status tell a caller? Save to
+      /tmp/answer-status.
+    hint: >-
+      Compare the status when files expire, when none do, and when the directory
+      is empty.
+    walkthrough: |
+      E=/tmp/empty; rm -rf "$E"; mkdir -p "$E"
+      N=/tmp/nothing-old; rm -rf "$N"; mkdir -p "$N"; touch "$N/fresh.log"
+      {
+        printf '  %-38s rc=%s  output=[%s]\n' "some files expired" \
+          "$(/tmp/bats/retention.sh /tmp/boundary >/dev/null 2>&1; echo $?)" \
+          "$(/tmp/bats/retention.sh /tmp/boundary 2>/dev/null | wc -l) lines"
+        printf '  %-38s rc=%s  output=[%s]\n' "nothing expired" \
+          "$(/tmp/bats/retention.sh "$N" >/dev/null 2>&1; echo $?)" \
+          "$(/tmp/bats/retention.sh "$N" 2>/dev/null)"
+        printf '  %-38s rc=%s  output=[%s]\n' "empty directory" \
+          "$(/tmp/bats/retention.sh "$E" >/dev/null 2>&1; echo $?)" \
+          "$(/tmp/bats/retention.sh "$E" 2>/dev/null)"
+        printf '  %-38s rc=%s\n' "directory does not exist" \
+          "$(/tmp/bats/retention.sh /nope >/dev/null 2>&1; echo $?)"
+        echo
+        echo "BUG 2: rc=0 AND NO OUTPUT MEANS TWO DIFFERENT THINGS."
+        echo
+        echo "'nothing expired' and 'empty directory' are indistinguishable, and both"
+        echo "look exactly like a successful run that found work and did it - because"
+        echo "the status is find's, and FIND SUCCEEDS WHEN IT MATCHES NOTHING."
+        echo
+        echo "the script's own comment claims it exits 1 when the directory is"
+        echo "missing so a caller can tell those apart. it does - but only for that"
+        echo "one case, checked before find runs. if the directory disappears a"
+        echo "moment later, find fails and the caller still sees whatever find"
+        echo "returned."
+        echo
+        echo "the suite has one status assertion, on the missing-directory case."
+        echo "the case it does NOT have is the one a caller actually hits nightly."
+      } > /tmp/answer-status
+      cat /tmp/answer-status
+    verify:
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: 'nothing expired +rc=0'
+        describe: Nothing expiring is a success
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: 'empty directory +rc=0'
+        describe: And so is an empty directory
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: 'directory does not exist +rc=1'
+        describe: While a missing directory is not
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: '(?i)TWO DIFFERENT THINGS'
+        describe: You found the second bug
+      - type: file_matches
+        path: /tmp/answer-status
+        pattern: '(?i)FIND SUCCEEDS WHEN IT MATCHES NOTHING'
+        describe: And its cause
+
+  - id: s4
+    instruction: >-
+      Find the third gap: which of the script's inputs does the suite never
+      exercise? Save to /tmp/answer-untested.
+    walkthrough: |
+      {
+        echo "the script's interface:"
+        grep -E '^DIR=|^DAYS=' /tmp/bats/retention.sh | sed 's/^/    /'
+        echo
+        echo "every place the suite invokes it:"
+        grep -n 'retention.sh' /tmp/bats/first.bats | sed 's/^/    /'
+        echo
+        echo "NO TEST PASSES THE DAYS ARGUMENT. every one relies on the default."
+        echo
+        echo "proving the parameter is a live code path with no coverage:"
+        printf '    default (7):  %s\n' "$(/tmp/bats/retention.sh /tmp/boundary | wc -l) files expired"
+        printf '    DAYS=5:       %s\n' "$(/tmp/bats/retention.sh /tmp/boundary 5 | wc -l) files expired"
+        printf '    DAYS=100:     %s\n' "$(/tmp/bats/retention.sh /tmp/boundary 100 | wc -l) files expired"
+        echo
+        echo "the behaviour changes completely and no test would notice if it broke."
+        echo
+        echo "EVERY PARAMETER WITH A DEFAULT IS A CODE PATH WITH NO COVERAGE, because"
+        echo "the default is what every caller uses and therefore what every test"
+        echo "writer reaches for. the argument exists precisely for the unusual case,"
+        echo "which is the case nobody tries."
+      } > /tmp/answer-untested
+      cat /tmp/answer-untested
+    verify:
+      - type: file_matches
+        path: /tmp/answer-untested
+        pattern: '(?i)NO TEST PASSES THE DAYS ARGUMENT'
+        describe: You found the untested parameter
+      - type: file_matches
+        path: /tmp/answer-untested
+        pattern: 'DAYS=5: +[0-9]+ files expired'
+        describe: And showed the behaviour varies with it
+      - type: file_matches
+        path: /tmp/answer-untested
+        pattern: '(?i)CODE PATH WITH NO COVERAGE'
+        describe: And stated the general rule
+
+  - id: s5
+    instruction: >-
+      Say what the three passing tests were actually worth, and give the rule you
+      would apply in review. Save to /tmp/answer-worth.
+    walkthrough: |
+      {
+        echo "what the suite established:"
+        echo "  - a 30-day-old file is listed"
+        echo "  - a 2-day-old file is not"
+        echo "  - a missing directory exits 1"
+        echo
+        echo "all three are TRUE, correctly written, and readable. nothing is wrong"
+        echo "with them as tests."
+        echo
+        echo "what they did NOT establish, which is everything that was wrong:"
+        echo "  - where the boundary actually falls        (bug 1)"
+        echo "  - what rc=0 with no output means           (bug 2)"
+        echo "  - that the DAYS argument does anything     (untested path)"
+        echo
+        echo "THE TESTS ENCODE WHAT THE AUTHOR ALREADY BELIEVED. that is what tests"
+        echo "written after the code always do - they are drawn from the same mental"
+        echo "model, so they inherit the same wrong assumptions. a test cannot"
+        echo "question a belief its author did not know they held."
+        echo
+        echo "THE RULE I WOULD APPLY IN REVIEW:"
+        echo
+        echo "  never ask 'are there tests'. ask 'WHICH CASE WOULD HAVE CAUGHT THIS,"
+        echo "  AND IS IT IN THERE?'"
+        echo
+        echo "the first question is answered by a green tick and means nothing. the"
+        echo "second forces someone to name a specific input, which either exists in"
+        echo "the suite or does not."
+        echo
+        echo "and the four places to look for that case, every time:"
+        echo "  BOUNDARIES     exactly 7, exactly 0, exactly the limit"
+        echo "  FAILURE PATHS  the thing is missing, unreachable, empty"
+        echo "  ARGUMENTS      every parameter with a default"
+        echo "  THE EMPTY CASE where 'it worked' and 'it did nothing' look the same"
+      } > /tmp/answer-worth
+      cat /tmp/answer-worth
+    verify:
+      - type: file_matches
+        path: /tmp/answer-worth
+        pattern: '(?i)ALREADY BELIEVED'
+        describe: You explained why the tests missed the bugs
+      - type: file_matches
+        path: /tmp/answer-worth
+        pattern: '(?i)WHICH CASE WOULD HAVE CAUGHT THIS'
+        describe: And gave the review question
+      - type: file_matches
+        path: /tmp/answer-worth
+        pattern: '(?i)BOUNDARIES'
+        describe: And the four places to look
+      - type: file_matches
+        path: /tmp/answer-worth
+        pattern: '(?i)THE EMPTY CASE'
+        describe: Including the one that hides a no-op
+
+solution: >-
+  **The suite passes and the script is wrong.**
+
+
+  ```console
+  $ bats first.bats
+  1..3
+  ok 1 it lists an old file
+  ok 2 it does not list a recent file
+  ok 3 it refuses a missing directory
+  ```
+
+
+  **Bug 1 — the boundary.** With files at 6, 7, 8 and 30 days under a seven-day
+  policy, the script lists only 8 and 30. **A file at exactly seven days is
+  kept**, because `-mtime +7` means *more than* seven whole periods — the window
+  is eight days. The suite's fixture used 30 and 2, both a long way from the
+  edge. **Nothing interesting happens in the middle of a range.**
+
+
+  **Bug 2 — the exit status.**
+
+
+  | Case | rc | output |
+  |---|---|---|
+  | some files expired | 0 | the paths |
+  | nothing expired | 0 | *empty* |
+  | empty directory | 0 | *empty* |
+  | directory missing | 1 | — |
+
+
+  "Nothing expired" and "empty directory" are indistinguishable, and both look
+  like a successful run — because the status is `find`'s, and **`find` succeeds
+  when it matches nothing**. The suite's one status assertion covers the case a
+  caller almost never hits.
+
+
+  **The third gap — `retention.sh DIR [DAYS]`.** No test passes `DAYS`. Vary it
+  and the behaviour changes completely; nothing would notice if it broke.
+  **Every parameter with a default is a code path with no coverage**, because the
+  default is what every caller uses and therefore what every test writer reaches
+  for.
+
+
+  **What the three tests were worth.** All three assert true things and are
+  correctly written. They just encode what the author already believed — which is
+  what tests written after the code always do, since they are drawn from the same
+  mental model and inherit the same wrong assumptions.
+
+
+  **So the review question is never "are there tests".** It is **"which case
+  would have caught this, and is it in there?"** — because the first is answered
+  by a green tick and the second forces someone to name an input.
+
+
+  Four places to look, every time: **boundaries**, **failure paths**, **arguments
+  with defaults**, and **the empty case** where "it worked" and "it did nothing"
+  produce the same output.
