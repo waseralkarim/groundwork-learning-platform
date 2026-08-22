@@ -95,7 +95,7 @@ export default async function HomePage() {
                   </span>
                 </div>
 
-                <ul className="grid gap-5 md:grid-cols-2">
+                <ul className="grid items-start gap-5 md:grid-cols-2">
                   {courses.map((course, i) => (
                     <li key={course.slug}>
                       <CourseCard course={course} highlight={trackIndex === 0 && i === 0} />
@@ -121,7 +121,7 @@ function CourseCard({ course, highlight }: { course: RoadmapCourse; highlight: b
   const topicCount = course.modules.reduce((n, m) => n + m.topics.length, 0);
 
   return (
-    <article className="group relative flex h-full flex-col gap-4 overflow-hidden rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:shadow-lg hover:shadow-black/5">
+    <article className="group relative flex flex-col gap-4 overflow-hidden rounded-lg border border-[var(--color-rule)] bg-[var(--color-surface)] p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:shadow-lg hover:shadow-black/5">
       <span
         aria-hidden="true"
         className="absolute inset-y-0 left-0 w-[3px] bg-[var(--color-accent)] opacity-0 transition-opacity duration-200 group-hover:opacity-100"
@@ -150,7 +150,7 @@ function CourseCard({ course, highlight }: { course: RoadmapCourse; highlight: b
 
       <p className="text-[0.9rem] leading-relaxed text-[var(--color-ink-soft)]">{course.summary}</p>
 
-      <div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1 font-[family-name:var(--font-mono)] text-[0.62rem] uppercase tracking-[0.12em] text-[var(--color-muted)]">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1 font-[family-name:var(--font-mono)] text-[0.62rem] uppercase tracking-[0.12em] text-[var(--color-muted)]">
         <span className="rounded border border-[var(--color-rule-soft)] px-1.5 py-0.5 text-[var(--color-signal)]">
           {course.levels.join(" ")}
         </span>
