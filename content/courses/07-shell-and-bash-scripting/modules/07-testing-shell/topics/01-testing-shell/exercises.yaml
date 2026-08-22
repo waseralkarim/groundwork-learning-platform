@@ -1,0 +1,332 @@
+topic: topic.testing-shell
+
+exercises:
+  - id: e1
+    title: What does a green suite establish?
+    level: L2
+    objectives: [OBJ-B08.9.1]
+    kind: interpretation
+    prompt: >-
+      A colleague says "the retention script is covered — there are three tests
+      and they all pass." The script keeps files for eight days under a
+      seven-day policy, and cannot distinguish "nothing expired" from "the
+      directory is empty".
+
+
+      Say what the three tests did establish, why they missed both bugs, and
+      what you would say in review.
+    answer: >-
+      **What they established**, precisely: a 30-day-old file is listed, a
+      2-day-old file is not, and a missing directory exits 1. All three are
+      true, correctly written and readable. Nothing is wrong with them as tests.
+
+
+      **Why they missed the boundary.** The fixture used 30 days and 2 days —
+      both a long way from the edge. The bug lives at exactly 7, where `-mtime
+      +7` flips from "more than seven whole periods" to "not yet". **Nothing
+      interesting happens in the middle of a range.**
+
+
+      **Why they missed the status.** The one status assertion covers the
+      missing-directory case, which a caller almost never hits. The case it hits
+      nightly — nothing expired — returns 0 with no output, indistinguishable
+      from an empty directory, because the status is `find`'s and `find` succeeds
+      when it matches nothing.
+
+
+      **The underlying reason for both:** tests written after the code encode
+      what the author already believed. They are drawn from the same mental model
+      as the implementation, so they inherit the same wrong assumptions. A test
+      cannot question a belief its author did not know they held.
+
+
+      **In review I would not say "add more tests".** I would ask **"which case
+      would have caught this, and is it in there?"** — because the first is
+      answered by a green tick and the second forces someone to name a specific
+      input, which either exists in the suite or does not.
+    explanation: >-
+      The distinction that matters is between *coverage* and *cases*. Every line
+      of the buggy predicate was executed by those three tests. Line coverage
+      would have reported the script well covered, and it would have been telling
+      the truth about the wrong question.
+
+  - id: e2
+    title: Fix four broken bats tests
+    level: L2
+    objectives: [OBJ-B08.9.2]
+    kind: interpretation
+    prompt: >-
+      Each of these is wrong. Say what happens and give the fix.
+
+
+      ```bash
+      @test "1" { ./script.sh --bad-flag; }
+
+      @test "2" { run ./script.sh; }
+
+      @test "3" { run ./script.sh; [ "$output" = "ok" ] | tee /tmp/log; }
+
+      @test "4" {
+        WORK=/tmp/fixtures; mkdir -p "$WORK"; echo data > "$WORK/in.txt"
+        run ./script.sh "$WORK"
+      }
+      ```
+    answer: >-
+      **1. It can only pass if the script succeeds.** Without `run`, a non-zero
+      exit ends the test — so this cannot express "a bad flag is rejected", which
+      is presumably the intent. Fix:
+
+
+      ```bash
+      run ./script.sh --bad-flag
+      [ "$status" -ne 0 ]
+      ```
+
+
+      **2. It passes whatever the script does.** `run` captures the status
+      instead of failing, and nothing asserts on it. This is a test that can
+      never fail — worse than no test, because it looks like coverage. Add
+      `[ "$status" -eq 0 ]` and an assertion on `$output`.
+
+
+      **3. The assertion can never fail.** `[ ... ]` is a non-final pipeline
+      stage, so the pipeline's status is `tee`'s, which is 0. Every exemption
+      B08.5 measured applies inside a `@test`. Fix: make the assertion the last
+      command, and print separately if you need the log.
+
+
+      **4. It uses a fixed path.** Two runs of the suite — or two CI branches —
+      share `/tmp/fixtures`, so tests interfere and the failure looks
+      intermittent. It also never cleans up. Fix: `WORK="$BATS_TEST_TMPDIR/w"`,
+      which is created fresh per test and removed afterwards. It also has no
+      assertion at all, so it shares defect 2.
+    explanation: >-
+      Cases 2 and 3 are the dangerous pair, because both are green and both look
+      like tests. A suite where several tests can never fail reports the same
+      thing as a suite where the code is correct — and the only way to tell them
+      apart is to make each test fail once, deliberately, when you write it.
+
+  - id: e3
+    title: Choose cases for a script you cannot see
+    level: L3
+    objectives: [OBJ-B08.9.4]
+    kind: short_answer
+    prompt: >-
+      A script `rotate-logs.sh DIR [KEEP]` keeps the newest `KEEP` log files in
+      `DIR` (default 5), compresses the rest, and deletes anything already
+      compressed and older than 30 days.
+
+
+      Without seeing the code, list the cases you would insist on, and say what
+      each is for.
+    answer: >-
+      **Boundaries — where the behaviour changes:**
+
+
+      - Exactly `KEEP` files: none should be compressed.
+      - `KEEP + 1` files: exactly one compressed, and it must be the **oldest**.
+      - A compressed file at exactly 30 days, and at 29 and 31.
+
+
+      **The empty and degenerate cases:**
+
+
+      - Zero files. Does it exit cleanly, and can a caller tell that from success?
+      - Exactly one file, with `KEEP=0` — does "keep none" work, or does 0 get
+        treated as "use the default"?
+      - `KEEP` larger than the number of files.
+
+
+      **The argument nobody passes:** `KEEP` at all. The default is exercised
+      constantly and the parameter never.
+
+
+      **Failure paths:**
+
+
+      - `DIR` missing, and `DIR` not writable.
+      - A file that is already compressed being handed to the compressor again.
+      - The disk full mid-compress — at minimum, that it does not delete the
+        original after a failed compress.
+
+
+      **Destructive behaviour, tested most carefully of all**, because this is
+      the part that loses data:
+
+
+      - A dry run, if there is one, really removes nothing.
+      - A filename containing a space or a newline survives the loop.
+      - The 30-day deletion only ever touches **already-compressed** files.
+
+
+      **The one I would insist on hardest:** that a failed compress cannot lead to
+      a deleted original. That is the sequence where this class of script
+      destroys data, and it is invisible on the happy path.
+    explanation: >-
+      Notice how little of this needs the source. Boundaries, defaults, the empty
+      case and the destructive step are derivable from the *description*, which
+      is why cases written before reading the implementation tend to be better —
+      they are not contaminated by the author's assumptions.
+
+  - id: e4
+    title: Review a test double
+    level: L3
+    objectives: [OBJ-B08.9.5]
+    kind: interpretation
+    prompt: >-
+      Review this, used to test a script that calls `aws s3 cp`.
+
+
+      ```bash
+      setup() {
+        mkdir -p /tmp/fakebin
+        cat > /tmp/fakebin/aws <<'A'
+      #!/bin/bash
+      if [ "$2" = "cp" ]; then
+        echo "upload: done"
+        exit 0
+      fi
+      exit 0
+      A
+        chmod +x /tmp/fakebin/aws
+        PATH="$PATH:/tmp/fakebin"
+      }
+
+      @test "it uploads the backup" {
+        run ./backup.sh
+        [ "$status" -eq 0 ]
+      }
+      ```
+    answer: >-
+      **Six defects, and the first makes the whole thing a no-op.**
+
+
+      **1. `PATH="$PATH:/tmp/fakebin"` appends.** If a real `aws` exists it wins;
+      if it does not, the double is used and the test passes either way. On a CI
+      image with the AWS CLI installed, this test **uploads to S3**. Prepend:
+      `PATH="/tmp/fakebin:$PATH"`.
+
+
+      **2. It is not exported.** `setup` runs in the test's shell so the
+      assignment is visible, but the habit of `export PATH=...` is what makes it
+      survive into anything the script spawns.
+
+
+      **3. A fixed path.** `/tmp/fakebin` is shared between runs and branches,
+      and is never cleaned up. `$BATS_TEST_TMPDIR/bin`.
+
+
+      **4. It records nothing.** The test cannot assert *what* was uploaded, or
+      to where — only that the script exited 0. The single most valuable line in
+      a double is `echo "aws $*" >> "$FAKE_LOG"`.
+
+
+      **5. It always succeeds.** No way to make the upload fail, so the failure
+      path — the one that runs during an incident — is untested. Add
+      `exit "${FAKE_RC:-0}"`.
+
+
+      **6. It has branching logic.** The `if [ "$2" = "cp" ]` is a second
+      implementation with its own bugs, and it is already subtly wrong: `$2` is
+      only `cp` for `aws s3 cp`, so any change to the invocation silently takes
+      the other branch and still exits 0.
+
+
+      **And the test itself asserts only the exit status**, which given defect 5
+      is guaranteed. It cannot fail.
+
+
+      **Rewritten:**
+
+
+      ```bash
+      setup() {
+        BIN="$BATS_TEST_TMPDIR/bin"; mkdir -p "$BIN"
+        printf '#!/bin/bash\necho "aws $*" >> "$FAKE_LOG"\nexit "${FAKE_RC:-0}"\n' > "$BIN/aws"
+        chmod 0755 "$BIN/aws"
+        export FAKE_LOG="$BATS_TEST_TMPDIR/calls"; : > "$FAKE_LOG"
+        export PATH="$BIN:$PATH"
+      }
+
+      @test "it uploads the backup to the right bucket" {
+        run ./backup.sh
+        [ "$status" -eq 0 ]
+        grep -q 's3 cp .* s3://backups/' "$FAKE_LOG"
+      }
+
+      @test "it fails when the upload fails" {
+        FAKE_RC=1 run ./backup.sh
+        [ "$status" -ne 0 ]
+      }
+      ```
+    explanation: >-
+      Defect 1 is the one worth internalising, because it fails in the most
+      expensive direction: the test passes on a developer laptop with no AWS CLI
+      and performs a real upload in CI. A double that is not *earlier* on `PATH`
+      is not a double at all.
+
+  - id: e5
+    title: Defend a testing standard
+    level: L3
+    objectives: [OBJ-B08.9.8]
+    kind: short_answer
+    prompt: >-
+      A colleague proposes: "every shell script in the repository must have at
+      least 80% line coverage before merge."
+
+
+      Write your response.
+    answer: >-
+      **I would push back, and propose something narrower that catches more.**
+
+
+      **Why the coverage target does not do what it looks like it does.** The
+      retention script's two bugs were on lines that a three-test suite already
+      executed — every line of the predicate ran, and the wrong boundary was
+      never exercised. Coverage measures which *lines* ran, and shell bugs live
+      in which *inputs* were tried. An 80% gate would have passed that script.
+
+
+      It also has a predictable failure mode: people write tests that execute
+      lines cheaply. A test that runs the script once with valid arguments and
+      asserts nothing hits most of the file. We would get a green number and the
+      same defects.
+
+
+      **What I would propose instead** — a short list, because a standard that
+      demands everything gets ignored:
+
+
+      - **Anything destructive** gets a test: a delete, a `--dry-run` that must
+        be dry, a retention boundary.
+      - **Anything that decides**: a branch, a threshold, a parse.
+      - **Every failure path we rely on.** If a script must exit non-zero when a
+        host is unreachable, something must have watched it do that.
+      - **Every bug we fix, in the same commit.** Cheapest and highest value: the
+        case is known real, and nobody would have invented it.
+
+
+      And explicitly **not**: the shell itself, trivial wrappers, output wording
+      unless something parses it.
+
+
+      **Enforcement that costs nothing:** `shellcheck -S warning` in CI, which
+      finds a class of defect no coverage number touches, plus
+      `bats -r --print-output-on-failure`. Neither is a percentage, and both fail
+      the build for a reason somebody can act on.
+
+
+      **And the review question, which is the actual mechanism:** not "are there
+      tests" but **"which case would have caught this, and is it in there?"**
+      That is unautomatable and it is the thing that works.
+
+
+      **Where I would agree with them:** the instinct is right. Operational shell
+      is the least-tested code we have and the most likely to run as root
+      everywhere. The disagreement is only about the metric — I would rather have
+      four tests on the destructive path than forty that reach 80%.
+    explanation: >-
+      The strongest form of this argument is empirical rather than theoretical:
+      the seeded script is a worked example where full line coverage and a green
+      suite coexist with two data-losing bugs. Bringing a concrete case to a
+      standards discussion beats arguing about metrics in the abstract.

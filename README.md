@@ -113,7 +113,7 @@ task obs:verify       # assert signals reach their backends, and logs link to tr
 | Services | proxy · web · api · worker · seed · db · cache — one published port |
 | Profiles | `labs` · `observability` · `tools` — each opt-in, inert when off |
 | Content pipeline | schema validation, 12 lint-rule groups, idempotent ingest, deterministic UUIDv5 keys |
-| Curriculum | **34 topics** across 7 courses, 170 lessons, 136 labs, 510 quiz questions, 68 troubleshooting scenarios, 157 exercises, 176 interview questions, 102 assessment parts, 5 projects including four capstones |
+| Curriculum | **35 topics** across 7 courses, 175 lessons, 140 labs, 525 quiz questions, 70 troubleshooting scenarios, 162 exercises, 181 interview questions, 105 assessment parts, 5 projects including four capstones |
 | Reader | server-rendered lessons, Mermaid diagrams, inline shells (`:::try`), commit-before-reveal (`:::predict`), light/dark/system theme that diagrams and terminals follow |
 | Accounts | Argon2id, opaque sessions in httpOnly cookies, per-account and per-IP rate limiting, Origin-checked mutations, audit log |
 | Learning | Progress, prerequisite gating, **server-side quiz grading**, progressive-reveal troubleshooting, dashboard |
@@ -134,7 +134,7 @@ Written as scripts rather than as instructions, and all of it runs in CI.
 |---|---|
 | 97 API tests · 26 broker tests | Units, and the content pipeline against real PostgreSQL |
 | 56 smoke checks | The whole chain through the proxy, as a browser would |
-| `task labs:walk` — 136 labs | Every lab's steps run as a learner would, and its own checks pass |
+| `task labs:walk` — 140 labs | Every lab's steps run as a learner would, and its own checks pass |
 | `task labs:terminal` | The terminal moves bytes in both directions, and shows a prompt |
 | `task verify:a11y` — 11 checks | One `main`, one `h1`, heading order, named controls, zoom, skip link, no `<p>` inside `<p>`, compression |
 | `task verify:cold-start` | A fresh clone still works, from empty volumes |

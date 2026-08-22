@@ -1,0 +1,263 @@
+id: assessment.testing-shell
+topic: topic.testing-shell
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a green suite that let data be deleted
+    kind: explain
+    objectives: [OBJ-B08.9.1, OBJ-B08.9.4]
+    prompt: >-
+      A retention job deleted eleven months of invoices against a seven-year
+      policy. It has twelve tests, all passing before and after the incident, and
+      94% line coverage. Nothing in the script changed — a month earlier
+      `RETENTION_YEARS` was moved out of the script into an environment file.
+
+
+      ```bash
+      YEARS=${RETENTION_YEARS:-7}
+      cutoff_days=$(( YEARS * 365 ))
+      find "$DIR" -maxdepth 1 -type f -name '*.pdf' -mtime "+$cutoff_days" -delete
+      echo "pruned invoices older than $YEARS years"
+      ```
+
+
+      The job logged: `pruned invoices older than 0 years`.
+
+
+      In about 250 words: explain it, and say what you would change.
+    rubric:
+      - "Uses the logged '0 years' to identify the value rather than reasoning about find first"
+      - "Notes that no test sets RETENTION_YEARS, so the new input has no coverage"
+      - "Explains why 94% coverage does not help — lines ran, inputs did not vary"
+      - "Notes the fixture (10 years / 1 year) is nowhere near the 7-year boundary"
+      - "Identifies that a value from outside reached arithmetic with no validation"
+      - "Proposes validating YEARS and refusing rather than defaulting"
+      - "Proposes tests for unset / empty / zero / non-numeric"
+      - "Adds a production assertion, since no test knows tonight's config"
+    model_answer: >-
+      **Start with the log.** `pruned invoices older than 0 years` names the
+      value, which turns "why did retention break" into "where did 0 come from" —
+      a much smaller question. `cutoff_days=$(( 0 * 365 ))` is 0, and `-mtime +0`
+      matches everything older than a day.
+
+
+      **No test sets `RETENTION_YEARS`.** Every test runs with it unset, takes the
+      default of 7, and passes. The change made that value an **input**, and the
+      suite had never supplied one — so the parameter with the most operational
+      significance had no coverage at all.
+
+
+      **94% coverage did not help** because every line ran on every test,
+      including the assignment and the arithmetic. Coverage measures which *lines*
+      executed; the defect is in which *values* were tried, and exactly one was.
+
+
+      **The fixture could not have helped either** — files at 10 years and 1 year
+      against a 7-year policy, both far from the boundary.
+
+
+      **What I would change.** Validate the input and refuse rather than guess:
+      reject anything non-numeric, and reject zero, because a retention period of
+      zero is not a valid configuration for this job. Exit 64 with a message
+      naming the variable and the value.
+
+
+      Add the cases that were missing — unset, empty, zero, non-numeric — all of
+      which are about the *input* rather than the logic. Move the fixture to the
+      boundary: 7 years minus a day, exactly 7, plus a day.
+
+
+      And add a production assertion, because no test knows what tonight's config
+      says: if a run would remove more than a tenth of everything, refuse. **A
+      test proves the script is right; an assertion proves the run was.**
+
+
+      The general finding: **when a constant becomes configurable, the tests that
+      covered it now cover nothing.**
+
+  - id: B
+    title: Make an untestable script testable, and test it
+    kind: practical
+    objectives: [OBJ-B08.9.2, OBJ-B08.9.5]
+    prompt: >-
+      ```bash
+      #!/bin/bash
+      set -euo pipefail
+      SRC=/srv/data
+      aws s3 cp "$SRC/latest.tar.gz" s3://backups/latest.tar.gz
+      curl -fsS -X POST "$WEBHOOK" -d 'backup ok'
+      echo "backup uploaded"
+      ```
+
+
+      There is no AWS account and no webhook in CI.
+
+
+      Give the changes that make it testable, and a suite covering what is worth
+      testing. Say what your doubles cannot prove.
+    rubric:
+      - "Makes SRC and the destination injectable rather than hard-coded"
+      - "Adds main \"$@\" behind a BASH_SOURCE guard, using an if rather than &&"
+      - "Builds PATH doubles for aws and curl in $BATS_TEST_TMPDIR"
+      - "PREPENDS the double directory to PATH, and says why appending is dangerous"
+      - "Doubles record their arguments and return a controllable status"
+      - "Tests the failure path: upload fails, script must not report success"
+      - "Asserts the actual arguments, not merely that the command was called"
+      - "States that a double cannot prove the interface is right, and proposes one real test"
+    model_answer: >-
+      **Make the inputs reachable.** `SRC` and the bucket are hard-coded, so no
+      test can vary them:
+
+
+      ```bash
+      SRC=${SRC:-/srv/data}
+      DEST=${DEST:-s3://backups/latest.tar.gz}
+      main() { ... }
+      if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
+      ```
+
+
+      An `if`, not `[ ... ] && main "$@"` — that form returns 1 when sourced, so
+      `source` fails under errexit and every test dies in `setup`.
+
+
+      **The doubles:**
+
+
+      ```bash
+      setup() {
+        BIN="$BATS_TEST_TMPDIR/bin"; mkdir -p "$BIN"
+        for tool in aws curl; do
+          printf '#!/bin/bash\necho "%s $*" >> "$FAKE_LOG"\nexit "${FAKE_RC:-0}"\n' "$tool" > "$BIN/$tool"
+          chmod 0755 "$BIN/$tool"
+        done
+        export FAKE_LOG="$BATS_TEST_TMPDIR/calls"; : > "$FAKE_LOG"
+        export PATH="$BIN:$PATH"          # PREPEND
+        export SRC="$BATS_TEST_TMPDIR/src"; mkdir -p "$SRC"; : > "$SRC/latest.tar.gz"
+        export WEBHOOK=https://example.invalid/hook
+      }
+      ```
+
+
+      **Prepending matters more than it looks.** Appending means a real `aws` on
+      the CI image wins — the test passes on a laptop with no CLI and performs a
+      real upload in CI. It fails in the expensive direction.
+
+
+      **The suite:**
+
+
+      ```bash
+      @test "it uploads to the configured destination" {
+        run main
+        [ "$status" -eq 0 ]
+        grep -q "aws s3 cp .*/latest.tar.gz s3://backups/latest.tar.gz" "$FAKE_LOG"
+      }
+
+      @test "it notifies only after a successful upload" {
+        run main
+        [ "$(head -1 "$FAKE_LOG" | cut -d' ' -f1)" = "aws" ]
+      }
+
+      @test "it fails when the upload fails" {
+        FAKE_RC=1 run main
+        [ "$status" -ne 0 ]
+      }
+
+      @test "it does not report success when the upload fails" {
+        FAKE_RC=1 run main
+        [[ "$output" != *"backup uploaded"* ]]
+      }
+
+      @test "it does not notify when the upload fails" {
+        FAKE_RC=1 run main
+        [ "$(wc -l < "$FAKE_LOG")" -eq 1 ]
+      }
+      ```
+
+
+      The last three are the ones that matter. The fifth asserts `set -e`
+      actually stopped the script — a claim about the options, not the logic.
+
+
+      **What the doubles cannot prove:** that `aws s3 cp` still takes those
+      arguments, that the credentials work, that the bucket exists, or that the
+      webhook accepts the body. A double proves you called what you meant to
+      call. I would add one nightly integration test against a real
+      scratch bucket, and a production assertion that the uploaded object's size
+      matches the source.
+
+  - id: C
+    title: Argue against a coverage target
+    kind: reason
+    objectives: [OBJ-B08.9.6, OBJ-B08.9.8]
+    prompt: >-
+      Your team lead proposes: "every shell script must reach 80% line coverage
+      before merge, enforced in CI."
+
+
+      Write your response — what you would agree with, what you would push back
+      on, and what you would propose instead.
+    rubric:
+      - "Agrees with the underlying concern rather than dismissing it"
+      - "Argues coverage measures lines while shell bugs live in inputs, with a concrete case"
+      - "Notes the gaming failure mode — cheap tests that execute lines and assert nothing"
+      - "Proposes a short list: destructive, decides, failure paths, every bug fixed"
+      - "Names what not to test and why"
+      - "Proposes shellcheck alongside bats, and says they answer different questions"
+      - "Gives the review question as the real mechanism"
+      - "Says when to stop writing shell at all"
+    model_answer: >-
+      **I agree with the concern.** Operational shell is the least-tested code we
+      own and the most likely to run as root on every host. The disagreement is
+      only about the metric.
+
+
+      **Why 80% would not have helped.** Our retention script had two data-losing
+      bugs on lines that a three-test suite already executed — the wrong boundary
+      and an exit status that could not distinguish "nothing expired" from
+      "nothing there". Coverage would have reported it well covered, truthfully,
+      about the wrong question. Coverage measures which **lines** ran; shell bugs
+      live in which **inputs** were tried. The invoice job that deleted eleven
+      months had 94%.
+
+
+      **And it has a predictable gaming failure mode.** A test that runs the
+      script once with valid arguments and asserts nothing hits most of a file.
+      We would get a number and the same defects, plus a suite nobody trusts.
+
+
+      **What I would propose instead** — short, because a standard demanding
+      everything gets ignored:
+
+
+      - Anything **destructive**: a delete, a `--dry-run` that must be dry, a
+        retention boundary.
+      - Anything that **decides**: a branch, a threshold, a parse.
+      - Every **failure path we rely on** — if a script must exit non-zero when a
+        host is unreachable, something must have watched it do that.
+      - Every **bug we fix, in the same commit**. Cheapest and highest value: the
+        case is known real and nobody would have invented it.
+
+
+      Explicitly not: the shell itself, trivial wrappers, output wording unless
+      something parses it — otherwise every rewording is a red build, and the team
+      learns that failures are noise.
+
+
+      **Enforcement that costs nothing:** `shellcheck -S warning` first, because
+      it finds a class of defect no coverage number touches and needs no tests
+      written; then `bats -r --print-output-on-failure`. Neither is a percentage,
+      and both fail for a reason someone can act on. And no `--retry`, no
+      `continue-on-error` — a gate that is routinely dismissed is not a gate.
+
+
+      **The real mechanism is unautomatable:** in review, never ask "are there
+      tests". Ask **"which case would have caught this, and is it in there?"**
+
+
+      **And a limit worth agreeing on now:** when a script needs doubles for four
+      tools, parses JSON, or grows a test helper library, it has outgrown shell.
+      That is the point to rewrite it in Python, where `pytest` gives real
+      assertion output and mocking that does not depend on `PATH` ordering.

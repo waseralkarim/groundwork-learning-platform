@@ -245,7 +245,7 @@ places before the lab walk caught it.
 |---|---|---|---|
 | B06 | **Linux Fundamentals** | L1–L2 | **The distribution** — what one is, release models, version semantics · **Packages** — file ownership, dependency strengths, the closure, conffiles, integrity · **The filesystem hierarchy** — the ownership contract, config/state/cache, read-only roots, mount gates · **Environment & shell startup** — the four shell modes, PATH construction, the exec snapshot, secrets in the environment — *inodes and links are A01.5; permissions, ownership, special bits and groups are A04.4; text processing is B08. This course uses all of them rather than teaching them* |
 | B07 | **Linux in Depth** | L2–L4 | systemd units, targets, timers · journald & log management · Disk, LVM, mounts, quotas · Memory *tuning* — swappiness, overcommit, cgroup pressure · Network configuration · Kernel parameters & sysctl · Performance tools (top/vmstat/iostat/ss/perf) · **Systematic troubleshooting methodology** — *builds on A01.2 and A01.4 rather than repeating them* |
-| B08 | **Shell & Bash Scripting** | L1–L4 | **Expansion and quoting** — the eight stages, word splitting, globbing, "$@", POSIX vs bash · **Pipes and redirection** — descriptors, ordering, truncation, subshells, PIPESTATUS, buffering · **Searching text** — exit codes, BRE vs ERE, -F, field splitting · **Finding files** — predicates, -mtime truncation, -prune, exec forms, xargs safety · **Script structure** — errexit's exemptions, masked statuses, arithmetic, traps that run twice, a preamble worth defending · **Functions and scope** — dynamic scope, subshell boundaries, the four ways to return a value, exit status as one byte · **Arguments and options** — "$@", shift, getopts and OPTIND, getopt(1), a command-line contract · **Concurrency and locking** — overlapping runs, flock on the inode, stale locks, timeout -k, safe retries · Testing shell with bats |
+| B08 | **Shell & Bash Scripting** | L1–L4 | **Expansion and quoting** — the eight stages, word splitting, globbing, "$@", POSIX vs bash · **Pipes and redirection** — descriptors, ordering, truncation, subshells, PIPESTATUS, buffering · **Searching text** — exit codes, BRE vs ERE, -F, field splitting · **Finding files** — predicates, -mtime truncation, -prune, exec forms, xargs safety · **Script structure** — errexit's exemptions, masked statuses, arithmetic, traps that run twice, a preamble worth defending · **Functions and scope** — dynamic scope, subshell boundaries, the four ways to return a value, exit status as one byte · **Arguments and options** — "$@", shift, getopts and OPTIND, getopt(1), a command-line contract · **Concurrency and locking** — overlapping runs, flock on the inode, stale locks, timeout -k, safe retries · **Testing shell** — what a green suite is worth, bats, PATH doubles, choosing cases from boundaries and failure paths |
 | B09 | **SSH & Remote Access** | L2–L4 | SSH protocol & handshake · Keys, agents, forwarding · `~/.ssh/config` · SCP/rsync · Tunnels & jump hosts · Hardening sshd · Certificate-based SSH · Debugging failures |
 | B10 | **Git & Version Control** | L1–L4 | Why version control · Objects, refs, the DAG (**internals first**) · Staging & committing · Branching & merging · Rebase vs merge · Cherry-pick, revert, reset · Reflog & recovery · Remotes & PRs · Conflict resolution · Workflows (trunk, GitFlow, GitHub Flow) · Hooks · Submodules & monorepos · Bisect & forensics |
 | B11 | **Python for DevOps** | L1–L3 | Language essentials · Data structures · Files & paths · Errors & exceptions · Virtual envs & `uv` · Logging · argparse/typer CLIs · HTTP clients & APIs · JSON/YAML/TOML · Templating (Jinja2) · Testing with pytest · Packaging & distributing tools |
@@ -573,6 +573,42 @@ Three things the walk caught, all recorded in the guide:
 - Reading inode numbers through `/proc/self/fd/N` reported **different inodes
   for two descriptors on the same file**. Use `stat` on the path and `readlink`
   on the fd.
+
+### What building B08.9 found
+
+The last topic of B08, and the one the sandbox nearly prevented: `bats` was
+absent, the same constraint `shellcheck` hit in B08.5. Debian ships bats 1.11.1,
+so it went into the lab image and the topic became teachable rather than
+describable. That is worth remembering as a first move — check whether the
+missing tool is one apt call away before scoping around it.
+
+**A `@test` body fails on the first non-zero command — and errexit's exemptions
+apply.** Measured: a bare `false` ends the test; `false | true` does not, and the
+test passes. So an assertion written as a non-final pipeline stage can never
+fail. Every exemption B08.5 found behaves the same way inside bats.
+
+**`[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"` breaks a sourceable script.**
+When sourced the condition is false, so the compound returns 1, so `source`
+fails under errexit and every test dies in `setup` with `source ... failed`. The
+`if` form returns 0. I wrote the `&&` version first and the walk caught it; it is
+now taught in the lab with a comment on the guard.
+
+**`--print-output-on-failure` shows the actual output**, which corrected an
+overstatement I had already committed — I had written that bats never shows the
+values. It shows `$output`; it still does not show a computed variable or what
+you expected, so the got/want helper stays for those.
+
+**`bats --jobs N` needs GNU parallel or rush, and neither is installed.** It does
+not fall back to serial: it prints `parallel: command not found` and then
+`Executed 0 instead of expected 1 tests` — a suite that looks green and ran
+nothing. I nearly shipped it as advice, which would have been this topic's own
+failure mode in the topic about that failure mode.
+
+The seeded material is the argument: `manual-check.sh` says "looks right",
+`bats first.bats` reports 3/3, and the script keeps files for eight days under a
+seven-day policy and cannot tell "nothing expired" from "the directory is
+empty". Neither the manual check nor the suite touches a boundary, and no test
+passes the DAYS argument at all.
 
 ## Track C — Build & Ship
 

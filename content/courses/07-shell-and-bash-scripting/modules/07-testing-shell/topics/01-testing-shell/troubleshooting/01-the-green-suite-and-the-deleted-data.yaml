@@ -1,0 +1,267 @@
+id: troubleshooting.the-green-suite-and-the-deleted-data
+topic: topic.testing-shell
+title: The green suite and the deleted invoices
+level: L3
+objectives: [OBJ-B08.9.4, OBJ-B08.9.7]
+reveal_policy: progressive
+
+situation: >-
+  A retention job deleted eleven months of invoices. The policy is seven years.
+
+
+  The job has a test suite. It has twelve tests, all passing, and it has passed
+  on every commit for two years. Line coverage on the script is 94%.
+
+
+  The engineer who wrote it is asked what happened and cannot find a bug. Every
+  test still passes against the script as it stands, including after the
+  incident.
+
+
+  The only change in the last month was a config edit: `RETENTION_YEARS` was
+  moved out of the script and into an environment file, so operations could set
+  it per-environment without a deploy.
+
+
+  Work out why twelve passing tests and 94% coverage did not prevent this.
+
+symptoms:
+  - "Eleven months of invoices deleted against a seven-year policy"
+  - "Twelve tests, all passing, before and after the incident"
+  - "94% line coverage on the script"
+  - "The only recent change moved a value into an environment file"
+  - "No test fails when run against the script today"
+
+artifacts:
+  - type: config
+    label: The script, after the change
+    content: |
+      #!/bin/bash
+      set -uo pipefail
+
+      DIR=${1:?usage: prune-invoices.sh DIR}
+      YEARS=${RETENTION_YEARS:-7}
+
+      cutoff_days=$(( YEARS * 365 ))
+      find "$DIR" -maxdepth 1 -type f -name '*.pdf' -mtime "+$cutoff_days" -delete
+      echo "pruned invoices older than $YEARS years"
+
+  - type: config
+    label: The suite
+    content: |
+      setup() {
+        WORK="$BATS_TEST_TMPDIR/w"; mkdir -p "$WORK"
+        touch -d '10 years ago' "$WORK/ancient.pdf"
+        touch -d '1 year ago'   "$WORK/recent.pdf"
+      }
+
+      @test "it deletes a very old invoice" {
+        run ./prune-invoices.sh "$WORK"
+        [ ! -e "$WORK/ancient.pdf" ]
+      }
+
+      @test "it keeps a recent invoice" {
+        run ./prune-invoices.sh "$WORK"
+        [ -e "$WORK/recent.pdf" ]
+      }
+
+      @test "it reports what it did" {
+        run ./prune-invoices.sh "$WORK"
+        [[ "$output" == *"pruned invoices"* ]]
+      }
+
+      # ... nine more, all shaped like these
+
+  - type: log
+    label: The environment file that was added
+    content: |
+      # /etc/prune-invoices.env
+      RETENTION_YEARS=
+
+  - type: log
+    label: The job's own output on the night
+    content: |
+      pruned invoices older than 0 years
+
+  - type: command_output
+    label: What the default does when the variable is set-but-empty
+    content: |
+      $ RETENTION_YEARS=  bash -c 'echo "${RETENTION_YEARS:-7}"'
+      7
+      $ RETENTION_YEARS=  bash -c 'echo "${RETENTION_YEARS-7}"'
+
+      $ unset RETENTION_YEARS; bash -c 'echo "${RETENTION_YEARS:-7}"'
+      7
+
+diagnostic_questions:
+  - "The job printed '0 years'. Which value produced that, and how?"
+  - "Does any test set RETENTION_YEARS?"
+  - "What does the suite's fixture look like, and where is the policy boundary?"
+  - "Why does 94% coverage not help here?"
+  - "Which case, if it existed, would have failed?"
+
+hints:
+  - "Read the environment file carefully. What is on the right of the `=`?"
+  - "Compare `${VAR:-7}` with `${VAR-7}` in the artifacts."
+  - "Count the tests that pass a value for the retention period."
+
+root_cause: >-
+  **The environment file sets `RETENTION_YEARS` to the empty string, and the
+  script uses `${RETENTION_YEARS:-7}` — but the value reached `find` as `0`.**
+
+
+  The log says `pruned invoices older than 0 years`, so `YEARS` was `0`, not
+  `7`. The default did not fire. That happens when the variable is set to
+  something that is not empty but is not a number either, or — as here — when the
+  environment file is sourced and a later line resets it, or when the deployment
+  tooling renders `RETENTION_YEARS=0` from an unset template value. The specific
+  mechanism matters less than the shape: **an externally supplied value reached
+  the arithmetic without ever being validated.**
+
+
+  `cutoff_days=$(( 0 * 365 ))` is `0`, and `-mtime +0` matches everything older
+  than one day.
+
+
+  **Why twelve tests did not catch it.** Not one of them sets
+  `RETENTION_YEARS`. Every test runs with the variable unset, takes the default
+  of 7, and passes. The parameter that was moved into configuration — the whole
+  point of the change — is a code path with **no coverage at all**.
+
+
+  **Why 94% coverage did not help.** Every line of the script executes on every
+  test, including the `YEARS=` line and the arithmetic. Coverage measures which
+  *lines* ran; the defect is in which *values* were tried. A suite can execute a
+  line a thousand times with one input and learn nothing about the others.
+
+
+  **Why the fixture could not see it either.** The files are at 10 years and 1
+  year, against a 7-year policy. Both are a long way from the boundary, so even
+  a test that did vary `YEARS` would likely have passed unless it chose a value
+  near 7 — and none of them chose any value.
+
+
+  **Nothing regressed.** The script's logic is the same as it was two years ago.
+  What changed is that a value which used to be a literal in the file became an
+  input from outside, and the suite had never treated it as an input.
+
+method: >-
+  **1. Read the job's own output first.** `pruned invoices older than 0 years`
+  names the value. That single line converts "why did retention break" into
+  "where did 0 come from", which is a much smaller question and one the tests
+  cannot answer.
+
+
+  **2. Ask which tests exercise the thing that changed.** The change made
+  `RETENTION_YEARS` an input. `grep -c RETENTION_YEARS tests/` returns 0. That is
+  the finding, and it takes ten seconds.
+
+
+  **3. Distrust the coverage number specifically.** 94% and twelve green tests
+  are the reason nobody looked here. Coverage answers "did this line run", and
+  every line ran. Ask instead **which inputs were tried** — here, exactly one.
+
+
+  **4. Look at where the fixture sits relative to the boundary.** 10 years and 1
+  year, policy 7. Nothing near the edge, so the suite could not detect a
+  boundary error even in the parameter it *did* exercise.
+
+
+  **5. Reproduce with the value, not the script.** `RETENTION_YEARS=0
+  ./prune-invoices.sh "$fixture"` deletes everything, immediately, in a
+  throwaway directory. No need to reason about `find` semantics until the input
+  is confirmed.
+
+
+  **6. Ask what the script should have done with a value it did not like.**
+  Nothing validated `YEARS`. Zero, empty, negative and `seven` would all have
+  reached the arithmetic, and three of those produce a delete-everything cutoff.
+
+
+  The habit: **when a change turns a constant into an input, the tests that
+  covered the constant now cover nothing.** Ask what the suite knows about the
+  new input, and the answer is usually "it has never seen one".
+
+resolution: >-
+  **Immediately:** stop the job, restore the invoices from backup, and confirm
+  the restore against an independent count rather than the job's own output.
+
+
+  **Validate the input, and refuse rather than guess:**
+
+
+  ```bash
+  YEARS=${RETENTION_YEARS:-7}
+  [[ "$YEARS" =~ ^[0-9]+$ ]] || { echo "RETENTION_YEARS must be a whole number, got '$YEARS'" >&2; exit 64; }
+  [ "$YEARS" -ge 1 ] || { echo "RETENTION_YEARS must be at least 1, got $YEARS" >&2; exit 64; }
+  ```
+
+
+  A retention period of zero is not a valid configuration for this job. If it
+  ever became one, it should require a different, explicit flag — the same
+  reasoning as B08.8's destruction-is-opt-in rule, and for the same reason: it
+  decides which way a mistake falls.
+
+
+  **Add the cases that were missing**, and note that all of them are about the
+  *input* rather than the logic:
+
+
+  ```bash
+  @test "an unset RETENTION_YEARS uses the default" {
+    unset RETENTION_YEARS
+    run ./prune-invoices.sh "$WORK"
+    [[ "$output" == *"older than 7 years"* ]]
+  }
+
+  @test "an empty RETENTION_YEARS is refused, not defaulted to zero" {
+    RETENTION_YEARS= run ./prune-invoices.sh "$WORK"
+    [ "$status" -eq 64 ]
+  }
+
+  @test "a zero RETENTION_YEARS is refused" {
+    RETENTION_YEARS=0 run ./prune-invoices.sh "$WORK"
+    [ "$status" -eq 64 ]
+    [ -e "$WORK/recent.pdf" ]
+  }
+
+  @test "a non-numeric RETENTION_YEARS is refused" {
+    RETENTION_YEARS=seven run ./prune-invoices.sh "$WORK"
+    [ "$status" -eq 64 ]
+  }
+  ```
+
+
+  **Move the fixture to the boundary.** Files at 7 years minus a day, exactly 7
+  years, and 7 years plus a day — so the suite can see an off-by-one at all. The
+  current fixture at 10 and 1 could not.
+
+
+  **Add a production assertion**, because no test knows what tonight's config
+  says:
+
+
+  ```bash
+  before=$(find "$DIR" -name '*.pdf' | wc -l)
+  ...
+  after=$(find "$DIR" -name '*.pdf' | wc -l)
+  removed=$(( before - after ))
+  [ "$removed" -le "$((before / 10))" ] || {
+    echo "prune removed $removed of $before invoices — refusing to continue" >&2
+    exit 1
+  }
+  ```
+
+
+  A retention job that suddenly deletes a large fraction of everything is nearly
+  always wrong, and that check is independent of whether the config is sane.
+  **A test proves the script is right; an assertion proves the run was.**
+
+
+  **For the postmortem:** the script did not change, the tests did not fail, and
+  coverage was 94%. A configuration change turned a literal into an input, and
+  the suite had never supplied one — so the parameter with the most operational
+  significance had the least coverage. Two general findings: **coverage measures
+  lines, and shell bugs live in inputs**; and **when a constant becomes
+  configurable, the tests that covered it now cover nothing** — the change should
+  arrive with the cases for the new input, not after them.

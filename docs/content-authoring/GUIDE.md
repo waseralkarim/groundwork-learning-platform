@@ -496,6 +496,32 @@ session nearly removed ~25 "leftover" containers that turned out to be the
 user's MCP servers, a kind cluster and an unrelated lab. `docker ps --format
 '{{.Names}}\t{{.Image}}'` first, every time.
 
+**Check whether a missing tool is one apt call away before scoping around it.**
+B08.9 was planned as a topic that could only *describe* `bats`, because it was
+absent — the same constraint `shellcheck` imposed in B08.5. Debian ships
+`bats 1.11.1`. Adding it to the image turned a tour into four labs with real
+suites. `apt-cache policy <tool>` needs `apt-get update` first, because the image
+deletes `/var/lib/apt/lists` at build time and the query silently returns
+nothing otherwise.
+
+**A `@test` body inherits errexit's exemptions.** A bare `false` ends the test;
+`false | true` does not, and the test passes. So an assertion written as a
+non-final pipeline stage can never fail — the same trap as B08.5, in a place
+where it looks like a test rather than a script.
+
+**`[ cond ] && main "$@"` at the end of a sourceable script returns 1 when
+sourced**, so `source` fails under errexit and every bats test dies in `setup`.
+Use `if [ cond ]; then main "$@"; fi`, which returns 0. This cost a debugging
+cycle and is now taught rather than worked around.
+
+**Two overstatements this session, both caught by running the thing rather than
+trusting the docs.** I wrote that bats "does not give you the values" on failure
+— `--print-output-on-failure` does, for `$output`. And I documented
+`bats --jobs N` as a way to parallelise; it needs GNU `parallel` or `rush`,
+neither of which is installed, and rather than falling back to serial it reports
+`Executed 0 instead of expected 1 tests`. **Run every flag you document, in the
+image, before writing the sentence.**
+
 **Write content files with the Write/Edit tools, not with shell heredocs.**
 Escaped strings inside heredocs mangle `\n`, `\\` and line continuations in YAML
 walkthroughs, repeatedly and silently. Normalise every new file to LF before

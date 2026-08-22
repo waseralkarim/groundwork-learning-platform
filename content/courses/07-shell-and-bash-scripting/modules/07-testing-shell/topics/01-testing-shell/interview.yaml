@@ -1,0 +1,266 @@
+topic: topic.testing-shell
+
+questions:
+  - id: i1
+    level: L2
+    question: "How would you test a shell script?"
+    model_answer: >-
+      `bats`, and the first thing I would decide is **what is worth testing**,
+      because a standard that demands testing everything gets ignored.
+
+
+      Always: anything **destructive** — a delete, a `--dry-run` that must be
+      dry, a retention boundary. Anything that **decides** — a branch, a
+      threshold, a parse. Every **failure path** the script relies on. And every
+      **bug we fix**, in the same commit as the fix.
+
+
+      Not: the shell itself, trivial wrappers, or output wording unless something
+      parses it — otherwise every rewording is a red build, which teaches the
+      team that failures are noise.
+
+
+      The mechanics are small. A `.bats` file is shell; `@test` blocks run with
+      `set -e` semantics, so a bare `[ ... ]` is an assertion. **`run` is the one
+      thing you have to know**, because without it a non-zero exit ends the test —
+      so you cannot write a failure-path test at all. With it you get `$status`,
+      `$output` and `${lines[@]}`.
+
+
+      Two details I would want in review. Fixtures go in `$BATS_TEST_TMPDIR`,
+      which is fresh per test — a fixed path under `/tmp` means the suite cannot
+      run twice at once. And an assertion must be the **last command in its
+      pipeline**: `[ "$x" = y ] | tee log` can never fail, because errexit's
+      exemptions apply inside a test exactly as they do anywhere else.
+
+
+      Before any of that, though, I would make the script testable:
+      `main "$@"` behind a `BASH_SOURCE` guard, so a suite can source it and test
+      individual functions rather than only running the whole thing. And anything
+      a test needs to vary has to be an argument or an environment variable — a
+      threshold hard-coded mid-script is one no test can reach.
+    signal: >-
+      Reaching for bats is expected. The discriminators are `run` and *why* it
+      exists — that without it a failure path cannot be written at all — and
+      leading with what is worth testing rather than with syntax. The
+      `BASH_SOURCE` guard and "anything a test must vary is an input" show
+      someone who has made a script testable, not just written tests.
+    follow_ups:
+      - "What is in $output after a command writes to both streams?"
+      - "Why must an assertion be last in its pipeline?"
+  - id: i2
+    level: L3
+    question: >-
+      A script has a passing test suite and a bug in production. Where do you
+      look?
+    model_answer: >-
+      At **which cases the suite names**, not at whether it exists.
+
+
+      The example I keep coming back to had three passing tests and two bugs. The
+      tests were correct, readable and asserted true things — a 30-day-old file
+      is expired, a 2-day-old one is not, a missing directory exits 1. All true.
+      The policy was seven days and the fixture used **30 and 2**, so nothing was
+      anywhere near the boundary, and `-mtime +7` quietly kept everything for
+      eight days.
+
+
+      So I look in four places, in this order:
+
+
+      **Boundaries.** Exactly the limit, one either side. Nothing interesting
+      happens in the middle of a range.
+
+
+      **Arguments with defaults.** The script took an optional `DAYS` and no test
+      passed one. Every parameter with a default is a code path with no coverage,
+      because the default is what every caller uses and therefore what every test
+      writer reaches for. Worth saying: when I finally wrote that test it
+      **passed** — the parameter was untested, not broken. Different finding.
+
+
+      **Failure paths**, which is where `run` matters, and the empty case where
+      "it worked" and "it did nothing" produce the same output.
+
+
+      **And I would distrust a coverage number specifically.** I have seen 94%
+      coverage on a script that deleted eleven months of invoices: every line ran
+      on every test, and the value that broke it had never been supplied.
+      Coverage measures which lines ran; shell bugs live in which inputs were
+      tried.
+
+
+      The underlying reason a suite misses these is worth naming — tests written
+      after the code encode what the author already believed, so they inherit the
+      same wrong assumptions. A test cannot question a belief its author did not
+      know they held. Which is why the review question is never "are there tests"
+      but **"which case would have caught this, and is it in there?"**
+    signal: >-
+      Most people answer "add more tests". The discriminator is naming the four
+      places — boundaries, defaults, failure paths, the empty case — and
+      distrusting coverage for a stated reason. "The parameter was untested, not
+      broken" is a distinction few draw, and the review question at the end is
+      the mark of someone who has run reviews rather than only attended them.
+    follow_ups:
+      - "Why does line coverage not help here?"
+      - "Why do tests written after the code miss these?"
+  - id: i3
+    level: L3
+    question: >-
+      How do you test a script that runs `kubectl` or `terraform`?
+    model_answer: >-
+      With a **test double on `PATH`**. The script finds the command by searching
+      `PATH`, so the test controls what it finds.
+
+
+      ```bash
+      setup() {
+        BIN="$BATS_TEST_TMPDIR/bin"; mkdir -p "$BIN"
+        printf '#!/bin/bash\necho "kubectl $*" >> "$FAKE_LOG"\nexit "${FAKE_RC:-0}"\n' > "$BIN/kubectl"
+        chmod 0755 "$BIN/kubectl"
+        export FAKE_LOG="$BATS_TEST_TMPDIR/calls"; : > "$FAKE_LOG"
+        export PATH="$BIN:$PATH"
+      }
+      ```
+
+
+      Three behaviours and they are the three that matter: it **records how it
+      was called**, it **returns a status the test chooses**, and it lives in
+      `$BATS_TEST_TMPDIR` so it cannot leak between tests.
+
+
+      Two mistakes I would look for. **Appending to `PATH` instead of
+      prepending** — if the real tool is installed it wins, so the test passes on
+      a laptop with no CLI and performs a real deploy in CI. And **a double that
+      always returns 0**, which only proves the script works when the world works.
+      `FAKE_RC=1 run ./deploy.sh` is what proves it does not report success after
+      the apply failed.
+
+
+      The failure-path tests are the ones worth writing and the ones nobody does.
+      Three I would insist on: that it does not claim success when the tool
+      failed; that it **stops** rather than running the next command, which is a
+      claim about `set -e` rather than about logic; and that it does not call the
+      tool **at all** when validation should have refused first — an empty call
+      log proves it validated before acting.
+
+
+      And the honest limit: make the double accept a flag the real tool would
+      reject, and the suite stays green. **A double proves you called what you
+      meant to call, not that it is the right call.** So keep it trivially small,
+      assert the actual arguments rather than just "it was called", and have one
+      real integration test somewhere — nightly, not per-commit. That is the line
+      between a unit test and an integration test, and it is better said out loud
+      than discovered during an upgrade.
+    signal: >-
+      Knowing the PATH-double technique is the answer. The discriminators are
+      prepend-not-append (which fails in the expensive direction — real deploys
+      in CI), a double that can be made to FAIL, and stating the limit
+      unprompted: it proves you called what you meant, not that it was right.
+      The "empty call log proves it validated before acting" test is rare.
+    follow_ups:
+      - "What stops the double drifting from the real tool?"
+      - "Which of your tests would catch a flag removed upstream?"
+  - id: i4
+    level: L3
+    question: "What would you do about a test that fails one build in twenty?"
+    model_answer: >-
+      Fix it or delete it, that week. **A flaky test is a broken test.**
+
+
+      The usual causes in shell are worth knowing because they are all the same
+      shape — state that outlives a test. A fixed fixture path like
+      `/tmp/backup-tests` is shared between tests, between files, and between
+      concurrent CI jobs on one runner, so a matrix build races against itself.
+      `$BATS_TEST_TMPDIR` removes the whole class in two lines. The other common
+      one is time: an assertion comparing against `$(date +%F)` fails at
+      midnight, and that failure gets blamed on the flake everyone already knows
+      about.
+
+
+      "It always passes locally" is the strongest clue and usually gets treated
+      as reassurance. Ask what CI does that a laptop does not — usually
+      parallelism, a shared filesystem, or a different clock.
+
+
+      But the reason I would treat it as urgent is not the test. It is what
+      happens next. The pattern I have watched is: add `--retry`, then
+      `continue-on-error`, then a habit of merging red builds that "look like the
+      flaky one" — and then a genuine regression ships because it was
+      indistinguishable from noise. Seventeen "just re-run" messages in a chat
+      log is a measurement of what it has already cost.
+
+
+      **A flaky test does not cost you the flake, it costs you the suite.** Once a
+      red build is routinely dismissed, every test in the repository has stopped
+      being a gate.
+
+
+      So: no retries in CI, no `continue-on-error`. If it genuinely cannot be
+      fixed this week, `skip "flaky — see #482"` — which keeps it named and
+      visible while removing it from the gate. That is strictly better than a red
+      build the team has agreed to ignore, and much better than deleting it
+      quietly.
+    signal: >-
+      "Fix it" is the expected answer. The discriminator is treating it as
+      urgent for a social reason rather than a technical one — retry, then
+      continue-on-error, then merging red — and recognising that the suite is
+      telling the truth. Naming $BATS_TEST_TMPDIR and clock-dependent assertions
+      as the two usual causes shows they have actually debugged one.
+    follow_ups:
+      - "Why does it always pass locally?"
+      - "What would you do if it genuinely cannot be fixed this week?"
+  - id: i5
+    level: L2
+    question: >-
+      Where does testing stop and monitoring start?
+    model_answer: >-
+      Three layers, and they answer three different questions.
+
+
+      A **unit test with doubles** asks *is the logic what I meant?* It catches a
+      wrong path being built, a missing guard, a script reporting success after a
+      failure.
+
+
+      An **integration test** against the real tool asks *is the interface what I
+      assumed?* It catches a flag removed in the next version, an RBAC denial, a
+      manifest that is valid YAML and names the wrong image. Slow and shared, so
+      nightly rather than per-commit.
+
+
+      A **production assertion** asks *is reality what I expected, this time?*
+      Nothing else can. No test knows the disk filled up tonight, that the cluster
+      is full, or that a rollout reported success while the app crashlooped.
+
+
+      The line I use: **a test proves the script is right; an assertion proves the
+      run was.** A script that does something irreversible needs both, and the
+      assertion is usually worth more, because it is the one that runs on the
+      night it matters.
+
+
+      Concretely, in a retention job I would want both a suite covering the
+      boundary and, in the job itself, something like "if this run is about to
+      remove more than a tenth of everything, refuse". That check is independent
+      of whether the config is sane, which is exactly the case the tests cannot
+      cover — I have seen a config change turn a literal into an input, and the
+      suite had never supplied one.
+
+
+      And the honest limit on all of it: once I am writing doubles for four
+      different tools, asserting on parsed JSON, or maintaining a test helper
+      library, the tests are telling me the script outgrew shell. `pytest` gives
+      the same ideas with real assertion output and mocking that does not depend
+      on `PATH` ordering. The reason to learn this in shell first is not that
+      shell is the right place to test — it is that the scripts you inherit are
+      already in shell, and they are running as root on every host tonight.
+    signal: >-
+      The three layers are the structure; the discriminator is being specific
+      about what only an assertion can catch, and giving a concrete one — refuse
+      if this run would remove more than a tenth of everything. "A test proves
+      the script is right; an assertion proves the run was" is the compression to
+      listen for. Knowing when to stop writing shell is the senior half.
+    follow_ups:
+      - "Give an assertion you would add to a deploy script."
+      - "When would you rewrite the script in Python?"

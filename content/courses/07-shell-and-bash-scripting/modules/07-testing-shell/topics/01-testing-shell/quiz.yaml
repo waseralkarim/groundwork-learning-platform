@@ -1,0 +1,448 @@
+id: quiz.testing-shell
+topic: topic.testing-shell
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.9.1]
+    stem: >-
+      A suite of three tests passes against a script with two bugs. What does
+      that tell you?
+    options:
+      - id: a
+        text: The script behaves as expected for the three cases those tests name
+        correct: true
+      - id: b
+        text: The tests are badly written
+        note: >-
+          They can be correct, readable, and assert true things — and still miss
+          everything that is wrong.
+      - id: c
+        text: The script has no bugs in the tested lines
+        note: >-
+          The buggy line was covered; the *case* that exposes it was not.
+      - id: d
+        text: Coverage is too low
+        note: >-
+          Line coverage would look fine here. The gap is in inputs, not lines.
+    explanation: >-
+      A green suite is evidence about **the cases it names, and nothing more**.
+      Tests written after the code encode what the author already believed, so
+      they inherit the same wrong assumptions. The review question is never "are
+      there tests" — it is **"which case would have caught this, and is it in
+      there?"**
+
+  - id: q2
+    type: multi_choice
+    level: L2
+    objectives: [OBJ-B08.9.1, OBJ-B08.9.4]
+    stem: "Where do bugs tend to hide from a happy-path suite?"
+    options:
+      - id: a
+        text: At boundaries — exactly 7 days, exactly the limit
+        correct: true
+      - id: b
+        text: On failure paths
+        correct: true
+      - id: c
+        text: In arguments that have a default and are never passed
+        correct: true
+      - id: d
+        text: In the empty case, where "it worked" and "it did nothing" look alike
+        correct: true
+      - id: e
+        text: In the most frequently executed line
+        note: >-
+          That line is exercised constantly, in tests and in production.
+    explanation: >-
+      The seeded fixture used 30 days and 2 days under a 7-day policy — both a
+      long way from the edge. **Nothing interesting happens in the middle of a
+      range.** And every parameter with a default is a code path with no
+      coverage, because the default is what every caller uses.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.9.2]
+    stem: "What does `run` do in a bats test?"
+    options:
+      - id: a
+        text: >-
+          Runs a command without failing the test, capturing `$status`,
+          `$output` and `${lines[@]}`
+        correct: true
+      - id: b
+        text: Runs the command and fails the test if it exits non-zero
+        note: >-
+          That is what happens *without* `run` — which is why failure paths need
+          it.
+      - id: c
+        text: Runs the command in a subshell so it cannot affect the test
+        note: >-
+          It does run it as a child, but the point is capturing the result.
+      - id: d
+        text: Retries the command until it succeeds
+        note: >-
+          Nothing in bats retries.
+    explanation: >-
+      Without `run`, a non-zero exit ends the test immediately — **so you cannot
+      test a failure path without it.** That is the most common reason a
+      beginner's suite has no failure-path tests: the obvious way to write one
+      does not work. Note `run` also swallows the status, so a test that forgets
+      `[ "$status" ... ]` passes whatever happened.
+
+  - id: q4
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.9.2]
+    stem: "What is in `$output` after `run bash -c 'echo out; echo err >&2'`?"
+    options:
+      - id: a
+        text: Both lines — `run` combines stdout and stderr
+        correct: true
+      - id: b
+        text: Only `out`
+        note: >-
+          Measured: `$output` is `out\nerr` and `${#lines[@]}` is 2.
+      - id: c
+        text: Only `err`
+        note: >-
+          Both are captured.
+      - id: d
+        text: Neither; `$output` holds only the exit status
+        note: >-
+          The status is in `$status`.
+    explanation: >-
+      Combining the streams is convenient and occasionally misleading — a test
+      asserting on stdout can be satisfied by a warning printed to stderr. When
+      the distinction matters, `run bash -c 'cmd 2>/dev/null'`.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.9.2]
+    stem: "Where should a test's fixtures and fake binaries live?"
+    options:
+      - id: a
+        text: "`$BATS_TEST_TMPDIR`, which is created per test and removed after"
+        correct: true
+      - id: b
+        text: A fixed path under `/tmp`
+        note: >-
+          Then the suite cannot run twice at once, which matters the moment CI
+          runs two branches.
+      - id: c
+        text: The repository, committed alongside the tests
+        note: >-
+          Fine for static input data; wrong for anything a test mutates.
+      - id: d
+        text: The current working directory
+        note: >-
+          Which differs depending on how the suite was invoked.
+    explanation: >-
+      `$BATS_TEST_TMPDIR` is fresh for **each test** — measured as
+      `/tmp/bats-run-XXXX/test/N` — so no test can be affected by one that ran
+      before it, and nothing leaks between parallel runs.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.9.3]
+    stem: >-
+      A bats failure prints the file, the line and the failing expression. What
+      does it not print by default?
+    options:
+      - id: a
+        text: The actual values being compared
+        correct: true
+      - id: b
+        text: Which test failed
+        note: >-
+          The `not ok N <name>` line names it.
+      - id: c
+        text: The suite's exit status
+        note: >-
+          Non-zero if any test failed, which is what makes it a CI gate.
+      - id: d
+        text: How many tests ran
+        note: >-
+          The `1..N` plan line says so.
+    explanation: >-
+      `[ "$output" = "x" ]` failing tells you the assertion failed, not what
+      `$output` was. **`--print-output-on-failure`** adds `# Last output: …`,
+      which covers `$output` — most assertions. For anything else (a count, a
+      file's contents, a computed variable) put the values in the message
+      yourself, or use a four-line `assert_equals` helper.
+
+  - id: q7
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.9.3]
+    stem: >-
+      Why can `[ "$x" = "$y" ] | tee log` never fail a bats test?
+    options:
+      - id: a
+        text: >-
+          It is a non-final pipeline stage, and errexit's exemptions apply inside
+          a test
+        correct: true
+      - id: b
+        text: "`tee` swallows the exit status of the whole pipeline"
+        note: >-
+          The pipeline's status is the *last* command's, which is `tee` — the
+          same thing said less precisely, but the rule is about position.
+      - id: c
+        text: "`[ ]` cannot be used inside a pipeline"
+        note: >-
+          It can; it simply is not the command whose status counts.
+      - id: d
+        text: bats disables assertions inside pipelines
+        note: >-
+          bats does nothing special; this is ordinary shell behaviour.
+    explanation: >-
+      Measured: a bare `false` ends the test, and `false | true` does not. Every
+      exemption B08.5 found — `if`/`while` conditions, `&&`/`||` operands,
+      anything after `!` — behaves the same way here. **An assertion must be the
+      last command in its pipeline, or it is decoration.**
+
+  - id: q8
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.9.4]
+    stem: >-
+      A retention script's policy is 7 days. Which fixture is most likely to find
+      an off-by-one?
+    options:
+      - id: a
+        text: Files at 6, 7 and 8 days
+        correct: true
+      - id: b
+        text: Files at 2 and 30 days
+        note: >-
+          The seeded suite's fixture, and it passed with the bug present.
+      - id: c
+        text: A thousand files spread evenly over a year
+        note: >-
+          More data, same blindness — unless something lands exactly on the edge.
+      - id: d
+        text: One file at 7 days
+        note: >-
+          Better, but it cannot tell a correct boundary from one that expires
+          everything.
+    explanation: >-
+      Test one on each side and one exactly on it. `-mtime +7` means *more than*
+      seven whole periods, so a file at exactly seven days is kept for another
+      day — a fixture at 2 and 30 cannot see that, which is why three green tests
+      sat on top of it.
+
+  - id: q9
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.9.4]
+    stem: >-
+      A suite has no test that passes the script's optional `DAYS` argument. What
+      follows?
+    options:
+      - id: a
+        text: That code path is uncovered, and nothing would notice if it broke
+        correct: true
+      - id: b
+        text: The argument is unused and should be removed
+        note: >-
+          Untested is not the same as unused — measured, `DAYS` changes the
+          behaviour completely.
+      - id: c
+        text: The default value is wrong
+        note: >-
+          Unrelated; the default may be perfectly correct.
+      - id: d
+        text: Nothing, since the default covers the same code
+        note: >-
+          It covers one value of it.
+    explanation: >-
+      **Every parameter with a default is a code path with no coverage**, because
+      the default is what every caller uses and therefore what every test writer
+      reaches for. When the test was finally written it **passed** — so the
+      parameter was untested, not broken. Those are different findings.
+
+  - id: q10
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.9.5]
+    stem: >-
+      How do you test a script that calls `kubectl`, with no cluster available?
+    options:
+      - id: a
+        text: >-
+          Put a script named `kubectl` earlier on `PATH` that records its
+          arguments and returns a chosen status
+        correct: true
+      - id: b
+        text: Install kubectl and point it at a throwaway cluster
+        note: >-
+          That is an integration test — valuable, and too slow and too shared to
+          run per-commit.
+      - id: c
+        text: Refactor the script so it does not call external commands
+        note: >-
+          Calling external commands is what the script is *for*.
+      - id: d
+        text: Skip those tests; shell that calls tools is untestable
+        note: >-
+          This is where most people stop, and it is not true.
+    explanation: >-
+      The script finds `kubectl` by searching `PATH`, so the test controls what
+      it finds. The double needs three behaviours: **record how it was called**,
+      **return a status the test chooses**, and live in `$BATS_TEST_TMPDIR` so it
+      cannot leak. It is the same mechanism B08.6 measured when a shell function
+      shadowed `ls`.
+
+  - id: q11
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.9.5]
+    stem: "What is wrong with a test double that always returns 0?"
+    options:
+      - id: a
+        text: It only proves the script works when the world works, which was never in doubt
+        correct: true
+      - id: b
+        text: It makes the tests slower
+        note: >-
+          It is the fastest possible double.
+      - id: c
+        text: It cannot record the arguments it was called with
+        note: >-
+          It can; the status is separate.
+      - id: d
+        text: bats will refuse to run it
+        note: >-
+          bats has no opinion about what a double does.
+    explanation: >-
+      The failure path is what runs during an incident, and it is usually the
+      part that has never executed. `FAKE_RC=1 run ./deploy.sh` is what proves
+      the script does not report success after `kubectl` failed — the same
+      trailing-`echo` defect B08.5 found in a migration runner.
+
+  - id: q12
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.9.6]
+    stem: >-
+      Your `kubectl` double accepts a flag the real `kubectl` would reject, and
+      the suite stays green. What does that show?
+    options:
+      - id: a
+        text: A double proves you called what you meant to call, not that it is the right call
+        correct: true
+      - id: b
+        text: The double is broken and should be fixed
+        note: >-
+          Making it validate flags turns it into a second implementation with
+          its own bugs.
+      - id: c
+        text: The test is redundant
+        note: >-
+          It still catches wrong arguments, missing guards and false success.
+      - id: d
+        text: PATH-based doubles should not be used
+        note: >-
+          The alternative is not testing the script at all.
+    explanation: >-
+      Keep a double honest three ways: **assert the arguments**, not just that it
+      was called; **keep it trivially small**; and have **one real test**
+      somewhere — nightly, not per-commit. That is the line between a unit test
+      and an integration test, and it is worth saying out loud rather than
+      discovering during an upgrade.
+
+  - id: q13
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B08.9.6]
+    stem: "Which failure can only be caught by a production assertion?"
+    options:
+      - id: a
+        text: The cluster is full tonight
+        correct: true
+      - id: b
+        text: The script builds the wrong manifest path
+        note: >-
+          A unit test with a double catches that.
+      - id: c
+        text: A `kubectl` flag was removed in the latest version
+        note: >-
+          An integration test against the real tool catches that.
+      - id: d
+        text: The script reports success after a failed apply
+        note: >-
+          A double returning non-zero catches that.
+    explanation: >-
+      Three layers, three questions. A unit test asks *is the logic what I
+      meant?* An integration test asks *is the interface what I assumed?* An
+      assertion asks *is reality what I expected, this time?* **A test proves the
+      script is right; an assertion proves the run was.**
+
+  - id: q14
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.9.7]
+    stem: >-
+      A suite `source`s the script under test. Every test fails in `setup` with
+      `source ... failed`. The script ends with
+      `[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"`. Why?
+    options:
+      - id: a
+        text: >-
+          When sourced the condition is false, so the compound returns 1 — and a
+          sourced file whose last statement fails ends the test
+        correct: true
+      - id: b
+        text: "`BASH_SOURCE` is not set when a file is sourced"
+        note: >-
+          It is set — that is exactly how the guard distinguishes the two cases.
+      - id: c
+        text: "`main` is not defined yet at that point"
+        note: >-
+          It is defined above, and it is not called when sourced anyway.
+      - id: d
+        text: bats cannot source a file that defines functions
+        note: >-
+          Sourcing to get at functions is the standard pattern.
+    explanation: >-
+      Use the `if` form, which returns 0 when the condition is false:
+      ```bash
+      if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
+      ```
+      This is B08.5's exemption rule arriving in the one place it is most
+      confusing — the guard looks like a no-op and is the reason nothing runs.
+
+  - id: q15
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B08.9.8]
+    stem: >-
+      Which is the highest-value rule in a testing standard for operational
+      shell?
+    options:
+      - id: a
+        text: Every bug you fix gets a test, in the same commit as the fix
+        correct: true
+      - id: b
+        text: Every function has a test
+        note: >-
+          Produces tests for trivial wrappers and still misses the boundary.
+      - id: c
+        text: Line coverage must exceed 80%
+        note: >-
+          The buggy lines here were all covered. The gap was in inputs.
+      - id: d
+        text: Every script must have a test file
+        note: >-
+          Satisfiable with one happy-path test that proves nothing.
+    explanation: >-
+      Those cases are **known to be real** — every other test is a guess about
+      what might go wrong — and **nobody would have invented them**, which is
+      exactly the category a happy-path suite misses. It is also the cheapest
+      rule to follow, because the case is already in front of you.

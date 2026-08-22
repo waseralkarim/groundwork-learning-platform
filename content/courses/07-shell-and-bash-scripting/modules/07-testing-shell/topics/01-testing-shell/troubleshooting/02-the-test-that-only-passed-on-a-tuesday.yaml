@@ -1,0 +1,250 @@
+id: troubleshooting.the-test-that-only-passed-on-a-tuesday
+topic: topic.testing-shell
+title: The suite that fails one build in twenty
+level: L3
+objectives: [OBJ-B08.9.7]
+reveal_policy: progressive
+
+situation: >-
+  A bats suite fails roughly one build in twenty, always in a different test,
+  always with something that looks unrelated to the change being merged.
+
+
+  Re-running the job passes. Everyone re-runs the job.
+
+
+  Over four months the team has added `--retry` to the CI step, then stopped
+  reading the suite's output, and then started merging on a red build if the
+  failure "looks like the flaky one".
+
+
+  This week a genuine regression reached production. It had failed in CI. The
+  engineer merged anyway.
+
+
+  Work out why the suite is flaky, and why that matters more than the regression.
+
+symptoms:
+  - "One build in twenty fails, in a different test each time"
+  - "Re-running always passes"
+  - "Failures cluster when CI is busy"
+  - "A genuine failure was merged because it was assumed to be the flake"
+  - "The suite passes every time when run locally"
+
+artifacts:
+  - type: config
+    label: The suite
+    content: |
+      setup() {
+        WORK=/tmp/backup-tests
+        mkdir -p "$WORK"
+        echo "data" > "$WORK/source.txt"
+        export BACKUP_DIR=/tmp/backup-out
+        mkdir -p "$BACKUP_DIR"
+      }
+
+      @test "it writes a backup" {
+        run ./backup.sh "$WORK"
+        [ -f "$BACKUP_DIR/backup.tar.gz" ]
+      }
+
+      @test "it overwrites an existing backup" {
+        touch "$BACKUP_DIR/backup.tar.gz"
+        run ./backup.sh "$WORK"
+        [ "$(stat -c%s "$BACKUP_DIR/backup.tar.gz")" -gt 0 ]
+      }
+
+      @test "it names the archive after the date" {
+        run ./backup.sh "$WORK"
+        [[ "$output" == *"$(date +%F)"* ]]
+      }
+
+      @test "it refuses a missing source" {
+        run ./backup.sh /nope
+        [ "$status" -ne 0 ]
+      }
+
+  - type: log
+    label: Three failures from three different builds
+    content: |
+      build 4471   not ok 2 it overwrites an existing backup
+      build 4489   not ok 1 it writes a backup
+      build 4502   not ok 3 it names the archive after the date
+
+  - type: config
+    label: The CI step, as it is today
+    content: |
+      - name: tests
+        run: bats -r tests/ || bats -r tests/    # retry once
+        continue-on-error: true
+
+  - type: command_output
+    label: How CI runs the suite
+    content: |
+      # two jobs on the same runner, matrix over bash 5.1 and 5.2
+      strategy:
+        matrix:
+          bash: ["5.1", "5.2"]
+
+  - type: log
+    label: A note in the team chat, three months ago
+    content: |
+      > it's the flaky backup test again, just re-run
+      > (17 similar messages since)
+
+diagnostic_questions:
+  - "Where do the fixtures live, and what is true of that path across two jobs?"
+  - "What does the matrix do, and what do the two jobs share?"
+  - "Why does it always pass locally?"
+  - "Test 3 compares against `date +%F`. When could that be wrong?"
+  - "What did adding `--retry` and `continue-on-error` cost?"
+
+hints:
+  - "`WORK=/tmp/backup-tests` is not per-test. Is it per-*job*?"
+  - "Two matrix jobs on one runner share a filesystem."
+  - "What happens to test 3 at midnight?"
+
+root_cause: >-
+  **The fixtures use fixed paths, and two matrix jobs run on the same runner at
+  the same time.**
+
+
+  `WORK=/tmp/backup-tests` and `BACKUP_DIR=/tmp/backup-out` are the same
+  directories for every test, every file, and — critically — **both matrix
+  jobs**. The bash 5.1 job and the bash 5.2 job create, overwrite and read the
+  same `backup.tar.gz` concurrently. Whichever one loses the race sees a file
+  that the other truncated, deleted or had not finished writing.
+
+
+  That explains every observation: a different test fails each time, because it
+  depends on interleaving; re-running passes, because the collision is a race;
+  failures cluster when CI is busy, because that is when the two jobs overlap;
+  and it never fails locally, because locally only one job runs.
+
+
+  **`$BATS_TEST_TMPDIR` exists precisely to prevent this.** It is created fresh
+  per test and removed afterwards, so no test can be affected by another — in the
+  same run or a parallel one.
+
+
+  **There is a second, rarer flake.** Test 3 compares the output against
+  `$(date +%F)`. If the script captures the date and the test evaluates `date`
+  on the other side of midnight, they disagree. One build in twenty is the
+  concurrency; one build in a very long time is this. It matters because it is
+  the kind of thing that gets blamed on "the flaky suite" and never fixed.
+
+
+  **And the expensive part is none of that.** The suite was telling the truth —
+  that these tests are not isolated — and the team responded by making the signal
+  quieter: `|| bats -r tests/` to retry, then `continue-on-error: true`, then a
+  habit of merging red builds that "look like the flaky one".
+
+
+  **A flaky test does not cost you the flake. It costs you the suite.** Once a
+  red build is routinely dismissed, every test in the repository has stopped
+  being a gate — including the one that caught this week's regression.
+
+method: >-
+  **1. Read the failures as a set, not one at a time.** Three different tests
+  failing across three builds is not three bugs; it is one property. Ask what
+  those tests share, and the answer is the fixture directory.
+
+
+  **2. Look for state that outlives a test.** `WORK=/tmp/backup-tests` is a fixed
+  path. It is shared between tests in a file, between files in a run, and between
+  concurrent runs on the same machine. `$BATS_TEST_TMPDIR` is the fix and the
+  tell — a suite not using it is a suite that has not thought about isolation.
+
+
+  **3. Ask what CI does that a laptop does not.** "It always passes locally" is
+  the strongest clue available and is usually treated as reassurance. The matrix
+  runs two jobs; the laptop runs one. Anything shared between jobs is a candidate.
+
+
+  **4. Look for time in assertions.** `$(date +%F)` evaluated twice can differ.
+  Any test that compares against *now* is a test that fails at some hour.
+
+
+  **5. Count the cost of the mitigations.** `--retry` doubles the runtime and
+  hides the signal. `continue-on-error: true` removes the gate entirely. Neither
+  fixed anything, and together they converted a test suite into decoration —
+  which is what let a real failure through.
+
+
+  **6. Treat the chat log as evidence.** Seventeen "just re-run" messages is a
+  measurement: the team has been paying this cost for months, and the flake has
+  been more expensive than the bug it was hiding.
+
+
+  The habit: **a flaky test is a broken test.** Fix it or delete it the week it
+  appears, because the alternative is not "a slightly unreliable suite" — it is
+  a team that has learned to ignore red.
+
+resolution: >-
+  **Immediately:** revert the regression, and remove `continue-on-error: true`
+  from the CI step in the same change. Until the gate is real again, nothing else
+  about the suite matters.
+
+
+  **Isolate every fixture:**
+
+
+  ```bash
+  setup() {
+    WORK="$BATS_TEST_TMPDIR/work"; mkdir -p "$WORK"
+    echo "data" > "$WORK/source.txt"
+    export BACKUP_DIR="$BATS_TEST_TMPDIR/out"; mkdir -p "$BACKUP_DIR"
+  }
+  ```
+
+
+  Fresh per test, removed afterwards, and unique per job — so the two matrix jobs
+  cannot collide however they interleave. This is a two-line change that removes
+  the entire class.
+
+
+  **Remove time from the assertion.** Have the script take the date as an
+  injectable input and pin it in the test:
+
+
+  ```bash
+  @test "it names the archive after the date" {
+    BACKUP_DATE=2026-01-15 run ./backup.sh "$WORK"
+    [[ "$output" == *"2026-01-15"* ]]
+  }
+  ```
+
+
+  Anything a test needs to be deterministic about must be an input. A test that
+  reads the clock is a test that fails at midnight — and, worse, one whose
+  failure will be blamed on the flake everyone already knows about.
+
+
+  **Then restore the gate and keep it honest:**
+
+
+  ```yaml
+  - name: tests
+    run: bats -r --print-output-on-failure tests/
+  ```
+
+
+  No retry, no `continue-on-error`. A retry is a way of not reading the output,
+  and this suite's output was correct every time it went red.
+
+
+  **Adopt a rule with a deadline**, because this is a social failure as much as a
+  technical one: **a test that fails intermittently is quarantined or deleted
+  within the week.** `skip "flaky — see #482"` keeps it named and visible while
+  removing it from the gate, which is strictly better than a red build everyone
+  has agreed to ignore. What is not acceptable is leaving it failing, because
+  that is the state that trains the team.
+
+
+  **For the postmortem, and this is the finding worth carrying:** the suite was
+  never wrong. It correctly reported, one build in twenty for four months, that
+  these tests were not isolated. Every response made the signal quieter rather
+  than fixing the cause, and the accumulated result was that a genuine regression
+  was indistinguishable from noise. **A flaky test does not cost you the flake;
+  it costs you the suite** — and the bill arrives on the day something real
+  fails.
