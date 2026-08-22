@@ -93,10 +93,10 @@ questions:
   - id: i3
     level: L2
     question: >-
-      Your image installs 17 packages and contains 163. Is that a problem?
+      Your image installs 18 packages and contains 175. Is that a problem?
     model_answer: >-
-      Not by itself — the 146 are the dependency closure, computed at install time
-      because those seventeen genuinely require them. `apt-mark showmanual` and
+      Not by itself — the 157 are the dependency closure, computed at install time
+      because those eighteen genuinely require them. `apt-mark showmanual` and
       `apt-mark showauto` are how the system records the split, and the split is
       what makes `autoremove` possible at all.
 
@@ -109,7 +109,7 @@ questions:
       `gcc` alone pulls in around forty packages — a compiler needs an assembler, a
       linker, a preprocessor and several arbitrary-precision maths libraries. You
       cannot tidy that away; you can only ask for less. So the real conversation is
-      about the seventeen, and if the compiler is only needed to build the
+      about the eighteen, and if the compiler is only needed to build the
       application, the fix is a multi-stage build.
 
 
@@ -119,7 +119,7 @@ questions:
       one that survives the "disk is cheap" reply.
 
 
-      If a reviewer asked me to delete the 146, I would show them `apt-get -s
+      If a reviewer asked me to delete the 157, I would show them `apt-get -s
       remove` on any of them: most take something we asked for with them. Their
       instinct is sound and the proposed action is impossible, and I would rather
       redirect them to the manual list than dismiss the concern — that list is the

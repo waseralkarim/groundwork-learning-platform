@@ -97,10 +97,10 @@ The system records whether each package was requested or pulled in:
 $ apt-mark showmanual | wc -l
 17
 $ apt-mark showauto | wc -l
-146
+157
 ```
 
-Seventeen and one hundred and forty-six. The seventeen are recognisable — they are
+Eighteen and one hundred and fifty-seven. The eighteen are recognisable — they are
 nearly the Dockerfile's `apt-get install` line:
 
 ```text
@@ -108,11 +108,11 @@ bash binutils ca-certificates coreutils curl file gcc iproute2 less
 libc6-dev libcap2-bin netcat-openbsd openssh-client openssl procps strace
 ```
 
-The other 146 are the **dependency closure**: everything required to make those
-seventeen work, computed at install time and recorded.
+The other 157 are the **dependency closure**: everything required to make those
+eighteen work, computed at install time and recorded.
 
 :::note
-"Nearly" is doing real work there. The Dockerfile names **eighteen** packages —
+"Nearly" is doing real work there. The Dockerfile names **nineteen** packages —
 `util-linux` is the one missing from the list above, and it is recorded as
 *automatic* despite having been asked for. The record describes what the package
 manager did, not a transcript of what you typed, and the two can differ for
@@ -129,7 +129,7 @@ then starts relying on it directly.
 
 ## What the closure costs
 
-The 17-to-163 ratio is the honest answer to "how big is this install", and it is
+The 18-to-175 ratio is the honest answer to "how big is this install", and it is
 usually a shock in one specific direction: **a small request can pull in an
 enormous amount.** Asking for `gcc` on this system brought in `binutils`,
 `cpp-14`, `libisl23`, `libmpfr6`, `libgcc-14-dev`, `linux-libc-dev` and dozens
@@ -141,7 +141,7 @@ Two consequences follow, and both come back later in the path:
 megabytes off your application while installing a compiler is arithmetic that
 does not work. The way to a small image is asking for less, not tidying more.
 
-**Attack surface is the closure, not the request.** Every one of those 146
+**Attack surface is the closure, not the request.** Every one of those 157
 packages ships code that exists on the machine and can be reached. A CVE in
 `libisl23` is yours, and you have almost certainly never heard of it.
 

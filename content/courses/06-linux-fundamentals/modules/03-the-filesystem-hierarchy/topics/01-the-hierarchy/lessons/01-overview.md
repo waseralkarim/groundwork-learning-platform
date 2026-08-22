@@ -18,7 +18,7 @@ dpkg-query: no path found matching pattern /usr/local
 ```
 
 The directory exists. Ten subdirectories under it exist. **No package owns any
-of them**, and that is not an oversight — across all 163 packages on this
+of them**, and that is not an oversight — across all 175 packages on this
 machine, exactly zero ship a single file under `/usr/local` or `/opt`:
 
 ```console

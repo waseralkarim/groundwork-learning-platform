@@ -89,17 +89,17 @@ exercises:
       somebody following good advice.
 
   - id: e3
-    title: Explain a 17-to-163 ratio to a sceptical reviewer
+    title: Explain an 18-to-175 ratio to a sceptical reviewer
     level: L2
     objectives: [OBJ-B06.2.4]
     kind: short_answer
     prompt: >-
-      A reviewer sees that your image installs 17 packages and contains 163, and
-      asks you to remove the 146 that were not requested. What do you say, and
+      A reviewer sees that your image installs 18 packages and contains 175, and
+      asks you to remove the 157 that were not requested. What do you say, and
       what would you actually do to make the image smaller?
     answer: >-
       *They cannot be removed, because they are requirements rather than extras.
-      The 146 are the dependency closure of the 17 — computed at install time,
+      The 157 are the dependency closure of the 18 — computed at install time,
       not added by accident. `apt-get -s remove` on any of them shows what would
       go with it, and in most cases the answer includes something we asked for.*
 
@@ -107,7 +107,7 @@ exercises:
       *The way to a smaller image is to ask for less.* `gcc` alone pulls in about
       38 packages, so if the compiler is only needed to build the application,
       the fix is a multi-stage build that leaves it behind. `apt-mark showmanual`
-      is the list to argue about; the other 146 follow from it arithmetically.
+      is the list to argue about; the other 157 follow from it arithmetically.
 
 
       *And it is worth separating the two concerns:* if the reviewer's real

@@ -63,7 +63,7 @@ exercises:
     answer: >-
       *The database is fine — that answer is what `/usr/local` is for.* Debian
       policy forbids any package from installing files under `/usr/local`, so
-      nothing there is ever owned. On this image, zero of 163 packages ship a
+      nothing there is ever owned. On this image, zero of 175 packages ship a
       file under `/usr/local` or `/opt`; the directories are created by
       `base-files.postinst` precisely so they exist while nothing owns them.
 

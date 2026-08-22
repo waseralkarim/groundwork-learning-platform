@@ -232,12 +232,12 @@ questions:
     level: L2
     objectives: [OBJ-B06.2.4]
     stem: >-
-      A Dockerfile names 17 packages and the resulting image has 163 installed.
+      A Dockerfile names 18 packages and the resulting image has 175 installed.
       What is the best reading of that?
     options:
       - id: a
         text: >-
-          Normal — 146 arrived as the dependency closure, and the system records
+          Normal — 157 arrived as the dependency closure, and the system records
           which were requested and which were pulled in
         correct: true
       - id: b

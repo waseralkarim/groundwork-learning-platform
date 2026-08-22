@@ -140,7 +140,7 @@ steps:
       base-files has maintainer scripts in the same directory.
     walkthrough: |
       {
-        echo "does ANY of the 163 packages ship a file under those paths?"
+        echo "does ANY of the 175 packages ship a file under those paths?"
         echo "  package lists mentioning usr/local: $(grep -rl 'usr/local' /var/lib/dpkg/info/*.list 2>/dev/null | wc -l)"
         echo "  package lists shipping under /opt:  $(grep -rl '^/opt/' /var/lib/dpkg/info/*.list 2>/dev/null | wc -l)"
         echo
@@ -289,7 +289,7 @@ solution: >-
   ```
 
 
-  Zero of 163 packages ship anything there. The directories are **created by a
+  Zero of 175 packages ship anything there. The directories are **created by a
   maintainer script** so they exist for you to use, and deliberately not listed as
   package contents so nothing owns them. Debian policy forbids a package from
   installing files under `/usr/local`, and this is what enforcement looks like

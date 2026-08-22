@@ -14,8 +14,19 @@
 # is where most engineers actually meet asymmetric cryptography, and reading a
 # real authorized_keys entry is worth more than being shown one.
 #
-# A second image would be a second thing to build, scan and keep patched for no
-# gain.
+# B08 Shell & Bash Scripting adds bats, and B10 Git & Version Control adds git.
+# Both were weighed against splitting the image instead, and both come here.
+#
+# git was the closer call, because a tool that can clone, fetch and push is a
+# larger thing to hand every lab than a test runner is. What settles it is that
+# it cannot do any of those. The broker puts each lab on an `Internal` Docker
+# network, allow_egress defaults to false, and content has no way to ask for
+# anything else - so git has nowhere to reach. What is left is a local tool
+# operating on files the learner already owns.
+#
+# A second image would be a second thing to build, scan and keep patched, and
+# the isolation that makes git safe here is the same isolation every other lab
+# already depends on.
 
 FROM debian:13-slim
 
@@ -39,6 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       less \
       bash \
       bats \
+      git \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
