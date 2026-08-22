@@ -1,0 +1,284 @@
+id: lab.the-conflict-that-came-back
+topic: topic.rebase-and-replay
+title: Meet the same conflict twice, and find out why "ours" is not yours
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B10.4.3, OBJ-B10.4.4]
+
+intro: >-
+  Two things about rebase conflicts are folklore, and both are worth measuring
+  rather than repeating.
+
+
+  The first is that "ours" means your work. During a rebase it does not, and you
+  will read the index to prove it. The second is that a rebase conflict comes
+  back for every commit. It can — and whether it does depends entirely on how
+  you resolved the previous one, which you will demonstrate both ways.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Build a branch whose commits repeatedly change one line, with `main`
+      changing the same line, then start a rebase. Save the first conflict to
+      /tmp/answer-first.
+    hint: >-
+      Two commits on the branch, each changing the same line. `main` changes it
+      too, to something different.
+    walkthrough: |
+      rm -rf /tmp/cc; mkdir -p /tmp/cc; cd /tmp/cc
+      git init -q
+      echo "value = 1" > v.txt
+      git add -A && git commit -q -m "base: 1"
+      git checkout -q -b feature
+      echo "value = 2" > v.txt && git commit -q -am "bump to 2"
+      echo "value = 3" > v.txt && git commit -q -am "bump to 3"
+      git checkout -q main
+      echo "value = 99" > v.txt && git commit -q -am "main sets 99"
+      git checkout -q feature
+      git rebase main >/dev/null 2>&1 || true
+      {
+        echo "rebase stopped at the first replayed commit."
+        echo
+        echo "what git status calls this:"
+        git status | head -2 | sed 's/^/  /'
+        echo
+        echo "the index, during the conflict:"
+        git ls-files --stage v.txt | sed 's/^/  /'
+      } > /tmp/answer-first
+      cat /tmp/answer-first
+    verify:
+      - type: command_output
+        command: "cd /tmp/cc && git status --short -- v.txt | cut -c1-2"
+        equals: "UU"
+        describe: The rebase stopped on a conflict
+      - type: file_matches
+        path: /tmp/answer-first
+        pattern: "(?i)rebase in progress|interactive rebase"
+        describe: And status named the operation
+
+  - id: s2
+    instruction: >-
+      Read stages 2 and 3 and work out which side is which. Save to
+      /tmp/answer-sides.
+    hint: >-
+      You know what value `main` holds and what your first commit set. Predict
+      which one will be in stage 2 before you look.
+    walkthrough: |
+      cd /tmp/cc
+      {
+        echo "  stage 1 (base):   $(git cat-file -p :1:v.txt)"
+        echo "  stage 2 (ours):   $(git cat-file -p :2:v.txt)"
+        echo "  stage 3 (theirs): $(git cat-file -p :3:v.txt)"
+        echo
+        echo "ours is 99 - which is MAIN, the branch i am rebasing ONTO."
+        echo "theirs is 2 - which is MY OWN commit, the one being replayed."
+        echo
+        echo "that is backwards from a merge, and it is not an inconsistency:"
+        echo "ours always means HEAD, and during a rebase git has checked out the"
+        echo "new base and is applying my commits to it. HEAD is main."
+        echo
+        echo "the practical consequence: 'git checkout --ours v.txt' here would"
+        echo "throw away the change i am replaying - my own work - which is"
+        echo "almost never what anyone means when they type it."
+      } > /tmp/answer-sides
+      cat /tmp/answer-sides
+    verify:
+      - type: command_output
+        command: "cd /tmp/cc && git cat-file -p :2:v.txt"
+        equals: "value = 99"
+        describe: Stage 2 holds main's value, not yours
+      - type: command_output
+        command: "cd /tmp/cc && git cat-file -p :3:v.txt"
+        equals: "value = 2"
+        describe: And stage 3 holds the commit being replayed
+      - type: file_matches
+        path: /tmp/answer-sides
+        pattern: "(?i)ours always means HEAD"
+        describe: And you explained why, rather than calling it a quirk
+
+  - id: s3
+    instruction: >-
+      Resolve this conflict by keeping `main`'s value, continue, and record what
+      happens to the next commit. Save to /tmp/answer-recur.
+    hint: >-
+      `git checkout --ours` takes stage 2. Then `git add` and continue, and check
+      whether the rebase stops again.
+    walkthrough: |
+      cd /tmp/cc
+      {
+        echo "resolving by keeping main's 99:"
+        git checkout --ours v.txt >/dev/null 2>&1
+        git add v.txt
+        GIT_EDITOR=true git rebase --continue >/dev/null 2>&1 || true
+        st=$(git status --short -- v.txt | cut -c1-2)
+        echo "  status after continue: [$st]"
+        if [ "$st" = "UU" ]; then
+          echo
+          echo "IT CONFLICTED AGAIN, on the same line:"
+          echo "    stage 2 (ours):   $(git cat-file -p :2:v.txt)"
+          echo "    stage 3 (theirs): $(git cat-file -p :3:v.txt)"
+          echo
+          echo "why: i resolved to 99, so the tree now says 99. the next commit"
+          echo "was written to change 2 into 3, and it is being applied to a tree"
+          echo "that says 99 - so that region disagrees all over again."
+        fi
+      } > /tmp/answer-recur
+      cat /tmp/answer-recur
+    verify:
+      - type: command_output
+        command: "cd /tmp/cc && git cat-file -p :3:v.txt"
+        equals: "value = 3"
+        describe: The second replayed commit conflicted too
+      - type: file_matches
+        path: /tmp/answer-recur
+        pattern: "(?i)CONFLICTED AGAIN"
+        describe: And you recorded that it recurred
+      - type: file_matches
+        path: /tmp/answer-recur
+        pattern: "(?i)disagrees all over again|says 99"
+        describe: And explained what made it recur
+
+  - id: s4
+    instruction: >-
+      Start over and resolve the first conflict the other way — keeping your own
+      change — then show that the second commit applies cleanly. Save to
+      /tmp/answer-clean.
+    hint: >-
+      `git rebase --abort` first. This time take stage 3 rather than stage 2.
+    walkthrough: |
+      cd /tmp/cc
+      git rebase --abort >/dev/null 2>&1 || true
+      git rebase main >/dev/null 2>&1 || true
+      {
+        echo "same starting conflict:"
+        echo "  ours=$(git cat-file -p :2:v.txt)  theirs=$(git cat-file -p :3:v.txt)"
+        echo
+        echo "this time resolving to MY value (stage 3):"
+        git checkout --theirs v.txt >/dev/null 2>&1
+        git add v.txt
+        GIT_EDITOR=true git rebase --continue >/dev/null 2>&1 || true
+        st=$(git status --short -- v.txt | cut -c1-2)
+        echo "  status after continue: [$st]"
+        if [ -z "$(echo $st | tr -d ' ')" ]; then
+          echo "  no second conflict. the rebase finished."
+          echo "  final value: $(cat v.txt)"
+        fi
+        echo
+        echo "so the recurrence is NOT automatic. resolving to my own value left"
+        echo "the tree saying 2, which is exactly what the next commit expected"
+        echo "to find - so it applied with nothing to ask."
+        echo
+        echo "the rule worth keeping: a rebase conflict recurs when your"
+        echo "resolution leaves the region still disagreeing with what the next"
+        echo "commit was written against."
+      } > /tmp/answer-clean
+      cat /tmp/answer-clean
+    verify:
+      - type: command_output
+        command: "cd /tmp/cc && cat v.txt"
+        equals: "value = 3"
+        describe: The rebase ran to completion with your changes applied
+      - type: file_matches
+        path: /tmp/answer-clean
+        pattern: "(?i)no second conflict"
+        describe: And the second commit applied cleanly this time
+      - type: file_matches
+        path: /tmp/answer-clean
+        pattern: "(?i)not automatic"
+        describe: And you corrected the folklore
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-advice what you would tell someone facing a rebase of
+      a twenty-commit branch that conflicts on the first commit.
+    hint: >-
+      You now know what makes conflicts repeat. What options change that
+      condition rather than enduring it?
+    walkthrough: |
+      cat > /tmp/answer-advice <<'EOF'
+      first, find out how big the problem is rather than starting and hoping:
+
+        git log --oneline main..HEAD | wc -l     how many commits will replay
+        git diff --name-only $(git merge-base main HEAD)..main
+        git diff --name-only $(git merge-base main HEAD)..HEAD
+
+      the intersection of those two file lists is the only place conflicts can
+      happen at all. if it is small, the rebase is probably fine regardless of
+      the commit count.
+
+      then, options in the order i would consider them:
+
+        - resolve toward my own change where that is correct. i measured that
+          resolving toward the new base is what makes the same region come back
+          on the next commit; resolving toward my change usually does not.
+
+        - enable rerere. it records each resolution and replays it when the same
+          conflict reappears, which makes repetition cheap. it does not stop the
+          repetition and it can replay an answer that is no longer right, so it
+          is a painkiller rather than a cure.
+
+        - squash first. twenty commits replayed twenty times is twenty chances to
+          conflict; one commit is one. if the intermediate commits are "wip" and
+          "fix typo" they are costing me real time for no value.
+
+        - merge instead. a merge resolves once, against two finished states. if
+          the branch is long-lived and the history shape is not worth this much
+          effort, this is the honest answer and nobody should feel bad about it.
+
+      what i would not do is start the rebase and resolve twenty conflicts by
+      hand to preserve a linear log. the log is worth something, but it is not
+      worth an afternoon and the risk of resolving one of them wrong.
+      EOF
+      cat /tmp/answer-advice
+    verify:
+      - type: file_matches
+        path: /tmp/answer-advice
+        pattern: "(?i)rerere"
+        describe: You named the tool that makes repetition cheap
+      - type: file_matches
+        path: /tmp/answer-advice
+        pattern: "(?i)merge instead"
+        describe: And were willing to recommend not rebasing
+      - type: file_matches
+        path: /tmp/answer-advice
+        pattern: "(?i)intersection|only place conflicts can"
+        describe: And proposed measuring before starting
+
+solution: >-
+  **"Ours" during a rebase is the branch you are replaying onto.** Measured:
+  stage 2 holds `value = 99` — `main` — and stage 3 holds `value = 2`, your own
+  commit. Nothing is inconsistent, because *ours* always means `HEAD`, and a
+  rebase checks out the new base and applies your commits to it. `HEAD` is
+  `main`.
+
+
+  The practical consequence is sharp: `git checkout --ours` during a rebase
+  discards the change you are replaying, which is almost never what someone
+  means when they type it.
+
+
+  **Whether a conflict recurs depends on how you resolved the last one.** This is
+  the part usually stated as an absolute, and it is not one:
+
+
+  | Resolve conflict 1 to | Conflict 2? |
+  |---|---|
+  | `99` — the new base | **yes**, `ours=99 theirs=3` on the same line |
+  | `2` — your own change | **no**, the rebase finishes |
+
+
+  Resolving to your own value leaves the tree saying `2`, which is exactly what
+  the next commit was written against, so it applies with nothing to ask.
+  Resolving toward the new base leaves the region disagreeing again.
+
+
+  **So the rule is:** a rebase conflict recurs when your resolution leaves the
+  region still disagreeing with what the next commit was written against. On a
+  long branch that is easy to fall into, which is why the useful responses —
+  `rerere`, squashing first, or merging instead — are all about changing the
+  condition rather than enduring it.

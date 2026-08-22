@@ -1,0 +1,248 @@
+id: lab.recover-an-abandoned-branch
+topic: topic.rebase-and-replay
+title: Rebase a branch away, then get it back three different ways
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.4.5]
+
+intro: >-
+  A rebase you regret is one command away from undone, and knowing that before
+  you start is the difference between using the tool and avoiding it.
+
+
+  You will rebase a branch, confirm the originals are still there, and recover
+  them three ways — by `ORIG_HEAD`, by the reflog, and by giving the abandoned
+  commits a name so both histories exist side by side. Then you will find the
+  one thing in this topic that genuinely cannot be recovered.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Build a branch, note its tip, rebase it, and confirm the old tip still
+      exists. Save to /tmp/answer-gone.
+    hint: >-
+      Record `git rev-parse HEAD` before rebasing, then ask `git cat-file` about
+      it afterwards.
+    walkthrough: |
+      rm -rf /tmp/rc; mkdir -p /tmp/rc; cd /tmp/rc
+      git init -q
+      echo start > f.txt && git add -A && git commit -q -m base
+      git checkout -q -b work
+      echo "important work" > w.txt && git add -A && git commit -q -m "the work"
+      git rev-parse HEAD > /tmp/.tip
+      git checkout -q main
+      echo other > o.txt && git add -A && git commit -q -m "main moved"
+      git checkout -q work
+      git rebase -q main 2>/dev/null
+      {
+        echo "old tip: $(cat /tmp/.tip)"
+        echo "new tip: $(git rev-parse HEAD)"
+        echo
+        echo "is the old one gone?"
+        echo "  type:                $(git cat-file -t $(cat /tmp/.tip))"
+        echo "  its file, readable:  $(git cat-file -p $(cat /tmp/.tip):w.txt)"
+        echo "  reachable from refs: $(git rev-list --all | grep -c $(cat /tmp/.tip))"
+        echo
+        echo "not gone. unreachable."
+      } > /tmp/answer-gone
+      cat /tmp/answer-gone
+    verify:
+      - type: command_output
+        command: "cd /tmp/rc && git cat-file -t $(cat /tmp/.tip)"
+        equals: "commit"
+        describe: The pre-rebase commit still exists
+      - type: file_matches
+        path: /tmp/answer-gone
+        pattern: "reachable from refs: 0"
+        describe: And nothing points at it
+      - type: file_matches
+        path: /tmp/answer-gone
+        pattern: "important work"
+        describe: And its contents are still readable
+
+  - id: s2
+    instruction: >-
+      Recover with `ORIG_HEAD`, then confirm you are back where you started.
+      Save to /tmp/answer-orig.
+    hint: >-
+      `ORIG_HEAD` is written before any operation that moves `HEAD`
+      substantially. Compare it against the tip you recorded.
+    walkthrough: |
+      cd /tmp/rc
+      {
+        echo "ORIG_HEAD points at: $(git rev-parse ORIG_HEAD)"
+        echo "the tip i recorded:  $(cat /tmp/.tip)"
+        echo "-> the same commit. git wrote it before the rebase started."
+        echo
+        git reset --hard ORIG_HEAD >/dev/null 2>&1
+        echo "after git reset --hard ORIG_HEAD:"
+        echo "  HEAD:      $(git rev-parse HEAD)"
+        echo "  w.txt says: $(cat w.txt)"
+        echo
+        echo "the rebased commits are now the unreachable ones. nothing was"
+        echo "deleted in either direction - only which commits a ref leads to."
+      } > /tmp/answer-orig
+      cat /tmp/answer-orig
+    verify:
+      - type: command_output
+        command: "cd /tmp/rc && git rev-parse HEAD"
+        equals_command: "cat /tmp/.tip"
+        describe: ORIG_HEAD took you back to the exact pre-rebase commit
+      - type: file_matches
+        path: /tmp/answer-orig
+        pattern: "(?i)nothing was\\s+deleted in either direction"
+        describe: And you noticed the symmetry
+
+  - id: s3
+    instruction: >-
+      Rebase again, then recover by giving the abandoned commits a name instead
+      of moving your branch. Save to /tmp/answer-rescue.
+    hint: >-
+      `git branch <name> <sha>` creates a ref pointing anywhere. What does that
+      let you do that `reset --hard` does not?
+    walkthrough: |
+      cd /tmp/rc
+      git rebase -q main 2>/dev/null
+      OLD=$(cat /tmp/.tip)
+      {
+        git branch rescue "$OLD"
+        echo "created a branch pointing at the abandoned commit:"
+        git log --oneline --all --graph | sed 's/^/  /'
+        echo
+        echo "both histories now exist at once, and i can compare them before"
+        echo "deciding anything:"
+        echo "  files only on rescue: $(git diff --name-only work rescue | tr '\n' ' ')"
+        echo
+        echo "this is usually what someone actually wants after a rebase they are"
+        echo "unsure about. reset --hard is 'undo'; a rescue branch is 'let me"
+        echo "look at both', and it costs 41 bytes."
+      } > /tmp/answer-rescue
+      cat /tmp/answer-rescue
+    verify:
+      - type: command_output
+        command: "cd /tmp/rc && git rev-parse rescue"
+        equals_command: "cat /tmp/.tip"
+        describe: The rescue branch points at the abandoned commit
+      - type: command_output
+        command: "cd /tmp/rc && git rev-list --all | grep -c $(cat /tmp/.tip)"
+        equals: "1"
+        describe: Which makes it reachable again
+      - type: file_matches
+        path: /tmp/answer-rescue
+        pattern: "(?i)let me\\s+look at both|compare them before"
+        describe: And you said why that beats undoing
+
+  - id: s4
+    instruction: >-
+      Find the recovery route that works when you did not record anything. Save
+      to /tmp/answer-reflog.
+    hint: >-
+      `git reflog` records every move of `HEAD`, including each step of a
+      rebase.
+    walkthrough: |
+      cd /tmp/rc
+      {
+        echo "every move of HEAD, most recent first:"
+        git reflog --format='  %h  %gd  %gs' | head -8
+        echo
+        echo "the rebase is visible as a sequence: a checkout of the new base,"
+        echo "one entry per replayed commit, then a finish. the entry BEFORE the"
+        echo "start is where the branch actually was."
+        echo
+        echo "so nothing needs to have been recorded in advance. git recorded it."
+        echo
+        echo "the window is not forever: reflog entries expire, ninety days for"
+        echo "reachable ones and thirty for unreachable ones by default. that is"
+        echo "long enough to be useful and short enough that 'recoverable' is a"
+        echo "claim with a deadline attached."
+      } > /tmp/answer-reflog
+      cat /tmp/answer-reflog
+    verify:
+      - type: command_output
+        command: "cd /tmp/rc && git reflog | grep -c rebase"
+        equals_command: "cd /tmp/rc && git reflog | grep -c rebase"
+        describe: The reflog records the rebase steps
+      - type: file_matches
+        path: /tmp/answer-reflog
+        pattern: "(?i)ninety days|thirty"
+        describe: And you noted that the window is finite
+
+  - id: s5
+    instruction: >-
+      Find the one thing here that cannot be recovered, and write it to
+      /tmp/answer-limit.
+    hint: >-
+      Everything recovered so far was an object. What state is never an object?
+    walkthrough: |
+      cd /tmp/rc
+      {
+        echo "an uncommitted, unstaged edit:"
+        echo "never staged" > scratch.txt
+        echo "  on disk: $(cat scratch.txt)"
+        echo "  is it an object? $(git hash-object scratch.txt) exists in the store? $(git cat-file -t $(git hash-object scratch.txt) 2>&1 | head -1)"
+        echo
+        echo "git hash-object COMPUTES the id without writing it. the file has no"
+        echo "object behind it, so there is nothing in the store to recover from"
+        echo "and no reflog entry that mentions it."
+        echo
+        echo "that is the whole limit of everything in this topic. commits,"
+        echo "branches, rebases and resets all move refs around an append-only"
+        echo "store, and refs are recoverable. work that was never staged or"
+        echo "committed was never written down at all."
+        echo
+        echo "so the habit is one line: commit or stash before anything that"
+        echo "rewrites history. after that, every mistake in this topic is a"
+        echo "reset away."
+      } > /tmp/answer-limit
+      cat /tmp/answer-limit
+    verify:
+      - type: file_matches
+        path: /tmp/answer-limit
+        pattern: "(?i)COMPUTES the id without writing"
+        describe: You identified why an unstaged file has no object
+      - type: file_matches
+        path: /tmp/answer-limit
+        pattern: "(?i)commit or stash before"
+        describe: And gave the habit that closes the gap
+
+solution: >-
+  **A rebase abandons commits; it does not delete them.** After rebasing, the old
+  tip still reports `commit`, its files are still readable through it, and
+  `git rev-list --all` finds **zero** refs leading to it.
+
+
+  **Three recoveries, in increasing order of "I did not plan for this":**
+
+
+  `git reset --hard ORIG_HEAD` — written before the rebase started, so
+  immediately afterwards it names exactly where the branch was. Verified: it
+  matches the recorded tip precisely.
+
+
+  `git branch rescue <sha>` — gives the abandoned commits a name instead of
+  moving your branch. Both histories then exist and you can diff them before
+  deciding. This is usually what someone actually wants after a rebase they are
+  unsure about: not *undo*, but *let me see both*. It costs 41 bytes.
+
+
+  `git reflog` — every move of `HEAD` is recorded, including each step of the
+  rebase, so nothing has to have been noted in advance. The window is finite:
+  ninety days for reachable entries, thirty for unreachable ones. "Recoverable"
+  is a claim with a deadline.
+
+
+  **And the one thing that is not recoverable:** an edit that was never staged or
+  committed. `git hash-object` computes an id without writing anything, so the
+  file has no object in the store and no reflog entry mentions it. Every
+  operation in this topic moves refs around an append-only store — and a ref can
+  only lead to something that was written down.
+
+
+  Which reduces the whole topic's safety advice to one line: **commit or stash
+  before anything that rewrites history.** After that, every mistake here is one
+  `reset` away.
