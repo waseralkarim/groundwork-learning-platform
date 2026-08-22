@@ -29,8 +29,8 @@ export default async function HomePage() {
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 opacity-[0.07] [background:radial-gradient(60rem_28rem_at_18%_-10%,var(--color-accent),transparent_70%)]"
         />
-        <div className="relative mx-auto w-full max-w-6xl px-6 py-20 sm:py-24">
-          <div className="flex max-w-3xl flex-col gap-6">
+        <div className="relative mx-auto grid w-full max-w-6xl gap-12 px-6 py-20 sm:py-24 lg:grid-cols-[1.35fr_1fr] lg:items-center">
+          <div className="flex flex-col gap-6">
             <span className="inline-flex w-fit items-center gap-2 rounded-full border border-[var(--color-rule)] bg-[var(--color-surface)] px-3 py-1 font-[family-name:var(--font-mono)] text-[0.62rem] uppercase tracking-[0.16em] text-[var(--color-accent)]">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
               Learning path
@@ -40,7 +40,7 @@ export default async function HomePage() {
               {roadmap?.title ?? "Groundwork"}
             </h1>
 
-            <p className="max-w-2xl text-[1.1rem] leading-relaxed text-[var(--color-ink-soft)]">
+            <p className="max-w-xl text-[1.1rem] leading-relaxed text-[var(--color-ink-soft)]">
               {roadmap?.summary ??
                 "Build DevOps from the ground up — foundations, hands-on labs, and production reality."}
             </p>
@@ -52,16 +52,44 @@ export default async function HomePage() {
                   className="inline-flex items-center gap-2 rounded-full bg-[var(--color-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-surface)] transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
                 >
                   Start here
-                  <span aria-hidden="true">→</span>
+                  <span aria-hidden="true">&rarr;</span>
                 </Link>
                 <span className="text-sm text-[var(--color-muted)]">
                   Begin with{" "}
-                  <span className="text-[var(--color-ink-soft)]">{firstTopic.title}</span> ·{" "}
+                  <span className="text-[var(--color-ink-soft)]">{firstTopic.title}</span> &middot;{" "}
                   {firstTopic.estimated_minutes} min
                 </span>
               </div>
             ) : null}
           </div>
+
+          {roadmap ? (
+            <aside className="rounded-xl border border-[var(--color-rule)] bg-[var(--color-surface)] p-6 shadow-sm">
+              <h2 className="font-[family-name:var(--font-mono)] text-[0.62rem] uppercase tracking-[0.16em] text-[var(--color-muted)]">
+                The path at a glance
+              </h2>
+
+              <dl className="mt-4 grid grid-cols-3 gap-4">
+                <HeroStat label="Courses" value={String(roadmap.courses.length)} />
+                <HeroStat label="Topics" value={String(roadmap.published_topics)} />
+                <HeroStat label="Hours" value={String(hours)} />
+              </dl>
+
+              <ul className="mt-6 flex flex-col gap-3 border-t border-[var(--color-rule-soft)] pt-5">
+                {tracks.map(([track, courses], i) => (
+                  <li key={track} className="flex items-baseline gap-3">
+                    <span className="font-[family-name:var(--font-mono)] text-[0.66rem] tabular-nums text-[var(--color-accent)]">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <span className="flex-1 text-sm text-[var(--color-ink-soft)]">{track}</span>
+                    <span className="font-[family-name:var(--font-mono)] text-[0.62rem] tabular-nums text-[var(--color-muted)]">
+                      {courses.length}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </aside>
+          ) : null}
         </div>
       </section>
 
@@ -73,13 +101,6 @@ export default async function HomePage() {
           </div>
         ) : roadmap ? (
           <>
-            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-[var(--color-rule)] bg-[var(--color-rule)] sm:grid-cols-4">
-              <Stat label="Courses" value={String(roadmap.courses.length)} />
-              <Stat label="Topics" value={String(roadmap.published_topics)} />
-              <Stat label="Hours" value={String(hours)} />
-              <Stat label="Tracks" value={String(tracks.length)} />
-            </dl>
-
             {tracks.map(([track, courses], trackIndex) => (
               <section key={track} className="flex flex-col gap-7">
                 <div className="flex items-baseline gap-4">
@@ -184,15 +205,15 @@ function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function HeroStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col gap-1 bg-[var(--color-surface)] px-5 py-5">
-      <dt className="font-[family-name:var(--font-mono)] text-[0.62rem] uppercase tracking-[0.13em] text-[var(--color-muted)]">
-        {label}
-      </dt>
-      <dd className="font-[family-name:var(--font-display)] text-[1.9rem] font-semibold leading-none tabular-nums">
+    <div className="flex flex-col gap-1">
+      <dd className="font-[family-name:var(--font-display)] text-[1.75rem] font-semibold leading-none tabular-nums">
         {value}
       </dd>
+      <dt className="font-[family-name:var(--font-mono)] text-[0.58rem] uppercase tracking-[0.13em] text-[var(--color-muted)]">
+        {label}
+      </dt>
     </div>
   );
 }
