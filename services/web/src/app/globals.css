@@ -71,17 +71,52 @@
   color-scheme: light;
 }
 
+/* Reading preferences.
+   Each is a data attribute stamped on <html> before first paint, resolved here
+   into a variable. Doing it in CSS rather than JavaScript means the preference
+   applies to the first frame and can never disagree with the server render. */
+:root {
+  --text-scale: 1;
+  --reading-font: var(--font-sans);
+  --reading-leading: 1.65;
+  --reading-measure: 70ch;
+}
+
+:root[data-text-size="s"] { --text-scale: 0.9375; }
+:root[data-text-size="m"] { --text-scale: 1; }
+:root[data-text-size="l"] { --text-scale: 1.125; }
+:root[data-text-size="xl"] { --text-scale: 1.25; }
+
+:root[data-reading-font="sans"] { --reading-font: var(--font-sans); }
+:root[data-reading-font="serif"] { --reading-font: var(--font-display); }
+:root[data-reading-font="mono"] { --reading-font: var(--font-mono); }
+
+:root[data-leading="snug"] { --reading-leading: 1.45; }
+:root[data-leading="normal"] { --reading-leading: 1.65; }
+:root[data-leading="relaxed"] { --reading-leading: 1.85; }
+
+:root[data-measure="narrow"] { --reading-measure: 58ch; }
+:root[data-measure="normal"] { --reading-measure: 70ch; }
+:root[data-measure="wide"] { --reading-measure: 84ch; }
+
+/* Scaling the root means every rem-based size follows — headings, spacing and
+   controls together — rather than body copy drifting away from its own layout. */
+html {
+  font-size: calc(100% * var(--text-scale));
+}
+
 body {
   background-color: var(--color-ground);
   color: var(--color-ink);
-  font-family: var(--font-sans);
+  font-family: var(--reading-font);
+  line-height: var(--reading-leading);
   -webkit-font-smoothing: antialiased;
 }
 
 /* Reading measure. The single most important typographic decision in a platform
    whose core activity is reading technical prose for an hour at a time. */
 .prose-measure {
-  max-width: 70ch;
+  max-width: var(--reading-measure);
 }
 
 *:focus-visible {

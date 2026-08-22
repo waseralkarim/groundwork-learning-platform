@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ReadingPrefs } from "@/components/ReadingPrefs";
 import { SearchBox } from "@/components/SearchBox";
 import { SignOutButton } from "@/components/SignOutButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { getCurrentUser } from "@/lib/api";
+import { readingInitScript } from "@/lib/reading";
 import { themeInitScript } from "@/lib/theme";
 import "./globals.css";
 
@@ -27,6 +29,8 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
             cannot read, so this cannot be done in the rendered markup. */}
         {/* biome-ignore lint/security/noDangerouslySetInnerHtml: fixed literal, no interpolation of user input */}
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: fixed literal, no interpolation of user input */}
+        <script dangerouslySetInnerHTML={{ __html: readingInitScript }} />
       </head>
       <body className="min-h-dvh antialiased">
         {/* Visually hidden until focused. The player's outline is fifteen
@@ -92,6 +96,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
                     Sign in
                   </Link>
                 )}
+                <ReadingPrefs />
                 <ThemeToggle />
               </nav>
             </div>
