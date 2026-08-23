@@ -1,0 +1,113 @@
+id: topic.undoing-things
+slug: undoing-things
+title: "Four Ways to Undo, and Which One You Actually Mean"
+summary: >-
+  Reset moves a pointer, revert adds a commit, cherry-pick copies one, restore
+  rewrites a file. Sorted by what they touch and whether history gains or loses
+  an entry, the choice stops being a guess — and one of them is the only option
+  that is safe on a branch other people have.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.staging-and-committing
+    hardness: required
+  - topic: topic.rebase-and-replay
+    hardness: required
+  - topic: topic.branching-and-merging
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B10.5.1
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish reset, revert, restore and cherry-pick by what each one
+      changes and what each leaves alone.
+    assessed_by: [quiz.q1, quiz.q2, quiz.q3, lab.four-undos-one-mistake, exercise.e1]
+
+  - id: OBJ-B10.5.2
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why revert is the only undo that is safe on shared history.
+    assessed_by: [quiz.q4, quiz.q5, lab.four-undos-one-mistake, exercise.e2]
+
+  - id: OBJ-B10.5.3
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what a cherry-pick produces, and when the copy is byte-identical
+      to the original.
+    assessed_by: [quiz.q6, quiz.q7, lab.copy-a-commit-and-watch-the-id, exercise.e3]
+
+  - id: OBJ-B10.5.4
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a change that appears in history twice, or appears to have been
+      applied and then vanished.
+    assessed_by: [quiz.q8, quiz.q9, lab.copy-a-commit-and-watch-the-id, troubleshooting.the-fix-that-shipped-twice]
+
+  - id: OBJ-B10.5.5
+    level: L3
+    verb: explain
+    statement: >-
+      Explain why a reverted merge cannot simply be re-merged, and what to do
+      instead.
+    assessed_by: [quiz.q10, quiz.q11, lab.revert-a-merge-and-try-again, troubleshooting.the-fix-that-shipped-twice]
+
+  - id: OBJ-B10.5.6
+    level: L3
+    verb: justify
+    statement: >-
+      Justify which undo to reach for in a given situation, in terms of who
+      holds the commits and what history should record.
+    assessed_by: [quiz.q12, quiz.q13, exercise.e4, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: revert
+    definition: >-
+      Create a new commit whose change is the inverse of an earlier one. History
+      gains an entry; nothing is removed, which is what makes it safe to share.
+  - term: cherry-pick
+    definition: >-
+      Apply one commit's change on top of the current branch, producing a new
+      commit object. The original is not linked, moved or removed.
+  - term: restore
+    definition: >-
+      Rewrite a file in the working tree or index from some source. Touches
+      files, never history.
+  - term: reset
+    definition: >-
+      Move a branch pointer, and optionally drag the index and working tree with
+      it. Touches history's shape, never adds to it.
+  - term: inverse patch
+    definition: >-
+      What a revert applies — the same change with additions and deletions
+      swapped. It can conflict, exactly like any other change.
+  - term: "revert -m"
+    definition: >-
+      Which parent of a merge to treat as the mainline. Required for a merge,
+      because "undo this" is ambiguous when there are two sides to return to.
+  - term: reverting a revert
+    definition: >-
+      The normal way to reapply work that was reverted, because a reverted merge
+      cannot be re-merged — the branch is still considered merged.
+  - term: duplicate change
+    definition: >-
+      The same change present as two commits, usually from a cherry-pick that
+      was later merged as well. Git sees two unrelated commits.
+  - term: empty commit
+    definition: >-
+      What a cherry-pick or rebase produces when the change is already present.
+      Git stops and asks rather than silently doing nothing.
+
+foreshadows:
+  - "B10.7's reflog is what makes a mistaken reset recoverable at all."
+  - "B10.9's conflict resolution applies to revert and cherry-pick exactly as it does to merge."
+  - "B10.13's bisect gets much harder when the same change exists as two commits."
+
+tags: [git, version-control, revert, reset, cherry-pick, recovery, fundamentals]

@@ -1,0 +1,11 @@
+id: module.undoing-things
+slug: undoing-things
+title: Undoing Things
+summary: >-
+  Four commands undo things and no two of them undo the same thing. Reset moves
+  a pointer, revert adds a commit, cherry-pick copies one, and restore rewrites
+  a file — and the differences are entirely about which of the three copies each
+  one touches and whether history gains or loses an entry. This module sorts
+  them by what they actually do, so the choice stops depending on which one you
+  remember.
+order: 5
