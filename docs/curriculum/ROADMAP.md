@@ -253,6 +253,49 @@ places before the lab walk caught it.
 | B13 | **Databases for DevOps** | L2–L4 | Relational model & SQL · PostgreSQL operations · Indexes & query plans · Transactions & isolation · Connection pooling · Replication & failover · Backup & **tested restore** · Migrations & zero-downtime schema change · Redis/Valkey · NoSQL concepts · Performance troubleshooting |
 
 
+### What building B10.6 found
+
+The remotes topic, and the one whose feasibility was in doubt before any content
+existed: lab containers have no network, and a topic about remotes looked like it
+might not be teachable at all.
+
+**Local-path remotes work completely.** `git init --bare`, two clones, push,
+fetch, force-push, forced-update detection — all of it, with no daemon and no
+network. Two developers can be simulated inside one container, so every
+collaboration scenario in the topic is something the learner performs rather than
+reads about. That answer arrived before a single objective was written, which is
+the only reason the topic exists in its current shape.
+
+**Ahead/behind are computed from the stale ref, and I had not said so.** Measured:
+with a colleague's commit already on the remote and no fetch since, the same
+repository reports `behind=0`; after fetching, `behind=1`. Nothing on the remote
+changed between the readings. That is the topic's whole thesis arriving as a
+measurement — a push can be rejected by a repository that had just claimed to be
+up to date.
+
+**The rejection message is `(fetch first)`, not `(non-fast-forward)`,** in the
+ordinary case. Git uses the second only when you already have the commits and are
+replacing them anyway. I had written the wrong one, and a learner reproducing the
+lab would have seen a message the lesson never mentioned.
+
+**A forced update is indistinguishable from ordinary divergence by the counts.**
+Both read `1/1`. Two things distinguish them: the leading `+` and
+`(forced update)` in the fetch output, which is the only warning anyone gets and
+scrolls past in a second; and the fact that the two "sides" are the same work in
+two versions. The durable evidence is `git reflog show origin/main`, which
+records `forced-update` along with the pre-rewrite id.
+
+**Merging after a force-push succeeds silently and reintroduces the removed
+commit.** No conflict, no warning — and the resulting push is a legitimate
+fast-forward, so no protection refuses it. That became the troubleshooting
+scenario, and it is the sharpest available argument that branch protection has to
+be a rule about what may land rather than about force-pushing.
+
+**Two labs needed their setups widened** for the same reason as B10.5's: changes
+placed adjacently produced conflicts that turned comparison labs into conflict
+labs. Separate files per side fixed it, and the hint now says why — the lab is
+about refs, and a content conflict obscures that.
+
 ### Why B10 has no separate "Reflog & Recovery" topic
 
 The B10 module list names "Reflog & recovery" as a topic between the undo work
