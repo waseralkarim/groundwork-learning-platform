@@ -253,6 +253,32 @@ places before the lab walk caught it.
 | B13 | **Databases for DevOps** | L2–L4 | Relational model & SQL · PostgreSQL operations · Indexes & query plans · Transactions & isolation · Connection pooling · Replication & failover · Backup & **tested restore** · Migrations & zero-downtime schema change · Redis/Valkey · NoSQL concepts · Performance troubleshooting |
 
 
+### Why B10 has no separate "Reflog & Recovery" topic
+
+The B10 module list names "Reflog & recovery" as a topic between the undo work
+and remotes. Building it would now duplicate rather than teach.
+
+A sweep after B10.5: `reflog` appears in 30 files across four topics,
+`ORIG_HEAD` in 15, rescue branches in 10, `fsck` in 6. B10.4's third lab
+recovers an abandoned branch three separate ways — ORIG_HEAD, a rescue branch,
+and the reflog — and then finds the one thing that cannot be recovered. B10.5's
+internals lesson explains why the reflog rather than the object store is what
+expires.
+
+That happened because recovery is the natural payoff of each topic rather than a
+subject of its own: B10.1 established that unreachable is not gone, and every
+topic since has cashed that in where it arose. Teaching it again as a topic would
+mean re-deriving facts the learner has already measured.
+
+What is genuinely not yet covered is narrower than a topic: `gc.reflogExpire`
+timings, `fsck --lost-found`, and recovering a dropped stash. Those belong in
+B10.9's conflict-resolution work or as a production section elsewhere, not as
+ninety minutes of their own.
+
+**So B10 goes from Undoing Things straight to Remotes and Pull Requests.** This
+note exists so the gap reads as a decision rather than an omission, in the same
+way the C14/A01 note does.
+
 ### What building B10.5 found
 
 The undo topic, and the one where two probes measured nothing before either
