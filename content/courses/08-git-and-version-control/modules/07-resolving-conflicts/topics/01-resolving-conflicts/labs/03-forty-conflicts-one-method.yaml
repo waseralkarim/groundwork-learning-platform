@@ -1,0 +1,290 @@
+id: lab.forty-conflicts-one-method
+topic: topic.resolving-conflicts
+title: A merge with conflicts everywhere, and when to stop resolving
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B10.7.5, OBJ-B10.7.6]
+
+intro: >-
+  Resolving one conflict is a decision. Resolving thirty is a project, and
+  taking them in the order Git happens to present them is how people spend an
+  afternoon and still get one wrong.
+
+
+  You will meet a merge that conflicts across several files, measure it before
+  touching anything, discover that aborting costs literally nothing, and find
+  out what the automatic resolution options actually do — including the one that
+  silently discards work.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Build a merge that conflicts in several files, and measure it before
+      opening a single one. Save to /tmp/answer-scale.
+    hint: >-
+      `git diff --name-only --diff-filter=U` lists the paths; counting
+      `<<<<<<<` across them gives the regions.
+    walkthrough: |
+      rm -rf /tmp/big; mkdir -p /tmp/big; cd /tmp/big
+      git init -q
+      git config merge.conflictStyle diff3
+      for i in $(seq 1 12); do printf 'setting_%02d = base\n' "$i"; done > cfg.txt
+      mkdir -p src
+      for i in 1 2 3; do echo "module $i base" > "src/m$i.txt"; done
+      git add -A && git commit -q -m base
+      git checkout -q -b feature
+      sed -i 's/= base/= feature/' cfg.txt
+      for i in 1 2 3; do echo "module $i feature" > "src/m$i.txt"; done
+      git commit -q -am feature
+      git checkout -q main
+      sed -i 's/= base/= main/' cfg.txt
+      for i in 1 2 3; do echo "module $i main" > "src/m$i.txt"; done
+      git commit -q -am main
+      git merge feature >/dev/null 2>&1
+      {
+        echo "before opening anything:"
+        echo "  unmerged paths:   $(git diff --name-only --diff-filter=U | wc -l)"
+        echo "  conflict regions: $(grep -c '<<<<<<<' cfg.txt src/*.txt | awk -F: '{s+=$2} END {print s}')"
+        echo
+        echo "which paths:"
+        git diff --name-only --diff-filter=U | sed 's/^/    /'
+        echo
+        echo "this is the whole job, listed, before i have made a single"
+        echo "decision. resolving in the order git prints them means finding out"
+        echo "how big it is only when i finish."
+      } > /tmp/answer-scale
+      cat /tmp/answer-scale
+    verify:
+      - type: command_output
+        command: "cd /tmp/big && git diff --name-only --diff-filter=U | wc -l"
+        equals: "4"
+        describe: You measured the scope before starting
+      - type: file_matches
+        path: /tmp/answer-scale
+        pattern: "(?i)before i have made a single"
+        describe: And noted why measuring first matters
+
+  - id: s2
+    instruction: >-
+      Establish what aborting costs, before deciding whether to continue. Save
+      to /tmp/answer-abort.
+    hint: >-
+      Abort, then check the status and whether either branch moved.
+    walkthrough: |
+      cd /tmp/big
+      MAIN_BEFORE=$(git rev-parse main)
+      {
+        git merge --abort
+        echo "after git merge --abort:"
+        echo "  status lines:  $(git status --short | wc -l)"
+        echo "  main moved?    $([ "$MAIN_BEFORE" = "$(git rev-parse main)" ] && echo no || echo yes)"
+        echo "  feature moved? no - a merge never touches the other branch"
+        echo
+        echo "nothing. abort costs nothing and loses nothing, because a"
+        echo "conflicted merge has written no commit - the work exists only in"
+        echo "the index and the working tree, and abort restores both."
+        echo
+        echo "worth knowing BEFORE starting: if the merge turns out to be the"
+        echo "wrong shape thirty minutes in, walking away is free. people push on"
+        echo "through bad merges because they think they have spent something."
+      } > /tmp/answer-abort
+      cat /tmp/answer-abort
+    verify:
+      - type: command_output
+        command: "cd /tmp/big && git status --short | wc -l"
+        equals: "0"
+        describe: Aborting left the repository completely clean
+      - type: file_matches
+        path: /tmp/answer-abort
+        pattern: "(?i)costs nothing and loses nothing"
+        describe: And you established that before deciding to continue
+
+  - id: s3
+    instruction: >-
+      Try the automatic resolution `-X ours` and inspect exactly what it did.
+      Save to /tmp/answer-xours.
+    hint: >-
+      It resolves every conflicting region in favour of one side. Check what
+      happened to the files that conflicted.
+    walkthrough: |
+      cd /tmp/big
+      {
+        git merge -X ours feature >/dev/null 2>&1
+        echo "after git merge -X ours:"
+        echo "  unmerged paths left: $(git diff --name-only --diff-filter=U | wc -l)"
+        echo "  cfg.txt line 1:      $(sed -n 1p cfg.txt)"
+        echo "  src/m1.txt:          $(cat src/m1.txt)"
+        echo
+        echo "every conflict resolved, instantly, in favour of main."
+        echo
+        echo "and that is the danger. -X ours resolves CONFLICTING REGIONS in my"
+        echo "favour - it does not discard the other side entirely, so it looks"
+        echo "reasonable. but every place we disagreed, their work is gone, and"
+        echo "the merge commit says nothing about it."
+        echo
+        echo "the reviewer sees a merge commit. the log shows the branch as"
+        echo "merged. git branch --merged lists it. nothing anywhere records that"
+        echo "twelve settings and three modules were decided unilaterally."
+      } > /tmp/answer-xours
+      cat /tmp/answer-xours
+    verify:
+      - type: command_output
+        command: "cd /tmp/big && git diff --name-only --diff-filter=U | wc -l"
+        equals: "0"
+        describe: The strategy option resolved everything automatically
+      - type: command_output
+        command: "cd /tmp/big && sed -n 1p cfg.txt"
+        equals: "setting_01 = main"
+        describe: In favour of your side
+      - type: file_matches
+        path: /tmp/answer-xours
+        pattern: "(?i)nothing anywhere records"
+        describe: And you noticed the result is indistinguishable from a real merge
+
+  - id: s4
+    instruction: >-
+      Work out when `-X ours` is legitimate and when it is not. Save to
+      /tmp/answer-when.
+    hint: >-
+      B10.3's troubleshooting scenario turned on this. What made it damaging
+      there, and what would make it safe?
+    walkthrough: |
+      cat > /tmp/answer-when <<'EOF'
+      -X ours is legitimate when i already know the other side's version of every
+      conflicting region is wrong. that is a real situation - re-merging a branch
+      whose changes were superseded, or reconciling a generated file where one
+      side is authoritative.
+
+      it is dangerous exactly when the merge base is old. relative to a recent
+      base, the regions in conflict are the ones people genuinely disagreed about
+      this week, and discarding them is a decision i can reason about. relative to
+      a four-week-old base, they include everything the other side did in four
+      weeks that touches the same lines - and i am discarding it without reading
+      it.
+
+      the tell is the one from B10.3: a whole-file or whole-merge resolution
+      discards regions nobody was arguing about. -X ours is narrower than
+      checkout --ours, since it only decides CONFLICTING hunks, but it is the same
+      failure at smaller scale.
+
+      what i would actually do with thirty conflicts:
+
+        - measure first. --diff-filter=U tells me the size before i start.
+        - ask why the base is old, because that is usually the real problem. a
+          back-merge would have made this several small merges instead of one
+          large one.
+        - abort if the shape is wrong. it costs nothing, and i verified that.
+        - resolve by hand with zdiff3 on, so the regions where only one side
+          changed anything answer themselves.
+        - if i do use -X, say so in the merge message. the commit is otherwise
+          indistinguishable from one where every conflict was considered.
+      EOF
+      cat /tmp/answer-when
+    verify:
+      - type: file_matches
+        path: /tmp/answer-when
+        pattern: "(?i)merge base is old|old base"
+        describe: You identified what makes it dangerous
+      - type: file_matches
+        path: /tmp/answer-when
+        pattern: "(?i)say so in the merge message"
+        describe: And gave a way to make the decision visible
+
+  - id: s5
+    instruction: >-
+      Write your method for a large conflicted merge to /tmp/answer-method.
+    hint: >-
+      Order matters. What do you want to know before you make the first
+      decision?
+    walkthrough: |
+      cat > /tmp/answer-method <<'EOF'
+      1. measure before opening anything.
+
+           git diff --name-only --diff-filter=U
+
+         that is the complete list of decisions i owe, and it includes the paths
+         with no markers, which are the ones i would otherwise miss entirely.
+
+      2. classify before deciding. git status names the kind of each conflict.
+         modify/delete and rename/rename are decisions about existence and
+         naming, not edits, and they are fast - clearing them shrinks the list
+         before i start reading diffs.
+
+      3. turn the base on if it is not already.
+
+           git config merge.conflictStyle zdiff3
+
+         with it, every region where ours matches the base resolves by
+         inspection: only they changed it, so take theirs.
+
+      4. decide whether this merge should exist at all. a large conflict is
+         usually a symptom of an old merge base rather than of genuinely
+         incompatible work. aborting costs nothing - i verified that - and a
+         back-merge or a rebase may turn one hard merge into several easy ones.
+
+      5. resolve related paths together, not in the order printed. three files
+         conflicting on the same rename are one decision, and resolving them
+         separately is how you get two of them right.
+
+      6. build and test before committing the merge. a resolved merge compiles
+         nothing by itself, and every resolution i made is untested until
+         something runs.
+
+      the ordering principle: find out how big it is, shrink it, make the easy
+      decisions mechanical, and only then spend judgement on what is left.
+      EOF
+      cat /tmp/answer-method
+    verify:
+      - type: file_matches
+        path: /tmp/answer-method
+        pattern: "diff-filter=U"
+        describe: You start by measuring
+      - type: file_matches
+        path: /tmp/answer-method
+        pattern: "(?i)should exist at all|old merge base"
+        describe: And question whether the merge is the right shape
+      - type: file_matches
+        path: /tmp/answer-method
+        pattern: "(?i)build and test"
+        describe: And test before committing
+
+solution: >-
+  **Measure before opening anything.** `git diff --name-only --diff-filter=U`
+  gives the complete list of decisions you owe — four paths here — including the
+  ones with no markers. Resolving in the order Git prints them means discovering
+  the size only when you finish.
+
+
+  **Aborting costs nothing.** Verified: `git merge --abort` leaves zero status
+  lines and neither branch moved. A conflicted merge has written no commit, so
+  there is nothing to lose. Worth knowing *before* starting, because people push
+  on through bad merges believing they have already spent something.
+
+
+  **`-X ours` resolves everything instantly, and that is the hazard.** Measured:
+  zero unmerged paths, every conflicting region decided in favour of your side.
+  It does not discard the other branch wholesale — only the conflicting hunks —
+  which is precisely why it looks reasonable.
+
+
+  The result is indistinguishable from a carefully considered merge: a merge
+  commit, the branch listed by `git branch --merged`, and nothing anywhere
+  recording that a dozen decisions were made unilaterally.
+
+
+  **It is safe when you already know the other side is wrong for every
+  conflicting region, and dangerous when the base is old** — because then the
+  conflicts include everything they did in that time that touches the same lines.
+  Same failure as B10.3's whole-file resolution, at a smaller scale.
+
+
+  **The method: measure, classify, turn on the base, ask whether the merge should
+  exist at all, resolve related paths together, and test before committing.** A
+  large conflict is usually a symptom of an old merge base rather than of
+  incompatible work — and a back-merge turns one hard merge into several easy
+  ones.
