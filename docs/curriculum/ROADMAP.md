@@ -253,6 +253,57 @@ places before the lab walk caught it.
 | B13 | **Databases for DevOps** | L2–L4 | Relational model & SQL · PostgreSQL operations · Indexes & query plans · Transactions & isolation · Connection pooling · Replication & failover · Backup & **tested restore** · Migrations & zero-downtime schema change · Redis/Valkey · NoSQL concepts · Performance troubleshooting |
 
 
+### What building B10.7 found
+
+The conflicts topic, and the one whose existence was in question — conflicts are
+mentioned in 51 files across five earlier topics, so the duplication check that
+killed a separate Reflog topic was run again here.
+
+It justified the topic rather than killing it, because two things appeared in
+**zero** files and both are substantial.
+
+**Git's default conflict markers omit the merge base.** B10.3 defines a conflict
+as "both sides changed the same region relative to the base" — so the default
+interface cannot express the question the rule asks. Measured: with ours at 1 and
+theirs at 5, the correct action is undecidable. If the base was 3 both changed it
+and someone must decide; if the base was 1 only they changed it and 5 wins with
+nothing to settle. Same markers, two entirely different situations.
+
+The reframing that follows is the useful part: `merge.conflictStyle = zdiff3`
+**removes work** rather than adding reading. Every region where ours matches the
+base stops being a decision, and zdiff3's output on a large conflict is *shorter*
+than the default's because it hoists common lines out of the region.
+
+**Two of the four conflict kinds write no markers at all.** Measured shapes:
+
+    content         stages 1,2,3        markers
+    modify/delete   stages 1,2 only     NO markers
+    add/add         stages 2,3, no 1    markers
+    rename/rename   3 unmerged paths    NO markers, both files present
+
+`add/add` having no stage 1 is worth its own note: neither side inherited the
+file, so B10.3's attribution rule genuinely does not apply, and diff3 shows no
+base section because there is none. That is a real limit on the technique the
+topic has just finished teaching.
+
+`rename/rename` producing three unmerged paths for one disagreement, with both
+files present and content intact, is the case where nothing looks wrong at all.
+
+**A commit is refused while any path has non-zero stages** — so an unresolved
+modify/delete cannot be committed. What lets one through is `git add -A`,
+sweeping unresolved paths in alongside the edited ones. That mechanism is the
+whole troubleshooting scenario.
+
+**Aborting costs nothing, measurably.** `git merge --abort` leaves zero status
+lines and neither branch moved. Worth establishing before a learner decides
+whether to continue, because people push on through bad merges believing they
+have already spent something.
+
+**`-X ours` produces a commit indistinguishable from a considered merge** — merge
+commit, both parents, listed by `branch --merged`, and nothing recording that a
+dozen decisions were made unread. Same failure as B10.3's whole-file resolution
+at smaller scale, and dangerous in proportion to the base's age.
+
 ### What building B10.6 found
 
 The remotes topic, and the one whose feasibility was in doubt before any content
