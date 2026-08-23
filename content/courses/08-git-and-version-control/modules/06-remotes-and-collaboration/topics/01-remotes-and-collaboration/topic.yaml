@@ -1,0 +1,115 @@
+id: topic.remotes-and-collaboration
+slug: remotes-and-collaboration
+title: "Remotes: A Name, a URL, and Refs That Remember"
+summary: >-
+  `origin/main` is not the remote's branch — it is your local note of where that
+  branch was the last time you asked. Once that is visible as a file under
+  `.git/refs/remotes`, fetch versus pull, "ahead by 3 commits", and every
+  rejected push stop being mysterious and become statements about which refs
+  have moved.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.the-object-model
+    hardness: required
+  - topic: topic.branching-and-merging
+    hardness: required
+  - topic: topic.undoing-things
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B10.6.1
+    level: L2
+    verb: explain
+    statement: >-
+      Explain what a remote is, and what a remote-tracking ref such as
+      `origin/main` actually records.
+    assessed_by: [quiz.q1, quiz.q2, lab.a-remote-is-a-directory, exercise.e1]
+
+  - id: OBJ-B10.6.2
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish fetch from pull by which refs each one moves.
+    assessed_by: [quiz.q3, quiz.q4, quiz.q5, lab.a-remote-is-a-directory, exercise.e2]
+
+  - id: OBJ-B10.6.3
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret "ahead", "behind" and "diverged" as statements about two refs
+      and their merge base.
+    assessed_by: [quiz.q6, quiz.q7, lab.ahead-behind-and-diverged]
+
+  - id: OBJ-B10.6.4
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why a push is rejected, and what the rejection is protecting.
+    assessed_by: [quiz.q8, quiz.q9, lab.ahead-behind-and-diverged, exercise.e3]
+
+  - id: OBJ-B10.6.5
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a repository whose remote-tracking refs disagree with the remote,
+      including after someone else rewrote history.
+    assessed_by: [quiz.q10, quiz.q11, lab.two-clones-one-truth, troubleshooting.the-branch-that-came-back]
+
+  - id: OBJ-B10.6.6
+    level: L3
+    verb: justify
+    statement: >-
+      Justify a team's pull and integration settings, in terms of what history
+      each one produces.
+    assessed_by: [quiz.q12, quiz.q13, exercise.e4, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: remote
+    definition: >-
+      A name for a URL, stored in `.git/config`. Nothing is connected; the name
+      is used when you run a command that talks to it.
+  - term: remote-tracking ref
+    definition: >-
+      A ref under `refs/remotes/<remote>/`, such as `origin/main`. Your local
+      record of where that branch was when you last fetched — never live.
+  - term: refspec
+    definition: >-
+      The mapping that says which refs go where, e.g.
+      `+refs/heads/*:refs/remotes/origin/*`. The leading `+` allows a
+      non-fast-forward update.
+  - term: upstream
+    definition: >-
+      The remote-tracking ref a local branch is configured against, which is what
+      makes bare `git push` and `git pull` know where to go, and what "ahead by
+      3" is measured relative to.
+  - term: fetch
+    definition: >-
+      Update remote-tracking refs and download objects. Touches no local branch
+      and no file in your working tree.
+  - term: pull
+    definition: >-
+      A fetch followed by an integration — merge by default, rebase if
+      configured. The second half is what surprises people.
+  - term: ahead / behind
+    definition: >-
+      Counts of commits on each side of the merge base between your branch and
+      its upstream. Both non-zero means diverged.
+  - term: fast-forward
+    definition: >-
+      An update where the old tip is an ancestor of the new one, so nothing is
+      lost. A push is rejected precisely when it would not be one.
+  - term: bare repository
+    definition: >-
+      A repository with no working tree, which is what a server-side remote is.
+      Pushing to a non-bare repository's checked-out branch is refused.
+
+foreshadows:
+  - "B10.9's conflict resolution is where a diverged branch is actually reconciled."
+  - "B10.10's workflows are largely disagreements about pull.rebase and who may force-push."
+  - "E27's CI runs on what the remote holds, which is why fetch-then-look beats pull-then-hope."
+
+tags: [git, version-control, remotes, collaboration, fetch, push, fundamentals]
