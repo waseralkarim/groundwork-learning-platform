@@ -253,6 +253,49 @@ places before the lab walk caught it.
 | B13 | **Databases for DevOps** | L2–L4 | Relational model & SQL · PostgreSQL operations · Indexes & query plans · Transactions & isolation · Connection pooling · Replication & failover · Backup & **tested restore** · Migrations & zero-downtime schema change · Redis/Valkey · NoSQL concepts · Performance troubleshooting |
 
 
+### What building B10.5 found
+
+The undo topic, and the one where two probes measured nothing before either
+produced a usable result.
+
+**`git cherry-pick` has no `-q` flag.** The first probe used it, the command
+failed, the surrounding script carried on, and the output looked like a real
+measurement. Caught only because a file was missing from a HEAD that should have
+contained it. A flag that does not exist fails loudly on its own line and
+silently in a pipeline of echoes.
+
+**A revert is an inverse patch and can conflict.** Lab 1's first version put the
+bad line adjacent to a later good line, and reverting the bad commit conflicted —
+the inverse patch's context included a line that did not exist when the bad
+commit was made. The lab asserted four commits and a clean file; reality was
+three commits and a UU. Fixed by separating the changes, and the finding kept as
+a teaching point, because "revert the bad commit" sounds atomic and can turn
+into a merge under incident pressure.
+
+**Cherry-pick does not always produce a new id.** Measured: onto a branch that
+has not moved since the source's parent, every input to the hash is identical —
+parent, tree, message, author, committer timestamp — so the copy IS the original
+object. That separates "cherry-pick creates a new commit object", always true,
+from "cherry-pick creates a new id", true only when an input differs. Same shape
+as the B10.4 finding, and content addressing being consistent rather than clever.
+
+**Reverting a merge does not un-merge it.** Verified end to end: revert -m 1
+removes the files, merging the branch again reports "Already up to date" and
+returns nothing, `branch --merged` still lists it, and its commit is still
+reachable. The work is missing from the working tree, not from history, and
+merge only asks the second question.
+
+**"The commit is in history" and "the change is in the tree" are different
+claims.** `git branch --contains` answers the first and people stop there. A
+revert, an overwrite, or a merge resolved toward the other side makes them
+differ, and only the second one determines whether the bug is back. This became
+the topic's recurring sentence and the troubleshooting scenario's whole point.
+
+**Revert and cherry-pick are the same machinery with the sign flipped** —
+cherry-pick applies (commit^ -> commit), revert applies (commit -> commit^).
+That one line explains why both conflict, both produce index stages 1/2/3, both
+resolve with add and --continue, and both stop on an empty result.
+
 ### What building B10.4 found
 
 The rebase topic, and the one where a claim I had already written turned out to
