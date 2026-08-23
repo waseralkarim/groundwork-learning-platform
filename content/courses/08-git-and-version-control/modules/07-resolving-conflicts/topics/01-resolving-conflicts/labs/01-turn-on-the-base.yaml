@@ -1,0 +1,286 @@
+id: lab.turn-on-the-base
+topic: topic.resolving-conflicts
+title: Resolve the same conflict twice, with and without the base
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.7.1, OBJ-B10.7.2]
+
+intro: >-
+  B10.3 established the rule a merge follows: a region conflicts when both sides
+  changed it *relative to the base*. Attribution needs three versions.
+
+
+  Git's default conflict markers show you two.
+
+
+  You will resolve a conflict with the default style, discover that the correct
+  answer is not determinable from what you can see, then turn on `diff3` and
+  watch the same conflict become obvious.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Create a conflict where the right answer depends on what the base said,
+      and look at the default markers. Save to /tmp/answer-default.
+    hint: >-
+      A config value that one side raised and the other lowered. Do not record
+      the base value anywhere except the commit.
+    walkthrough: |
+      rm -rf /tmp/cf1; mkdir -p /tmp/cf1; cd /tmp/cf1
+      git init -q
+      printf 'name = svc\nretries = 3\nport = 80\n' > cfg.txt
+      git add -A && git commit -q -m base
+      git checkout -q -b other
+      sed -i '2s/.*/retries = 5/' cfg.txt && git commit -q -am "other: retries 5"
+      git checkout -q main
+      sed -i '2s/.*/retries = 1/' cfg.txt && git commit -q -am "main: retries 1"
+      git merge other >/dev/null 2>&1
+      {
+        echo "the conflicted file, default style:"
+        cat cfg.txt | sed 's/^/  /'
+        echo
+        echo "i can see 1 and 5. i cannot see what it was before."
+        echo
+        echo "which matters, because the answers differ:"
+        echo "  if the base was 3, both sides changed it and this is a real"
+        echo "  disagreement someone has to settle."
+        echo "  if the base was 1, only the other side changed it - 5 is simply"
+        echo "  the newer value and there is nothing to decide."
+        echo
+        echo "the markers do not tell me which situation i am in."
+      } > /tmp/answer-default
+      cat /tmp/answer-default
+    verify:
+      - type: command_output
+        command: "cd /tmp/cf1 && git status --short -- cfg.txt | cut -c1-2"
+        equals: "UU"
+        describe: You produced a content conflict
+      - type: command_output
+        command: "cd /tmp/cf1 && grep -c '|||||||' cfg.txt"
+        equals: "0"
+        describe: And the default markers show no base
+      - type: file_matches
+        path: /tmp/answer-default
+        pattern: "(?i)cannot see what it was before|do not tell me which"
+        describe: And you identified what is missing
+
+  - id: s2
+    instruction: >-
+      Recover the base without changing the conflict style, and say what it
+      cost. Save to /tmp/answer-dig.
+    hint: >-
+      B10.3: the index holds all three versions during a conflict. Stage 1 is
+      the base.
+    walkthrough: |
+      cd /tmp/cf1
+      {
+        echo "the index has it all along:"
+        git ls-files --stage cfg.txt | sed 's/^/  /'
+        echo
+        echo "stage 1 (base):   $(git cat-file -p :1:cfg.txt | sed -n 2p)"
+        echo "stage 2 (ours):   $(git cat-file -p :2:cfg.txt | sed -n 2p)"
+        echo "stage 3 (theirs): $(git cat-file -p :3:cfg.txt | sed -n 2p)"
+        echo
+        echo "so the base was 3. both sides changed it, so this is a genuine"
+        echo "disagreement - someone has to decide whether 1 or 5 is right."
+        echo
+        echo "the information was always there. it just was not in the file i was"
+        echo "asked to edit, and finding it took a command most people resolving a"
+        echo "conflict do not know."
+      } > /tmp/answer-dig
+      cat /tmp/answer-dig
+    verify:
+      - type: command_output
+        command: "cd /tmp/cf1 && git cat-file -p :1:cfg.txt | sed -n 2p"
+        equals: "retries = 3"
+        describe: You recovered the base from stage 1
+      - type: file_matches
+        path: /tmp/answer-dig
+        pattern: "(?i)genuine disagreement|both sides changed"
+        describe: And used it to classify the conflict
+
+  - id: s3
+    instruction: >-
+      Turn on the `diff3` conflict style, redo the same merge, and compare. Save
+      to /tmp/answer-diff3.
+    hint: >-
+      `git config merge.conflictStyle diff3`, then abort and re-merge so the
+      markers are regenerated.
+    walkthrough: |
+      cd /tmp/cf1
+      git merge --abort
+      git config merge.conflictStyle diff3
+      git merge other >/dev/null 2>&1
+      {
+        echo "the same conflict, diff3 style:"
+        cat cfg.txt | sed 's/^/  /'
+        echo
+        echo "the ||||||| section is the base. it was 3, both sides changed it,"
+        echo "and i can see that without leaving the file."
+        echo
+        echo "this is the same information stage 1 held - now put where the"
+        echo "decision is actually being made."
+        echo
+        echo "zdiff3 goes one step further: it hoists lines common to both sides"
+        echo "out of the conflicted region first, so the markers surround only"
+        echo "what genuinely differs."
+      } > /tmp/answer-diff3
+      cat /tmp/answer-diff3
+    verify:
+      - type: command_output
+        command: "cd /tmp/cf1 && grep -c '|||||||' cfg.txt"
+        equals: "1"
+        describe: The markers now include a base section
+      - type: command_output
+        command: "cd /tmp/cf1 && grep -A1 '|||||||' cfg.txt | tail -1"
+        equals: "retries = 3"
+        describe: And it shows the original value
+      - type: file_matches
+        path: /tmp/answer-diff3
+        pattern: "zdiff3"
+        describe: And you noted the variant that trims common lines
+
+  - id: s4
+    instruction: >-
+      Show the case where the base changes the answer: one side changed the
+      line, the other did not. Save to /tmp/answer-onesided.
+    hint: >-
+      Make the two sides differ in a region where only one of them actually
+      changed something relative to the base.
+    walkthrough: |
+      rm -rf /tmp/cf2; mkdir -p /tmp/cf2; cd /tmp/cf2
+      git init -q
+      git config merge.conflictStyle diff3
+      printf 'alpha\nbeta\ngamma\n' > f.txt
+      git add -A && git commit -q -m base
+      git checkout -q -b other
+      printf 'alpha\nBETA-NEW\ngamma\nDELTA\n' > f.txt && git commit -q -am other
+      git checkout -q main
+      printf 'alpha\nbeta\ngamma\nEPSILON\n' > f.txt && git commit -q -am main
+      git merge other >/dev/null 2>&1
+      {
+        echo "conflicted file:"
+        cat f.txt | sed 's/^/  /'
+        echo
+        echo "reading it with the base visible:"
+        echo "  line 2: base said beta, ours still says beta, theirs says"
+        echo "    BETA-NEW. only one side changed it -> take theirs, no decision."
+        echo "  line 4: base had nothing, ours says EPSILON, theirs says DELTA."
+        echo "    both added -> a real decision."
+        echo
+        echo "without the base i would have treated both regions the same way and"
+        echo "had to guess on the first one. with it, half the conflict answers"
+        echo "itself."
+      } > /tmp/answer-onesided
+      cat /tmp/answer-onesided
+    verify:
+      - type: command_output
+        command: "cd /tmp/cf2 && grep -c '|||||||' f.txt"
+        equals: "1"
+        describe: The base section is present
+      - type: file_matches
+        path: /tmp/answer-onesided
+        pattern: "(?i)only one side changed it"
+        describe: And you used it to resolve part of the conflict without deciding
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-config what you would configure and why, and whether
+      the default is defensible.
+    hint: >-
+      Be fair to the default. Why might Git have chosen two-way markers?
+    walkthrough: |
+      cat > /tmp/answer-config <<'EOF'
+      i would set this globally and for everyone on the team:
+
+        git config --global merge.conflictStyle zdiff3
+
+      the reason is not preference. B10.3 established that a merge decides by
+      comparing each side against the BASE, and a conflict is precisely 'both
+      changed it relative to the base'. so the base is not extra context - it is
+      the term the rule is stated in. the default markers omit it, which means
+      the standard conflict experience withholds the one thing needed to apply
+      the rule i was taught.
+
+      with it visible, a whole class of conflict stops needing a decision at all:
+      if ours matches the base, only they changed it, and theirs is the answer.
+      i measured that above.
+
+      being fair to the default: two-way markers are shorter, and for a genuine
+      both-sides disagreement the base does not change what you have to do -
+      someone still has to choose. on small conflicts in code you wrote an hour
+      ago, it is fine. the default is defensible for the easy case and wrong for
+      the hard one, which is a poor way round.
+
+      zdiff3 over diff3 because it hoists lines common to both sides out of the
+      conflicted region first, so the markers surround only what genuinely
+      differs. on a large conflict that is a substantial reduction in what i have
+      to read.
+
+      what i would NOT do is rely on a merge tool to supply the base. tools do
+      show it, and the markers are what people actually edit - especially over
+      ssh, in CI, and during a rebase where the tool is not set up.
+      EOF
+      cat /tmp/answer-config
+    verify:
+      - type: file_matches
+        path: /tmp/answer-config
+        pattern: "merge.conflictStyle"
+        describe: You named the setting
+      - type: file_matches
+        path: /tmp/answer-config
+        pattern: "(?i)term the rule is stated in|not extra context"
+        describe: And justified it from the merge rule rather than preference
+      - type: file_matches
+        path: /tmp/answer-config
+        pattern: "(?i)defensible for the easy case"
+        describe: And gave the default a fair hearing
+
+solution: >-
+  **The default markers show ours and theirs.** The merge rule is stated in terms
+  of the *base* — a region conflicts when both sides changed it relative to that
+  base — so the default withholds the term the rule is written in.
+
+
+  Measured: with `retries` at `1` and `5` in the markers, the correct action is
+  undecidable. If the base was `3`, both changed it and someone must choose. If
+  the base was `1`, only the other side changed it and `5` is simply newer.
+
+
+  **The information is in the index the whole time.** `git cat-file -p :1:cfg.txt`
+  gives the base — stage 1, exactly as B10.3 described. It just is not in the
+  file you are asked to edit, and retrieving it takes a command most people
+  resolving a conflict have never seen.
+
+
+  **`diff3` puts it where the decision happens:**
+
+
+  ```text
+  <<<<<<< HEAD
+  retries = 1
+  ||||||| merged common ancestors
+  retries = 3
+  =======
+  retries = 5
+  >>>>>>> other
+  ```
+
+
+  And it makes a whole class of conflict answer itself: if ours matches the base,
+  only they changed it, so theirs is the answer with nothing to decide. Measured
+  in step 4, where one region resolves by inspection and only the other needs a
+  judgement.
+
+
+  **`zdiff3`** goes further, hoisting lines common to both sides out of the
+  conflicted region so the markers surround only what genuinely differs.
+
+
+  The default is defensible for a small conflict in code you wrote an hour ago,
+  and wrong for the hard case — which is a poor way round for a default.

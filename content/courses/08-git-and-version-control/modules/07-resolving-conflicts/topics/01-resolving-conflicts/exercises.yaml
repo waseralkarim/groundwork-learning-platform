@@ -1,0 +1,204 @@
+topic: topic.resolving-conflicts
+
+exercises:
+  - id: e1
+    title: Decide the conflict, twice
+    level: L2
+    objectives: [OBJ-B10.7.1]
+    kind: interpretation
+    prompt: >-
+      You are handed this conflict and asked to resolve it:
+
+
+      ```text
+      <<<<<<< HEAD
+      pool_size = 4
+      =======
+      pool_size = 16
+      >>>>>>> perf-tuning
+      ```
+
+
+      Say what you can and cannot determine, then say how the answer changes if
+      you learn the base said `pool_size = 4`, and separately if it said
+      `pool_size = 8`.
+    answer: >-
+      **What is determinable from the markers alone: nothing useful.** Two values
+      and no indication of which side moved. Every action available — take 4,
+      take 16, pick something else — is equally supported by what is shown.
+
+
+      **If the base was `4`:** our side did not change it and theirs did. Exactly
+      one side made a change, so the merge rule takes theirs — `16` — with nothing
+      to decide. This is not a judgement call at all; it only looked like one
+      because the base was hidden.
+
+
+      **If the base was `8`:** both sides changed it, in opposite directions. That
+      is a genuine disagreement about capacity, and it needs whoever understands
+      the workload rather than whoever is resolving the merge. The correct move
+      may well be to ask, and neither `4` nor `16` is defensible from the diff.
+
+
+      **Same markers, two completely different situations** — one mechanical, one
+      requiring a conversation. `merge.conflictStyle = zdiff3` puts the
+      distinguishing information into the file. Without it, `git cat-file -p
+      :1:<path>` reads the base out of stage 1.
+    explanation: >-
+      The point is not that the base is helpful context. It is that the merge rule
+      is *stated* in terms of the base, so a marker set without it cannot express
+      the question the rule asks. Half of what looks like judgement is arithmetic
+      once you can see all three versions.
+
+  - id: e2
+    title: Argue for changing the default
+    level: L2
+    objectives: [OBJ-B10.7.2]
+    kind: short_answer
+    prompt: >-
+      You propose adding `merge.conflictStyle = zdiff3` to the team's setup
+      guide. A colleague objects: they have resolved conflicts for years with the
+      default and never felt they were missing anything.
+
+
+      Take the objection seriously and make the case.
+    answer: >-
+      **Their experience is real and it is evidence about their conflicts, not
+      about the markers.** Most conflicts are small, recent and in code you wrote
+      yourself — and there the base is genuinely redundant, because you remember
+      what the line said. The default is fine for that, which is exactly why the
+      gap goes unnoticed for years.
+
+
+      **The case is about the conflicts where it is not fine.** A merge from a
+      long-lived branch, in a file you did not write, where a value differs and
+      you have no memory to fall back on. That is when the base is load-bearing,
+      and it is also when you are least equipped to go looking for it.
+
+
+      **The concrete gain is not "more context".** With the base shown, every
+      region where our side still matches it stops being a decision — only they
+      changed it, so theirs is the answer. That class of conflict is invisible
+      under the default and mechanical with `zdiff3`, which means less to think
+      about rather than more to read.
+
+
+      **And `zdiff3` specifically** hoists lines common to both sides out of the
+      conflicted region, so the markers surround only what genuinely differs. On a
+      large conflict the output is *shorter* than the default's, not longer.
+
+
+      **What I would concede:** it changes what people are used to seeing, and
+      unfamiliar markers during an incident are their own cost. Worth adopting
+      when nothing is on fire, not the week of a release.
+    explanation: >-
+      "I have never needed it" is strong evidence about typical cases and no
+      evidence about hard ones — and defaults should be chosen for the case where
+      they matter. The argument that actually persuades is that it removes
+      decisions rather than adding information.
+
+  - id: e3
+    title: Order the work on a large conflicted merge
+    level: L3
+    objectives: [OBJ-B10.7.5]
+    kind: ordering
+    prompt: >-
+      A merge has come back with conflicts in eighteen files. Put these steps in
+      the order you would do them, and justify the ordering.
+
+
+      - **A** Resolve the content conflicts region by region
+      - **B** Run the test suite
+      - **C** List every unmerged path
+      - **D** Clear the modify/delete and rename conflicts
+      - **E** Decide whether this merge should exist at all
+      - **F** Turn on `zdiff3`
+    answer: >-
+      **C → F → E → D → A → B.**
+
+
+      **C first, always.** `git diff --name-only --diff-filter=U` is the complete
+      set of decisions owed, and it includes the paths with no markers — the ones
+      a search for `<<<<<<<` silently skips. Until this runs you do not know the
+      size of the job.
+
+
+      **F before reading anything.** Turning on the base after resolving half the
+      conflicts means the first half was decided with less information than the
+      second. It costs one command.
+
+
+      **E before doing any work.** Eighteen files usually means an old merge base
+      rather than genuinely incompatible work. Aborting costs nothing — measurably
+      nothing — and a back-merge may turn one hard merge into several easy ones.
+      Asking this *after* two hours of resolution is how people talk themselves
+      into finishing something that should not have been started.
+
+
+      **D before A.** Modify/delete and rename conflicts are decisions about
+      existence and naming rather than edits, so they are fast. Clearing them
+      shrinks the list before the slow work begins, and it gets the invisible ones
+      out of the way while you are still thinking about them.
+
+
+      **A next**, resolving related paths together rather than in the order
+      printed — three files conflicting over one rename are a single decision, and
+      resolving them separately is how two of them end up right.
+
+
+      **B last and non-negotiable.** A resolved merge has compiled nothing. Every
+      resolution is untested until something runs, and a clean merge has never
+      been evidence that the result works.
+    explanation: >-
+      The ordering principle is: find out how big it is, shrink it, make the easy
+      decisions mechanical, and only then spend judgement on what is left. The
+      step people skip is E, and it is the only one that can make the other five
+      unnecessary.
+
+  - id: e4
+    title: Rule on a merge that used `-X ours`
+    level: L3
+    objectives: [OBJ-B10.7.6]
+    kind: short_answer
+    prompt: >-
+      Reviewing a merge commit, you notice from the message that it was created
+      with `git merge -X ours`. The branch had been open for five weeks. The diff
+      looks reasonable and CI is green.
+
+
+      Say what you would ask for and why.
+    answer: >-
+      **I would ask what was discarded, because the commit cannot tell me.**
+      `-X ours` resolves every conflicting region in favour of one side. It does
+      not discard the branch wholesale, which is why the result looks like a
+      normal merge — a merge commit, both parents, the branch listed by
+      `git branch --merged`, and nothing recording that decisions were made
+      without being read.
+
+
+      **Five weeks is the part that worries me.** Against a recent base, the
+      conflicting regions are the things people genuinely disagreed about this
+      week, and taking one side is a decision someone can defend. Against a
+      five-week base they include everything the other side did in five weeks that
+      touches the same lines — discarded unread.
+
+
+      **CI being green is not reassurance here.** It tests that the result works,
+      not that it contains what it should. Silently dropping the other branch's
+      changes produces a tree that compiles perfectly and is missing features.
+
+
+      **What I would ask for concretely:** re-run the merge without `-X`, list the
+      conflicting paths, and show me that list. If it is three files in a config
+      the release branch owns, fine — approve it and note the reasoning in the
+      message. If it is thirty files across the codebase, the merge needs redoing
+      by hand, and the five-week branch is the thing to fix so it does not recur.
+
+
+      **And regardless of the answer:** the merge message should say `-X ours` was
+      used and why. It is the only place that information can live.
+    explanation: >-
+      This is B10.3's whole-file failure at smaller scale, and the review problem
+      is identical — the artefact of a considered merge and an unconsidered one
+      are the same artefact. The question that separates them is not about the
+      diff but about the merge base's age.

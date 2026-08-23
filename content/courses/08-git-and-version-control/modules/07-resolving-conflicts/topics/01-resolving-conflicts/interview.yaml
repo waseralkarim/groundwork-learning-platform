@@ -1,0 +1,138 @@
+topic: topic.resolving-conflicts
+
+questions:
+  - id: i1
+    level: L2
+    question: >-
+      What do the default conflict markers show you, and what do they leave out?
+    model_answer: >-
+      Ours and theirs. They leave out the base — what the region said before
+      either side touched it.
+
+
+      That matters because the merge rule is stated in terms of the base: a region
+      conflicts when both sides changed it *relative to the base*. So the default
+      markers omit the term the rule is written in, and you can be shown two
+      values with no way to tell whether both sides moved or only one did.
+
+
+      `merge.conflictStyle = diff3` adds it between `|||||||` and `=======`.
+      `zdiff3` does the same and hoists lines common to both sides out of the
+      region first.
+    signal: >-
+      Most candidates have never changed this setting. The good answer connects it
+      to attribution rather than treating the base as extra context — the point is
+      that it removes decisions, not that it adds information.
+
+  - id: i2
+    level: L2
+    question: >-
+      Where is the merge base during a conflict, if you have not enabled diff3?
+    model_answer: >-
+      In the index, as stage 1. `git cat-file -p :1:<path>` reads it, and
+      `git ls-files --stage <path>` shows all three entries.
+
+
+      So the information is never missing — it is just not in the file you are
+      asked to edit. Enabling `diff3` moves it to where the decision is actually
+      being made.
+    signal: >-
+      Follows on from the three-stage model. Candidates who can go straight to
+      stage 1 have understood conflicts as an index state rather than as markers
+      in a file.
+
+  - id: i3
+    level: L2
+    question: >-
+      Name a conflict that writes no markers.
+    model_answer: >-
+      Modify/delete — one side changed a file, the other removed it. There is no
+      third version to merge against, so nothing is written into the file, and
+      your copy sits in the tree looking entirely normal.
+
+
+      Rename/rename writes none either, and leaves both filenames present with
+      their content intact. It also produces three unmerged paths for one
+      disagreement: the original name and both new ones.
+
+
+      Which is why searching for `<<<<<<<` is an unsafe way to find your work.
+      `git diff --name-only --diff-filter=U` lists every path still needing a
+      decision.
+    signal: >-
+      A strong discriminator. Candidates who only know content conflicts will
+      say all conflicts have markers, and that belief is exactly what lets a
+      modify/delete get committed unresolved.
+
+  - id: i4
+    level: L3
+    question: >-
+      Someone resolved every marker they could find, committed, and later
+      discovered a file was missing. How?
+    model_answer: >-
+      A conflict with no markers — most likely modify/delete. Their method could
+      not see it by construction.
+
+
+      It then got staged unresolved, which is the only way the commit could have
+      completed: `git commit` is refused while any path has non-zero stages. A
+      bulk `git add -A` sweeps unresolved paths in along with the edited ones,
+      accepting whatever the working tree holds — in this case the deletion.
+
+
+      To find what else went: `git diff HEAD^2 HEAD` shows what the merged branch
+      had that the result lacks. The losses are rarely limited to the one that got
+      noticed.
+    signal: >-
+      Two parts to the good answer — the invisible conflict, and the bulk add that
+      let it through. Candidates who get only the first have not thought about how
+      the commit succeeded at all.
+
+  - id: i5
+    level: L3
+    question: >-
+      A merge comes back with thirty conflicts. What do you do?
+    model_answer: >-
+      Measure before opening anything: `git diff --name-only --diff-filter=U`.
+      That is the complete set of decisions owed and it includes the ones with no
+      markers.
+
+
+      Then ask whether the merge should exist. Thirty conflicts usually means the
+      base is weeks old rather than the work being incompatible, and aborting
+      costs nothing — no commit was written and neither branch moved. A back-merge
+      turns one hard merge into several easy ones.
+
+
+      If it does go ahead: turn on `zdiff3` first so regions where one side
+      matches the base resolve themselves, clear the modify/delete and rename
+      conflicts early because they are decisions rather than edits, resolve
+      related paths together, and test before committing.
+    signal: >-
+      The step people skip is asking whether to do it at all. Someone who reaches
+      for that has usually spent an afternoon on a merge that should have been
+      three.
+
+  - id: i6
+    level: L3
+    question: >-
+      When is `git merge -X ours` appropriate?
+    model_answer: >-
+      When you already know the other side's version of every conflicting region
+      is wrong — a superseded branch, or a generated file where one side is
+      authoritative.
+
+
+      It is dangerous exactly when the base is old, because then the conflicting
+      regions include everything the other side did in that period touching the
+      same lines, discarded without being read. It only resolves conflicting
+      hunks rather than the whole file, which is why it looks reasonable.
+
+
+      And the result is indistinguishable from a considered merge — a merge
+      commit, both parents, `branch --merged` listing it, nothing recording that
+      decisions were made unseen. So if I use it, I say so in the merge message.
+    signal: >-
+      Candidates who call it forbidden have not thought about it; candidates who
+      call it a time-saver have not been burned. The useful answer names the
+      condition — base age — and notices the commit cannot tell a reviewer.

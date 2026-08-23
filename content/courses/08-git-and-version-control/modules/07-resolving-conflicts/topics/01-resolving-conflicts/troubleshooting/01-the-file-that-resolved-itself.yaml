@@ -1,0 +1,205 @@
+id: troubleshooting.the-file-that-resolved-itself
+topic: topic.resolving-conflicts
+title: The file that resolved itself, and the one that vanished
+level: L3
+objectives: [OBJ-B10.7.4]
+reveal_policy: progressive
+
+situation: >-
+  A developer merged a two-week-old feature branch into `main`. Git reported
+  conflicts, they resolved what they found, committed, pushed, and CI passed.
+
+
+  Two days later, two separate reports arrive.
+
+
+  A validation helper that existed on `main` before the merge is gone — not
+  emptied, not broken, absent. And a rate-limit constant that the feature branch
+  raised from 100 to 500 is back at 100 on `main`, although the branch's commit
+  raising it is in the history.
+
+
+  The developer says they resolved every conflict Git showed them. Their
+  terminal history confirms they searched every file for markers and edited each
+  one they found.
+
+
+  Work out what Git asked that they did not answer.
+
+symptoms:
+  - "A helper file present on main before the merge is absent afterwards"
+  - "A constant raised on the branch is back at its old value on main"
+  - "The commit that raised it is in the history and not reverted"
+  - "The developer resolved every conflict marker they could find"
+  - "CI passed on the merge commit"
+
+artifacts:
+  - type: command_output
+    label: How they found the conflicts
+    content: |
+      $ grep -rl '<<<<<<<' .
+      src/api.py
+      src/config.py
+
+  - type: command_output
+    label: What Git actually reported at the time
+    content: |
+      CONFLICT (content): Merge conflict in src/api.py
+      CONFLICT (content): Merge conflict in src/config.py
+      CONFLICT (modify/delete): src/validate.py deleted in HEAD and modified in feature
+      Automatic merge failed; fix conflicts and then commit the result.
+
+  - type: command_output
+    label: The config file, before they edited it
+    content: |
+      <<<<<<< HEAD
+      RATE_LIMIT = 100
+      =======
+      RATE_LIMIT = 500
+      >>>>>>> feature
+
+  - type: command_output
+    label: What the base held
+    content: |
+      $ git cat-file -p :1:src/config.py | grep RATE_LIMIT
+      RATE_LIMIT = 100
+
+hints:
+  - "Compare the list of files with markers against the list of conflicts Git reported."
+  - "One of those conflict lines does not say 'content'. What does that kind write into the file?"
+  - "For the constant: which side changed it, relative to the base?"
+
+diagnostic_questions:
+  - "How many conflicts did Git report, and how many files contained markers?"
+  - "What does a modify/delete conflict write into the working tree?"
+  - "How would the developer have resolved a conflict they could not see?"
+  - "Relative to the base, which side changed RATE_LIMIT?"
+  - "What would the markers have shown if diff3 had been enabled?"
+
+method: >-
+  **1. Count the conflicts against the files with markers.** Git reported three
+  conflicts; `grep` found markers in two files. That discrepancy is the whole
+  first half of the problem, and it is visible in the output the developer
+  already had.
+
+
+  **2. Identify the third conflict's kind.** It is `modify/delete`, not
+  `content`. One side deleted `validate.py` and the other changed it — so there
+  is no third version to merge against, no markers are written, and the file
+  either sits in the tree looking normal or is simply absent depending on which
+  side deleted it.
+
+
+  **3. Ask how it got resolved.** It did not. `git commit` refuses while any path
+  has non-zero stages, so something must have staged it. `git add -A` or
+  `git commit -a` will do exactly that — sweeping the unresolved path in
+  alongside the edited ones, and accepting whatever state the working tree
+  happened to hold.
+
+
+  **4. For the constant, read the base rather than the two sides.** Stage 1 holds
+  `RATE_LIMIT = 100`. Ours also holds `100`. So *only the feature branch changed
+  it*, and the merge rule says take theirs — 500 — with nothing to decide.
+
+
+  **5. Conclude the resolution was a coin-flip.** With two-way markers the
+  developer saw `100` and `500`, had no way to tell that our side had not moved,
+  and picked. Picking `100` reverted the branch's change while producing a merge
+  that looks entirely normal.
+
+root_cause: >-
+  **Two distinct failures, both caused by the conflict interface rather than by
+  carelessness.**
+
+
+  **The vanished helper: a conflict with no markers.** `modify/delete` writes
+  nothing into the file, because there is no third version to merge against. The
+  developer's method — search for `<<<<<<<`, edit what you find — cannot see it
+  by construction. Git reported it clearly in the merge output, and that output
+  scrolled past.
+
+
+  The file was then staged unresolved. A commit is refused while any path has
+  non-zero stages, so the merge could not have completed otherwise; a bulk
+  `git add -A` swept the path in with whatever the working tree held, which in
+  this case was the deletion.
+
+
+  **The reverted constant: two-way markers hiding the base.** Stage 1 held `100`
+  and ours held `100`, so only the feature branch changed the line. Under the
+  merge rule that is not a conflict anyone needs to decide — exactly one side
+  changed the region, so its value wins.
+
+
+  Git presented it as a conflict because the *file* had conflicting regions
+  elsewhere and the surrounding context differed, and the default markers showed
+  two values with no way to tell which side had moved. The developer had a
+  fifty-fifty choice presented as a judgement, and chose the value that undid the
+  branch's work.
+
+
+  **Why nothing caught it.** CI passed because the result compiles and the tests
+  do not assert the constant's value. The merge commit is well-formed, the branch
+  is listed by `git branch --merged`, and the commit raising the constant is
+  still in the history — so every check anyone would run reports something true
+  and reassuring.
+
+resolution: >-
+  **Immediately, establish the damage from the pre-merge state rather than from
+  memory:**
+
+
+  ```console
+  $ git diff HEAD^1 HEAD -- src/     # what the merge changed relative to main
+  $ git diff HEAD^2 HEAD -- src/     # relative to the feature branch
+  ```
+
+
+  The second is the important one and the one nobody runs. Anything the feature
+  branch had that the merge result lacks was dropped in resolution, and this is
+  unlikely to be limited to the two things that were reported.
+
+
+  Restore `validate.py` from `HEAD^2`, restore the constant, and commit with a
+  message that says what happened.
+
+
+  **Then fix the method, in the order that prevents the most.**
+
+
+  **List unmerged paths instead of grepping for markers.**
+
+
+  ```console
+  $ git diff --name-only --diff-filter=U
+  ```
+
+
+  It is the complete set of decisions owed, including the ones that write nothing
+  into a file. Searching for `<<<<<<<` is a method that silently omits two of the
+  four conflict kinds.
+
+
+  **Never `git add -A` during a conflicted merge.** Stage paths individually as
+  each is genuinely resolved. The bulk form is what allowed an unanswered
+  question to be committed as though it had been answered.
+
+
+  **Turn on the base.**
+
+
+  ```console
+  $ git config --global merge.conflictStyle zdiff3
+  ```
+
+
+  The constant would have shown ours matching the base, which converts a
+  fifty-fifty guess into a mechanical answer. This single setting would have
+  prevented half the incident.
+
+
+  **What not to conclude.** Not that the developer was careless — they applied a
+  method that works for content conflicts to a merge containing two other kinds,
+  and the tooling defaults did not tell them the difference. The defect is a
+  default that hides the base and a habit that only finds markers, and both are
+  fixed by configuration and one command.
