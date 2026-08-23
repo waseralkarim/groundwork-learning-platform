@@ -1,0 +1,388 @@
+id: quiz.undoing-things
+topic: topic.undoing-things
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.5.1]
+    stem: >-
+      Which undo makes history *longer*?
+    options:
+      - id: a
+        text: "`git revert`"
+        correct: true
+      - id: b
+        text: "`git reset --soft`"
+        note: >-
+          Moves the branch pointer back, so history gets shorter. It keeps the
+          work staged, which is a different thing.
+      - id: c
+        text: "`git restore <path>`"
+        note: >-
+          Touches a file and leaves history exactly as it was.
+      - id: d
+        text: "`git reset --hard`"
+        note: >-
+          The shortest outcome of the four.
+    explanation: >-
+      Revert adds a commit whose change is the inverse of an earlier one. That
+      single property — adding rather than replacing — is what makes it the only
+      undo safe to use on commits other people already have.
+
+  - id: q2
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.5.1]
+    stem: >-
+      The bad commit is second of three. You run `git reset --hard` to the commit
+      before it. What happens to the good commit that came after?
+    options:
+      - id: a
+        text: It goes too — reset moves a pointer, so everything after the target is dropped
+        correct: true
+      - id: b
+        text: It is preserved, since only the targeted commit is removed
+        note: >-
+          Reset does not target a single commit; it moves the branch to a
+          position, and the branch no longer reaches anything past it.
+      - id: c
+        text: It is replayed automatically onto the new tip
+        note: >-
+          That is what a rebase does. Reset replays nothing.
+      - id: d
+        text: Git refuses, because a later commit depends on it
+        note: >-
+          No such check exists — reset moves the pointer without inspecting what
+          it leaves behind.
+    explanation: >-
+      Measured: three commits become one. This is the practical difference from
+      revert, which undoes one commit's change and leaves everything else — and
+      it matters exactly when the mistake is not the most recent thing you did.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.5.1]
+    stem: >-
+      You want to squash your last three commits into one, keeping all the work.
+      Which undo gets you there?
+    options:
+      - id: a
+        text: "`git reset --soft HEAD~3`, then commit once"
+        correct: true
+      - id: b
+        text: "`git revert HEAD~2..HEAD`, then commit"
+        note: >-
+          That adds three commits undoing the work. The opposite of keeping it.
+      - id: c
+        text: "`git reset --hard HEAD~3`, then commit"
+        note: >-
+          `--hard` resets the working tree too, so there would be nothing left
+          to commit.
+      - id: d
+        text: "`git restore --source=HEAD~3 .`"
+        note: >-
+          Rewrites files and leaves the three commits in history.
+    explanation: >-
+      `--soft` moves `HEAD` and leaves the index and working tree alone, so all
+      three commits' changes remain staged and ready to be committed as one.
+      That is what squashing is, without an interactive rebase.
+
+  - id: q4
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.5.2]
+    stem: >-
+      A bad commit has been pushed and three colleagues have pulled it. Which
+      undo requires none of them to repair their repository?
+    options:
+      - id: a
+        text: "`git revert`"
+        correct: true
+      - id: b
+        text: "`git reset --hard`, then force-push"
+        note: >-
+          Removes commits they hold, so each of them ends up with a history that
+          disagrees with the remote.
+      - id: c
+        text: "`git rebase -i` to drop the commit, then force-push"
+        note: >-
+          Same problem: it replaces history rather than adding to it.
+      - id: d
+        text: Any of them, since nothing is ever deleted
+        note: >-
+          Nothing is deleted locally. The harm is that other people hold commits
+          your new history no longer contains.
+    explanation: >-
+      Revert adds a commit, so colleagues receive one more commit — which is
+      exactly what pulling is designed to do. The other two replace history, and
+      replacement is only safe while you are the sole holder.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.5.2]
+    stem: >-
+      Some people dislike revert because the mistaken commit stays visible in the
+      log. What is the better way to see that?
+    options:
+      - id: a
+        text: It is provenance — the change was made for a reason and undone for a reason
+        correct: true
+      - id: b
+        text: It is a limitation that `--amend` avoids
+        note: >-
+          Amend rewrites a commit, which is exactly the unsafe operation on
+          shared history.
+      - id: c
+        text: It only matters until the next garbage collection
+        note: >-
+          Reachable commits are never collected. It stays forever, by design.
+      - id: d
+        text: It can be hidden with `git log --no-merges`
+        note: >-
+          That filters merges, not reverted commits.
+    explanation: >-
+      A history showing a fix, a revert, and a re-application tells a far more
+      useful story than one where the first two never appear — particularly to
+      whoever asks in eighteen months why the code looks the way it does.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.5.3]
+    stem: >-
+      You cherry-pick a commit onto a branch that has not moved since the
+      source's parent. What is the new commit's id?
+    options:
+      - id: a
+        text: Identical to the source's
+        correct: true
+      - id: b
+        text: Always different, since it is a new commit
+        note: >-
+          It is a new commit *object*, and with identical inputs that object is
+          the original. Measured.
+      - id: c
+        text: Different, because the committer timestamp is rewritten
+        note: >-
+          Cherry-pick preserves the committer timestamp when nothing else
+          differs, which is why the ids can match.
+      - id: d
+        text: Undefined — Git picks a new id at random
+        note: >-
+          Ids are never picked. They are computed from contents.
+    explanation: >-
+      With the same parent, tree, message, author and committer timestamp, every
+      input to the hash is the same, so the output is. "Cherry-pick creates a new
+      commit object" and "cherry-pick creates a new id" are different claims —
+      the first is always true, the second only when an input differs.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.5.3]
+    stem: >-
+      After cherry-picking a commit onto `main` from a branch that has moved on,
+      what records that the two commits are related?
+    options:
+      - id: a
+        text: Nothing, unless you used `-x` to note it in the message
+        correct: true
+      - id: b
+        text: The new commit lists the source as a second parent
+        note: >-
+          Only merges have a second parent. A cherry-pick produces an ordinary
+          one-parent commit.
+      - id: c
+        text: Git stores a cherry-pick record in `.git`
+        note: >-
+          No such record exists after the operation completes.
+      - id: d
+        text: The reflog links them permanently
+        note: >-
+          The reflog records ref movements, not relationships between commits,
+          and it expires.
+    explanation: >-
+      `git rev-list` finds zero references between them. Git sees two unrelated
+      commits that happen to make the same change — which is why `-x`, appending
+      "(cherry picked from commit …)" to the message, is the only durable record
+      you will get.
+
+  - id: q8
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.5.4]
+    stem: >-
+      The same change appears as two commits in `main`'s history. What most
+      likely happened?
+    options:
+      - id: a
+        text: It was cherry-picked, and later the source branch was merged as well
+        correct: true
+      - id: b
+        text: Someone committed it twice by accident
+        note: >-
+          Possible, and it would usually have two different messages and
+          timestamps rather than identical ones.
+      - id: c
+        text: A merge duplicated it
+        note: >-
+          A merge combines; it does not duplicate a change that exists once.
+      - id: d
+        text: A rebase replayed it twice
+        note: >-
+          A rebase replays each commit once, and drops the replay entirely if
+          the change is already present.
+    explanation: >-
+      This is cherry-pick's characteristic failure. The pick and the merge each
+      bring the change in, Git has no record that they are the same work, and
+      the log shows two commits with no explanation. It merges cleanly only
+      while the two copies stay byte-identical.
+
+  - id: q9
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.5.4]
+    stem: >-
+      When is cherry-picking the right tool rather than a merge?
+    options:
+      - id: a
+        text: When the two branches will never be merged together
+        correct: true
+      - id: b
+        text: When you only want one commit from a branch you will merge later
+        note: >-
+          That is precisely the case that produces the duplicate. Merge the
+          branch, or commit on the oldest branch that needs the fix.
+      - id: c
+        text: When the branches have diverged a long way
+        note: >-
+          Divergence makes any operation harder; it does not favour copying.
+      - id: d
+        text: Whenever you want to avoid a merge commit
+        note: >-
+          Avoiding a merge commit is a history-shape preference; duplicating a
+          change is a correctness cost.
+    explanation: >-
+      A hotfix onto a release line that will never be merged back, or a commit
+      rescued from an abandoned branch. When the branches *will* meet, committing
+      on the oldest branch that needs the fix and merging forward keeps the
+      change singular.
+
+  - id: q10
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.5.5]
+    stem: >-
+      Why does `git revert` on a merge commit require `-m`?
+    options:
+      - id: a
+        text: A merge has two parents, so "return to what" is ambiguous
+        correct: true
+      - id: b
+        text: To confirm you understand the risk
+        note: >-
+          It is not a confirmation prompt; it supplies information Git cannot
+          infer.
+      - id: c
+        text: To choose which of the merged branches to delete
+        note: >-
+          Nothing is deleted, and no branch is affected.
+      - id: d
+        text: To pick which conflict resolution to keep
+        note: >-
+          Resolutions are already in the merge's tree.
+    explanation: >-
+      Reverting means producing the inverse of a change, and a merge's change
+      depends on which parent you consider the mainline. `-m 1` means keep the
+      first parent — the branch you were on. Git refuses rather than guessing.
+
+  - id: q11
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.5.5]
+    stem: >-
+      You reverted a merge. The feature is now fixed, so you merge the branch
+      again — and get "Already up to date". Why?
+    options:
+      - id: a
+        text: The branch is still merged; the revert removed the changes without un-merging it
+        correct: true
+      - id: b
+        text: The revert deleted the branch's commits
+        note: >-
+          Nothing was deleted. They are still reachable from the merge commit.
+      - id: c
+        text: The merge commit was rewritten by the revert
+        note: >-
+          The revert added a commit and left the merge exactly as it was.
+      - id: d
+        text: Git caches merge results and the cache is stale
+        note: >-
+          No such cache exists; the answer comes from reachability.
+    explanation: >-
+      Verified: `git branch --merged main` still lists the branch and its commit
+      is still reachable. The work is missing from the *working tree* because a
+      revert commit removed it — not from *history*. Merge only asks the second
+      question, so reverting the revert is the way back.
+
+  - id: q12
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.5.6]
+    stem: >-
+      You committed a secret an hour ago and pushed. What do you do first?
+    options:
+      - id: a
+        text: Rotate the credential
+        correct: true
+      - id: b
+        text: "`git revert` the commit"
+        note: >-
+          Removes it from the current tree and leaves the blob readable in every
+          clone. Worth doing second.
+      - id: c
+        text: "`git reset --hard` and force-push"
+        note: >-
+          Rewrites shared history and still does not un-disclose the secret.
+      - id: d
+        text: Rewrite history to remove the blob, then tell the team
+        note: >-
+          Worth doing, and not first. Every clone and CI cache already has it.
+    explanation: >-
+      B10.1 established that deleting a file in a later commit does nothing to
+      the blob. It was disclosed the moment it was pushed, so rotation is the
+      only step that revokes access. Every Git operation here is hygiene
+      afterwards.
+
+  - id: q13
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.5.6]
+    stem: >-
+      Which question decides between `reset` and `revert`?
+    options:
+      - id: a
+        text: Does anyone else have these commits?
+        correct: true
+      - id: b
+        text: How many commits need undoing?
+        note: >-
+          Both handle ranges. The count does not change what is safe.
+      - id: c
+        text: Whether the change was committed or only staged
+        note: >-
+          That decides whether you need either of them, not which.
+      - id: d
+        text: Whether history should look linear
+        note: >-
+          A preference about appearance, not about safety — and the wrong lever
+          for this decision.
+    explanation: >-
+      Reset replaces history and revert adds to it, so the only variable that
+      matters is who is holding the commits you would be replacing. That is a
+      question with a definite answer, which is why it makes a better rule than
+      any preference about how the log should read.

@@ -1,0 +1,191 @@
+topic: topic.undoing-things
+
+exercises:
+  - id: e1
+    title: Pick the undo for each situation
+    level: L2
+    objectives: [OBJ-B10.5.1]
+    kind: short_answer
+    prompt: >-
+      Name the command for each, and say in one line why the others are wrong.
+
+
+      1. You edited a file, have not staged anything, and want it back as it was.
+      2. Your last three local commits should be one commit with a better message.
+      3. A commit you pushed yesterday broke production.
+      4. A fix on the release branch is also needed on `main`, and the release
+         branch will never be merged back.
+    answer: >-
+      **1. `git restore <path>`.** The problem is a file, not a commit. Nothing is
+      committed, so nothing in history needs changing — `reset` would move a
+      pointer for no reason and `revert` needs a commit to invert.
+
+
+      **2. `git reset --soft HEAD~3`, then commit once.** `--soft` moves `HEAD`
+      and leaves the index alone, so all three commits' work stays staged and can
+      be committed as one. `--hard` would discard the work entirely; `revert`
+      would add three commits undoing it.
+
+
+      **3. `git revert`.** It is pushed, so somebody else may hold it. Revert adds
+      a commit and nobody has to repair anything. `reset` plus a force-push
+      removes commits other people have, which is the operation that creates work
+      for everyone else.
+
+
+      **4. `git cherry-pick`, ideally with `-x`.** The branches will never be
+      merged, so the duplicate-change problem cannot arise. `-x` records the
+      source id in the message, which is the only link that will exist. Merging
+      would drag the whole release branch into `main`.
+
+
+      The pattern across all four: identify whether the problem is a *file*, a
+      *local commit*, a *shared commit*, or a *change needed elsewhere*. Each has
+      exactly one answer, and none of them requires judgement about history
+      aesthetics.
+    explanation: >-
+      Sorting by what the problem is — rather than by which command you remember
+      — makes all four decidable. The one that carries real risk is the third,
+      because reaching for `reset` there is the most common way to turn one
+      person's mistake into everybody's afternoon.
+
+  - id: e2
+    title: Answer the colleague who wants to force-push
+    level: L2
+    objectives: [OBJ-B10.5.2]
+    kind: interpretation
+    prompt: >-
+      A colleague pushed a commit with a typo in the message. They want to
+      `git reset --hard HEAD~1`, fix it, and force-push, arguing it is one commit
+      and nobody could have pulled it in ten minutes.
+
+
+      Say whether you agree, and what you would suggest.
+    answer: >-
+      **The reasoning is right and the conclusion is a gamble.** Ten minutes is
+      probably fine, and "probably" is doing all the work — CI may already have
+      fetched it, a colleague's editor may auto-fetch, and a mirror may have
+      pulled it. None of those announce themselves.
+
+
+      **The proportionality point is the stronger objection.** The cost of being
+      wrong is every holder resolving a divergent history; the benefit is a
+      corrected message. That is a poor trade even at low probability.
+
+
+      **What I would suggest depends on what the message is worth.** For a typo,
+      leaving it is usually correct — the log has a small blemish and nobody has
+      to do anything.
+
+
+      If it genuinely matters, `git commit --amend` and `git push
+      --force-with-lease` is the right shape, because the lease refuses if the
+      remote moved since their last fetch. That converts the gamble into a check.
+      It still will not protect someone who pulled and is working locally, and
+      that residual risk is exactly why "is it worth it" is the first question.
+
+
+      **What I would push back on is the framing.** "Nobody could have pulled it"
+      is unverifiable, and the habit of reasoning that way is what produces the
+      incident later on a branch where it is not true.
+    explanation: >-
+      Most force-push incidents are the correct judgement applied to a case where
+      the assumption happened to be false. The durable fix is preferring checks
+      over assumptions — `--force-with-lease` is one — rather than becoming
+      better at estimating whether anyone pulled.
+
+  - id: e3
+    title: Explain two identical commit ids
+    level: L2
+    objectives: [OBJ-B10.5.3]
+    kind: interpretation
+    prompt: >-
+      An engineer cherry-picks a commit onto `main` and is confused: `git log`
+      shows the same commit id on both branches. They ask whether the
+      cherry-pick actually did anything, or whether Git just linked to the
+      original.
+
+
+      Explain what happened, and what would have made the ids differ.
+    answer: >-
+      **The cherry-pick did make a commit — and it happens to be the same object.**
+      Nothing was linked; Git does not store links between a cherry-pick and its
+      source.
+
+
+      A commit's id is a hash of its contents: tree, parent, message, author and
+      committer, with timestamps. If `main` had not moved since the source
+      commit's parent, then the new commit has the *same parent*, and the tree,
+      message, author and committer are copied unchanged. Every input to the hash
+      is identical, so the output is — and an object with that id already exists,
+      so nothing new is written.
+
+
+      **What would have made them differ:** any change to any input. The usual one
+      is `main` having moved on, which gives a different parent. Amending the
+      message would do it. So would `-x`, which appends the source id to the
+      message and therefore changes the object.
+
+
+      The useful correction to their mental model is that "cherry-pick creates a
+      new commit" and "cherry-pick creates a new id" are separate claims. The
+      first is always true — it performs a commit operation. The second depends
+      entirely on whether any input differed.
+    explanation: >-
+      This is content addressing behaving consistently, and it surprises people
+      because they expect an identity to be *allocated*. Ids are computed, so
+      identical inputs give identical ids, and Git deduplicates without needing
+      to try.
+
+  - id: e4
+    title: Write the team's undo guidance
+    level: L3
+    objectives: [OBJ-B10.5.6]
+    kind: short_answer
+    prompt: >-
+      After an incident where someone reset and force-pushed `main`, a team
+      proposes: "nobody may use reset, revert only".
+
+
+      Write the guidance you would propose instead. It must prevent the incident
+      and stay short enough to follow.
+    answer: >-
+      **Why the ban is the wrong shape.** `reset` is the correct tool for work
+      nobody has seen — squashing local commits with `--soft`, discarding a
+      local experiment. Banning it makes people use worse tools for safe jobs,
+      and it does not name what actually went wrong.
+
+
+      **What actually went wrong** was replacing history other people held. That
+      is one specific thing, and it has a test.
+
+
+      **The guidance:**
+
+
+      > **Ask one question before undoing anything: has anyone else got these
+      > commits?**
+      >
+      > **No — reset freely.** `--soft` to recommit differently, `--hard` to
+      > discard. Nothing is lost that was committed; `ORIG_HEAD` and the reflog
+      > hold it for weeks.
+      >
+      > **Yes — revert.** It adds a commit instead of replacing history, so
+      > everyone else just receives one more commit. This includes `main`,
+      > release branches, and any branch someone else is committing to.
+      >
+      > **Never force-push a shared branch.** If you must force-push your own,
+      > use `--force-with-lease`, never `--force`.
+      >
+      > **Protect `main` in the host** so the rule does not depend on memory.
+
+
+      **The last line matters most.** The incident happened on a branch where the
+      convention was already understood, which is evidence that a convention is
+      not a control. Branch protection would have refused the push regardless of
+      what anyone remembered.
+    explanation: >-
+      Bans are attractive because they are checkable, and they usually forbid a
+      capability rather than the failure. Naming the actual condition — "does
+      anyone else have these commits" — is just as easy to check and does not
+      cost the safe uses.
