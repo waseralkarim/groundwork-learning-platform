@@ -1,0 +1,182 @@
+id: assessment.resolving-conflicts
+topic: topic.resolving-conflicts
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a resolution that was a coin-flip
+    kind: explain
+    objectives: [OBJ-B10.7.1, OBJ-B10.7.2]
+    prompt: >-
+      A merge conflict showed `TIMEOUT = 30` on one side and `TIMEOUT = 90` on
+      the other. The engineer resolving it picked 30, and a week later that
+      turned out to have reverted a deliberate change.
+
+
+      Reviewing it afterwards, `git cat-file -p :1:config.py` would have shown
+      the base held `TIMEOUT = 30`.
+
+
+      In about 250 words: explain what the base tells you that the markers did
+      not, whether the engineer made a mistake, and what you would change.
+    rubric:
+      - "Works out from the base that only one side changed the value"
+      - "Concludes the merge rule gives 90, with nothing to decide"
+      - "States that the default markers cannot express which side moved"
+      - "Declines to call it a mistake — the information was not available in the file"
+      - "Notes the base was in the index as stage 1 the whole time"
+      - "Recommends merge.conflictStyle = diff3 or zdiff3"
+      - "Explains that this converts a judgement into a mechanical answer"
+      - "Ideally notes zdiff3 also shortens large conflicts by hoisting common lines"
+    model_answer: >-
+      **The base makes the attribution decidable.** It held `30`, and ours also
+      held `30` — so our side never touched the line and theirs raised it to
+      `90`. Exactly one side changed the region, which is the merge rule's
+      take-theirs case. There was nothing to decide, and `90` was the answer.
+
+
+      **The engineer did not make a mistake in any useful sense.** They were shown
+      two values and asked to choose, with no indication that one of them was
+      simply the unchanged original. A coin-flip presented as a judgement produces
+      a wrong answer half the time, and this was the half.
+
+
+      **The information was in the index throughout**, as stage 1 —
+      `git cat-file -p :1:config.py` reads it. It just was not in the file they
+      were asked to edit, and retrieving it takes a command most people resolving
+      a conflict have never encountered.
+
+
+      **The change is one line of configuration:**
+
+
+      ```console
+      $ git config --global merge.conflictStyle zdiff3
+      ```
+
+
+      With the base in the markers, "ours matches the base" is visible at a
+      glance, and that whole class of conflict stops needing judgement.
+
+
+      Strong answers note that `zdiff3` also hoists lines common to both sides out
+      of the conflicted region, so on a large conflict the output is *shorter*
+      than the default's — it removes work rather than adding reading.
+
+  - id: B
+    title: Diagnose a merge that lost things nobody edited
+    kind: diagnose
+    objectives: [OBJ-B10.7.3, OBJ-B10.7.4]
+    prompt: >-
+      After a merge, two files that existed before are missing and one renamed
+      module has ended up under both its old and new names. The engineer insists
+      they resolved every conflict — they searched every file for `<<<<<<<` and
+      edited each one they found — and `git status` was clean before they
+      committed.
+
+
+      In about 300 words: explain what happened, what evidence would confirm it,
+      and what to change.
+    rubric:
+      - "Identifies that not all conflicts write markers"
+      - "Names modify/delete and rename/rename specifically"
+      - "Explains that a marker search cannot find those by construction"
+      - "Explains how status became clean: a bulk git add staged unresolved paths"
+      - "Notes that commit is refused while any path has non-zero stages"
+      - "Proposes git diff --name-only --diff-filter=U as the correct listing"
+      - "Proposes comparing the result against HEAD^2 to find what was dropped"
+      - "Recommends staging paths individually during a conflicted merge"
+      - "Avoids attributing it to carelessness"
+    model_answer: >-
+      **Their method cannot see two of the four conflict kinds.**
+      `modify/delete` writes no markers — there is no third version to merge
+      against — and `rename/rename` writes none either, leaving both filenames in
+      the tree with content intact. A search for `<<<<<<<` finds nothing in either
+      case, by construction rather than by oversight.
+
+
+      **`git status` was clean because something staged them unresolved.** A
+      commit is refused while any path has non-zero stages, so the merge could not
+      have completed otherwise. A bulk `git add -A` or `git commit -a` sweeps
+      unresolved paths in alongside the edited ones, accepting whatever the working
+      tree happens to hold — a deletion, or both copies of a renamed file.
+
+
+      **Evidence.** Git's own merge output listed every conflict, including the
+      ones without markers; comparing that list against the files they edited shows
+      the gap immediately. Going forward, `git diff --name-only --diff-filter=U`
+      lists every path still needing a decision.
+
+
+      **To find what was actually lost:** `git diff HEAD^2 HEAD` shows what the
+      merged branch had that the result does not. That is the command nobody runs,
+      and the losses are unlikely to be limited to the ones that were noticed.
+
+
+      **What to change.** List unmerged paths rather than grepping for markers.
+      Stage paths individually as each is genuinely resolved, never `-A`, during a
+      conflicted merge.
+
+
+      This is not carelessness — it is a method that works for content conflicts
+      applied to a merge containing other kinds, with defaults that do not signal
+      the difference.
+
+  - id: C
+    title: Justify a policy for large conflicted merges
+    kind: reason
+    objectives: [OBJ-B10.7.5, OBJ-B10.7.6]
+    prompt: >-
+      After a painful merge, two proposals circulate: "any merge with more than
+      ten conflicts must use `-X ours` to save time", and "any merge with more
+      than ten conflicts must be resolved by two people together".
+
+
+      In about 300 words: argue a position, and be concrete about what each
+      proposal prevents and what it costs.
+    rubric:
+      - "Explains what -X ours actually does: resolves conflicting hunks in one side's favour"
+      - "Notes the result is indistinguishable from a considered merge"
+      - "Identifies the danger as scaling with the age of the merge base"
+      - "Observes the first proposal automates exactly the case that most needs judgement"
+      - "Credits pairing with catching things one person misses"
+      - "Names pairing's cost: two people's time, and it does not address the cause"
+      - "Identifies the real defect as merge base age, not conflict count"
+      - "Proposes measuring and back-merging, or aborting, before resolving"
+      - "Takes a clear position rather than listing options"
+    model_answer: >-
+      **The first proposal is backwards.** `-X ours` resolves every conflicting
+      hunk in one side's favour — narrower than discarding the branch, which is
+      why it looks reasonable. But conflict count correlates with merge base age,
+      and against an old base the conflicting regions include everything the other
+      side did in that period touching the same lines. So the rule automates
+      exactly the case where the automation does the most damage, and the
+      resulting commit is indistinguishable from one where every conflict was
+      considered.
+
+
+      **Pairing, at its strongest,** genuinely helps: two people catch the
+      conflicts with no markers, and someone has to explain each resolution aloud,
+      which is a real check. Its cost is two people's time on a task caused by
+      something neither of them can fix in the moment — and it does nothing about
+      the reason there are thirty conflicts.
+
+
+      **The count is a symptom.** Thirty conflicts almost always means the branch
+      diverged weeks ago, not that the work is genuinely incompatible.
+
+
+      **My position: neither, as stated. Measure first, then decide whether the
+      merge should exist.**
+
+
+      Run `git diff --name-only --diff-filter=U` before opening anything. If the
+      list is large, abort — it costs nothing, verifiably — and back-merge `main`
+      into the branch instead, turning one hard merge into several small ones.
+      Turn on `zdiff3` so the regions where one side matches the base resolve
+      themselves.
+
+
+      Pair on what is left if it is still substantial. And if `-X` is ever used,
+      say so in the merge message, because that is the only place the information
+      can live.
