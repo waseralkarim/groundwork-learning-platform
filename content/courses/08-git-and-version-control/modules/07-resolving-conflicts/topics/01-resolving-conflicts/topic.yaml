@@ -1,0 +1,114 @@
+id: topic.resolving-conflicts
+slug: resolving-conflicts
+title: "Conflicts: Turn On the Style That Shows the Base"
+summary: >-
+  Git's default conflict markers hide the one thing the three-way rule says you
+  need — what the line said before either side touched it. `diff3` puts it back.
+  Then there are the conflicts that are not about content at all, where a path
+  has only two stages instead of three, and no marker appears anywhere.
+order: 1
+levels: [L2, L3]
+estimated_minutes: 130
+status: published
+
+prerequisites:
+  - topic: topic.branching-and-merging
+    hardness: required
+  - topic: topic.rebase-and-replay
+    hardness: recommended
+  - topic: topic.staging-and-committing
+    hardness: recommended
+
+objectives:
+  - id: OBJ-B10.7.1
+    level: L2
+    verb: interpret
+    statement: >-
+      Interpret conflict markers, and configure a conflict style that shows the
+      merge base.
+    assessed_by: [quiz.q1, quiz.q2, quiz.q3, lab.turn-on-the-base, exercise.e1]
+
+  - id: OBJ-B10.7.2
+    level: L2
+    verb: explain
+    statement: >-
+      Explain why the default two-way markers are insufficient for deciding a
+      resolution.
+    assessed_by: [quiz.q4, quiz.q5, lab.turn-on-the-base, exercise.e2]
+
+  - id: OBJ-B10.7.3
+    level: L2
+    verb: distinguish
+    statement: >-
+      Distinguish content conflicts from modify/delete, add/add and rename
+      conflicts by their index stages.
+    assessed_by: [quiz.q6, quiz.q7, quiz.q8, lab.the-conflicts-with-no-markers]
+
+  - id: OBJ-B10.7.4
+    level: L3
+    verb: diagnose
+    statement: >-
+      Diagnose a conflicted merge in which some paths have no markers and no
+      obvious resolution.
+    assessed_by: [quiz.q9, quiz.q10, lab.the-conflicts-with-no-markers, troubleshooting.the-file-that-resolved-itself]
+
+  - id: OBJ-B10.7.5
+    level: L3
+    verb: design
+    statement: >-
+      Design an approach to a merge with many conflicts, rather than resolving
+      them in the order Git presents them.
+    assessed_by: [quiz.q11, lab.forty-conflicts-one-method, exercise.e3]
+
+  - id: OBJ-B10.7.6
+    level: L3
+    verb: justify
+    statement: >-
+      Justify when to abort and change approach instead of continuing to
+      resolve.
+    assessed_by: [quiz.q12, quiz.q13, lab.forty-conflicts-one-method, exercise.e4, assessment.A, assessment.B, assessment.C]
+
+terminology:
+  - term: conflict style
+    definition: >-
+      How Git writes markers into a conflicted file. `merge` is the two-way
+      default; `diff3` and `zdiff3` add the base between `|||||||` and `=======`.
+  - term: diff3
+    definition: >-
+      A conflict style showing base, ours and theirs. Makes attribution possible
+      by inspection rather than by guessing which side changed what.
+  - term: zdiff3
+    definition: >-
+      Like `diff3`, but with common lines hoisted out of the conflicted region
+      first, so the markers surround only what genuinely differs.
+  - term: modify/delete
+    definition: >-
+      One side changed a file, the other removed it. The index holds stages 1
+      and 2 or 1 and 3 — never all three — and no markers are written.
+  - term: add/add
+    definition: >-
+      Both sides created the same path independently. There is no base, so the
+      index has stages 2 and 3 with no stage 1.
+  - term: rename/rename
+    definition: >-
+      Both sides moved the same file to different names. Git reports it, and the
+      resolution is a decision about which name is right.
+  - term: "--diff-filter=U"
+    definition: >-
+      Limit output to unmerged paths, which is how you list exactly what still
+      needs a decision.
+  - term: merge tool
+    definition: >-
+      A three-pane program that shows base, ours and theirs. Worth configuring
+      because it presents the base by default, which the markers do not.
+  - term: abort
+    definition: >-
+      `git merge --abort` or `git rebase --abort`. Costs nothing, loses nothing,
+      and is frequently the correct move once a merge is understood to be the
+      wrong shape.
+
+foreshadows:
+  - "B10.10's workflows exist largely to keep merges small enough that this topic is short."
+  - "E27's CI is what catches the conflicts that resolved cleanly and are wrong."
+
+tags: [git, version-control, conflicts, merge, diff3, fundamentals]

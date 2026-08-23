@@ -1,0 +1,10 @@
+id: module.resolving-conflicts
+slug: resolving-conflicts
+title: Resolving Conflicts
+summary: >-
+  B10.3 established what a conflict is — both sides changed the same region
+  relative to the base, and the index holds all three versions. This module is
+  about resolving them well: turning on the conflict style that actually shows
+  you the base, recognising the conflicts that are not about content at all, and
+  having a method for a merge with forty of them rather than one.
+order: 7
