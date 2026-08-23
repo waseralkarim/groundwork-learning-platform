@@ -1,0 +1,266 @@
+id: lab.revert-a-merge-and-try-again
+topic: topic.undoing-things
+title: Revert a merge, then discover you cannot just merge it back
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.5.5]
+
+intro: >-
+  Reverting a merge is the correct response to a feature that broke production
+  and needs to come out now. It is also a decision with a consequence nobody
+  mentions at the time: when the feature is fixed and you merge the branch
+  again, none of it arrives.
+
+
+  You will produce that exactly, find out why Git thinks there is nothing to do,
+  and learn the recovery that sounds like a joke and is not.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Merge a feature branch, then revert the merge. Save what each step did to
+      /tmp/answer-revert.
+    hint: >-
+      A merge commit has two parents, so `git revert` needs to be told which
+      side to return to. Try it without first and read the error.
+    walkthrough: |
+      rm -rf /tmp/rv; mkdir -p /tmp/rv; cd /tmp/rv
+      git init -q
+      echo base > f.txt && git add -A && git commit -q -m base
+      git checkout -q -b feat
+      echo "feature work" > feat.txt && git add -A && git commit -q -m "add feature"
+      git checkout -q main
+      git merge --no-ff feat -m "merge feat" >/dev/null 2>&1
+      M=$(git rev-parse HEAD)
+      echo "$M" > /tmp/.merge
+      {
+        echo "after merging: feat.txt present? $(test -e feat.txt && echo yes || echo no)"
+        echo
+        echo "reverting without -m:"
+        git revert --no-edit "$M" 2>&1 | head -1 | sed 's/^/  /'
+        echo "-> a merge has two parents, so 'undo this' is ambiguous. git needs"
+        echo "   to be told which side to return to."
+        echo
+        git revert -m 1 --no-edit "$M" >/dev/null 2>&1
+        echo "after revert -m 1:"
+        echo "  feat.txt present? $(test -e feat.txt && echo yes || echo no)"
+        echo "  commits now:      $(git rev-list --count HEAD)"
+        echo
+        echo "-m 1 means 'keep the first parent' - the branch i was on. the"
+        echo "revert commit undoes everything the merge brought in."
+      } > /tmp/answer-revert
+      cat /tmp/answer-revert
+    verify:
+      - type: file_matches
+        path: /tmp/answer-revert
+        pattern: "(?i)is a merge but no -m option"
+        describe: You captured why -m is required
+      - type: command_output
+        command: "cd /tmp/rv && test -e feat.txt && echo present || echo gone"
+        equals: "gone"
+        describe: And the revert removed the feature's files
+
+  - id: s2
+    instruction: >-
+      The feature is fixed. Merge the branch again and record what happens. Save
+      to /tmp/answer-again.
+    hint: >-
+      Predict the result before running it. Does the branch have anything Git
+      considers new?
+    walkthrough: |
+      cd /tmp/rv
+      {
+        echo "merging feat again:"
+        git merge feat 2>&1 | head -1 | sed 's/^/  /'
+        echo
+        echo "  feat.txt back? $(test -e feat.txt && echo yes || echo no)"
+        echo
+        echo "'Already up to date' - and none of the work came back."
+        echo
+        echo "why: merging asks what the branch has that i do not. feat's commits"
+        echo "are all still reachable from main, because the merge commit is still"
+        echo "in my history - reverting it did not un-merge anything. it added a"
+        echo "commit that undid the CHANGES."
+        echo
+        echo "so from git's point of view the branch is fully merged and has"
+        echo "nothing to contribute. it is right. the files are missing because a"
+        echo "later commit removed them, not because the merge is absent."
+      } > /tmp/answer-again
+      cat /tmp/answer-again
+    verify:
+      - type: file_matches
+        path: /tmp/answer-again
+        pattern: "(?i)Already up to date"
+        describe: Git considered the branch already merged
+      - type: command_output
+        command: "cd /tmp/rv && test -e feat.txt && echo present || echo gone"
+        equals: "gone"
+        describe: And the work did not come back
+      - type: file_matches
+        path: /tmp/answer-again
+        pattern: "(?i)did not un-merge|still reachable"
+        describe: And you explained why Git is right
+
+  - id: s3
+    instruction: >-
+      Confirm the diagnosis by checking whether the feature's commits are
+      reachable from `main`. Save to /tmp/answer-reachable.
+    hint: >-
+      `git branch --merged` and `git rev-list` both answer this from the graph.
+    walkthrough: |
+      cd /tmp/rv
+      {
+        echo "is feat still considered merged into main?"
+        git branch --merged main | sed 's/^/  /'
+        echo
+        echo "is feat's commit reachable from main?"
+        echo "  $(git rev-list HEAD | grep -c $(git rev-parse feat)) reference(s)"
+        echo
+        echo "reachable. the merge commit is still in history and still names"
+        echo "feat's tip as its second parent."
+        echo
+        echo "which settles it: the work is missing from the WORKING TREE because"
+        echo "a revert commit removed it. it is not missing from HISTORY at all."
+        echo "those are different questions and only one of them is what merge"
+        echo "looks at."
+      } > /tmp/answer-reachable
+      cat /tmp/answer-reachable
+    verify:
+      - type: command_output
+        command: "cd /tmp/rv && git rev-list HEAD | grep -c $(git rev-parse feat)"
+        equals: "1"
+        describe: The feature's commit is still reachable from main
+      - type: file_matches
+        path: /tmp/answer-reachable
+        pattern: "(?i)different questions"
+        describe: And you separated "missing from the tree" from "missing from history"
+
+  - id: s4
+    instruction: >-
+      Get the work back. Save the method and the result to /tmp/answer-recover.
+    hint: >-
+      The change was removed by a commit. What undoes a commit?
+    walkthrough: |
+      cd /tmp/rv
+      {
+        echo "the revert commit is what removed the files, so undo THAT:"
+        git log --oneline -1 | sed 's/^/  /'
+        git revert --no-edit HEAD >/dev/null 2>&1
+        echo
+        echo "after reverting the revert:"
+        echo "  feat.txt back? $(test -e feat.txt && echo yes || echo no)"
+        echo "  contents:      $(cat feat.txt 2>/dev/null)"
+        echo "  commits now:   $(git rev-list --count HEAD)"
+        echo
+        echo "'revert the revert' sounds like a joke and is the correct answer."
+        echo "the work was removed by a commit, so it comes back by undoing that"
+        echo "commit - not by re-merging something that was never un-merged."
+        echo
+        echo "history now reads: merged, reverted, restored. all three happened"
+        echo "and all three are worth being able to see."
+      } > /tmp/answer-recover
+      cat /tmp/answer-recover
+    verify:
+      - type: command_output
+        command: "cd /tmp/rv && cat feat.txt"
+        equals: "feature work"
+        describe: The work came back
+      - type: file_matches
+        path: /tmp/answer-recover
+        pattern: "(?i)never un-merged|not by re-merging"
+        describe: And you said why re-merging was never going to work
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-advice what you would tell a team about to revert a
+      merge on `main` during an incident.
+    hint: >-
+      Reverting is the right call under pressure. What should they know now that
+      they will not have time to work out later?
+    walkthrough: |
+      cat > /tmp/answer-advice <<'EOF'
+      revert the merge. it is the right call: it is the only undo that adds a
+      commit rather than replacing history, so it is safe on a branch everyone
+      has, and nobody has to repair their own repository afterwards.
+
+      the two things worth knowing before you do it, because you will not want to
+      work them out at 2am:
+
+        - you need -m 1. a merge has two parents and 'undo this' is ambiguous
+          without saying which side to return to. -m 1 is the branch you were on,
+          which is main. git refuses rather than guessing, so this is a pause
+          rather than a trap.
+
+        - re-merging the branch later will NOT bring the work back. git still
+          considers it merged, because reverting removed the changes without
+          un-merging anything, and you will get 'Already up to date' at exactly
+          the moment you expect the fix to arrive.
+
+      when the feature is fixed, the sequence is:
+
+        git revert <the-revert-commit>     brings the original work back
+        ...then merge the new fixes on top
+
+      i would write both of those in the incident notes at the time, because the
+      person merging the fix next week is probably not the person who reverted
+      it, and 'Already up to date' is a genuinely confusing message when you are
+      expecting a large diff.
+
+      the alternative some teams prefer is to revert and then have the feature
+      branch rebuilt fresh rather than reverting the revert. that also works and
+      it discards the original commits' history. which is better depends on
+      whether the original work is worth keeping in the record - and that is a
+      decision, not a default.
+      EOF
+      cat /tmp/answer-advice
+    verify:
+      - type: file_matches
+        path: /tmp/answer-advice
+        pattern: "(?i)-m 1"
+        describe: You warned about the flag they will need
+      - type: file_matches
+        path: /tmp/answer-advice
+        pattern: "(?i)Already up to date"
+        describe: And about the message that will confuse them later
+      - type: file_matches
+        path: /tmp/answer-advice
+        pattern: "(?i)incident notes|write both"
+        describe: And said to record it while it is known
+
+solution: >-
+  **Reverting a merge needs `-m`.** A merge commit has two parents, so "undo
+  this" is ambiguous — Git refuses rather than guessing, and the error says so.
+  `-m 1` means keep the first parent, the branch you were on.
+
+
+  **Then re-merging the branch does nothing.** Measured: `Already up to date`,
+  and no files return. Git is correct. Reverting a merge does not *un-merge*
+  anything — the merge commit is still in history, still naming the branch's tip
+  as its second parent, so those commits remain reachable and the branch has
+  nothing to contribute.
+
+
+  Confirmed from the graph: `git branch --merged main` still lists the feature,
+  and `git rev-list` still reaches its commit.
+
+
+  **The distinction that resolves it:** the work is missing from the **working
+  tree**, because a revert commit removed it. It is not missing from **history**
+  at all. Merge only looks at the second question.
+
+
+  **So the recovery is to revert the revert.** The change was removed by a
+  commit; it comes back by undoing that commit. History then reads merged,
+  reverted, restored — all three of which happened, and all three of which are
+  worth being able to see.
+
+
+  Worth writing into the incident notes at the time: `-m 1` is required, and
+  re-merging later will say `Already up to date` at exactly the moment someone
+  expects a large diff. The person merging the fix next week is rarely the person
+  who reverted it.
