@@ -1,0 +1,280 @@
+id: lab.ahead-behind-and-diverged
+topic: topic.remotes-and-collaboration
+title: Get a push rejected on purpose, and read what the rejection means
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.6.3, OBJ-B10.6.4]
+
+intro: >-
+  A rejected push is the first genuinely confusing thing most people meet in
+  Git, and the message is not obviously helpful under pressure.
+
+
+  You will cause one deliberately, read the rejection as a statement about
+  reachability, and then resolve it three different ways — comparing the history
+  each one produces, so the choice stops being about which command you saw last.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Set up two clones, have each commit a *different* file, and get a push
+      rejected. Save the rejection to /tmp/answer-rejected.
+    hint: >-
+      Both sides commit on `main`, one pushes first. Use different files on
+      each side — this lab is about refs, and a content conflict would obscure
+      that.
+    walkthrough: |
+      rm -rf /tmp/ab; mkdir -p /tmp/ab; cd /tmp/ab
+      git init -q --bare origin.git
+      git clone -q origin.git alice 2>/dev/null
+      cd alice && echo start > f.txt && git add -A && git commit -q -m start
+      git push -q origin main 2>/dev/null
+      cd /tmp/ab && git clone -q origin.git bob 2>/dev/null
+      cd alice && echo "alice work" > alice.txt && git add -A
+      git commit -q -m "alice: change" && git push -q origin main 2>/dev/null
+      cd /tmp/ab/bob && echo "bob work" > bob.txt && git add -A
+      git commit -q -m "bob: change"
+      {
+        echo "bob pushes:"
+        git push origin main 2>&1 | grep -E "rejected|hint: Updates" | head -2 | sed 's/^/  /'
+        echo
+        echo "'fetch first' means: the remote holds commits i have never seen."
+        echo
+        echo "the rule is the fast-forward rule from B10.3. an update is allowed"
+        echo "when the old tip is an ANCESTOR of the new one, because then nothing"
+        echo "that was reachable stops being reachable."
+        echo
+        echo "my main is not a descendant of what the remote holds - we both"
+        echo "committed on top of the same commit - so accepting my push would"
+        echo "strand alice's commit. the remote refuses."
+        echo
+        echo "note what is NOT at risk: my commits. they are on my machine and"
+        echo "nothing has happened to them. the rejection protects alice."
+      } > /tmp/answer-rejected
+      cat /tmp/answer-rejected
+    verify:
+      - type: file_matches
+        path: /tmp/answer-rejected
+        pattern: "(?i)rejected"
+        describe: You captured the rejection
+      - type: file_matches
+        path: /tmp/answer-rejected
+        pattern: "(?i)ancestor"
+        describe: And stated the fast-forward rule
+      - type: file_matches
+        path: /tmp/answer-rejected
+        pattern: "(?i)protects alice|not at risk: my commits"
+        describe: And identified whose work the rejection protects
+
+  - id: s2
+    instruction: >-
+      Fetch, then measure the divergence precisely before doing anything about
+      it. Save to /tmp/answer-measure.
+    hint: >-
+      `git rev-list --left-right --count` and the two `..` ranges tell you
+      exactly what each side has.
+    walkthrough: |
+      cd /tmp/ab/bob
+      git fetch -q origin
+      {
+        echo "counts:"
+        git rev-list --left-right --count origin/main...HEAD | awk '{print "  behind=" $1 "  ahead=" $2}'
+        echo
+        echo "what they have that i do not:"
+        git log --oneline HEAD..origin/main | sed 's/^/  /'
+        echo "what i have that they do not:"
+        git log --oneline origin/main..HEAD | sed 's/^/  /'
+        echo
+        echo "merge base: $(git merge-base HEAD origin/main | cut -c1-7)"
+        echo
+        echo "both counts non-zero means DIVERGED, and diverged is not an error."
+        echo "it is what two people working at the same time produces. something"
+        echo "has to reconcile the two lines, and i get to choose what."
+      } > /tmp/answer-measure
+      cat /tmp/answer-measure
+    verify:
+      - type: command_output
+        command: "cd /tmp/ab/bob && git rev-list --left-right --count origin/main...HEAD | awk '{print $1\"/\"$2}'"
+        equals: "1/1"
+        describe: You measured a genuine divergence
+      - type: file_matches
+        path: /tmp/answer-measure
+        pattern: "alice: change"
+        describe: And listed what the other side has
+      - type: file_matches
+        path: /tmp/answer-measure
+        pattern: "(?i)not an error"
+        describe: And recognised divergence as normal
+
+  - id: s3
+    instruction: >-
+      Resolve it by merging, and record the resulting shape. Save to
+      /tmp/answer-merge.
+    hint: >-
+      `git pull --no-rebase` is a fetch plus a merge. Count the commits
+      afterwards and look at the graph.
+    walkthrough: |
+      cd /tmp/ab/bob
+      cp -r /tmp/ab/bob /tmp/ab/bob-backup
+      {
+        git pull -q --no-rebase --no-edit origin main 2>/dev/null || true
+        echo "after pull --no-rebase:"
+        git log --oneline --graph | sed 's/^/  /'
+        echo
+        echo "  commits: $(git rev-list --count HEAD)"
+        echo "  HEAD parents: $(git cat-file -p HEAD | grep -c '^parent')"
+        echo
+        echo "a merge commit. both sides are preserved and the history records"
+        echo "that the work was parallel - because it was."
+        echo
+        echo "the cost is that a two-person day produces a merge commit per"
+        echo "reconciliation, and on a busy branch the log fills with 'Merge"
+        echo "branch main of ...' entries that say nothing."
+      } > /tmp/answer-merge
+      cat /tmp/answer-merge
+    verify:
+      - type: command_output
+        command: "cd /tmp/ab/bob && git cat-file -p HEAD | grep -c '^parent'"
+        equals: "2"
+        describe: The merge produced a two-parent commit
+      - type: file_matches
+        path: /tmp/answer-merge
+        pattern: "(?i)parallel"
+        describe: And you said what that shape records
+
+  - id: s4
+    instruction: >-
+      Start again from the diverged state and resolve it by rebasing instead.
+      Compare the two shapes. Save to /tmp/answer-rebase.
+    hint: >-
+      You kept a backup. `git pull --rebase` replays your commit on top of
+      theirs.
+    walkthrough: |
+      rm -rf /tmp/ab/bob2 && cp -r /tmp/ab/bob-backup /tmp/ab/bob2
+      cd /tmp/ab/bob2
+      OLD=$(git rev-parse HEAD)
+      {
+        git pull -q --rebase origin main 2>/dev/null || true
+        echo "after pull --rebase:"
+        git log --oneline --graph | sed 's/^/  /'
+        echo
+        echo "  commits: $(git rev-list --count HEAD)"
+        echo "  HEAD parents: $(git cat-file -p HEAD | grep -c '^parent')"
+        echo "  my commit's id changed: $([ "$OLD" = "$(git rev-parse HEAD)" ] && echo no || echo yes)"
+        echo
+        echo "linear, one parent, one fewer commit than the merge produced. my"
+        echo "commit was REPLAYED onto alice's, so it is a new object - exactly"
+        echo "what B10.4 measured."
+        echo
+        echo "which is fine here, because nobody else had my commit. the same"
+        echo "operation on commits somebody else holds is the golden rule."
+      } > /tmp/answer-rebase
+      cat /tmp/answer-rebase
+    verify:
+      - type: command_output
+        command: "cd /tmp/ab/bob2 && git cat-file -p HEAD | grep -c '^parent'"
+        equals: "1"
+        describe: The rebase produced a linear history
+      - type: command_output
+        command: "cd /tmp/ab/bob2 && git rev-list --count HEAD"
+        equals: "3"
+        describe: With one fewer commit than the merge
+      - type: file_matches
+        path: /tmp/answer-rebase
+        pattern: "(?i)id changed: yes"
+        describe: And you confirmed your commit was replayed as a new object
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-choice how you would set `pull.rebase` for a team, and
+      what you would tell someone whose push was just rejected.
+    hint: >-
+      Both shapes are legitimate. What makes the default matter is that it is
+      invisible.
+    walkthrough: |
+      cat > /tmp/answer-choice <<'EOF'
+      first, to the person whose push was just rejected: nothing is wrong and
+      nothing of yours is at risk. the remote has commits you have not got, so
+      accepting your push would make them unreachable. it refused in order to
+      protect somebody else's work, not to stop yours.
+
+      the fix is always the same three steps: fetch, look at what each side has,
+      then reconcile. do not reach for --force, which is asking to do exactly the
+      thing the check exists to prevent.
+
+      on the setting: i would set pull.rebase = true as the team default, with
+      pull.ff = only for people who prefer to be told rather than have anything
+      happen automatically.
+
+      the reason is not that linear history is better in the abstract. it is that
+      the DEFAULT is invisible. with pull.rebase unset, the same `git pull`
+      produces a merge commit on one machine and a rebase on another, and nobody
+      can tell from the command which happened - so a team ends up with a history
+      whose shape depends on who ran the command. picking one and configuring it
+      removes a variable nobody was tracking.
+
+      what i would not do is rely on people remembering to type --rebase. the
+      whole problem is that the bare command is the one people type.
+
+      and the case where the merge shape is genuinely right: reconciling two
+      long-lived branches, where the fact that they were parallel is real
+      information. that is a different operation from catching up on a shared
+      branch, and it deserves a different answer.
+      EOF
+      cat /tmp/answer-choice
+    verify:
+      - type: file_matches
+        path: /tmp/answer-choice
+        pattern: "(?i)nothing of yours is at risk"
+        describe: You reassured about what a rejection means
+      - type: file_matches
+        path: /tmp/answer-choice
+        pattern: "pull.rebase"
+        describe: And named the setting
+      - type: file_matches
+        path: /tmp/answer-choice
+        pattern: "(?i)default is invisible|which happened"
+        describe: And gave the reason a default matters
+
+solution: >-
+  **A rejection is a statement about reachability.** An update is allowed when
+  the old tip is an *ancestor* of the new one, because then nothing that was
+  reachable stops being reachable. Two people committing on the same base
+  produces tips where neither is an ancestor of the other, so accepting the
+  second push would strand the first person's commit.
+
+
+  **It protects them, not you.** Your commits are on your machine and nothing has
+  happened to them. `(fetch first)` is Git saying the remote holds work you have
+  never seen.
+
+
+  **Measure before reconciling.** `git rev-list --left-right --count
+  origin/main...HEAD` gives `behind/ahead` — here `1/1` — and the two `..` ranges
+  list exactly what each side has. Diverged is not an error; it is what two
+  people working at once produces.
+
+
+  **The two resolutions produce different histories**, both measured:
+
+
+  | | Commits | HEAD parents | Your commit's id |
+  |---|---|---|---|
+  | `pull --no-rebase` | 4 | **2** | unchanged |
+  | `pull --rebase` | 3 | 1 | **replayed, new id** |
+
+
+  The merge records that the work was parallel, which it was. The rebase produces
+  a linear history at the cost of replaying your commit as a new object — fine
+  here, because nobody else had it, and exactly the golden rule if they did.
+
+
+  **The reason to configure `pull.rebase` is that the default is invisible.** With
+  it unset, the same `git pull` merges on one machine and rebases on another, and
+  nobody can tell from the command which happened. Picking one removes a variable
+  nobody was tracking.
