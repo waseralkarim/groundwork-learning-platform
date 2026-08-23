@@ -1,0 +1,193 @@
+id: troubleshooting.the-fix-that-shipped-twice
+topic: topic.undoing-things
+title: The fix that shipped twice, then stopped working
+level: L3
+objectives: [OBJ-B10.5.4, OBJ-B10.5.5]
+reveal_policy: progressive
+
+situation: >-
+  A validation bug was fixed urgently on the `release-4.2` branch and shipped
+  that night. The same fix was cherry-picked onto `main` so the next release
+  would have it.
+
+
+  Three weeks later, `release-4.2` was merged into `main` as part of the normal
+  end-of-cycle housekeeping. The merge reported no conflicts.
+
+
+  Since that merge, the validation bug is back on `main` — but the fix commit is
+  still in the log, twice, and neither has been reverted.
+
+
+  Nobody rebased anything. Nobody force-pushed.
+
+
+  Work out how merging a branch that contained the fix removed the fix.
+
+symptoms:
+  - "A bug fixed three weeks ago is back on main after a routine merge"
+  - "The fix commit appears twice in the log, and neither is reverted"
+  - "The merge reported no conflicts"
+  - "No rebase and no force-push occurred"
+  - "The release branch definitely contains the fix"
+
+artifacts:
+  - type: command_output
+    label: The fix, appearing twice
+    content: |
+      $ git log --oneline --all | grep 'validate empty batch'
+      a4f8b21 fix: validate empty batch
+      7c19e03 fix: validate empty batch
+
+  - type: command_output
+    label: What each one is
+    content: |
+      $ git log --oneline --format='%h %ad %s' --date=short a4f8b21 -1
+      a4f8b21 2026-07-02 fix: validate empty batch
+
+      $ git log --oneline --format='%h %ad %s' --date=short 7c19e03 -1
+      7c19e03 2026-07-02 fix: validate empty batch
+
+      $ git branch --contains a4f8b21
+        main
+      $ git branch --contains 7c19e03
+        main
+        release-4.2
+
+  - type: command_output
+    label: What happened on main between the pick and the merge
+    content: |
+      $ git log --oneline a4f8b21..main --format='%h %s' | tail -4
+      d17c449 merge release-4.2
+      88ba0e1 refactor: extract the batch validator
+      e5f2a13 revert "fix: validate empty batch"
+      3b9d017 add batch metrics
+
+  - type: command_output
+    label: The current state of the code
+    content: |
+      $ git show main:validator.py | grep -A2 'def validate'
+      def validate(batch):
+          return batch.rows
+
+hints:
+  - "There are two commits with the same message. Are they the same commit?"
+  - "Read the log between the cherry-pick and the merge. Something else happened to main."
+  - "If a change was reverted on main, what does merging a branch that contains the original do?"
+
+diagnostic_questions:
+  - "Are a4f8b21 and 7c19e03 the same object, or two commits making the same change?"
+  - "Which branches contain each of them, and what does that tell you about their origin?"
+  - "What happened on main between the cherry-pick and the merge?"
+  - "When the merge ran, what did each side have relative to their merge base?"
+  - "Why did the merge not conflict?"
+
+method: >-
+  **1. Establish whether the two commits are the same object.** They are not —
+  different ids, and `git branch --contains` shows one on `main` only and the
+  other on both. That is the signature of a cherry-pick: a copy on `main`, the
+  original on the release branch, with nothing recording that they are the same
+  work.
+
+
+  **2. Read what happened on `main` in between.** The log shows a
+  `revert "fix: validate empty batch"` commit sitting between the cherry-pick
+  and the merge. Somebody undid the fix on `main` — probably deliberately, and
+  the reason is worth finding.
+
+
+  **3. Work out what each side had relative to the merge base.** Relative to the
+  base, `main` changed the validator twice — the cherry-picked fix, then the
+  revert undoing it — with a net effect of no fix. `release-4.2` also changed the
+  validator, applying the fix once.
+
+
+  **4. Ask why there was no conflict.** Because the two sides did not both change
+  the *same region relative to the base* in incompatible ways at the same place,
+  or because the refactor moved the code and the merge resolved textually
+  without either version conflicting. The absence of a conflict is not evidence
+  the result is right — B10.3's recurring point.
+
+
+  **5. Compare the merged result against both sides.** `git show main:validator.py`
+  against `git show release-4.2:validator.py` will show which side's content
+  won. That is the finding, and it does not require guessing.
+
+root_cause: >-
+  **The fix existed on `main` as a cherry-picked copy, and that copy was
+  reverted. Merging the branch that held the original could not restore it.**
+
+
+  The two ids are two commits making the same change. Nothing in Git links them,
+  so when the revert undid `a4f8b21` on `main`, it undid *that commit only*. The
+  original `7c19e03` on `release-4.2` was untouched and unrelated.
+
+
+  When the merge ran, Git compared each side against their merge base. On the
+  `main` side, the net change to the validator since the base was *nothing* —
+  the fix went in and came back out. On the release side, the fix went in. Those
+  are not contradictory statements about the same region, so nothing conflicted;
+  the refactor that moved the validator gave the merge enough room to combine
+  the two without a textual clash, and it produced a tree in which the fix is
+  absent.
+
+
+  **The revert is where the intent was lost.** Whoever reverted the cherry-pick
+  on `main` presumably had a reason — the metrics commit before it suggests the
+  fix interacted badly with something. But the revert only spoke about `main`'s
+  copy. The release branch still carried the original, and merging it later was
+  always going to reintroduce the question without anyone noticing it had been
+  asked before.
+
+
+  **Why nobody caught it.** The fix commit is visible in the log — twice — which
+  makes the history *look* correct at a glance. `git log --oneline | grep` finds
+  it, `git branch --contains` says it is on `main`, and neither of those means
+  the current tree contains the change. The only reliable check is the code.
+
+resolution: >-
+  **Immediately:** establish what the tree actually contains rather than what the
+  log suggests.
+
+
+  ```console
+  $ git show main:validator.py
+  $ git show release-4.2:validator.py
+  ```
+
+
+  Then reapply the fix on `main` as a normal commit, with a message that names
+  the history — that it was cherry-picked, reverted, and is being restored — so
+  the next person reading the log has the whole sequence.
+
+
+  **Find out why the revert happened before reapplying.** The revert was probably
+  correct at the time. Reapplying the fix without knowing why it was removed
+  risks reintroducing whatever it broke, and the commit before it is a good
+  place to start looking.
+
+
+  **Then fix the practice, in order of what it prevents.**
+
+
+  **Do not cherry-pick between branches that will be merged later.** This is the
+  root condition. Commit the fix on the *oldest* branch that needs it and merge
+  forward, so the change exists as one commit and every branch acquires it by
+  merging. Then a revert on any branch is visible to every merge that follows.
+
+
+  **When a cherry-pick is genuinely right, use `-x`.** It appends the source id
+  to the message, which is the only record Git will keep — and it would have made
+  this diagnosis a one-minute job rather than an investigation.
+
+
+  **When reverting a change that exists in more than one place, say so in the
+  message and revert it in both.** The revert here was correct and incomplete,
+  and incompleteness is invisible without the link that `-x` would have provided.
+
+
+  **What not to conclude.** Not "never cherry-pick" — a hotfix on a release line
+  that will never be merged back is exactly what it is for. And not "the merge
+  was wrong": it combined two sides correctly against their base. The defect was
+  created three weeks earlier, when one change was made to exist as two unrelated
+  commits.
