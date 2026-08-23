@@ -1,0 +1,184 @@
+id: assessment.remotes-and-collaboration
+topic: topic.remotes-and-collaboration
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a rejection to someone who thinks Git is broken
+    kind: explain
+    objectives: [OBJ-B10.6.1, OBJ-B10.6.4]
+    prompt: >-
+      A developer is frustrated. `git status` told them their branch was up to
+      date. Their push was then rejected with `(fetch first)`. They ran
+      `git status` again and it still says up to date. They believe the tooling
+      is inconsistent and want to force-push to "resolve the disagreement".
+
+
+      In about 250 words: explain why both status readings are correct, what the
+      rejection means, and what they should do.
+    rubric:
+      - "States that origin/main is a local ref updated only by fetch"
+      - "Explains that status compares against that local ref, not the remote"
+      - "Concludes both readings are correct and consistent"
+      - "Identifies the push as the first command that contacted the remote"
+      - "Explains the rejection as a reachability rule, not an error"
+      - "States that the rejection protects the other person's commits, not theirs"
+      - "Recommends fetch and inspection before integrating"
+      - "Explicitly warns that --force would strand someone else's commit"
+    model_answer: >-
+      **Both readings are correct, and neither is about the remote.**
+      `origin/main` is a file under `.git/refs/remotes/`, updated by exactly one
+      thing: a fetch. `git status` compares their branch against that file, so it
+      reports how they stand relative to *what they were last told*. Running it
+      twice with no fetch in between cannot produce new information.
+
+
+      **The push was the first command that contacted the remote**, which is why
+      it was the first thing that could discover the difference. It is not a
+      contradiction of status — it is the first new data either command had.
+
+
+      **The rejection is a reachability rule.** An update is accepted when the old
+      tip is an ancestor of the new one, because then nothing that was reachable
+      stops being reachable. Their branch is not a descendant of what the remote
+      holds, so accepting the push would strand a colleague's commit.
+
+
+      **It protects the other person, not them.** Their commits are on their
+      machine and nothing has happened to them. `--force` is a request to do
+      precisely what the check prevents, and on a shared branch it makes someone
+      else's work unreachable — which they cannot repair, because the affected
+      repositories are not theirs.
+
+
+      **What to do:** `git fetch`, then `git log --oneline HEAD..origin/main` and
+      the reverse. Two commands, and the divergence is visible with the facts in
+      front of them.
+
+  - id: B
+    title: Diagnose a repository that disagrees with the remote
+    kind: diagnose
+    objectives: [OBJ-B10.6.5]
+    prompt: >-
+      A developer returns from two weeks away, runs `git pull`, and reports that
+      Git "duplicated everything" — the log now shows two copies of several
+      commits with the same messages and different ids, plus a merge commit they
+      did not create.
+
+
+      While they were away, the team rebased and force-pushed a long-lived
+      integration branch.
+
+
+      In about 300 words: explain what they are seeing, what evidence would
+      confirm it, and how you would get them back to a clean state.
+    rubric:
+      - "Identifies the rebase as producing new commits and abandoning the originals"
+      - "Explains that their clone still held the originals, untouched by the remote rewrite"
+      - "Explains that pull saw divergence and merged, keeping both sides"
+      - "Notes the duplicates are the same work in two versions, not two changes"
+      - "Names the forced-update line in fetch output as the evidence"
+      - "Suggests comparing commit messages and author dates to confirm"
+      - "Recommends resetting onto origin, or rebasing genuine local work onto it"
+      - "Warns against pushing the merge, which would spread the duplication"
+      - "Ideally notes that merging after a known rewrite is the general error"
+    model_answer: >-
+      **A rebase created new commits and abandoned the originals.** The remote now
+      holds the replayed versions. Their clone still held the originals, because a
+      rewrite on a remote does not reach into anyone's existing repository.
+
+
+      **Their pull saw a divergence and merged.** Both sides had commits the other
+      lacked, which is the ordinary condition for a merge — and a merge keeps
+      both. The two "sides" were not parallel work; they were one history and its
+      replacement, so the result contains every change twice.
+
+
+      **Evidence to confirm it.** The fetch output would have shown
+      `+ old...new <branch> -> origin/<branch> (forced update)` — the leading `+`
+      is the tell, and it scrolls past instantly. Failing that, compare the
+      duplicate pairs: identical messages and identical *author* dates with
+      different ids and different committer dates is a replay signature, not two
+      people writing the same change.
+
+
+      **Getting back.** If they have no local work of their own, the answer is
+      simply to take the remote's version:
+
+
+      ```console
+      $ git fetch origin
+      $ git reset --hard origin/<branch>
+      ```
+
+
+      If they do have real commits, rebase those onto the new tip with
+      `git rebase --onto origin/<branch> <old-upstream>` so their work is replayed
+      and the abandoned history is not dragged along.
+
+
+      **What they must not do is push that merge.** It would put the abandoned
+      commits back on the shared branch for everybody, and — because it is a
+      fast-forward — nothing would refuse it. Strong answers generalise: never
+      merge after a known rewrite, because divergence caused by a rewrite is not
+      parallel work and the ahead/behind counts cannot tell you which you have.
+
+  - id: C
+    title: Justify a team's pull and push settings
+    kind: reason
+    objectives: [OBJ-B10.6.6]
+    prompt: >-
+      A team's `main` history contains dozens of commits titled "Merge branch
+      'main' of github.com:...". One proposal is to require everyone to rebase
+      manually before pushing. Another is to ban `git pull` entirely in favour of
+      `git fetch` plus explicit integration.
+
+
+      In about 300 words: argue a position. Be concrete about what each proposal
+      prevents, what it costs, and what you would actually configure.
+    rubric:
+      - "Identifies the cause: pull merges by default when the branch has diverged"
+      - "Notes those merge commits record nothing about the work"
+      - "Credits the manual-rebase proposal with producing the right shape"
+      - "Names its weakness: it relies on people remembering, and the bare command is what people type"
+      - "Credits the ban-pull proposal with making integration deliberate"
+      - "Names its weakness: it forbids a command rather than fixing a default"
+      - "Recommends configuring pull.rebase, with pull.ff=only as an alternative"
+      - "Explains that the real defect is an invisible default, not carelessness"
+      - "Takes a clear position rather than listing options"
+    model_answer: >-
+      **The cause is a default, not carelessness.** With `pull.rebase` unset,
+      `git pull` merges whenever the branch has diverged. Those merge commits
+      record nothing — "Merge branch 'main' of origin" is an artefact of two
+      people committing on the same afternoon, not information about the work.
+      Worse, they crowd out the merge commits that *do* mean something.
+
+
+      **Manual rebasing, at its strongest:** it produces exactly the right shape
+      and requires no configuration. Its weakness is that it depends on people
+      remembering, and the bare `git pull` is the command people type. A policy
+      whose failure mode is "someone typed the obvious thing" will fail.
+
+
+      **Banning pull, at its strongest:** it makes integration deliberate, and
+      `fetch` then looking is genuinely a better habit — it is the only way to see
+      what is coming before it arrives. Its weakness is that it forbids a command
+      instead of fixing the default that makes it ambiguous, and blanket bans get
+      quietly ignored.
+
+
+      **What I would configure:** `pull.rebase = true` for the team. It makes the
+      command people already type do the thing they meant, with no reliance on
+      memory. `pull.ff = only` is a reasonable alternative for anyone who would
+      rather be told than have something happen automatically.
+
+
+      **And I would still teach fetch-look-decide**, as a habit rather than a
+      rule — not because pull is dangerous, but because knowing what is arriving
+      before it arrives is worth two commands on a shared branch.
+
+
+      The general point: when the same command behaves differently on different
+      machines, the fix is configuration. Asking people to compensate for an
+      invisible default is asking them to remember something the tool could
+      simply decide.
