@@ -1,0 +1,260 @@
+id: lab.a-remote-is-a-directory
+topic: topic.remotes-and-collaboration
+title: Build a remote out of a directory and read its refs by hand
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.6.1, OBJ-B10.6.2]
+
+intro: >-
+  A remote does not have to be a server, and treating it as one is what makes
+  fetch and pull confusing. You will build a remote out of an empty directory,
+  clone from it twice, and read `origin/main` as the ordinary file it is.
+
+
+  Then you will watch a colleague push, and watch your repository continue to
+  believe nothing happened — because nothing told it otherwise.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Create a bare repository, clone it twice, and record what makes the bare
+      one different. Save to /tmp/answer-bare.
+    hint: >-
+      `git init --bare` creates a repository with no working tree. Look inside
+      both and compare.
+    walkthrough: |
+      rm -rf /tmp/rm; mkdir -p /tmp/rm; cd /tmp/rm
+      git init -q --bare origin.git
+      git clone -q origin.git alice 2>/dev/null
+      git clone -q origin.git bob 2>/dev/null
+      {
+        echo "the bare repository is a .git directory with no working tree:"
+        ls origin.git | tr '\n' ' ' | sed 's/^/  /'
+        echo; echo
+        echo "a clone has the same things, inside .git, plus your files:"
+        ls -a alice | tr '\n' ' ' | sed 's/^/  /'
+        echo; echo
+        echo "so a 'server' is not special. it is a repository with no checkout,"
+        echo "which is the only difference that matters - you cannot push to a"
+        echo "branch somebody has checked out, because that would change files"
+        echo "under them."
+        echo
+        echo "and the remote itself is just a name for a path:"
+        git -C alice remote -v | sed 's/^/  /'
+      } > /tmp/answer-bare
+      cat /tmp/answer-bare
+    verify:
+      - type: command_output
+        command: "test -d /tmp/rm/origin.git/refs && echo yes || echo no"
+        equals: "yes"
+        describe: You created a bare repository
+      - type: command_output
+        command: "cd /tmp/rm/alice && git remote -v | wc -l"
+        equals: "2"
+        describe: And the clone has a remote pointing at it
+      - type: file_matches
+        path: /tmp/answer-bare
+        pattern: "(?i)no checkout|no working tree"
+        describe: And you identified what makes it bare
+
+  - id: s2
+    instruction: >-
+      Have "alice" commit and push, then read `origin/main` in both clones as a
+      file. Save to /tmp/answer-refs.
+    hint: >-
+      `cat .git/refs/remotes/origin/main`. Bob has not fetched — predict what his
+      copy says before you look.
+    walkthrough: |
+      cd /tmp/rm/alice
+      echo one > f.txt && git add -A && git commit -q -m "alice: first"
+      git push -q origin main 2>/dev/null
+      {
+        echo "alice pushed. what does the bare repo hold?"
+        echo "  origin.git main: $(git -C /tmp/rm/origin.git rev-parse main)"
+        echo
+        echo "alice's own record of it:"
+        echo "  $(cat /tmp/rm/alice/.git/refs/remotes/origin/main 2>/dev/null || echo '(packed)')"
+        echo
+        echo "bob's record of it:"
+        ls /tmp/rm/bob/.git/refs/remotes/origin/ 2>/dev/null | sed 's/^/    /'
+        echo "  bob has not fetched, so he has no record of this branch at all."
+        echo
+        echo "origin/main is a FILE. forty hex characters and a newline, under"
+        echo ".git/refs/remotes. it is not a window onto the server - it is this"
+        echo "repository's note of what the server said, last time it asked."
+      } > /tmp/answer-refs
+      cat /tmp/answer-refs
+    verify:
+      - type: command_output
+        command: "cd /tmp/rm/origin.git && git rev-parse main | wc -c"
+        equals: "41"
+        describe: The bare repository holds the pushed commit
+      - type: file_matches
+        path: /tmp/answer-refs
+        pattern: "(?i)note of what the server said"
+        describe: And you described what a remote-tracking ref records
+
+  - id: s3
+    instruction: >-
+      From bob's clone, make a commit, then have alice push again. Show that
+      bob's repository still believes nothing happened. Save to
+      /tmp/answer-stale.
+    hint: >-
+      Do not fetch yet. Run `git status -sb` in bob and read it carefully.
+    walkthrough: |
+      cd /tmp/rm/bob
+      git pull -q origin main 2>/dev/null
+      echo bob >> f.txt && git commit -q -am "bob: change"
+      cd /tmp/rm/alice
+      echo alice >> f.txt && git commit -q -am "alice: change"
+      git push -q origin main 2>/dev/null
+      cd /tmp/rm/bob
+      {
+        echo "alice has now pushed a second commit. bob has not fetched."
+        echo
+        echo "bob's status:"
+        git status -sb | head -1 | sed 's/^/  /'
+        echo
+        echo "ahead/behind, counted from bob's stale record:"
+        git rev-list --left-right --count origin/main...HEAD | awk '{print "  behind=" $1 "  ahead=" $2}'
+        echo
+        echo "bob is told he is ahead and NOT behind. that is false about the"
+        echo "world and true about what bob knows - nothing has told his"
+        echo "repository that alice pushed."
+        echo
+        echo "git status is not out of date. it is exactly as current as the last"
+        echo "fetch, and it has no way to be more current than that."
+      } > /tmp/answer-stale
+      cat /tmp/answer-stale
+    verify:
+      - type: command_output
+        command: "cd /tmp/rm/bob && git rev-list --left-right --count origin/main...HEAD | awk '{print $1}'"
+        equals: "0"
+        describe: Bob's repository reports zero commits behind
+      - type: file_matches
+        path: /tmp/answer-stale
+        pattern: "(?i)false about the\\s+world and true about what bob knows"
+        describe: And you named exactly what the count is measuring
+
+  - id: s4
+    instruction: >-
+      Fetch in bob's clone and show what changed — and what did not. Save to
+      /tmp/answer-fetch.
+    hint: >-
+      Record `main` and `origin/main` before and after. Only one of them should
+      move.
+    walkthrough: |
+      cd /tmp/rm/bob
+      BEFORE_MAIN=$(git rev-parse --short main)
+      BEFORE_ORIG=$(git rev-parse --short origin/main)
+      git fetch -q origin
+      {
+        echo "                  before      after"
+        echo "  main            $BEFORE_MAIN     $(git rev-parse --short main)"
+        echo "  origin/main     $BEFORE_ORIG     $(git rev-parse --short origin/main)"
+        echo
+        echo "only origin/main moved. fetch updated bob's RECORD of the remote"
+        echo "and touched neither his branch nor any file in his working tree."
+        echo
+        echo "and now the counts tell the truth:"
+        git rev-list --left-right --count origin/main...HEAD | awk '{print "  behind=" $1 "  ahead=" $2}'
+        echo "  -> diverged. both sides committed since the merge base."
+        echo
+        echo "nothing about the remote changed between the two readings. what"
+        echo "changed is what this repository had been told."
+      } > /tmp/answer-fetch
+      cat /tmp/answer-fetch
+    verify:
+      - type: command_output
+        command: "cd /tmp/rm/bob && git rev-list --left-right --count origin/main...HEAD | awk '{print $1}'"
+        equals: "1"
+        describe: After fetching, the repository knows it is behind
+      - type: command_output
+        command: "cd /tmp/rm/bob && git rev-list --left-right --count origin/main...HEAD | awk '{print $2}'"
+        equals: "1"
+        describe: And still ahead — it has diverged
+      - type: file_matches
+        path: /tmp/answer-fetch
+        pattern: "(?i)only origin/main moved"
+        describe: And you noticed fetch moved nothing else
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-habit what you would tell someone who runs `git pull`
+      as their first command every morning.
+    hint: >-
+      Pull is fetch plus something. What is the something, and when does it
+      matter?
+    walkthrough: |
+      cat > /tmp/answer-habit <<'EOF'
+      pulling first thing is usually fine and occasionally expensive, and the
+      difference is worth knowing before it costs an hour.
+
+      pull is two operations. the fetch half is completely safe - it writes
+      remote-tracking refs and objects, and it cannot touch my branch, my files,
+      or produce a conflict. there is no situation where fetching is the risky
+      choice.
+
+      the second half integrates, into whatever i currently have checked out. that
+      is where merges appear, conflicts happen, and merge commits i did not plan
+      get created. if i have diverged - which i just measured is invisible until i
+      fetch - pull will start reconciling before i have seen what i am
+      reconciling with.
+
+      so the habit i would suggest is fetch, look, then decide:
+
+        git fetch
+        git log --oneline HEAD..origin/main    what they have that i do not
+        git log --oneline origin/main..HEAD    what i have that they do not
+
+      two extra commands, and i know exactly what a pull would do before it does
+      it. if the second command is empty i can pull with no thought at all,
+      because it is a fast-forward.
+
+      the case where pull-first genuinely bites: i have local commits, they have
+      pushed, and my pull.rebase setting is not what i assume. the same command
+      then produces a merge commit on one machine and a rebase on another, and
+      nobody can tell from the command which happened.
+      EOF
+      cat /tmp/answer-habit
+    verify:
+      - type: file_matches
+        path: /tmp/answer-habit
+        pattern: "(?i)fetch, look, then decide|fetch half is completely safe"
+        describe: You separated the safe half from the rest
+      - type: file_matches
+        path: /tmp/answer-habit
+        pattern: "pull.rebase"
+        describe: And named the setting that makes the same command behave differently
+
+solution: >-
+  **A remote is a name for a path.** `git init --bare` produces a repository with
+  no working tree, and that is the only meaningful difference — it is why you
+  cannot push to a branch somebody has checked out, because doing so would change
+  files underneath them.
+
+
+  **`origin/main` is a file.** Forty hex characters and a newline under
+  `.git/refs/remotes/`. It records where that branch was *the last time this
+  repository asked*, and exactly one thing updates it: a fetch.
+
+
+  **Which is why a stale repository reports confidently wrong things.** Measured:
+  with alice's commit already on the remote and bob not yet fetched, bob's
+  repository reports **behind=0, ahead=1** — no divergence at all. After
+  `git fetch`, the same repository reports **behind=1, ahead=1**.
+
+
+  Nothing about the remote changed between those two readings. What changed is
+  what bob's repository had been told. `git status` is not out of date; it is
+  exactly as current as the last fetch, and it has no way to be more current.
+
+
+  **Fetch moved `origin/main` and nothing else** — not `main`, not a file. That
+  is the half of `pull` that is always safe, and the half worth running on its
+  own before deciding anything.
