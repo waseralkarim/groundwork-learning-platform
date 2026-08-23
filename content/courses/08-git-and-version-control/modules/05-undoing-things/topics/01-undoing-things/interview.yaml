@@ -1,0 +1,142 @@
+topic: topic.undoing-things
+
+questions:
+  - id: i1
+    level: L2
+    question: >-
+      What is the difference between reset and revert?
+    model_answer: >-
+      Reset moves the branch pointer, so history gets shorter — the commits are
+      not deleted, but the branch no longer reaches them. Revert adds a new
+      commit whose change is the inverse of an earlier one, so history gets
+      longer and nothing existing moves.
+
+
+      That difference decides which is safe on shared work. Revert adds, so
+      everyone else just receives one more commit. Reset replaces, so anyone
+      holding the old commits ends up with a history that disagrees with the
+      remote and has to repair their own repository.
+    signal: >-
+      Listen for "adds versus replaces" rather than a description of flags. The
+      candidate who frames it that way can derive the sharing rule instead of
+      remembering it.
+
+  - id: i2
+    level: L2
+    question: >-
+      A bad commit was pushed an hour ago. How do you undo it?
+    model_answer: >-
+      Revert. It is pushed, so somebody may hold it, and revert is the only undo
+      that does not replace anything they have.
+
+
+      Reset plus a force-push would work in the sense of producing the right
+      tree, and it would cost every other holder an afternoon reconciling a
+      divergent history — which I cannot do for them, because the repositories
+      needing repair are not mine.
+    signal: >-
+      The reflexive answer is reset and force-push, sometimes with "nobody has
+      pulled it yet". Push on that: it is unverifiable, and the habit of
+      reasoning that way is what produces the incident on a branch where it is
+      not true.
+
+  - id: i3
+    level: L2
+    question: >-
+      What does cherry-pick actually do, and when is it the wrong choice?
+    model_answer: >-
+      It applies one commit's change on top of your current branch and makes a
+      commit for it. Nothing links the new commit to the original — no parent
+      relationship, no reference, nothing `git log` can show.
+
+
+      It is wrong whenever the two branches will be merged later, because the
+      change then exists in history twice as two unrelated commits. That merges
+      cleanly while the copies are identical and conflicts the moment either is
+      amended, with nothing in the log explaining why.
+
+
+      It is right when the branches will never meet: a hotfix on a release line
+      that is not merged back, or a commit rescued from an abandoned branch. If I
+      do use it, `-x` records the source id in the message, which is the only
+      link that will exist.
+    signal: >-
+      Most candidates can describe it. Fewer name the duplicate-change failure,
+      and that is the one that costs teams real time — usually months later, when
+      nobody connects the symptom to the pick.
+
+  - id: i4
+    level: L3
+    question: >-
+      You revert a merge, then later merge the branch again to bring the work
+      back. What happens?
+    model_answer: >-
+      You get "Already up to date" and none of the work returns.
+
+
+      Reverting a merge does not un-merge it. The merge commit is still in
+      history and still names the branch's tip as a parent, so those commits are
+      still reachable and the branch has nothing to contribute. The files are
+      missing from the working tree because a later commit removed them — not
+      from history.
+
+
+      The way back is to revert the revert. It sounds like a joke and it is the
+      correct answer, because the change was removed by a commit and comes back
+      by undoing that commit.
+    signal: >-
+      A good separator between people who have read about revert and people who
+      have done it during an incident. The phrase to listen for is that the work
+      is missing from the tree rather than from history.
+
+  - id: i5
+    level: L3
+    question: >-
+      Someone says a fix is definitely on main — the commit is right there in the
+      log. The bug is back. Where do you look?
+    model_answer: >-
+      At the file. "The commit is in history" and "the change is in the tree" are
+      different claims, and only the second one determines behaviour.
+
+
+      `git show main:<path>` settles it in one command. If the change is absent,
+      `git log -S '<string>' -- <path>` lists every commit that added or removed
+      that text, which usually names the culprit directly.
+
+
+      Three explanations are worth distinguishing: a later commit reverted or
+      overwrote it; the commit in the log is a cherry-picked copy and the other
+      copy was the one reverted; or a merge resolved in favour of a side without
+      it. Each has a distinct signature, so I would identify which rather than
+      guess.
+    signal: >-
+      Checking the tree before theorising is the discriminator. Accepting "it
+      must be a new regression" sends someone chasing a cause that does not
+      exist, which is the expensive outcome.
+
+  - id: i6
+    level: L3
+    question: >-
+      How would you write a team rule about reset versus revert?
+    model_answer: >-
+      As one question: has anyone else got these commits?
+
+
+      If no, reset freely — `--soft` to recommit differently, `--hard` to discard
+      a local experiment. Nothing committed is lost; the reflog holds it for
+      weeks.
+
+
+      If yes, revert. That covers `main`, release branches, and any branch
+      somebody else is committing to.
+
+
+      I would not ban reset. It is the right tool for several safe jobs, and a
+      rule that forbids safe things gets ignored, which weakens the rules that
+      matter. And I would put branch protection on the shared branches, because
+      every incident of this kind happens on a team that already understood the
+      convention — a convention is not a control.
+    signal: >-
+      Bans are the common answer and they are cheap to propose. The better answer
+      names the actual condition and notices that the enforcement has to live
+      somewhere other than memory.

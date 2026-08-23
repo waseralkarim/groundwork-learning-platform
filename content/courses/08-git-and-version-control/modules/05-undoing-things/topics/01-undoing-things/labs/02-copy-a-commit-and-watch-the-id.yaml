@@ -1,0 +1,283 @@
+id: lab.copy-a-commit-and-watch-the-id
+topic: topic.undoing-things
+title: Cherry-pick the same commit twice and watch what the id does
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 30
+objectives: [OBJ-B10.5.3, OBJ-B10.5.4]
+
+intro: >-
+  "Cherry-pick creates a new commit with a new id" is the standard description
+  and it is not quite true. You will find the case where the copy is
+  byte-identical to the original, work out why, and then produce the duplicate
+  change that makes cherry-pick worth being careful with.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Cherry-pick a commit onto a branch that has **not** moved since the
+      source's parent, and compare the ids. Save to /tmp/answer-identical.
+    hint: >-
+      Create the branch, commit on it, switch back without committing anything
+      on `main`, then cherry-pick. Predict the id before you look.
+    walkthrough: |
+      rm -rf /tmp/cp1; mkdir -p /tmp/cp1; cd /tmp/cp1
+      git init -q
+      echo base > f.txt && git add -A && git commit -q -m base
+      git checkout -q -b side
+      echo "the fix" > fix.txt && git add -A && git commit -q -m "the fix"
+      SRC=$(git rev-parse HEAD)
+      git checkout -q main
+      git cherry-pick "$SRC" >/dev/null 2>&1
+      {
+        echo "source id: $SRC"
+        echo "new id:    $(git rev-parse HEAD)"
+        echo
+        if [ "$SRC" = "$(git rev-parse HEAD)" ]; then
+          echo "IDENTICAL. the 'copy' is the same object as the original."
+        else
+          echo "different"
+        fi
+        echo
+        echo "why: main had not moved, so every input to the hash was the same -"
+        echo "same parent, same tree, same message, same author, same committer"
+        echo "timestamp. an id is a pure function of those, so the same inputs"
+        echo "produce the same forty characters."
+        echo
+        echo "so 'cherry-pick makes a new commit object' and 'cherry-pick makes a"
+        echo "new id' are different claims. the first is always true. the second"
+        echo "is only true when something about the inputs differs."
+      } > /tmp/answer-identical
+      cat /tmp/answer-identical
+    verify:
+      - type: command_output
+        command: "cd /tmp/cp1 && [ \"$(git rev-parse HEAD)\" = \"$(git rev-parse side)\" ] && echo identical || echo different"
+        equals: "identical"
+        describe: The cherry-picked commit is the same object as the source
+      - type: file_matches
+        path: /tmp/answer-identical
+        pattern: "(?i)pure function"
+        describe: And you explained why from content addressing
+
+  - id: s2
+    instruction: >-
+      Do it again with `main` moved on first, and compare. Save to
+      /tmp/answer-different.
+    hint: >-
+      Same setup, but commit something unrelated on `main` before
+      cherry-picking.
+    walkthrough: |
+      rm -rf /tmp/cp2; mkdir -p /tmp/cp2; cd /tmp/cp2
+      git init -q
+      echo base > f.txt && git add -A && git commit -q -m base
+      git checkout -q -b side
+      echo "the fix" > fix.txt && git add -A && git commit -q -m "the fix"
+      SRC=$(git rev-parse HEAD)
+      git checkout -q main
+      echo other > o.txt && git add -A && git commit -q -m "main moved on"
+      git cherry-pick "$SRC" >/dev/null 2>&1
+      {
+        echo "source id: $SRC"
+        echo "new id:    $(git rev-parse HEAD)"
+        echo "-> different, because the parent is different."
+        echo
+        echo "and the relationship between them is: none."
+        echo "  is the source reachable from main? $(git rev-list HEAD | grep -c $SRC)"
+        echo
+        echo "zero. the new commit does not point at the source, does not"
+        echo "reference it, and carries no record that it is a copy. git sees two"
+        echo "unrelated commits that happen to make the same change."
+        echo
+        echo "the change itself is there though:"
+        echo "  fix.txt on main: $(cat fix.txt)"
+      } > /tmp/answer-different
+      cat /tmp/answer-different
+    verify:
+      - type: command_output
+        command: "cd /tmp/cp2 && [ \"$(git rev-parse HEAD)\" = \"$(git rev-parse side)\" ] && echo identical || echo different"
+        equals: "different"
+        describe: A moved target produces a genuinely new commit
+      - type: file_matches
+        path: /tmp/answer-different
+        pattern: "reachable from main\\? 0"
+        describe: And nothing links the copy to the source
+      - type: file_matches
+        path: /tmp/answer-different
+        pattern: "(?i)two\\s+unrelated commits"
+        describe: And you said what that means
+
+  - id: s3
+    instruction: >-
+      Try cherry-picking the same commit a second time onto the same branch, and
+      record what Git does. Save to /tmp/answer-twice.
+    hint: >-
+      The change is already present. Predict whether Git notices before you run
+      it.
+    walkthrough: |
+      cd /tmp/cp2
+      {
+        echo "cherry-picking the same commit again:"
+        if git cherry-pick "$(git rev-parse side)" >/tmp/.out 2>&1; then
+          echo "  succeeded"
+        else
+          echo "  refused. git says:"
+          head -3 /tmp/.out | sed 's/^/    /'
+        fi
+        git cherry-pick --abort >/dev/null 2>&1 || true
+        echo
+        echo "git noticed the change was already present rather than applying it"
+        echo "twice or silently doing nothing. it stops and asks."
+        echo
+        echo "worth knowing because the opposite would be worse in both"
+        echo "directions: applying twice would corrupt the file, and doing"
+        echo "nothing silently would leave you believing something happened."
+      } > /tmp/answer-twice
+      cat /tmp/answer-twice
+    verify:
+      - type: command_output
+        command: "cd /tmp/cp2 && git status --short | wc -l"
+        equals: "0"
+        describe: You aborted cleanly, leaving no half-finished state
+      - type: file_matches
+        path: /tmp/answer-twice
+        pattern: "(?i)already present|refused"
+        describe: And recorded that Git noticed rather than duplicating
+
+  - id: s4
+    instruction: >-
+      Produce the duplicate that cherry-pick is actually dangerous for: pick a
+      commit onto `main`, then merge the source branch as well. Save to
+      /tmp/answer-duplicate.
+    hint: >-
+      Both branches now contain the change, as different commits. Count how many
+      commits in the final history make it.
+    walkthrough: |
+      rm -rf /tmp/cp3; mkdir -p /tmp/cp3; cd /tmp/cp3
+      git init -q
+      echo base > f.txt && git add -A && git commit -q -m base
+      git checkout -q -b release
+      echo "urgent fix" > fix.txt && git add -A && git commit -q -m "urgent fix"
+      SRC=$(git rev-parse HEAD)
+      echo "more release work" > r.txt && git add -A && git commit -q -m "release work"
+      git checkout -q main
+      echo other > o.txt && git add -A && git commit -q -m "main work"
+      git cherry-pick "$SRC" >/dev/null 2>&1
+      {
+        echo "cherry-picked the urgent fix onto main. now merging release too:"
+        git merge --no-ff release -m "merge release" >/dev/null 2>&1 || echo "  (conflicted)"
+        echo
+        echo "commits mentioning the fix in the final history:"
+        git log --oneline | grep -c "urgent fix" | sed 's/^/  /'
+        echo
+        git log --oneline | sed 's/^/    /'
+        echo
+        echo "the same change is in history twice, as two unrelated commits, and"
+        echo "nothing in the log says they are the same work."
+        echo
+        echo "here it merged cleanly because the two copies were identical. had"
+        echo "anyone amended the fix on either side, this would have conflicted -"
+        echo "and the conflict would be between two copies of the same change,"
+        echo "with no explanation visible in the log."
+      } > /tmp/answer-duplicate
+      cat /tmp/answer-duplicate
+    verify:
+      - type: command_output
+        command: "cd /tmp/cp3 && git log --oneline | grep -c 'urgent fix'"
+        equals: "2"
+        describe: The same change appears as two commits
+      - type: file_matches
+        path: /tmp/answer-duplicate
+        pattern: "(?i)two unrelated commits|nothing in the log says"
+        describe: And you noted nothing records that they are the same work
+
+  - id: s5
+    instruction: >-
+      Write to /tmp/answer-when when cherry-picking is the right tool and when it
+      is not.
+    hint: >-
+      You have just produced the failure mode. What situations make it likely,
+      and what is the alternative?
+    walkthrough: |
+      cat > /tmp/answer-when <<'EOF'
+      cherry-pick is right when the change genuinely needs to exist in two places
+      that will not be merged together:
+
+        - a hotfix that must go on a release branch and on main, where the
+          release branch will never be merged back
+        - pulling one commit out of an abandoned branch
+        - applying someone's fix from a fork you are not merging
+
+      it is wrong whenever the branches WILL be merged later, because then the
+      change ends up in history twice as two unrelated commits. i just produced
+      that: two commits making the same change, and nothing in the log saying
+      they are the same work.
+
+      it merged cleanly here only because the copies were byte-identical. amend
+      either one and the merge conflicts - between two copies of my own change,
+      with no explanation available to whoever has to resolve it.
+
+      the alternatives, in order of preference:
+
+        - merge the branch instead, if it is going to be merged anyway. then the
+          change exists once and its history is honest.
+        - commit the fix on the OLDEST branch that needs it, and merge that
+          branch forward into the newer ones. the change exists once and every
+          branch gets it by merging, which is what merging is for.
+        - if i must cherry-pick, use -x. it appends "(cherry picked from commit
+          <sha>)" to the message, which is the only record that will exist -
+          git itself stores no link.
+
+      the general rule: cherry-pick copies a change and records nothing. that is
+      fine when nobody will ever have to reconcile the two copies, and expensive
+      when they will.
+      EOF
+      cat /tmp/answer-when
+    verify:
+      - type: file_matches
+        path: /tmp/answer-when
+        pattern: "(?i)will be merged later|merged together"
+        describe: You identified when it goes wrong
+      - type: file_matches
+        path: /tmp/answer-when
+        pattern: "cherry picked from commit|[-]x"
+        describe: And named the flag that leaves a record
+      - type: file_matches
+        path: /tmp/answer-when
+        pattern: "(?i)oldest branch"
+        describe: And gave the merge-forward alternative
+
+solution: >-
+  **Cherry-pick does not always produce a new id**, and the exception is
+  instructive. If the target branch has not moved since the source's parent,
+  then parent, tree, message, author and committer timestamp are all identical —
+  so the copy hashes to the same forty characters and *is* the original object.
+
+
+  That makes **"cherry-pick creates a new commit object"** and **"cherry-pick
+  creates a new id"** different claims. The first is always true; the second
+  only when some input differs. Content addressing being consistent, once again.
+
+
+  **When the target has moved, the id differs and nothing links the two.**
+  `git rev-list` finds **zero** references from the new commit to the source.
+  There is no back-reference, no record, nothing `git log` can show. Git sees two
+  unrelated commits that happen to make the same change.
+
+
+  **Which is the hazard.** Cherry-pick a fix onto `main`, then merge the source
+  branch as well, and the change is in history twice. Measured: two commits, one
+  change, no explanation in the log. It merged cleanly here only because the
+  copies were byte-identical — amend either one and the merge conflicts between
+  two copies of your own work.
+
+
+  **So cherry-pick fits when the branches will never be merged together**: a
+  hotfix onto a release line that will not be merged back, or a commit rescued
+  from an abandoned branch. When they *will* be merged, committing on the oldest
+  branch that needs the fix and merging forward keeps the change singular and the
+  history honest. And `-x` at least records the source in the message, since Git
+  stores no link of its own.

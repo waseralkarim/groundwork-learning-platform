@@ -1,0 +1,176 @@
+id: assessment.undoing-things
+topic: topic.undoing-things
+pass_score: 70
+
+parts:
+  - id: A
+    title: Explain a revert that undid more than it should have
+    kind: explain
+    objectives: [OBJ-B10.5.1, OBJ-B10.5.2]
+    prompt: >-
+      An engineer wanted to undo a bad commit that was three commits back. They
+      ran `git reset --hard <bad-commit>~1` and force-pushed. Two colleagues who
+      had pulled report that their branches now show commits the remote does not
+      have, and one of them has lost an afternoon's work rebuilding.
+
+
+      The engineer points out that nothing was deleted, and that the commits are
+      still recoverable from the reflog.
+
+
+      In about 250 words: say whether their defence holds, explain what the
+      colleagues are seeing, and give the command they should have used.
+    rubric:
+      - "Agrees that locally nothing was deleted — the objects survive"
+      - "Explains that the defence is about their repository, not the colleagues'"
+      - "States that reset moved the branch back, so history got shorter"
+      - "Identifies that the reset also removed the two good commits after the bad one"
+      - "Explains what the colleagues see: their history contains commits the remote does not"
+      - "Notes each colleague must repair their own repository and the engineer cannot do it for them"
+      - "Names revert as the correct command, because it adds rather than replaces"
+      - "Ideally notes --force-with-lease would not have helped, since the colleagues had already pulled"
+    model_answer: >-
+      **The defence is true and irrelevant.** Nothing was deleted in the
+      engineer's repository: the commits are objects, the reflog names them, and
+      `ORIG_HEAD` would have restored them. That is a statement about *their*
+      machine.
+
+
+      **The colleagues are the ones with a problem.** They pulled the original
+      commits, so their branches point at them. The force-push replaced the
+      remote's history with a shorter one, so their local history now contains
+      commits the remote does not, and Git offers to merge two divergent
+      histories. Each of them has to repair their own repository, and the
+      engineer cannot do it for them — the objects needing repair are not on
+      their machine.
+
+
+      **The reset also did more than intended.** Resetting to the commit before
+      the bad one drops *everything after it*, including the two good commits.
+      Reset moves a pointer; it does not remove one commit from the middle.
+
+
+      **The correct command was `git revert <bad-commit>`.** It adds a commit
+      whose change is the inverse, leaving the two good commits and everyone
+      else's history untouched. Colleagues receive one more commit, which is
+      exactly what pulling does.
+
+
+      Strong answers note that `--force-with-lease` would not have saved this
+      either — the lease only refuses if the remote moved since the pusher's last
+      fetch, and it says nothing about who has already pulled. Nothing on the
+      remote records that.
+
+  - id: B
+    title: Diagnose a fix that is in the log but not in the code
+    kind: diagnose
+    objectives: [OBJ-B10.5.4, OBJ-B10.5.5]
+    prompt: >-
+      A bug that was fixed two months ago is back. `git log` shows the fix commit
+      present on `main` and not reverted. The engineer investigating has
+      confirmed with `git branch --contains` that the commit is on `main`, and
+      concludes the bug must be a new regression with a different cause.
+
+
+      You are unconvinced.
+
+
+      In about 300 words: say what you would check, what explanations you would
+      consider, and how you would tell them apart.
+    rubric:
+      - "Distinguishes 'the commit is in history' from 'the change is in the tree'"
+      - "Proposes reading the actual file, e.g. git show main:<path>"
+      - "Considers a later commit having reverted or overwritten the change"
+      - "Considers the commit being a cherry-picked copy, with a revert of the other copy"
+      - "Considers a merge having resolved in favour of a side without the fix"
+      - "Names git log -S or -G on the relevant string as the way to find every touch"
+      - "Explains how each hypothesis is distinguished by evidence, not guessed between"
+      - "Avoids accepting the regression conclusion without checking the tree"
+      - "Ideally notes that a reverted merge cannot be fixed by re-merging"
+    model_answer: >-
+      **The conclusion rests on a confusion worth naming first.** "The commit is
+      in history" and "the change is in the code" are different claims.
+      `git branch --contains` answers the first. Only reading the file answers the
+      second, so I would start with `git show main:validator.py` and look.
+
+
+      **If the change is genuinely absent, there are three explanations worth
+      distinguishing, and evidence separates them.**
+
+
+      *A later commit undid it.* `git log -S '<the changed string>' -- <path>`
+      lists every commit that added or removed that text. If a revert or an
+      overwrite appears after the fix, that is the answer and the log shows it
+      directly.
+
+
+      *The commit is a cherry-picked copy and the other copy was reverted.*
+      Signature: two commits with the same message and different ids, and
+      `git branch --contains` giving different branch sets for each. Nothing links
+      them, so a revert of one says nothing about the other.
+
+
+      *A merge resolved in favour of a side without the fix.* Signature: the
+      change disappears exactly at a merge commit. `git log --merges` plus
+      comparing `git show <merge>^1:<path>` against `^2:<path>` shows which side
+      the result matches.
+
+
+      **The discipline is to check the tree before theorising.** "It must be a new
+      regression" is the expensive conclusion, because it sends someone
+      investigating a cause that does not exist. And if it turns out a merge was
+      reverted, re-merging the branch will report `Already up to date` and change
+      nothing — which is its own trap for whoever tries it next.
+
+  - id: C
+    title: Justify an undo policy for a shared repository
+    kind: reason
+    objectives: [OBJ-B10.5.2, OBJ-B10.5.6]
+    prompt: >-
+      A team is writing its rules for undoing things. One proposal is "revert
+      only, reset is banned". Another is "use whatever is appropriate, we are all
+      professionals".
+
+
+      In about 300 words: argue a position. Give the strongest case for each, and
+      be concrete about which failures each one prevents and which it does not.
+    rubric:
+      - "States both cases fairly and at their strongest"
+      - "Credits the ban with being checkable and removing the shared-history failure"
+      - "Names what the ban costs: reset --soft for squashing, discarding local experiments"
+      - "Credits the professionals position with not obstructing safe local use"
+      - "Names its weakness: it relies on judgement under pressure, which is when it fails"
+      - "Proposes scoping by whether anyone else holds the commits"
+      - "Notes that branch protection is a control while a convention is not"
+      - "Takes a clear position rather than hedging"
+      - "Ideally observes that the incident is always about publication, never about the command"
+    model_answer: >-
+      **The ban, at its strongest:** it is checkable, it removes the failure
+      entirely, and nobody has to reason about who holds what while an incident is
+      running — which is exactly when that reasoning goes wrong.
+
+
+      **"We are professionals", at its strongest:** `reset` is the right tool for
+      several safe jobs. `--soft` is how you squash local commits before a review;
+      `--hard` is how you discard a local experiment. Banning it makes people use
+      worse tools for work nobody will ever see, and rules that forbid safe things
+      get ignored, which weakens the ones that matter.
+
+
+      **Both are answering the wrong question.** Neither `reset` nor `revert` is
+      dangerous. Publishing a replaced history is. A `reset` on a local branch
+      harms nobody; a `revert` is safe everywhere. The variable is not the command
+      — it is whether anyone else holds the commits.
+
+
+      **My position: scope by publication.** Reset freely on commits nobody else
+      has; revert on anything shared. That is one question with a definite answer,
+      it is as checkable as the ban, and it costs none of the safe uses.
+
+
+      **And put branch protection on `main` and the release branches**, because a
+      convention that holds only while everyone remembers is not a control. Every
+      incident of this kind happens on a team that already understood the rule —
+      the person was tired, or certain nobody had pulled. Protection refuses the
+      push regardless, and it is the only part of this that does not depend on
+      judgement.

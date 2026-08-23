@@ -1,0 +1,293 @@
+id: lab.four-undos-one-mistake
+topic: topic.undoing-things
+title: Undo the same mistake four ways and compare the wreckage
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B10.5.1, OBJ-B10.5.2]
+
+intro: >-
+  One mistake, four commands, four different outcomes. Rather than reading a
+  table of what each does, you will apply each to an identical starting state
+  and compare what history looks like afterwards.
+
+
+  By the end one of them will be obviously the only choice for a branch other
+  people have — not because a rule says so, but because you will have watched
+  the others change commits that were already published.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Build the starting state — a good commit, a bad commit, and a good commit
+      after it — as a function you can rebuild. Save it to /tmp/answer-setup.
+    hint: >-
+      The bad commit in the middle is what makes this interesting: undoing it is
+      not the same as removing the last thing you did.
+    walkthrough: |
+      cat > /tmp/build.sh <<'SH'
+      #!/bin/bash
+      rm -rf "$1"; mkdir -p "$1"; cd "$1"
+      git init -q
+      seq 1 20 | sed 's/^/line /' > app.txt && git add -A && git commit -q -m "good: first"
+      sed -i '2s/.*/line 2 BROKEN/' app.txt && git add -A && git commit -q -m "bad: the mistake"
+      sed -i '20s/.*/line 20 improved/' app.txt && git add -A && git commit -q -m "good: after"
+      SH
+      chmod +x /tmp/build.sh
+      /tmp/build.sh /tmp/u0
+      {
+        echo "the starting state, rebuilt identically for each experiment:"
+        git -C /tmp/u0 log --oneline | sed 's/^/  /'
+        echo
+        echo "the bad line and the later good line:"
+        sed -n '2p;20p' /tmp/u0/app.txt | sed 's/^/  /'
+        echo
+        echo "they are eighteen lines apart, deliberately. a revert applies an"
+        echo "inverse patch, and a patch needs its context to still be there - if"
+        echo "the two changes were adjacent, reverting the first would conflict"
+        echo "with the second. measured: adjacent lines DO conflict here."
+        echo
+        echo "the mistake is in the MIDDLE. that matters - undoing it is not the"
+        echo "same as removing the last thing i did, and two of the four commands"
+        echo "will take the good commit with it."
+      } > /tmp/answer-setup
+      cat /tmp/answer-setup
+    verify:
+      - type: command_output
+        command: "cd /tmp/u0 && git rev-list --count HEAD"
+        equals: "3"
+        describe: You built a three-commit history
+      - type: file_matches
+        path: /tmp/answer-setup
+        pattern: "BROKEN"
+        describe: With the mistake in the middle
+      - type: file_matches
+        path: /tmp/answer-setup
+        pattern: "(?i)take the good commit with it"
+        describe: And predicted the consequence of its position
+
+  - id: s2
+    instruction: >-
+      Apply `git reset --hard` to remove the bad commit, and record what
+      happened to history and to the good commit after it. Save to
+      /tmp/answer-reset.
+    hint: >-
+      Reset to the commit before the mistake. Count the commits before and
+      after.
+    walkthrough: |
+      /tmp/build.sh /tmp/u1
+      cd /tmp/u1
+      {
+        echo "before: $(git rev-list --count HEAD) commits"
+        git reset --hard HEAD~2 >/dev/null 2>&1
+        echo "after reset --hard HEAD~2: $(git rev-list --count HEAD) commits"
+        echo
+        echo "app.txt now:"; sed 's/^/  /' app.txt
+        echo
+        echo "the mistake is gone - and so is 'good: after'. reset moves the"
+        echo "pointer backwards, so everything after the target goes with it."
+        echo
+        echo "history is now SHORTER than it was. anyone who pulled the old"
+        echo "commits has a history mine disagrees with, and they will have to"
+        echo "repair their own repository."
+      } > /tmp/answer-reset
+      cat /tmp/answer-reset
+    verify:
+      - type: command_output
+        command: "cd /tmp/u1 && git rev-list --count HEAD"
+        equals: "1"
+        describe: Reset removed the bad commit and the good one after it
+      - type: file_matches
+        path: /tmp/answer-reset
+        pattern: "(?i)SHORTER"
+        describe: And you noticed history lost entries
+
+  - id: s3
+    instruction: >-
+      Rebuild, and this time use `git revert` on just the bad commit. Compare.
+      Save to /tmp/answer-revert.
+    hint: >-
+      Revert takes the commit you want undone, not the one before it.
+    walkthrough: |
+      /tmp/build.sh /tmp/u2
+      cd /tmp/u2
+      BAD=$(git rev-parse HEAD~1)
+      {
+        echo "before: $(git rev-list --count HEAD) commits"
+        git revert --no-edit "$BAD" >/dev/null 2>&1
+        echo "after revert: $(git rev-list --count HEAD) commits"
+        echo
+        echo "app.txt now:"; sed 's/^/  /' app.txt
+        echo
+        echo "the BROKEN line is gone and 'line 20 improved' survived - revert undid one"
+        echo "commit's change without touching anything else."
+        echo
+        echo "history is LONGER, not shorter:"
+        git log --oneline | sed 's/^/  /'
+        echo
+        echo "the bad commit is still there, visible, with its message. nothing"
+        echo "anyone else has was moved or removed - they just receive one more"
+        echo "commit, which is what pulling is for."
+      } > /tmp/answer-revert
+      cat /tmp/answer-revert
+    verify:
+      - type: command_output
+        command: "cd /tmp/u2 && git rev-list --count HEAD"
+        equals: "4"
+        describe: Revert added a commit rather than removing one
+      - type: command_output
+        command: "cd /tmp/u2 && grep -c BROKEN app.txt"
+        equals: "0"
+        describe: And the bad change is gone from the file
+      - type: command_output
+        command: "cd /tmp/u2 && grep -c improved app.txt"
+        equals: "1"
+        describe: While the good commit after it survived
+      - type: file_matches
+        path: /tmp/answer-revert
+        pattern: "(?i)LONGER"
+        describe: And you noticed history gained an entry
+
+  - id: s4
+    instruction: >-
+      Rebuild twice more and try the other two — `git restore` on the file, and
+      `git reset --soft`. Save what each one leaves behind to
+      /tmp/answer-others.
+    hint: >-
+      Ask for each: did history change, and did the working tree change?
+    walkthrough: |
+      /tmp/build.sh /tmp/u3
+      cd /tmp/u3
+      {
+        echo "=== git restore, from the commit before the mistake ==="
+        before=$(git rev-list --count HEAD)
+        git restore --source=HEAD~2 app.txt
+        echo "  commits: $before -> $(git rev-list --count HEAD)  (unchanged)"
+        echo "  app.txt: $(tr '\n' '/' < app.txt)"
+        echo "  git status: $(git status --short | tr -d ' ')"
+        echo "  -> the FILE changed and history did not. nothing is committed;"
+        echo "     this is an edit, sitting in the working tree."
+        echo
+
+        /tmp/build.sh /tmp/u4
+        cd /tmp/u4
+        echo "=== git reset --soft ==="
+        before=$(git rev-list --count HEAD)
+        git reset --soft HEAD~2 >/dev/null 2>&1
+        echo "  commits: $before -> $(git rev-list --count HEAD)"
+        echo "  app.txt: $(tr '\n' '/' < app.txt)"
+        echo "  git status: $(git status --short | tr -d ' ')"
+        echo "  -> history got shorter, and BOTH changes are still staged."
+        echo "     the work is intact and ready to be recommitted differently."
+      } > /tmp/answer-others
+      cat /tmp/answer-others
+    verify:
+      - type: command_output
+        command: "cd /tmp/u3 && git rev-list --count HEAD"
+        equals: "3"
+        describe: restore left history alone
+      - type: command_output
+        command: "cd /tmp/u4 && git rev-list --count HEAD"
+        equals: "1"
+        describe: While reset --soft shortened it
+      - type: file_matches
+        path: /tmp/answer-others
+        pattern: "(?i)still staged"
+        describe: And you noticed --soft kept the work staged
+
+  - id: s5
+    instruction: >-
+      Write the comparison to /tmp/answer-table, and say which one you would use
+      if the bad commit had already been pushed.
+    hint: >-
+      Sort them by two questions: did history change, and did anyone else's
+      commits move?
+    walkthrough: |
+      cat > /tmp/answer-table <<'EOF'
+      one mistake, four commands, measured:
+
+        command            history        working tree      others affected
+        ----------------------------------------------------------------------
+        restore <path>     unchanged      file rewritten    no
+        reset --soft       3 -> 1         unchanged,        yes - commits
+                                          work staged             disappeared
+        reset --hard       3 -> 1         reset to target   yes - commits
+                                                                  disappeared
+        revert             3 -> 4         bad change gone   no
+
+      two of them made history shorter and two did not, and that is the whole
+      decision for a pushed commit.
+
+      if the bad commit has already been pushed, the answer is revert, and it is
+      not a preference. reset removes commits other people have, so their history
+      disagrees with mine and every one of them has to repair their own
+      repository - and i cannot do it for them, because the objects needing
+      repair are on their machines.
+
+      revert adds a commit. everyone else receives one more commit, which is
+      exactly what pulling is designed to do. nobody notices anything unusual.
+
+      the other two are for work nobody has seen:
+
+        - reset --soft when i want to recommit the same work differently -
+          squash three messy commits into one, or split one into two.
+        - restore when the problem is a file rather than a commit, and i have
+          not committed anything wrong yet.
+
+      also worth noting from step 2: reset took the GOOD commit after the mistake
+      with it, because reset moves a pointer and everything after the target goes
+      too. revert did not - it undid one commit's change and left the rest. when
+      the mistake is not the most recent thing, that difference is the whole
+      game.
+      EOF
+      cat /tmp/answer-table
+    verify:
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "(?i)revert, and it is\\s+not a preference|answer is revert"
+        describe: You chose revert for a pushed commit
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "(?i)repair their own"
+        describe: And gave the reason in terms of other people
+      - type: file_matches
+        path: /tmp/answer-table
+        pattern: "(?i)took the GOOD commit"
+        describe: And noted what reset does when the mistake is not the last commit
+
+solution: >-
+  **One mistake, four commands, four outcomes:**
+
+
+  | | History | Working tree | Others affected |
+  |---|---|---|---|
+  | `restore <path>` | unchanged | file rewritten | no |
+  | `reset --soft` | 3 → 1 | unchanged, work staged | **yes** |
+  | `reset --hard` | 3 → 1 | reset to target | **yes** |
+  | `revert` | 3 → **4** | bad change gone | no |
+
+
+  **Two made history shorter and two did not**, and that is the entire decision
+  for a commit anyone else has.
+
+
+  **Reset also took the good commit with it.** The mistake was in the middle, and
+  reset moves a pointer — so everything after the target went too. Revert undid
+  one commit's change and left the rest, which is what you almost always want
+  when the mistake is not the most recent thing.
+
+
+  **For a pushed commit, revert is the only option**, and not as a preference.
+  Reset removes commits other people hold, so their history disagrees with yours
+  and each of them must repair their own repository — which you cannot do for
+  them. Revert adds a commit, so everyone receives one more commit, which is
+  exactly what pulling is for.
+
+
+  The other two are for work nobody has seen: `reset --soft` when you want to
+  recommit the same work differently, since it keeps everything staged; and
+  `restore` when the problem is a file rather than a commit.
