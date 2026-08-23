@@ -1,0 +1,374 @@
+id: quiz.resolving-conflicts
+topic: topic.resolving-conflicts
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.7.1]
+    stem: >-
+      What does the `|||||||` section in a conflict marker contain?
+    options:
+      - id: a
+        text: The merge base — what the region said before either side touched it
+        correct: true
+      - id: b
+        text: A summary of both sides' changes
+        note: >-
+          It is a literal third version, not a summary.
+      - id: c
+        text: The version Git would have chosen automatically
+        note: >-
+          Git chose nothing here; that is why there is a conflict.
+      - id: d
+        text: Lines common to both sides
+        note: >-
+          That is what `zdiff3` hoists *out* of the region. The `|||||||`
+          section is the base.
+    explanation: >-
+      It appears only under `merge.conflictStyle = diff3` or `zdiff3`. The
+      default omits it — which means the default withholds the term the merge
+      rule is stated in.
+
+  - id: q2
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.7.1]
+    stem: >-
+      Where does the base live during a conflict if you have *not* enabled
+      `diff3`?
+    options:
+      - id: a
+        text: In the index, as stage 1
+        correct: true
+      - id: b
+        text: Nowhere — Git discards it once markers are written
+        note: >-
+          It is in the index throughout. `git cat-file -p :1:<path>` reads it.
+      - id: c
+        text: In the reflog
+        note: >-
+          The reflog records ref movements, not merge inputs.
+      - id: d
+        text: Only in the merge base commit, which you must find yourself
+        note: >-
+          True that the commit exists, and the index already holds the relevant
+          blob — no searching required.
+    explanation: >-
+      B10.3 established the three stages. The information is never missing; it is
+      simply not in the file you are asked to edit, and retrieving it takes a
+      command most people resolving a conflict have never seen.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.7.1]
+    stem: >-
+      What does `zdiff3` do that `diff3` does not?
+    options:
+      - id: a
+        text: Hoists lines common to both sides out of the conflicted region first
+        correct: true
+      - id: b
+        text: Shows the base, which `diff3` omits
+        note: >-
+          Both show the base. That is the point of both.
+      - id: c
+        text: Resolves simple conflicts automatically
+        note: >-
+          Neither resolves anything. They change what the markers display.
+      - id: d
+        text: Colours the output
+        note: >-
+          Not a display-colour setting.
+    explanation: >-
+      The markers end up surrounding only what genuinely differs, which on a
+      large conflict is a substantial reduction in what has to be read. Same
+      information, less of it.
+
+  - id: q4
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.7.2]
+    stem: >-
+      Ours says `retries = 1`, theirs says `retries = 5`, and you cannot see the
+      base. Why is that a problem?
+    options:
+      - id: a
+        text: You cannot tell whether both sides changed it or only one did
+        correct: true
+      - id: b
+        text: You cannot tell which value is newer
+        note: >-
+          Recency does not decide a merge, and knowing it would not help.
+      - id: c
+        text: You cannot tell which branch is which
+        note: >-
+          The markers name both branches.
+      - id: d
+        text: It is not a problem — pick the larger value
+        note: >-
+          There is no rule that says a larger number wins.
+    explanation: >-
+      If the base was `3`, both changed it and someone must decide. If the base
+      was `1`, only they changed it and `5` is simply newer, with nothing to
+      settle. The markers cannot distinguish those, so you are asked to decide
+      without the information the rule requires.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.7.2]
+    stem: >-
+      With the base visible, which conflicts stop needing a judgement?
+    options:
+      - id: a
+        text: Those where one side still matches the base
+        correct: true
+      - id: b
+        text: Those where both sides made the same change
+        note: >-
+          Those never conflict in the first place — identical content is one
+          candidate.
+      - id: c
+        text: Those in generated files
+        note: >-
+          A policy question, not something the base reveals.
+      - id: d
+        text: None — the base is context only
+        note: >-
+          Measured otherwise: half of a two-region conflict resolved by
+          inspection once the base was visible.
+    explanation: >-
+      If ours equals the base, only they changed the region, so theirs is the
+      answer with nothing to decide. That class of conflict is invisible under
+      the default markers and mechanical once the base is shown.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.7.3]
+    stem: >-
+      A modify/delete conflict has how many stages in the index?
+    options:
+      - id: a
+        text: Two — there is no third version, because one side deleted the file
+        correct: true
+      - id: b
+        text: Three, like any conflict
+        note: >-
+          Measured as two. The deleted side contributes nothing.
+      - id: c
+        text: One, since only one side has content
+        note: >-
+          The base is present too, so it is two.
+      - id: d
+        text: None — it is reported outside the index
+        note: >-
+          It is an index state like any other conflict.
+    explanation: >-
+      Stages 1 and 2 (or 1 and 3). And **no markers are written**, because there
+      is no third version to merge against — your copy sits in the tree looking
+      entirely normal. The question is "should this file exist", answered with
+      `git add` or `git rm` rather than an edit.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.7.3]
+    stem: >-
+      An add/add conflict is missing which stage, and why?
+    options:
+      - id: a
+        text: Stage 1 — there is no base, because neither side inherited the file
+        correct: true
+      - id: b
+        text: Stage 2, because ours was created after theirs
+        note: >-
+          Both sides' versions are present, at stages 2 and 3.
+      - id: c
+        text: Stage 3, because Git prefers ours for new files
+        note: >-
+          Git prefers nothing; both are recorded.
+      - id: d
+        text: None are missing
+        note: >-
+          Measured as stages 2 and 3 only.
+    explanation: >-
+      Both sides invented the file independently, so there is nothing it "was
+      before". The B10.3 attribution rule genuinely does not apply — neither side
+      changed anything *relative to* anything — and `diff3` honestly shows no
+      base section.
+
+  - id: q8
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.7.3]
+    stem: >-
+      Both sides renamed the same file to different names. How many unmerged
+      paths does that produce?
+    options:
+      - id: a
+        text: Three — the original name and both new ones
+        correct: true
+      - id: b
+        text: One, for the original path
+        note: >-
+          Measured as three. Git cannot express the disagreement as one entry.
+      - id: c
+        text: Two, one per new name
+        note: >-
+          The original is unmerged as well.
+      - id: d
+        text: Zero — renames are detected and resolved automatically
+        note: >-
+          Detected, yes. Resolved, no — the two names are incompatible.
+    explanation: >-
+      And both files are present on disk with their content intact. Nothing looks
+      wrong; the merge simply will not complete. The only thing at issue is the
+      name, and no marker can express that.
+
+  - id: q9
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.7.4]
+    stem: >-
+      A merge is stuck but `grep -r '<<<<<<<'` finds nothing. What do you run?
+    options:
+      - id: a
+        text: "`git diff --name-only --diff-filter=U`"
+        correct: true
+      - id: b
+        text: "`git merge --abort` and try again"
+        note: >-
+          Aborting is free and will not diagnose anything. The same conflict
+          returns.
+      - id: c
+        text: "`git status --short` and look for `M`"
+        note: >-
+          Unmerged paths show as `UU`, `DU`, `AA` and similar — not `M`. Status
+          works; looking for the wrong code does not.
+      - id: d
+        text: "`git log --merges`"
+        note: >-
+          Shows past merges, not the current state.
+    explanation: >-
+      Modify/delete and rename/rename write no markers, so a marker search
+      reports nothing while the merge remains blocked. `--diff-filter=U` lists
+      every path still needing a decision, which is the complete answer and
+      includes the invisible ones.
+
+  - id: q10
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.7.4]
+    stem: >-
+      Why is a modify/delete conflict easy to miss?
+    options:
+      - id: a
+        text: The file is left in the tree looking completely normal
+        correct: true
+      - id: b
+        text: Git does not report it
+        note: >-
+          It reports it clearly. The file's appearance is what misleads.
+      - id: c
+        text: It resolves itself on the next commit
+        note: >-
+          Committing is refused while any path has non-zero stages.
+      - id: d
+        text: It only occurs during rebases
+        note: >-
+          It occurs in any merge where one side deleted a file the other changed.
+    explanation: >-
+      Your version sits there, unmarked and readable, and the search-for-markers
+      instinct passes over it. That instinct is the actual hazard, which is why
+      listing unmerged paths before opening anything is the habit worth building.
+
+  - id: q11
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.7.5]
+    stem: >-
+      Faced with a merge conflicting across thirty files, what do you do first?
+    options:
+      - id: a
+        text: List the unmerged paths and count the regions, before opening anything
+        correct: true
+      - id: b
+        text: Start with the first file Git mentions
+        note: >-
+          That is resolving in arbitrary order, and you learn the size only when
+          you finish.
+      - id: c
+        text: Run `-X ours` to clear the easy ones
+        note: >-
+          It clears *all* of them, in your favour, including ones you have not
+          looked at.
+      - id: d
+        text: Abort immediately — thirty is too many
+        note: >-
+          Aborting may well be right, and it is a decision to make with the
+          measurements in hand.
+    explanation: >-
+      The list is the complete set of decisions you owe, it includes the paths
+      with no markers, and it lets you ask the important question early: should
+      this merge exist at all, or is the base simply too old?
+
+  - id: q12
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.7.6]
+    stem: >-
+      What does `git merge --abort` cost, halfway through resolving?
+    options:
+      - id: a
+        text: Nothing — no commit was written, and both branches are untouched
+        correct: true
+      - id: b
+        text: The resolutions you have made so far
+        note: >-
+          True, and that is time rather than anything unrecoverable. The question
+          is what it costs the repository.
+      - id: c
+        text: The merge base has to be recomputed
+        note: >-
+          It is derived from the graph every time anyway.
+      - id: d
+        text: Any stashed work
+        note: >-
+          Abort does not touch the stash.
+    explanation: >-
+      Verified: zero status lines afterwards, and neither branch moved. Knowing
+      this *before* starting matters, because people push on through bad merges
+      believing they have already spent something.
+
+  - id: q13
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.7.6]
+    stem: >-
+      When is `-X ours` genuinely appropriate?
+    options:
+      - id: a
+        text: When you already know the other side's version of every conflicting region is wrong
+        correct: true
+      - id: b
+        text: When there are too many conflicts to resolve by hand
+        note: >-
+          Volume is not a reason to decide without looking. That is when the base
+          is usually old, which is when it does most damage.
+      - id: c
+        text: When you are on `main` and they are on a feature branch
+        note: >-
+          Which branch you are on says nothing about which version is correct.
+      - id: d
+        text: Whenever the merge is taking too long
+        note: >-
+          Time pressure is exactly when a silent discard is most expensive.
+    explanation: >-
+      It is narrower than `checkout --ours` — only conflicting hunks — which is
+      why it looks reasonable. Against an old base those hunks include everything
+      the other side did that touches the same lines, and the resulting commit is
+      indistinguishable from a considered merge.
