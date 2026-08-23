@@ -1,0 +1,10 @@
+id: module.remotes-and-collaboration
+slug: remotes-and-collaboration
+title: Remotes and Collaboration
+summary: >-
+  A remote is not a server you are connected to — it is a name for a URL and a
+  set of local refs that remember what that URL said last time you asked. Every
+  confusing thing about fetch, pull, push and "your branch is ahead by 3
+  commits" becomes readable once those remote-tracking refs are visible as the
+  ordinary files they are.
+order: 6

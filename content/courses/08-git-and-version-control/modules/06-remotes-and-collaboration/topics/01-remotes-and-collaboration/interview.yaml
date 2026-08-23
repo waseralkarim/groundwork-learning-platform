@@ -1,0 +1,143 @@
+topic: topic.remotes-and-collaboration
+
+questions:
+  - id: i1
+    level: L2
+    question: >-
+      What is `origin/main`?
+    model_answer: >-
+      A local file — 41 bytes under `.git/refs/remotes/origin/`, exactly like any
+      branch ref. It records where that branch was the last time this repository
+      asked, and a fetch is the only thing that updates it.
+
+
+      So "up to date with origin/main" means up to date with what I last heard,
+      not with the server. There is no connection between commands; a remote is
+      just a name for a URL in `.git/config`.
+    signal: >-
+      "The remote's branch" is the common answer and it is the root of most
+      confusion here. Listen for the word *local*, and for whether they can say
+      what updates it.
+
+  - id: i2
+    level: L2
+    question: >-
+      What is the difference between fetch and pull?
+    model_answer: >-
+      Pull is fetch plus an integration. Fetch updates remote-tracking refs and
+      downloads objects — it touches no local branch and no file, so it cannot
+      conflict or disturb work in progress. There is no situation where fetching
+      is the risky choice.
+
+
+      The second half integrates into whatever is checked out, and merges or
+      rebases depending on `pull.rebase`. That is where merge commits people did
+      not ask for come from.
+
+
+      I prefer fetch, then `git log --oneline HEAD..origin/main` and the reverse,
+      then decide. Two extra commands and you know what a pull would do.
+    signal: >-
+      Most candidates know pull fetches. The useful follow-up is whether they can
+      say what determines the second half — a candidate who names `pull.rebase`
+      has been on a team where the history shape was inconsistent.
+
+  - id: i3
+    level: L2
+    question: >-
+      Your push is rejected. What happened and what do you do?
+    model_answer: >-
+      The remote has commits I do not have, so my branch is not a descendant of
+      its tip. Accepting my push would make those commits unreachable, so it is
+      refused.
+
+
+      Worth being clear about who it protects: not me. My commits are on my
+      machine and nothing has happened to them. It protects the person whose work
+      would be stranded.
+
+
+      What I do is fetch, then look at both ranges, then merge or rebase with the
+      facts visible. What I do not do is `--force`, which is asking to do exactly
+      what the check prevented.
+    signal: >-
+      Reaching for `--force` is the answer to worry about, especially with a
+      justification like "nobody else is on that branch". The good answer knows
+      the rejection is about someone else's reachability.
+
+  - id: i4
+    level: L3
+    question: >-
+      How can you tell a colleague force-pushed, rather than just having pushed
+      normally?
+    model_answer: >-
+      The fetch output. A normal update prints `abc123..def456`; a forced one
+      prints a leading `+` and `(forced update)`, meaning the update was not a
+      fast-forward and the commit my ref used to name is no longer reachable from
+      that branch.
+
+
+      The ahead/behind counts cannot tell you — a rewrite reads as `1/1` exactly
+      like ordinary parallel work. The other clue is in the commits themselves:
+      after a rewrite the two sides are the same work with different ids, often
+      with matching author dates and different committer dates.
+
+
+      It matters because merging is the right response to divergence and the wrong
+      response to a rewrite.
+    signal: >-
+      A strong discriminator. Candidates who have been on the receiving end
+      mention the fetch line unprompted; others assume Git would warn more
+      loudly, which is the assumption that causes the damage.
+
+  - id: i5
+    level: L3
+    question: >-
+      A colleague rewrote a shared branch. You pull and merge. What have you just
+      done?
+    model_answer: >-
+      Put back the commits they removed.
+
+
+      My clone still had the old history — a rewrite on the remote does not reach
+      into anyone else's repository. Pull saw a divergence and merged, and a merge
+      keeps both sides. So the result contains the commits they abandoned and the
+      ones that replaced them.
+
+
+      And nothing warns me. The merge succeeds cleanly, and pushing it is a
+      fast-forward, so no protection applies — which is how a deliberately removed
+      commit ends up back on a shared branch two days later.
+
+
+      The right response to a known rewrite is to reset onto the new
+      `origin/<branch>`, or rebase real local work onto it. Never merge.
+    signal: >-
+      This is the question that separates people who have read about force-push
+      from people who have cleaned up after one. The phrase to listen for is that
+      the merge succeeds silently.
+
+  - id: i6
+    level: L3
+    question: >-
+      A team's history is full of "Merge branch 'main' of ..." commits. What
+      causes it and what would you change?
+    model_answer: >-
+      `git pull` merging by default whenever the branch has diverged. Those merge
+      commits record nothing about the work — they are an artefact of two people
+      committing on the same afternoon — and they crowd out the merge commits that
+      do mean something.
+
+
+      I would set `pull.rebase = true` for the team, or `pull.ff = only` for
+      people who would rather be asked than have something happen.
+
+
+      The reason to configure it rather than ask people to type `--rebase` is that
+      the default is invisible: with it unset, the same command merges on one
+      machine and rebases on another, and nobody can tell from the command which
+      happened. That makes it a configuration problem, not a discipline problem.
+    signal: >-
+      Candidates who frame it as carelessness will propose training. The better
+      answer notices that one command means two things depending on a setting
+      nobody looks at, and fixes the setting.

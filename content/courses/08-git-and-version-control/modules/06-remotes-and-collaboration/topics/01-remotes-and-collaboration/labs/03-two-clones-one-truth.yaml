@@ -1,0 +1,263 @@
+id: lab.two-clones-one-truth
+topic: topic.remotes-and-collaboration
+title: Someone force-pushed; find out before your merge hides it
+type: guided
+tier: 2
+image: groundwork/lab-foundations:1
+duration_minutes: 35
+objectives: [OBJ-B10.6.5]
+
+intro: >-
+  B10.4 established what happens when someone rebases and force-pushes a branch
+  other people have. This is that event seen from the other side — yours.
+
+
+  Your repository will look diverged, exactly as it does after ordinary parallel
+  work. The difference is that reconciling this divergence normally will
+  reintroduce a commit that was deliberately removed, and nothing will warn you.
+  You will find the evidence that tells the two situations apart.
+
+setup:
+  - /opt/lab/seed-git.sh
+
+steps:
+  - id: s1
+    instruction: >-
+      Set up two clones, have "alice" amend her last commit and force-push, and
+      record the state before you fetch. Save to /tmp/answer-before.
+    hint: >-
+      Amend rewrites a commit, so alice's tip changes id. Note bob's tip before
+      anything else.
+    walkthrough: |
+      rm -rf /tmp/t; mkdir -p /tmp/t; cd /tmp/t
+      git init -q --bare origin.git
+      git clone -q origin.git alice 2>/dev/null
+      cd alice && echo a > f.txt && git add -A && git commit -q -m one
+      echo b >> f.txt && git commit -q -am two
+      git push -q origin main 2>/dev/null
+      cd /tmp/t && git clone -q origin.git bob 2>/dev/null
+      git -C bob rev-parse HEAD > /tmp/.bob-old
+      cd alice && git commit -q --amend -m "two (reworded)"
+      git push -q --force origin main 2>/dev/null
+      {
+        echo "alice amended her last commit and force-pushed."
+        echo "  alice's tip:  $(git rev-parse --short HEAD)"
+        echo "  bob's tip:    $(git -C /tmp/t/bob rev-parse --short HEAD)"
+        echo "  bob recorded: $(git -C /tmp/t/bob rev-parse --short origin/main)"
+        echo
+        echo "bob has not fetched, so his origin/main still names the commit"
+        echo "alice abandoned. nothing has told him anything happened."
+      } > /tmp/answer-before
+      cat /tmp/answer-before
+    verify:
+      - type: command_output
+        command: "cd /tmp/t/bob && [ \"$(git rev-parse origin/main)\" = \"$(cat /tmp/.bob-old)\" ] && echo stale || echo updated"
+        equals: "stale"
+        describe: Bob's record still names the abandoned commit
+      - type: file_matches
+        path: /tmp/answer-before
+        pattern: "(?i)abandoned|nothing has told him"
+        describe: And you noted why
+
+  - id: s2
+    instruction: >-
+      Fetch in bob's clone and read the fetch output carefully. Save it to
+      /tmp/answer-forced.
+    hint: >-
+      Fetch prints a line per updated ref. One character in it distinguishes
+      this from a normal update.
+    walkthrough: |
+      cd /tmp/t/bob
+      {
+        echo "fetching:"
+        git fetch origin 2>&1 | grep -E '\->' | sed 's/^/  /'
+        echo
+        echo "the marker is the leading '+' and the words '(forced update)'."
+        echo
+        echo "a normal fetch prints a range like abc123..def456, meaning the old"
+        echo "tip is an ancestor of the new one - a fast-forward, nothing lost."
+        echo
+        echo "this printed 'old...new' with a plus, which means the update was"
+        echo "NOT a fast-forward. the commit my record used to name is no longer"
+        echo "reachable from the branch."
+        echo
+        echo "that line is the whole warning. it scrolls past in one second and"
+        echo "it is the only notice anyone gets that history was rewritten."
+      } > /tmp/answer-forced
+      cat /tmp/answer-forced
+    verify:
+      - type: file_matches
+        path: /tmp/answer-forced
+        pattern: "(?i)forced update"
+        describe: You captured the forced-update marker
+      - type: file_matches
+        path: /tmp/answer-forced
+        pattern: "(?i)not a fast-forward|NOT a fast-forward"
+        describe: And explained what it means
+
+  - id: s3
+    instruction: >-
+      Show that this looks exactly like ordinary divergence, and find what
+      distinguishes it. Save to /tmp/answer-looks.
+    hint: >-
+      Compare the counts against lab 2's. Then ask whether the two "sides"
+      contain the same work.
+    walkthrough: |
+      cd /tmp/t/bob
+      OLD=$(cat /tmp/.bob-old)
+      {
+        echo "counts: $(git rev-list --left-right --count origin/main...HEAD | awk '{print "behind=" $1 "  ahead=" $2}')"
+        echo "-> 1 and 1. identical to ordinary parallel work."
+        echo
+        echo "what i supposedly have that they do not:"
+        git log --oneline origin/main..HEAD | sed 's/^/  /'
+        echo "what they have that i do not:"
+        git log --oneline HEAD..origin/main | sed 's/^/  /'
+        echo
+        echo "and there is the tell: the two commits are the SAME WORK with"
+        echo "different messages. this is not two people doing different things -"
+        echo "it is one commit and its replacement."
+        echo
+        echo "my old commit is still an object here: $(git cat-file -t $OLD)"
+        echo "it is just not reachable from the branch any more."
+        echo
+        echo "so the counts cannot tell these apart. reading what the commits ARE"
+        echo "can, and so can the forced-update line from the fetch."
+      } > /tmp/answer-looks
+      cat /tmp/answer-looks
+    verify:
+      - type: command_output
+        command: "cd /tmp/t/bob && git rev-list --left-right --count origin/main...HEAD | awk '{print $1\"/\"$2}'"
+        equals: "1/1"
+        describe: It reports as an ordinary divergence
+      - type: command_output
+        command: "cd /tmp/t/bob && git cat-file -t $(cat /tmp/.bob-old)"
+        equals: "commit"
+        describe: While your old commit still exists as an object
+      - type: file_matches
+        path: /tmp/answer-looks
+        pattern: "(?i)SAME WORK"
+        describe: And you identified what actually distinguishes them
+
+  - id: s4
+    instruction: >-
+      Reconcile it the ordinary way — merge — and show what that produces. Save
+      to /tmp/answer-merged.
+    hint: >-
+      Predict whether Git will warn you. Then count how many times the work
+      appears in the result.
+    walkthrough: |
+      cd /tmp/t/bob
+      cp -r /tmp/t/bob /tmp/t/bob-backup
+      {
+        echo "merging origin/main, the way anyone would:"
+        git merge --no-edit origin/main 2>&1 | head -1 | sed 's/^/  /'
+        echo
+        echo "it succeeded. no warning, no conflict, no mention that anything"
+        echo "unusual happened."
+        echo
+        echo "the resulting history:"
+        git log --oneline | sed 's/^/  /'
+        echo
+        echo "both versions of the commit are now in my history - the one alice"
+        echo "removed and the one she replaced it with. i have just put back the"
+        echo "thing she deliberately took out, and if i push this, everyone gets"
+        echo "it."
+        echo
+        echo "this is what B10.4 meant by 'their next pull produces a history"
+        echo "with both'. it is not hypothetical and it is not loud."
+      } > /tmp/answer-merged
+      cat /tmp/answer-merged
+    verify:
+      - type: command_output
+        command: "cd /tmp/t/bob && git rev-list HEAD | grep -c $(cat /tmp/.bob-old)"
+        equals: "1"
+        describe: The merge reintroduced the abandoned commit
+      - type: file_matches
+        path: /tmp/answer-merged
+        pattern: "(?i)no warning"
+        describe: And you noted that nothing warned you
+      - type: file_matches
+        path: /tmp/answer-merged
+        pattern: "(?i)deliberately took out|put back"
+        describe: And said what that means for alice's intent
+
+  - id: s5
+    instruction: >-
+      Start over from the backup and handle it correctly instead. Save what you
+      did, and why, to /tmp/answer-correct.
+    hint: >-
+      Your local commit is the *old* version of work that already exists on the
+      remote in a newer form. What do you actually want to keep?
+    walkthrough: |
+      rm -rf /tmp/t/bob2 && cp -r /tmp/t/bob-backup /tmp/t/bob2
+      cd /tmp/t/bob2
+      {
+        echo "the right question is what my local commit actually IS."
+        echo
+        echo "here it is alice's old commit, which i received by cloning and"
+        echo "never modified. i have no work of my own, so the answer is to"
+        echo "discard my version and take the remote's:"
+        echo
+        git reset --hard origin/main >/dev/null 2>&1
+        echo "  after reset --hard origin/main:"
+        echo "    tip: $(git rev-parse --short HEAD)  $(git log -1 --format=%s)"
+        echo "    counts: $(git rev-list --left-right --count origin/main...HEAD | awk '{print "behind=" $1 "  ahead=" $2}')"
+        echo
+        echo "0 and 0. i now match the remote exactly and the abandoned commit"
+        echo "stays abandoned."
+        echo
+        echo "if i HAD made my own commits on top, the answer would be different:"
+        echo "rebase them onto the new origin/main, so my work is replayed onto"
+        echo "alice's rewritten history rather than dragging her old commit along."
+        echo
+        echo "  git rebase --onto origin/main <old-upstream> HEAD"
+        echo
+        echo "either way the rule is the same - never merge after a forced"
+        echo "update. merging treats a rewrite as if it were parallel work, and"
+        echo "it is not."
+      } > /tmp/answer-correct
+      cat /tmp/answer-correct
+    verify:
+      - type: command_output
+        command: "cd /tmp/t/bob2 && git rev-list --left-right --count origin/main...HEAD | awk '{print $1\"/\"$2}'"
+        equals: "0/0"
+        describe: You brought the clone back in line with the remote
+      - type: command_output
+        command: "cd /tmp/t/bob2 && git rev-list HEAD | grep -c $(cat /tmp/.bob-old)"
+        equals: "0"
+        describe: Without reintroducing the abandoned commit
+      - type: file_matches
+        path: /tmp/answer-correct
+        pattern: "(?i)never merge after a forced"
+        describe: And stated the rule
+
+solution: >-
+  **A forced update looks exactly like ordinary divergence.** Measured:
+  `behind=1, ahead=1`, identical to two people committing in parallel. The counts
+  cannot tell the two situations apart, because the counts only compare refs.
+
+
+  **Two things can.** The fetch output prints a leading `+` and `(forced update)`
+  instead of the usual `abc..def` range — that line is the entire warning anyone
+  gets, and it scrolls past in a second. And reading the commits shows the tell:
+  the two "sides" are *the same work* with different messages, not two people
+  doing different things.
+
+
+  **Merging it succeeds silently.** No conflict, no warning, no mention that
+  anything unusual happened — and the result contains both the commit alice
+  removed and the one she replaced it with. Pushing that gives everyone back the
+  thing she deliberately took out. This is B10.4's "their next pull produces a
+  history with both", and it is neither hypothetical nor loud.
+
+
+  **The right question is what your local commit actually is.** If it is just the
+  old version of their work, `git reset --hard origin/main` — measured to leave
+  `0/0` with the abandoned commit still abandoned. If you had real commits on
+  top, rebase them onto the new `origin/main` so your work is replayed rather
+  than dragging the old commit along.
+
+
+  Either way: **never merge after a forced update.** Merging treats a rewrite as
+  parallel work, and it is not.

@@ -1,0 +1,195 @@
+id: troubleshooting.the-branch-that-came-back
+topic: topic.remotes-and-collaboration
+title: The commit that came back after it was removed
+level: L3
+objectives: [OBJ-B10.6.5]
+reveal_policy: progressive
+
+situation: >-
+  A commit containing a hard-coded API key was pushed to `main` on Tuesday. The
+  key was rotated immediately, and an engineer removed the commit from history
+  with an interactive rebase and force-pushed the cleaned branch. The team was
+  told.
+
+
+  On Thursday the commit is back on `main`. Nobody force-pushed since Tuesday,
+  and nobody reverted the cleanup.
+
+
+  `git log` shows the bad commit with its original id and timestamp, sitting
+  under a merge commit authored by a developer who says they only ran
+  `git pull` and `git push`.
+
+
+  Work out how a routine pull put a deliberately removed commit back on the
+  shared branch.
+
+symptoms:
+  - "A commit removed from history on Tuesday is on main again on Thursday"
+  - "Its id and author date are the originals, not a copy"
+  - "It sits under a merge commit from a developer who only pulled and pushed"
+  - "No force-push occurred after the cleanup"
+  - "The engineer who cleaned the branch confirms it was gone afterwards"
+
+artifacts:
+  - type: command_output
+    label: The bad commit, back
+    content: |
+      $ git log --oneline main | head -4
+      4b2c7e9 Merge branch 'main' of github.com:acme/service
+      9d1a3f0 add request retry
+      6f0e2d8 add config loader          <- the removed commit, original id
+      3c5b1a7 update deps
+
+  - type: command_output
+    label: What the merge combined
+    content: |
+      $ git log --oneline 4b2c7e9^1 -2
+      9d1a3f0 add request retry
+      3c5b1a7 update deps
+
+      $ git log --oneline 4b2c7e9^2 -2
+      6f0e2d8 add config loader
+      3c5b1a7 update deps
+
+  - type: command_output
+    label: The developer's reflog from Thursday morning
+    content: |
+      $ git reflog --date=short | head -5
+      4b2c7e9 HEAD@{0}: pull: Merge made by the 'ort' strategy.
+      9d1a3f0 HEAD@{1}: commit: add request retry
+      6f0e2d8 HEAD@{2}: clone: from github.com:acme/service
+
+  - type: command_output
+    label: When that clone happened
+    content: |
+      $ git log -1 --format=%cd --date=short 6f0e2d8
+      2026-08-18
+
+hints:
+  - "Look at the developer's reflog. When did they clone, relative to the cleanup?"
+  - "A merge keeps both sides. What was on their side?"
+  - "Nothing forced anything on Thursday. What did the Thursday push have to be, for the remote to accept it?"
+
+diagnostic_questions:
+  - "Where did the returning commit come from, if nobody force-pushed after the cleanup?"
+  - "What was in the developer's local main when they ran git pull?"
+  - "Why did the remote accept Thursday's push without complaint?"
+  - "Would --force-with-lease have prevented this?"
+  - "What should the developer have done when their pull reported a divergence?"
+
+method: >-
+  **1. Notice the id is the original.** The commit has its Tuesday id and author
+  date, so it was not recreated — this object was already somewhere. Something
+  that held it put it back.
+
+
+  **2. Read the merge's two sides.** `4b2c7e9^1` is the cleaned history;
+  `4b2c7e9^2` contains the bad commit. The merge combined a cleaned branch with
+  one that still had it, which is exactly what a merge is for and exactly what
+  should not have happened here.
+
+
+  **3. Find who held the old history.** The developer's reflog shows a `clone`
+  that predates the cleanup. Their local `main` was the pre-cleanup history and
+  nothing had changed it — a rewrite on the remote does not reach into anyone's
+  clone.
+
+
+  **4. Ask why Thursday's push was accepted.** Because it was a fast-forward. The
+  merge commit has the cleaned tip as its first parent, so nothing on the remote
+  became unreachable and no rule was broken. The remote had no basis to refuse.
+
+
+  **5. Conclude that the pull was the event.** Their `git pull` saw a divergence —
+  their old history against the cleaned one — and merged, because that is what
+  pull does by default. The merge preserved both sides, including the commit the
+  cleanup existed to remove.
+
+root_cause: >-
+  **A clone that predated the cleanup was merged back in by an ordinary pull.**
+
+
+  Rewriting history on a remote changes the remote. It does not reach into
+  anyone's existing clone, and it cannot — those objects are on their machines.
+  Anyone who had fetched before Tuesday still had the bad commit and a branch
+  pointing at a history containing it.
+
+
+  When that developer pulled on Thursday, Git compared their `main` against the
+  updated `origin/main` and found a divergence: one side had the pre-cleanup
+  history, the other the rewritten one. `git pull` merges by default, so it did —
+  and a merge **keeps both sides**. That is the correct behaviour of a merge and
+  the wrong outcome here, because the two "sides" were not parallel work. They
+  were one history and its replacement.
+
+
+  **The push was then accepted because it was legitimately a fast-forward.** The
+  merge commit's first parent is the cleaned tip, so nothing on the remote became
+  unreachable. No protection applied, because none was being violated.
+
+
+  **`--force-with-lease` would not have helped**, and it is worth saying so: no
+  force was involved. The lease guards against overwriting commits you have not
+  fetched, and this push overwrote nothing.
+
+
+  **What should have happened.** The pull reported a divergence — that was the
+  moment. Divergence after a known history rewrite is not parallel work, and
+  merging is exactly wrong. The developer needed to reset onto the new
+  `origin/main`, or rebase any real local work onto it, so their pre-cleanup
+  history was abandoned rather than merged.
+
+
+  The deeper cause is that removing a commit from a shared history is not a
+  single operation on the remote. It is an operation on the remote **plus** every
+  clone that holds it, and only the first part can be done by the person doing
+  the cleanup.
+
+resolution: >-
+  **Treat the key as disclosed regardless.** It was pushed on Tuesday and lived
+  in clones for two days. Rotation was correct and remains the only step that
+  revoked anything — the history work is hygiene, and this incident is a good
+  illustration of why it is only that.
+
+
+  **Remove it again, and this time coordinate.** Redo the cleanup, and require
+  everyone to re-clone or hard-reset rather than pull:
+
+
+  ```console
+  $ git fetch origin
+  $ git reset --hard origin/main
+  ```
+
+
+  Anyone with local work rebases it onto the new tip instead:
+
+
+  ```console
+  $ git rebase --onto origin/main <old-upstream> <their-branch>
+  ```
+
+
+  **Verify afterwards rather than assuming.** `git log --all --oneline | grep`
+  for the id in a fresh clone, and check the hosting provider — a rewritten
+  branch does not remove the commit from a fork or a pull request view, and it
+  can remain reachable by URL long after it leaves the branch.
+
+
+  **Then fix the practice.**
+
+
+  **Protect the branch** so a merge that reintroduces removed history cannot be
+  pushed silently. This push broke no rule, which is precisely the problem — the
+  protection has to be a rule about what may land, not about force-pushing.
+
+
+  **When history is rewritten, say what people must run**, not just that it
+  happened. "We cleaned `main`, please re-clone" is a different message from "we
+  cleaned `main`", and the second one is what produced this.
+
+
+  **Never merge after a known rewrite.** Divergence caused by a rewrite is not
+  parallel work, and the counts cannot tell you which you are looking at — a
+  point the lab measures directly.

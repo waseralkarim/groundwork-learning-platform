@@ -1,0 +1,182 @@
+topic: topic.remotes-and-collaboration
+
+exercises:
+  - id: e1
+    title: Explain a status that is confidently wrong
+    level: L2
+    objectives: [OBJ-B10.6.1]
+    kind: interpretation
+    prompt: >-
+      A colleague reports a bug in Git. They ran `git status`, which said their
+      branch was up to date with `origin/main`. Thirty seconds later their push
+      was rejected because the remote had commits they did not have.
+
+
+      They want to know how status can be that wrong that fast.
+    answer: >-
+      **Status was not wrong, and nothing changed in those thirty seconds.**
+
+
+      `origin/main` is a local file under `.git/refs/remotes/`. It records where
+      that branch was the last time this repository asked — and asking only
+      happens during a fetch, a pull, or a clone. Between those moments nothing
+      is communicated at all.
+
+
+      So "up to date with origin/main" means *up to date with what I last heard*.
+      It was true when they read it and it was true thirty seconds later. What it
+      never claimed was anything about the remote's current state.
+
+
+      **The push is the first thing that actually talked to the remote**, which is
+      why it is the first thing that could discover the difference. The rejection
+      does not contradict status; it is the first new information either command
+      had.
+
+
+      The habit that removes the surprise is `git fetch` before believing any
+      status about a shared branch. Fetch is free, cannot touch your work, and
+      makes every subsequent count honest.
+    explanation: >-
+      The mental model being corrected is that a repository is connected to a
+      server. Nothing is connected — a remote is a name for a URL, and every
+      piece of remote information you hold is a local file with an age.
+
+  - id: e2
+    title: Say what each command would do
+    level: L2
+    objectives: [OBJ-B10.6.2]
+    kind: short_answer
+    prompt: >-
+      Your branch has one local commit. The remote has one commit you do not
+      have. You have not fetched yet.
+
+
+      For each, say what changes and what does not:
+
+
+      1. `git fetch`
+      2. `git pull` with `pull.rebase` unset
+      3. `git pull --rebase`
+      4. `git pull` with `pull.ff = only`
+    answer: >-
+      **1. `git fetch`.** `origin/main` moves; your branch, index and working
+      tree are untouched. Afterwards status reports ahead 1, behind 1 — the
+      divergence becomes visible, which it was not before.
+
+
+      **2. `git pull`, `pull.rebase` unset.** Fetches, then merges. A merge commit
+      with two parents, both sides preserved, history recording that the work was
+      parallel. This is the default, and the one people are surprised by when a
+      merge commit appears that nobody asked for.
+
+
+      **3. `git pull --rebase`.** Fetches, then replays your commit on top of
+      theirs. Linear, one fewer commit, and **your commit gets a new id** because
+      its parent changed. Fine here, since nobody else has it.
+
+
+      **4. `git pull` with `pull.ff = only`.** Fetches, then refuses — "Diverging
+      branches can't be fast-forwarded". Nothing is integrated and you are asked
+      to choose.
+
+
+      All four fetch. They differ entirely in what happens afterwards, which is
+      the half of `pull` worth being deliberate about.
+    explanation: >-
+      Every one of these is "fetch, then something". Naming the something makes
+      the choice explicit — and explains why a team that leaves `pull.rebase`
+      unset ends up with a history whose shape depends on who typed the command.
+
+  - id: e3
+    title: Talk someone out of a force-push
+    level: L2
+    objectives: [OBJ-B10.6.4]
+    kind: interpretation
+    prompt: >-
+      A colleague's push to a shared branch was rejected. They say the remote is
+      "out of sync with my repo" and are about to run `git push --force` to make
+      it match.
+
+
+      Say what is actually happening and what you would tell them.
+    answer: >-
+      **The framing is backwards.** The remote is not out of sync with them —
+      they are missing commits the remote has. Their record of the remote is
+      stale, which is why nothing warned them earlier.
+
+
+      **The rejection protects somebody else's work.** An update is allowed when
+      the old tip is an ancestor of the new one, so nothing that was reachable
+      stops being reachable. Their push is not a descendant of what the remote
+      holds, so accepting it would strand a colleague's commit. Nothing of
+      *theirs* is at risk — their commits are on their machine, untouched.
+
+
+      **`--force` is a request to do exactly what the check prevents.** On a
+      shared branch it makes someone else's commit unreachable and leaves everyone
+      who pulled it holding a history that disagrees with the remote — none of
+      which can be repaired from their machine.
+
+
+      What I would say: `git fetch`, then read the two ranges. It is almost
+      certainly ordinary divergence, and a merge or rebase resolves it in one
+      command. If they genuinely must replace remote history — their own feature
+      branch — `--force-with-lease` at least refuses when the remote moved since
+      their last fetch.
+    explanation: >-
+      "Make it match mine" is a natural description of a rejection and it hides
+      what a shared branch is. Restating it as "which commits would stop being
+      reachable" turns a frustrating message into a fact with an obvious
+      response.
+
+  - id: e4
+    title: Write the team's pull policy
+    level: L3
+    objectives: [OBJ-B10.6.6]
+    kind: short_answer
+    prompt: >-
+      A team's history is a mixture of merge commits and linear stretches and
+      nobody can explain why. Some people's pulls produce merge commits titled
+      "Merge branch 'main' of ..." and some do not.
+
+
+      Write the policy you would propose, and justify it.
+    answer: >-
+      **The cause first, because this is not a discipline problem.** With
+      `pull.rebase` unset, `git pull` merges. Anyone who has set it, or who types
+      `--rebase` from habit, rebases. The same command produces different shapes
+      on different machines, so the history records people's configs rather than
+      anything about the work.
+
+
+      **The policy:**
+
+
+      > Set `pull.rebase = true` globally. A pull that has to reconcile replays
+      > your local commits on top of the remote's, which is what you meant.
+      >
+      > Prefer `git fetch` and a look before integrating on a shared branch.
+      >
+      > Never `--force` on a shared branch. `--force-with-lease` on your own.
+      >
+      > Merge commits on `main` should come from merging *feature branches*, not
+      > from reconciling two copies of `main`. A "Merge branch 'main' of ..."
+      > entry means something reconciled that should have replayed.
+
+
+      **Why rebase as the default:** the merge commits this produces record
+      nothing. "Merge branch 'main' of origin" is not information about the work —
+      it is an artefact of two people committing on the same afternoon. Real merge
+      commits, from real branches, stay valuable and stay legible once these stop
+      crowding them.
+
+
+      **`pull.ff = only`** is a defensible alternative for people who would rather
+      be asked than have something happen. I would offer it rather than mandate
+      it — either is fine as long as it is chosen rather than defaulted into.
+    explanation: >-
+      The instinct is to tell people to be more careful. The defect is an unset
+      default that makes one command mean two things, so the fix is configuration
+      rather than discipline — the same shape as most "people keep doing X"
+      problems.

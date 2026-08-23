@@ -1,0 +1,396 @@
+id: quiz.remotes-and-collaboration
+topic: topic.remotes-and-collaboration
+pass_score: 70
+
+questions:
+  - id: q1
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.6.1]
+    stem: >-
+      What is `origin/main`?
+    options:
+      - id: a
+        text: A local file recording where that branch was when you last fetched
+        correct: true
+      - id: b
+        text: A live view of the branch on the server
+        note: >-
+          Nothing is live. There is no connection between commands, and the ref
+          only changes when a fetch changes it.
+      - id: c
+        text: A copy of the remote branch, synced automatically
+        note: >-
+          Nothing syncs automatically. `git fetch` is the only thing that
+          updates it.
+      - id: d
+        text: A pointer that Git resolves over the network when read
+        note: >-
+          Reading it is `cat`ting a file. `git status` works with no network at
+          all.
+    explanation: >-
+      41 bytes under `.git/refs/remotes/origin/`, exactly like any branch. It
+      records what the remote said the last time this repository asked, which is
+      why `git status` is precisely as current as your last fetch and cannot be
+      more current than that.
+
+  - id: q2
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.6.1]
+    stem: >-
+      What makes a "server" repository different from your clone?
+    options:
+      - id: a
+        text: It is bare — no working tree, so nothing is checked out
+        correct: true
+      - id: b
+        text: It runs Git in a daemon mode that accepts connections
+        note: >-
+          A remote can be a plain directory path. The lab builds one with
+          `git init --bare` and no daemon at all.
+      - id: c
+        text: It holds the authoritative copy of the objects
+        note: >-
+          Every clone holds the objects. "Authoritative" is a convention, not a
+          property of the repository.
+      - id: d
+        text: It stores full history while clones store only recent commits
+        note: >-
+          A normal clone has the whole history. Shallow clones exist but are the
+          exception.
+    explanation: >-
+      Bare means no checkout, which is exactly why pushing to a branch someone
+      has checked out is refused — it would change files underneath them. Nothing
+      else about it is special.
+
+  - id: q3
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.6.2]
+    stem: >-
+      What does `git fetch` change?
+    options:
+      - id: a
+        text: Remote-tracking refs and the object store — nothing else
+        correct: true
+      - id: b
+        text: Your current branch, bringing it up to date
+        note: >-
+          That is the second half of `pull`. Fetch leaves every local branch
+          exactly where it was.
+      - id: c
+        text: Your working tree, updating files that changed
+        note: >-
+          No file is touched. You can fetch with uncommitted work and nothing
+          happens to it.
+      - id: d
+        text: Nothing until you also run `git merge`
+        note: >-
+          It downloads objects and moves remote-tracking refs, which is why you
+          can then inspect what arrived.
+    explanation: >-
+      Measured: after a fetch, `origin/main` moves and `main` does not. That is
+      why fetch is always safe — it cannot touch your work, cause a conflict, or
+      change a file you are editing. There is no situation where fetching is the
+      risky choice.
+
+  - id: q4
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.6.2]
+    stem: >-
+      Two developers run `git pull` on the same diverged branch and get
+      different history shapes. What most likely differs?
+    options:
+      - id: a
+        text: Their `pull.rebase` setting
+        correct: true
+      - id: b
+        text: Their Git versions
+        note: >-
+          Possible in principle, and far less likely than a config difference
+          that is designed to change exactly this.
+      - id: c
+        text: One of them had uncommitted changes
+        note: >-
+          That would block the pull rather than change the shape it produces.
+      - id: d
+        text: They fetched at different times
+        note: >-
+          That changes what is integrated, not whether it merges or rebases.
+    explanation: >-
+      With `pull.rebase` unset, the same command merges on one machine and
+      rebases on another and nobody can tell from the command which happened.
+      Configuring it explicitly removes a variable nobody was tracking — which is
+      the argument for setting it, rather than any claim that one shape is
+      better.
+
+  - id: q5
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.6.2]
+    stem: >-
+      What is the advantage of `git fetch` followed by inspection over `git pull`?
+    options:
+      - id: a
+        text: You see what would be integrated before anything integrates it
+        correct: true
+      - id: b
+        text: It is faster, since fetch transfers less
+        note: >-
+          Both transfer the same objects. Pull just does more afterwards.
+      - id: c
+        text: It avoids conflicts entirely
+        note: >-
+          It defers them. The same conflicts appear when you integrate.
+      - id: d
+        text: It updates your branch without a merge commit
+        note: >-
+          Fetch does not update your branch at all.
+    explanation: >-
+      `git log --oneline HEAD..origin/main` and the reverse show exactly what
+      each side has. Two extra commands, and you know what a pull would do before
+      it does it — including whether it is a fast-forward, in which case you can
+      pull without thinking.
+
+  - id: q6
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.6.3]
+    stem: >-
+      Your branch reports "ahead 1, behind 0". A colleague pushed ten minutes
+      ago. Is the report wrong?
+    options:
+      - id: a
+        text: No — it is accurate about what your repository has been told
+        correct: true
+      - id: b
+        text: Yes, the count is stale and should say behind 1
+        note: >-
+          The count is computed correctly from `origin/main`. What is stale is
+          `origin/main`, and only a fetch changes that.
+      - id: c
+        text: Yes, Git failed to check the remote
+        note: >-
+          Git never checks the remote unless a command tells it to.
+      - id: d
+        text: No, because pushes do not affect ahead/behind counts
+        note: >-
+          They do, once you fetch. Measured: the same repository reports 1/0
+          before and 1/1 after.
+    explanation: >-
+      Measured exactly this: `behind=0` before fetching, `behind=1` after,
+      with nothing changing on the remote in between. The counts compare two
+      local refs, so "behind" cannot appear until a fetch makes it appear — which
+      is why a push can be rejected by a repository that just claimed to be up to
+      date.
+
+  - id: q7
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.6.3]
+    stem: >-
+      "Diverged" means...
+    options:
+      - id: a
+        text: both sides have commits the other lacks, since their merge base
+        correct: true
+      - id: b
+        text: something has gone wrong and must be repaired
+        note: >-
+          It is the normal result of two people working at once.
+      - id: c
+        text: the branches have different names
+        note: >-
+          Names are irrelevant; the comparison is between two refs.
+      - id: d
+        text: your local branch is corrupted
+        note: >-
+          Nothing is corrupted. Both histories are valid.
+    explanation: >-
+      Both counts non-zero. It is not an error — it is what happens whenever two
+      people commit from the same starting point. It does require a decision,
+      because there is no single line of history any more, and merge or rebase
+      are the two ways to make one.
+
+  - id: q8
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.6.4]
+    stem: >-
+      A push is rejected with `(fetch first)`. Whose work is the rejection
+      protecting?
+    options:
+      - id: a
+        text: The other person's — your commits are safe on your machine
+        correct: true
+      - id: b
+        text: Yours, from being overwritten by the remote
+        note: >-
+          Nothing on the remote can affect your local commits. A push is
+          one-directional.
+      - id: c
+        text: Both equally
+        note: >-
+          Your side was never at risk. Only the remote's commits could become
+          unreachable.
+      - id: d
+        text: Nobody's — it is a consistency check
+        note: >-
+          It is a consistency check *about reachability*, and the reachability
+          at stake is somebody else's commits.
+    explanation: >-
+      An update is allowed when the old tip is an ancestor of the new one,
+      because then nothing that was reachable stops being reachable. Your push
+      would strand their commit, so it is refused. That is also why `--force` is
+      spelled the way it is — you are asking to do the thing the check prevents.
+
+  - id: q9
+    type: single_choice
+    level: L2
+    objectives: [OBJ-B10.6.4]
+    stem: >-
+      Your push is rejected. What is the correct first move?
+    options:
+      - id: a
+        text: "`git fetch`, then look at what each side has"
+        correct: true
+      - id: b
+        text: "`git push --force`"
+        note: >-
+          That does exactly what the rejection prevented, and makes somebody
+          else's commit unreachable.
+      - id: c
+        text: "`git pull` immediately"
+        note: >-
+          It will probably work, and it integrates before you have seen what you
+          are integrating with.
+      - id: d
+        text: Delete the branch and re-clone
+        note: >-
+          Heavy, and it discards your commits along with the problem.
+    explanation: >-
+      Fetch is free and safe. Once `origin/main` is current, the two `..` ranges
+      show exactly what each side has, and you can choose merge or rebase with
+      the facts in front of you rather than after the fact.
+
+  - id: q10
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.6.5]
+    stem: >-
+      After fetching, you see `+ abc123...def456 main -> origin/main (forced
+      update)`. What happened?
+    options:
+      - id: a
+        text: Someone rewrote history and force-pushed; the old commit is no longer reachable
+        correct: true
+      - id: b
+        text: The fetch failed and retried
+        note: >-
+          The line reports success. The `+` describes the kind of update, not an
+          error.
+      - id: c
+        text: Your local branch was updated forcibly
+        note: >-
+          Fetch never touches a local branch. Only `origin/main` moved.
+      - id: d
+        text: The remote was garbage collected
+        note: >-
+          `gc` does not move branch refs.
+    explanation: >-
+      The leading `+` and `(forced update)` mean the update was not a
+      fast-forward — the commit your record used to name is no longer reachable
+      from that branch. It is the only notice anyone gets that history was
+      rewritten, and it scrolls past in a second.
+
+  - id: q11
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.6.5]
+    stem: >-
+      A colleague force-pushed. Your repository now reports "ahead 1, behind 1".
+      Why is merging the wrong response?
+    options:
+      - id: a
+        text: It reintroduces the commit they deliberately removed, silently
+        correct: true
+      - id: b
+        text: It will conflict and cannot complete
+        note: >-
+          Measured: it succeeds cleanly, with no conflict and no warning. That
+          is what makes it dangerous.
+      - id: c
+        text: Merging is never valid after a fetch
+        note: >-
+          It is the normal response to ordinary divergence. This is not ordinary
+          divergence.
+      - id: d
+        text: It would lose your local commit
+        note: >-
+          A merge keeps both sides — which is precisely the problem here.
+    explanation: >-
+      The counts look identical to parallel work, but the two "sides" are the
+      same work in two versions. Merging keeps both, so the result contains the
+      commit that was removed and its replacement — and pushing it gives everyone
+      back what was deliberately taken out.
+
+  - id: q12
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.6.6]
+    stem: >-
+      Why configure `pull.rebase` explicitly rather than leaving the default?
+    options:
+      - id: a
+        text: Because the default is invisible — the same command behaves differently per machine
+        correct: true
+      - id: b
+        text: Because rebasing is always better than merging
+        note: >-
+          Both are legitimate. The argument for configuring is about consistency,
+          not about which shape wins.
+      - id: c
+        text: Because pull is unsafe without it
+        note: >-
+          It is not unsafe either way; it is unpredictable across a team.
+      - id: d
+        text: Because Git warns until it is set
+        note: >-
+          Recent versions do hint, which is a symptom of the problem rather than
+          the reason to fix it.
+    explanation: >-
+      With it unset, one developer's `git pull` merges and another's rebases, and
+      the history's shape depends on who ran the command. Picking either one and
+      configuring it removes a variable nobody was tracking.
+
+  - id: q13
+    type: single_choice
+    level: L3
+    objectives: [OBJ-B10.6.6]
+    stem: >-
+      Which setting makes `git pull` refuse rather than create a merge commit
+      when the branch has diverged?
+    options:
+      - id: a
+        text: "`pull.ff = only`"
+        correct: true
+      - id: b
+        text: "`pull.rebase = true`"
+        note: >-
+          It rebases instead of merging — it acts rather than refusing.
+      - id: c
+        text: "`merge.ff = false`"
+        note: >-
+          That forces a merge commit even when a fast-forward is possible. The
+          opposite.
+      - id: d
+        text: "`push.default = simple`"
+        note: >-
+          Concerns which branch a bare `git push` targets.
+    explanation: >-
+      `pull.ff = only` allows a pull that fast-forwards and refuses anything
+      else, so divergence becomes a message rather than an automatic merge. Good
+      for people who would rather be told than have something happen — and it
+      pairs naturally with the fetch-look-decide habit.
