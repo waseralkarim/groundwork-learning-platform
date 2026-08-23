@@ -13,8 +13,9 @@ intro: >-
 
 
   You will cause one deliberately, read the rejection as a statement about
-  reachability, and then resolve it three different ways — comparing the history
-  each one produces, so the choice stops being about which command you saw last.
+  reachability, and then resolve it both ways — merge and rebase — comparing the
+  history each produces, so the choice stops being about which command you saw
+  last.
 
 setup:
   - /opt/lab/seed-git.sh
